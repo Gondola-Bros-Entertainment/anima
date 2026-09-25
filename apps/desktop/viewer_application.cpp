@@ -186,10 +186,10 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
                 if (preview) {
                     const auto step = driver ? driver->playback_seconds(std::chrono::duration<double>(elapsed).count())
                                              : std::chrono::duration<double>(elapsed).count();
-                    for (const auto &event : preview->advance(step)) {
+                    for (const auto &preview_event : preview->advance(step)) {
                         ++preview_events;
-                        std::cout << "PREVIEW_EVENT " << event.name << " clip=" << preview->playback().animation()->name
-                                  << " time=" << event.time << " frame=" << frames << " (local preview only)\n";
+                        std::cout << "PREVIEW_EVENT " << preview_event.name << " clip=" << preview->playback().animation()->name
+                                  << " time=" << preview_event.time << " frame=" << frames << " (local preview only)\n";
                     }
                 }
 #endif
