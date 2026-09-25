@@ -1,0 +1,47 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "ANIMA_WARNINGS_AS_ERRORS": true,
+        "BUILD_TESTING": true
+      }
+    },
+    {
+      "name": "core",
+      "displayName": "Core only (macOS / Windows / Linux, no graphics or asset dependencies)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/core",
+      "cacheVariables": { "ANIMA_BUILD_DESKTOP": false, "ANIMA_BUILD_ASSETS": false }
+    },
+    {
+      "name": "headless",
+      "displayName": "Headless core and GLB importer (macOS / Windows / Linux)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/headless",
+      "cacheVariables": { "ANIMA_BUILD_DESKTOP": false, "ANIMA_BUILD_ASSETS": true }
+    },
+    {
+      "name": "desktop",
+      "displayName": "SDL3 / Vulkan viewer (macOS / Windows / Linux)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/desktop",
+      "cacheVariables": { "ANIMA_BUILD_DESKTOP": true, "ANIMA_BUILD_ASSETS": true, "ANIMA_BUILD_AUDIO_OUTPUT": true }
+    }
+  ],
+  "buildPresets": [
+    { "name": "core", "configurePreset": "core", "configuration": "Debug", "jobs": 2 },
+    { "name": "headless", "configurePreset": "headless", "configuration": "Debug", "jobs": 2 },
+    { "name": "desktop", "configurePreset": "desktop", "configuration": "Debug", "jobs": 2 }
+  ],
+  "testPresets": [
+    { "name": "core", "configurePreset": "core", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "headless", "configurePreset": "headless", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "desktop", "configurePreset": "desktop", "configuration": "Debug", "output": { "outputOnFailure": true } }
+  ]
+}

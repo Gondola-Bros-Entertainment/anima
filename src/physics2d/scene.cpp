@@ -1,0 +1,143 @@
+#include "../detail/json.hpp"
+#include "../detail/scene_driver.hpp"
+#include <anima/physics2d_scene.hpp>
+
+#include <numbers>
+
+namespace anima::physics2d {
+namespace {
+Pose planar_pose(GameObject object, Motion motion) {
+    if (motion == Motion::dynamic && object.parent())
+        throw std::invalid_argument("Dynamic 2D bodies must be scene roots");
+    const auto m = object.world_matrix();
+    for (float value : {m[12], m[13]})
+        if (!std::isfinite(value) || std::abs(value) > 1e6F)
+            throw std::invalid_argument("2D physics position outside supported range");
+    const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 1e-4F; };
+    if (!near(m[0] * m[0] + m[1] * m[1], 1) || !near(m[4] * m[4] + m[5] * m[5], 1) ||
+        !near(m[0] * m[4] + m[1] * m[5], 0) || !near(m[0] * m[5] - m[1] * m[4], 1) || !near(m[2], 0) ||
+        !near(m[6], 0) || !near(m[8], 0) || !near(m[9], 0) || !near(m[10], 1))
+        throw std::invalid_argument("2D physics requires unit scale, XY translation and Z rotation without tilt/shear");
+    return {{m[12], m[13]}, std::atan2(m[1], m[0])};
+}
+using Json = nlohmann::json;
+Json vec(Vec2 v) { return Json::array({v.x, v.y}); }
+Vec2 vec(const Json &j) {
+    if (!j.is_array() || j.size() != 2 || !j[0].is_number() || !j[1].is_number())
+        throw std::invalid_argument("2D physics vector requires two numbers");
+    return {j[0].get<float>(), j[1].get<float>()};
+}
+} // namespace
+RigidBody::RigidBody(GameObject object, World &world, BodySettings settings) : settings_(std::move(settings)) {
+    settings_.pose = planar_pose(object, settings_.motion);
+    body_ = world.create(settings_);
+}
+RigidBody::~RigidBody() { body_.remove(); }
+namespace {
+template <class Scenes> void step_scenes(Scenes &scenes, World &world, double seconds) {
+    if (!std::isfinite(seconds) || seconds < 1e-6 || seconds > .1)
+        throw std::invalid_argument("Invalid 2D physics fixed step");
+    anima::detail::SceneDriver::check(scenes);
+    auto components = scenes.template components<RigidBody>();
+    std::vector<Pose> poses;
+    for (const auto &component : components) {
+        if (!world.owns(component->body()))
+            throw std::invalid_argument("2D body belongs to another or expired world");
+        poses.push_back(planar_pose(component.object(), component->settings().motion));
+        if (component->settings().motion == Motion::kinematic && component->settings().fixed_rotation &&
+            std::abs(std::remainder(poses.back().angle - component->body().pose().angle,
+                                    2 * std::numbers::pi_v<float>)) >= 1e-6F)
+            throw std::invalid_argument("Fixed-rotation kinematic object changed angle");
+    }
+    for (std::size_t i = 0; i < components.size(); ++i) {
+        auto &component = components[i];
+        auto body = component->body();
+        body.set_enabled(component.active());
+        if (!component.active())
+            continue;
+        const auto motion = component->settings().motion;
+        if (motion == Motion::stationary) {
+            const auto old = body.pose();
+            if (old.position.x != poses[i].position.x || old.position.y != poses[i].position.y ||
+                old.angle != poses[i].angle)
+                body.teleport(poses[i]);
+        } else if (motion == Motion::kinematic)
+            body.move_kinematic(poses[i], seconds);
+    }
+    world.step(seconds);
+    for (auto &component : components) {
+        if (component.active() && component->settings().motion == Motion::dynamic) {
+            const auto pose = component->body().pose();
+            component.object().set_transform({{pose.position.x, pose.position.y, component.object().position().z},
+                                              {0, 0, std::sin(pose.angle / 2), std::cos(pose.angle / 2)},
+                                              {1, 1, 1}});
+        }
+    }
+}
+} // namespace
+void step(Scene &scene, World &world, double seconds) { step_scenes(scene, world, seconds); }
+void step(SceneSet &scenes, World &world, double seconds) { step_scenes(scenes, world, seconds); }
+void add_component_codec(ComponentCodecs &codecs, World &world) {
+    const std::weak_ptr<int> lifetime = world.lifetime_;
+    codecs.add<RigidBody>(
+        "anima.rigid-body-2d.v1",
+        [](const RigidBody &component, const ObjectReferences &) {
+            const auto &s = component.settings();
+            return Json{{"shape", static_cast<int>(s.collider.shape)},
+                        {"extent", vec(s.collider.half_extent)},
+                        {"radius", s.collider.radius},
+                        {"half_height", s.collider.half_height},
+                        {"motion", static_cast<int>(s.motion)},
+                        {"velocity", vec(component.body().velocity())},
+                        {"angular_velocity", component.body().angular_velocity()},
+                        {"density", s.density},
+                        {"friction", s.friction},
+                        {"restitution", s.restitution},
+                        {"layer", s.layer},
+                        {"sensor", s.sensor},
+                        {"continuous", s.continuous},
+                        {"fixed_rotation", s.fixed_rotation}}
+                .dump();
+        },
+        [&world, lifetime](GameObject object, std::string_view data, const ObjectReferences &) {
+            if (lifetime.expired())
+                throw std::out_of_range("2D rigid body codec world expired");
+            const auto j = anima::detail::parse_json(data, 8192);
+            anima::detail::json_fields(j, {"shape", "extent", "radius", "half_height", "motion", "velocity",
+                                           "angular_velocity", "density", "friction", "restitution", "layer", "sensor",
+                                           "continuous", "fixed_rotation"});
+            const auto integer = [&](const char *key, unsigned maximum) {
+                const auto &v = j.at(key);
+                if (!v.is_number_integer() || v.get<std::int64_t>() < 0 || v.get<std::uint64_t>() > maximum)
+                    throw std::invalid_argument("Invalid 2D rigid body enum/layer");
+                return v.get<unsigned>();
+            };
+            const auto number = [&](const char *key) {
+                if (!j.at(key).is_number())
+                    throw std::invalid_argument("Invalid 2D physics scalar");
+                return j.at(key).get<float>();
+            };
+            const auto boolean = [&](const char *key) {
+                if (!j.at(key).is_boolean())
+                    throw std::invalid_argument("Invalid 2D physics flag");
+                return j.at(key).get<bool>();
+            };
+            BodySettings s;
+            s.collider.shape = static_cast<Shape>(integer("shape", 2));
+            s.collider.half_extent = vec(j.at("extent"));
+            s.collider.radius = number("radius");
+            s.collider.half_height = number("half_height");
+            s.motion = static_cast<Motion>(integer("motion", 2));
+            s.velocity = vec(j.at("velocity"));
+            s.angular_velocity = number("angular_velocity");
+            s.density = number("density");
+            s.friction = number("friction");
+            s.restitution = number("restitution");
+            s.layer = static_cast<std::uint8_t>(integer("layer", 15));
+            s.sensor = boolean("sensor");
+            s.continuous = boolean("continuous");
+            s.fixed_rotation = boolean("fixed_rotation");
+            object.add_component<RigidBody>(world, s);
+        });
+}
+} // namespace anima::physics2d

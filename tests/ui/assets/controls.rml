@@ -1,0 +1,32 @@
+<rml>
+<head><title>Anima UI integration checks</title><style>
+body { margin: 0; width: 100%; height: 100%; font-family: LatoLatin; font-size: 18dp; color: white; pointer-events: none; }
+#panel { position: absolute; left: 16dp; top: 16dp; width: 260dp; height: 320dp; padding: 12dp; background-color: #102030dd; pointer-events: auto; }
+h1 { font-size: 22dp; margin: 0 0 12dp 0; }
+input, select, button { display: block; width: 224dp; height: 32dp; margin: 8dp 0; padding: 4dp; background-color: #304860; color: white; border-width: 1dp; border-color: #708090; }
+input:focus, select:focus { border-color: #50ffff; }
+button:hover { background-color: #5080a0; }
+selectvalue { width: 100%; }
+selectarrow { width: 12dp; height: 12dp; background-color: #80b0e0; }
+selectbox { background-color: #203040; border-width: 1dp; border-color: white; }
+option { padding: 4dp; }
+option:hover, option:checked { background-color: #5080a0; }
+#scroll { width: 220dp; height: 54dp; overflow: auto; background-color: #15283b; }
+#scrollcontent { height: 160dp; width: 180dp; }
+#clip { position: absolute; left: 350dp; top: 40dp; width: 100dp; height: 50dp; overflow: hidden; }
+#clipchild { display: block; width: 160dp; height: 80dp; background-color: #ff0000; }
+#alpha { position: absolute; left: 350dp; top: 120dp; width: 100dp; height: 80dp; background-color: #ffffff80; }
+#transform { position: absolute; left: 350dp; top: 230dp; width: 50dp; height: 30dp; background-color: #00ff00; transform: translate(30dp, 10dp); }
+#image { position: absolute; left: 480dp; top: 230dp; width: 64dp; height: 64dp; }
+</style></head>
+<body>
+<div id="panel"><h1>Reusable UI</h1>
+<input id="name" type="text" value="" maxlength="24" />
+<select id="choice"><option value="a">First choice</option><option value="b">Second choice</option></select>
+<button id="action">Apply</button>
+<div id="scroll"><div id="scrollcontent">Scrollable text<br/>Second line<br/>Third line<br/>Fourth line<br/>Fifth line</div></div>
+<p id="status">Ready</p></div>
+<div id="clip"><div id="clipchild"></div></div>
+<div id="alpha"></div><div id="transform"></div>
+<img id="image" src="checker.png" />
+</body></rml>

@@ -1,0 +1,4 @@
+# Receipts hash compiler bytes; platform checkout conversion must not change them.
+python/**/*.py text eol=lf
+python/*.toml text eol=lf
+tools/animation/*.py text eol=lf

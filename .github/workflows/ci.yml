@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  headless:
+    name: Headless / ${{ matrix.os }} / ${{ matrix.configuration }}
+    if: github.event.repository.private == false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Configure
+        run: >-
+          cmake -S . -B build/headless
+          -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
+          -DANIMA_BUILD_DESKTOP=OFF
+          -DANIMA_BUILD_ASSETS=ON
+          -DANIMA_BUILD_TESTS=ON
+          -DANIMA_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build/headless --config ${{ matrix.configuration }} --parallel 2
+      - name: Test runtime and copied consumers
+        run: >-
+          ctest --test-dir build/headless -C ${{ matrix.configuration }}
+          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
+
+  optional:
+    name: Optional headless libraries / Linux
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install FreeType
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libfreetype6-dev
+      - name: Configure physics, documents, input and audio
+        run: >-
+          cmake -S . -B build/optional
+          -DCMAKE_BUILD_TYPE=Debug
+          -DANIMA_BUILD_DESKTOP=OFF
+          -DANIMA_BUILD_ASSETS=ON
+          -DANIMA_BUILD_TESTS=ON
+          -DANIMA_WARNINGS_AS_ERRORS=ON
+          -DANIMA_BUILD_PHYSICS=ON
+          -DANIMA_BUILD_PHYSICS2D=ON
+          -DANIMA_BUILD_UI_DOCUMENTS=ON
+          -DANIMA_BUILD_INPUT_SDL=ON
+          -DANIMA_BUILD_AUDIO_OUTPUT=ON
+          -DANIMA_FETCH_SDL=ON
+          -DANIMA_INPUT_SDL_INCLUDE_DIR="$PWD/build/optional/_deps/sdl3-src/include"
+          -DSDL_SHARED=OFF -DSDL_STATIC=ON
+          -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
+          -DSDL_UNIX_CONSOLE_BUILD=ON
+      - name: Build
+        run: cmake --build build/optional --parallel 2
+      - name: Test optional libraries and copied consumers
+        run: >-
+          ctest --test-dir build/optional -C Debug
+          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
+
+  python:
+    name: Authoring and packaging / Python ${{ matrix.python }}
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Check documentation links
+        run: python tools/check_repository.py
+      - name: Test authoring contracts
+        run: |
+          python tests/authoring/contracts.py
+          python -O tests/authoring/contracts.py
+      - name: Build source and wheel distributions
+        run: |
+          python -m pip install build
+          python -m build python --outdir build/dist
+      - name: Verify distribution licenses
+        run: |
+          python - <<'PY'
+          from email.parser import BytesParser
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          expected = {}
+          for name in ("LICENSE", "NOTICE"):
+              expected[name] = Path(name).read_bytes()
+              if (Path("python") / name).read_bytes() != expected[name]:
+                  raise SystemExit(f"Python package {name} differs from repository {name}")
+
+          def check_metadata(data):
+              metadata = BytesParser().parsebytes(data)
+              if metadata["License-Expression"] != "Apache-2.0":
+                  raise SystemExit("Distribution is missing the Apache-2.0 license expression")
+              if set(metadata.get_all("License-File", [])) != set(expected):
+                  raise SystemExit("Distribution is missing LICENSE or NOTICE metadata")
+
+          wheels = list(Path("build/dist").glob("*.whl"))
+          sources = list(Path("build/dist").glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sources) != 1:
+              raise SystemExit("Expected one wheel and one source distribution")
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata_path, = (name for name in wheel.namelist()
+                                if name.endswith(".dist-info/METADATA"))
+              check_metadata(wheel.read(metadata_path))
+              prefix = metadata_path.rsplit("/", 1)[0]
+              for name, contents in expected.items():
+                  if wheel.read(f"{prefix}/licenses/{name}") != contents:
+                      raise SystemExit(f"Wheel {name} does not match the repository")
+          with tarfile.open(sources[0], "r:gz") as source:
+              metadata_path, = (name for name in source.getnames()
+                                if len(Path(name).parts) == 2 and name.endswith("/PKG-INFO"))
+              check_metadata(source.extractfile(metadata_path).read())
+              prefix = metadata_path.rsplit("/", 1)[0]
+              for name, contents in expected.items():
+                  if source.extractfile(f"{prefix}/{name}").read() != contents:
+                      raise SystemExit(f"Source distribution {name} does not match the repository")
+          print("PASS source and wheel licensing")
+          PY
+      - name: Import the installed wheel
+        run: |
+          python -m pip install --no-deps build/dist/*.whl
+          python -c "import anima_pipeline; from importlib.metadata import version; print(version('anima-pipeline'))"
+
+  documentation:
+    name: Doxygen reference
+    if: github.event.repository.private == false
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Doxygen
+        run: brew install doxygen
+      - name: Generate HTML and XML reference
+        run: |
+          cmake -S docs -B build/docs
+          cmake --build build/docs --target anima_docs
+          test -s build/docs/reference/html/index.html
+          test -s build/docs/reference/xml/index.xml
