@@ -7,7 +7,7 @@
 #ifdef CONSUMER_PHYSICS2D
 #include "physics2d.hpp"
 #endif
-#ifdef CONSUMER_UI_DOCUMENTS
+#if defined(CONSUMER_UI_DOCUMENTS) || defined(CONSUMER_UI_SCENE)
 #include "documents.hpp"
 #endif
 #ifdef CONSUMER_PHYSICS
@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
 #ifdef CONSUMER_RUNTIME
     runtime_consumer::run();
 #endif
-#ifdef CONSUMER_UI_DOCUMENTS
+#if defined(CONSUMER_UI_DOCUMENTS) || defined(CONSUMER_UI_SCENE)
     documents_consumer::run();
 #endif
 

@@ -176,6 +176,9 @@ input; navigation publishes zero desired velocity without consuming routes; UI
 hides inactive panels; physics excludes inactive bodies on its next fixed driver
 call. Call these drivers before rendering/mixing/querying their output after changing
 activation. `synchronize_lifecycle()` alone does not synchronize those systems.
+Input, navigation and UI drivers accept a whole `SceneSet` as well as one `Scene`;
+all drivers run between scene calls. See [runtime ownership and system ordering](runtime-lifecycle.md)
+for the frame sequence and the distinct UI event callback boundary.
 Physics still validates every body's world ownership and rigid transform, including
 inactive bodies, and dynamic bodies must remain scene roots. There is no automatic global pause or mixed 2D/3D driver scheduler. Explicit
 scene ownership and transitions are described below.
@@ -274,6 +277,24 @@ creates all native objects and links before restoring user components. Encoders
 must be read-only; decoders must restrict mutations to their supplied object's
 components. A decoder failure destroys the staged hierarchy. Codecs are retained
 by value in a prefab, so callback captures must have appropriate lifetimes.
+
+The ordinary `instantiate(scene, placement)` and `instantiate(parent, placement)`
+overloads use that retained registry, including its physics-world, audio-mixer and
+UI-host bindings. For an instance in another session, pass its configured registry:
+
+```cpp
+auto instance = prefab.instantiate(destination_scene, anima::identity(), destination_codecs);
+auto nested = prefab.instantiate(destination_parent, placement, destination_codecs);
+```
+
+These overloads borrow the supplied registry only for the call. They leave the
+prefab's authored data and retained registry unchanged, so subsequent ordinary
+instances still use the original bindings. Every serialized component type must
+exist in the destination registry before any object is created. Decoder failure
+removes the staged objects and their owned resources. Placement, activation and
+instance-local object-link remapping follow the same rules as ordinary
+instantiation; the registry supplies services rather than changing document keys
+or implicitly selecting resources from the destination scene.
 
 ## Stable object keys and component references
 

@@ -306,12 +306,23 @@ Prefab Prefab::capture(GameObject root, const ComponentCodecs &codecs) {
     const std::array roots{root};
     return Prefab(capture_nodes(roots, codecs), codecs);
 }
-GameObject Prefab::create(Scene &scene, const GameObject *parent, const Mat4 &placement) const {
-    return instantiate_nodes(scene, nodes_, parent, placement, &codecs_).front();
+GameObject Prefab::create(Scene &scene, const GameObject *parent, const Mat4 &placement,
+                          const ComponentCodecs &codecs) const {
+    for (const auto &node : nodes_)
+        codecs.validate(node.components);
+    return instantiate_nodes(scene, nodes_, parent, placement, &codecs).front();
 }
-GameObject Prefab::instantiate(Scene &scene, const Mat4 &placement) const { return create(scene, nullptr, placement); }
+GameObject Prefab::instantiate(Scene &scene, const Mat4 &placement) const {
+    return create(scene, nullptr, placement, codecs_);
+}
 GameObject Prefab::instantiate(GameObject parent, const Mat4 &placement) const {
-    return create(parent.scene(), &parent, placement);
+    return create(parent.scene(), &parent, placement, codecs_);
+}
+GameObject Prefab::instantiate(Scene &scene, const Mat4 &placement, const ComponentCodecs &codecs) const {
+    return create(scene, nullptr, placement, codecs);
+}
+GameObject Prefab::instantiate(GameObject parent, const Mat4 &placement, const ComponentCodecs &codecs) const {
+    return create(parent.scene(), &parent, placement, codecs);
 }
 std::string Prefab::serialize(const MeshName &name) const { return encode(nodes_, prefab_kind, name); }
 Prefab Prefab::deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs) {

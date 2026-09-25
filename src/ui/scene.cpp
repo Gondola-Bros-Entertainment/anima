@@ -1,4 +1,5 @@
 #include "../detail/json.hpp"
+#include "../detail/scene_driver.hpp"
 #include <anima/ui/scene.hpp>
 namespace anima {
 UiPanel::UiPanel(UiDocuments &host, std::string key, const std::filesystem::path &path, bool visible)
@@ -10,18 +11,34 @@ UiPanel::UiPanel(UiDocuments &host, std::string key, const std::filesystem::path
         document_.show();
 }
 void UiPanel::set_visible(bool visible) { visible_ = visible; }
-void sync_ui_panels(Scene &scene) {
-    for (auto component : scene.components<UiPanel>()) {
-        auto &panel = component.get();
-        const bool visible = component.active() && panel.visible_;
-        if (visible != panel.document_.visible()) {
+namespace {
+template <class Scenes> void synchronize_panels(Scenes &scenes) {
+    const detail::SceneDriver::Scope scope(scenes);
+    const auto panels = scenes.template components<UiPanel>();
+    for (auto component : panels)
+        if (!component->document().valid())
+            throw std::out_of_range("UI panel document expired");
+    for (auto component : panels) {
+        // A preceding visibility event may remove another panel or close its
+        // document. Pin the current component through events that remove itself.
+        if (!component)
+            continue;
+        auto panel = component.operator->();
+        auto &document = panel->document();
+        if (!document.valid())
+            continue;
+        const bool visible = component.active() && panel->visible();
+        if (visible != document.visible()) {
             if (visible)
-                panel.document_.show();
+                document.show();
             else
-                panel.document_.hide();
+                document.hide();
         }
     }
 }
+} // namespace
+void sync_ui_panels(Scene &scene) { synchronize_panels(scene); }
+void sync_ui_panels(SceneSet &scenes) { synchronize_panels(scenes); }
 void add_ui_component_codec(ComponentCodecs &codecs, UiDocuments &host, UiDocumentResolver resolve) {
     if (!resolve)
         throw std::invalid_argument("UI codec requires an asset resolver");

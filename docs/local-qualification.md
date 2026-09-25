@@ -12,7 +12,8 @@ devices that hosted runners do not cover.
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
 requests and manual dispatch. After the short repository checks, platform builds,
-CodeQL and documentation run in parallel. The final `CI required` check fails if
+Actions/Python analysis and documentation run in parallel. The full Linux build
+also supplies compiled C++ CodeQL analysis. The final `CI required` check fails if
 any required job fails, is cancelled or is skipped, providing one stable check
 for branch rules.
 
@@ -39,6 +40,8 @@ build, with separate executables for each public target. Isolated configuration
 checks still verify each mode's dependency boundaries. CI reports configuration,
 compilation and API execution in separate steps; runtime tests run in parallel.
 Compiler cache statistics distinguish cold runs from subsequent cache reuse.
+The traced full Linux job disables caching so CodeQL observes every compilation;
+it reuses the existing build and consolidated consumers without an extra build.
 
 Repository checks validate documentation links, lint workflow syntax and shell
 commands with actionlint, and scan the complete fetched Git history with Gitleaks.
@@ -46,10 +49,17 @@ Both tools use checksum-verified releases. A generated detection canary verifies
 the secret scanner before the real scan; findings are redacted in logs.
 Dependabot proposes weekly updates to the SHA-pinned GitHub Actions.
 
-The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions,
-C/C++ and Python with the security-extended query suite. Its C++ analysis uses
-`build-mode: none` to include optional modules. It is required by PR/push CI and
-also runs weekly. The documentation stage generates Doxygen HTML/XML. CI does
+The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions and
+Python with the security-extended query suite. C/C++ uses that suite with manual
+extraction of the existing full Linux build, including optional modules and copied
+consumers with their actual compiler configuration. These checks are required by
+PR/push CI. Weekly CI scanning uses one full Linux build plus Actions/Python and
+documentation checks; ordinary runs retain the complete platform matrix.
+CodeQL file coverage is not test coverage or a safety score. Compiled extraction
+covers the selected configuration, not every platform-specific preprocessor branch;
+copied fixtures can be attributed to their generated consumer paths. Inspect the
+analysis results and omitted files rather than treating a percentage as proof.
+The documentation stage generates Doxygen HTML/XML. CI does
 not qualify physical GPUs, speakers or input devices. Use the relevant local
 checks for those paths.
 

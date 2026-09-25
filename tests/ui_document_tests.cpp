@@ -2,6 +2,7 @@
 #ifdef TEST_UI_SCENE
 #include "component_payloads.hpp"
 #include <anima/prefab.hpp>
+#include <anima/scene_set.hpp>
 #include <anima/ui/scene.hpp>
 #endif
 #include <RmlUi/Core.h>
@@ -41,6 +42,232 @@ class Renderer final : public Rml::RenderInterface {
 constexpr auto markup = "<rml><head><style>body { font-family: LatoLatin; }</style></head><body><div "
                         "id='container'><button id='action'>Test</button></div><input "
                         "id='input' type='text'/></body></rml>";
+#ifdef TEST_UI_SCENE
+template <class F> bool driver_rejected(F f) noexcept {
+    try {
+        f();
+    } catch (const std::logic_error &) {
+        return true;
+    } catch (...) {
+    }
+    return false;
+}
+struct PanelDriverChecks {
+    bool rejected = true;
+    unsigned calls{};
+};
+struct PanelDriverProbe {
+    Scene &scene;
+    SceneSet &scenes;
+    PanelDriverChecks &checks;
+    PanelDriverProbe(Scene &owner, SceneSet &selection, PanelDriverChecks &results)
+        : scene(owner), scenes(selection), checks(results) {
+        attempt();
+    }
+    void attempt() noexcept {
+        ++checks.calls;
+        checks.rejected &= driver_rejected([&] { sync_ui_panels(scene); });
+        checks.rejected &= driver_rejected([&] { sync_ui_panels(scenes); });
+    }
+    void on_enable() noexcept { attempt(); }
+    void on_disable() noexcept { attempt(); }
+    void on_update(double) { attempt(); }
+    void on_fixed_update(double) { attempt(); }
+    void on_late_update(double) { attempt(); }
+};
+void panel_selection(UiDocuments &host, const std::filesystem::path &file) {
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto object = first->create(), parent = second->create(), child = second->create();
+    child.set_parent(parent);
+    auto panel = object.add_component<UiPanel>(host, "controls", file);
+    auto other = child.add_component<UiPanel>(host, "controls", file);
+    panel.set_enabled(false);
+    parent.set_active(false);
+    sync_ui_panels(scenes);
+    check(!panel->document().visible() && other.enabled() && !other->document().visible(),
+          "Scene set did not reconcile UI enablement and inherited activation");
+    panel.set_enabled(true);
+    parent.set_active(true);
+    other->set_visible(false);
+    sync_ui_panels(scenes);
+    check(panel->document().visible() && !other->document().visible(),
+          "Scene set did not preserve authored panel visibility");
+    other->set_visible(true);
+    sync_ui_panels(scenes);
+    check(other->document().visible(), "Scene set did not restore panel visibility");
+
+    panel->set_visible(false);
+    other->document().close();
+    rejects([&] { sync_ui_panels(scenes); });
+    check(panel->document().visible(), "Expired later document partially published earlier visibility");
+    // A rejected snapshot must release both the set and each selected scene.
+    scenes.update(0);
+    first->fixed_update(0);
+    auto recovered = scenes.create("recovered");
+    scenes.unload(recovered);
+    child.remove_component<UiPanel>();
+    sync_ui_panels(scenes);
+    check(!panel->document().visible(), "Panel driver remained locked after rejected snapshot");
+    scenes.unload(second);
+    sync_ui_panels(scenes);
+    scenes.clear();
+    sync_ui_panels(scenes);
+}
+void panel_reentry(UiDocuments &host, const std::filesystem::path &file) {
+    PanelDriverChecks checks;
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto object = first->create();
+    auto panel = object.add_component<UiPanel>(host, "controls", file, false);
+    bool complete_set = true;
+    unsigned events = 0;
+    const auto attempt = [&](const UiEvent &) {
+        ++events;
+        check(driver_rejected([&] { sync_ui_panels(first.get()); }), "UI event reentered single-scene driver");
+        check(driver_rejected([&] { sync_ui_panels(scenes); }), "UI event reentered scene-set driver");
+        check(driver_rejected([&] { first->update(0); }), "UI event entered scene update");
+        check(driver_rejected([&] { scenes.fixed_update(0); }), "UI event entered scene-set scheduling");
+        check(driver_rejected([&] { (void)scenes.create("nested"); }), "UI event changed set membership");
+        if (complete_set)
+            check(driver_rejected([&] { second->update(0); }), "UI event entered another selected scene");
+    };
+    auto show = panel->document().root().on("show", attempt);
+    auto hide = panel->document().root().on("hide", attempt);
+    panel->set_visible(true);
+    sync_ui_panels(scenes);
+    host.check_events();
+    check(events == 1 && panel->document().visible(), "Panel show event did not run");
+    complete_set = false;
+    panel->set_visible(false);
+    sync_ui_panels(first.get());
+    host.check_events();
+    check(events == 2 && !panel->document().visible(), "Panel hide event did not run");
+    scenes.update(0);
+    first->fixed_update(0);
+    (void)scenes.create("after-events");
+
+    object.add_component<PanelDriverProbe>(first.get(), scenes, checks);
+    scenes.update(0);
+    scenes.fixed_update(0);
+    check(checks.calls == 5 && checks.rejected, "Panel driver entered component construction or scheduling");
+    // Retire the probe while its result storage and borrowed scene still exist.
+    object.remove_component<PanelDriverProbe>();
+    check(checks.calls == 6 && checks.rejected, "Panel driver entered component retirement");
+}
+void panel_event_mutations(UiDocuments &host, const std::filesystem::path &file) {
+    for (const bool showing : {true, false}) {
+        SceneSet scenes;
+        auto scene = scenes.create("self-removal");
+        auto object = scene->create();
+        auto panel = object.add_component<UiPanel>(host, "controls", file, !showing);
+        auto root = panel->document().root();
+        unsigned events = 0;
+        auto removal = root.on(showing ? "show" : "hide", [&](const UiEvent &) {
+            ++events;
+            object.remove_component<UiPanel>();
+        });
+        panel->set_visible(showing);
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(events == 1 && !panel && !root.valid() && !removal.connected(),
+              "Panel self-removal during visibility event retained resources");
+        sync_ui_panels(scenes);
+    }
+    {
+        SceneSet scenes;
+        auto scene = scenes.create("subtree-removal");
+        auto object = scene->create(), child = scene->create();
+        child.set_parent(object);
+        auto panel = object.add_component<UiPanel>(host, "controls", file, false);
+        auto nested = child.add_component<UiPanel>(host, "controls", file, false);
+        auto root = panel->document().root(), child_root = nested->document().root();
+        unsigned events = 0, child_events = 0;
+        auto destruction = root.on("show", [&](const UiEvent &) {
+            ++events;
+            object.destroy();
+        });
+        auto skipped = child_root.on("show", [&](const UiEvent &) { ++child_events; });
+        panel->set_visible(true);
+        nested->set_visible(true);
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(events == 1 && child_events == 0 && scene->size() == 0 && !object.valid() && !child.valid() && !panel &&
+                  !nested && !root.valid() && !child_root.valid() && !destruction.connected() && !skipped.connected(),
+              "Object destruction during visibility dispatch retained a subtree or visited retired panels");
+        sync_ui_panels(scenes);
+    }
+    {
+        SceneSet scenes;
+        auto first = scenes.create("first"), second = scenes.create("second");
+        auto object = first->create(), later = second->create();
+        auto panel = object.add_component<UiPanel>(host, "controls", file, false);
+        auto other = later.add_component<UiPanel>(host, "controls", file, false);
+        auto removal = panel->document().root().on("show", [&](const UiEvent &) { later.remove_component<UiPanel>(); });
+        panel->set_visible(true);
+        other->set_visible(true);
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(panel->document().visible() && !other, "Visibility event did not safely remove a later panel");
+    }
+    {
+        SceneSet scenes;
+        auto first = scenes.create("first"), second = scenes.create("second");
+        auto panel = first->create().add_component<UiPanel>(host, "controls", file, false);
+        auto later = second->create();
+        auto old = later.add_component<UiPanel>(host, "controls", file, false);
+        auto old_root = old->document().root();
+        ComponentRef<UiPanel> replacement;
+        auto replace = panel->document().root().on("show", [&](const UiEvent &) {
+            later.remove_component<UiPanel>();
+            replacement = later.add_component<UiPanel>(host, "controls", file, false);
+            replacement->set_visible(true);
+        });
+        panel->set_visible(true);
+        old->set_visible(true);
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(!old && !old_root.valid() && replacement && !replacement->document().visible(),
+              "Visibility snapshot retargeted a removed attachment to its replacement");
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(replacement->document().visible(), "Replacement panel did not participate in the next snapshot");
+    }
+    {
+        SceneSet scenes;
+        auto first = scenes.create("first"), second = scenes.create("second");
+        auto panel = first->create().add_component<UiPanel>(host, "controls", file);
+        auto later = second->create();
+        auto other = later.add_component<UiPanel>(host, "controls", file);
+        auto closure = panel->document().root().on("hide", [&](const UiEvent &) { other->document().close(); });
+        panel->set_visible(false);
+        other->set_visible(false);
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(!panel->document().visible() && other.valid() && !other->document().valid(),
+              "Visibility event did not safely close a later document");
+        later.remove_component<UiPanel>();
+        sync_ui_panels(scenes);
+    }
+    {
+        SceneSet scenes;
+        auto first = scenes.create("first"), second = scenes.create("second");
+        auto panel = first->create().add_component<UiPanel>(host, "controls", file, false);
+        ComponentRef<UiPanel> added;
+        auto addition = panel->document().root().on("show", [&](const UiEvent &) {
+            added = second->create().add_component<UiPanel>(host, "controls", file, false);
+            added->set_visible(true);
+        });
+        panel->set_visible(true);
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(added && !added->document().visible(), "New panel participated in an existing visibility snapshot");
+        sync_ui_panels(scenes);
+        host.check_events();
+        check(added->document().visible(), "New panel did not participate in the next visibility snapshot");
+    }
+}
+#endif
 void run(const std::filesystem::path &file) {
     Renderer renderer;
     Rml::SetRenderInterface(&renderer);
@@ -171,6 +398,9 @@ void run(const std::filesystem::path &file) {
                 check(scene.size() == 1 && context->GetNumDocuments() == count, "UI prefab rollback leaked document");
             }
         }
+        panel_selection(host, file);
+        panel_reentry(host, file);
+        panel_event_mutations(host, file);
 #endif
         survivor = host.from_memory(markup);
         stale = survivor.element("action");

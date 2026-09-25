@@ -93,6 +93,9 @@ n::add_component_codec(codecs);
 `update_agents` reads world positions, including parent transforms. It updates
 route cursors and movement suggestions transactionally across the collected
 agents; invalid parameters/positions leave prior intent and cursors untouched.
+It accepts either a `Scene` or a `SceneSet`, covering the whole selection before
+publication. Drivers require idle scenes: callbacks, construction and set mutation
+reject before consuming routes. See [runtime ordering](runtime-lifecycle.md).
 It neither moves objects nor calls Scene/physics updates or user callbacks, so
 applications choose the scheduling order. Disabled components produce zero and
 retain their route cursor at the next agent update. Removing components or

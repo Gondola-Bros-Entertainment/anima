@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
+# Modern Apple/Windows linkers do not need repeated static archives. Let CMake
+# emit each once where supported, while retaining ordering for traditional linkers.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
 project(Anima VERSION 0.1.0 LANGUAGES CXX)
 
 if(PROJECT_IS_TOP_LEVEL)
@@ -427,6 +432,9 @@ if(ANIMA_BUILD_TESTS)
     endif()
     if(ANIMA_BUILD_UI OR ANIMA_BUILD_UI_DOCUMENTS)
         list(APPEND anima_consumer_modes ui_documents)
+        if(ANIMA_BUILD_ASSETS)
+            list(APPEND anima_consumer_modes ui_scene)
+        endif()
     endif()
     if(ANIMA_BUILD_UI)
         list(APPEND anima_consumer_modes ui)
