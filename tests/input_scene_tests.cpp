@@ -21,6 +21,137 @@ template <class F> void rejects(F f) {
 }
 constexpr i::Event down{i::EventType::control, {i::ControlKind::key, 4, 0}, 1};
 constexpr i::Event up{i::EventType::control, {i::ControlKind::key, 4, 0}, 0};
+i::Event key_event(std::uint16_t code, std::uint32_t device, float value = 1) {
+    return {i::EventType::control, {i::ControlKind::key, code, device}, value};
+}
+i::Map chord_map(std::uint32_t device = i::any_device) {
+    i::Binding binding{{i::ControlKind::key, 4, device}};
+    binding.modifiers = {{i::ControlKind::key, 224, device}};
+    return {{"chord", i::ActionType::button, {binding}}};
+}
+void chord_configuration() {
+    const auto map = chord_map(7);
+    const auto document = i::serialize_map(map);
+    const auto restored = i::deserialize_map(document);
+    check(restored[0].bindings[0].control == map[0].bindings[0].control &&
+              restored[0].bindings[0].modifiers == map[0].bindings[0].modifiers &&
+              i::serialize_map(restored) == document,
+          "Chord configuration lost selectors or modifiers on round-trip");
+    check(i::deserialize_map(R"({"version":2,"actions":[]})").empty(), "Version 2 empty input map was rejected");
+    for (const auto version : {"1", "3", "2.0", "-1", "true"}) {
+        const auto invalid = std::string("{\"version\":") + version + ",\"actions\":[]}";
+        rejects([&] { (void)i::deserialize_map(invalid); });
+    }
+    for (const auto &invalid : invalid_component_payloads(document, "version"))
+        rejects([&] { (void)i::deserialize_map(invalid); });
+
+    const std::string prefix =
+        R"({"version":2,"actions":[{"name":"chord","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"channel":0,"scale":1,"deadzone":0)";
+    const std::string suffix = "}]}]}";
+    const std::string modifier = R"({"kind":0,"code":224,"device":7})";
+    const auto with_modifiers = [&](std::string_view value) {
+        return prefix + ",\"modifiers\":" + std::string(value) + suffix;
+    };
+    check(i::deserialize_map(with_modifiers("[" + modifier + "]"))[0].bindings[0].modifiers.size() == 1,
+          "Explicit current chord schema was rejected");
+    rejects([&] { (void)i::deserialize_map(prefix + suffix); });
+    rejects([&] { (void)i::deserialize_map(with_modifiers("null")); });
+    rejects([&] { (void)i::deserialize_map(with_modifiers("{}")); });
+    rejects([&] { (void)i::deserialize_map(with_modifiers("[" + modifier + "," + modifier + "]")); });
+    rejects([&] {
+        (void)i::deserialize_map(
+            with_modifiers("[" + modifier + "," + modifier + "," + modifier + "," + modifier + "," + modifier + "]"));
+    });
+    for (const auto &invalid : invalid_component_payloads(modifier, "kind"))
+        rejects([&] { (void)i::deserialize_map(with_modifiers("[" + invalid + "]")); });
+    for (const auto invalid : {R"({"kind":3,"code":0,"device":7})", R"({"kind":0,"code":224,"device":8})",
+                               R"({"kind":0,"code":4,"device":7})", R"({"kind":0,"code":512,"device":7})",
+                               R"({"kind":0,"code":224,"device":4294967296})"})
+        rejects([&] { (void)i::deserialize_map(with_modifiers("[" + std::string(invalid) + "]")); });
+    rejects([&] { (void)i::deserialize_map(std::string(1024 * 1024, ' ') + document); });
+
+    // A valid in-memory map can exceed the wire bound once all modifiers are encoded.
+    i::Binding wide{{i::ControlKind::gamepad_axis, 15, UINT32_MAX - 1}, i::Channel::x, 16, .999999F};
+    wide.modifiers = {{i::ControlKind::gamepad_button, 60, UINT32_MAX - 1},
+                      {i::ControlKind::gamepad_button, 61, UINT32_MAX - 1},
+                      {i::ControlKind::gamepad_button, 62, UINT32_MAX - 1},
+                      {i::ControlKind::gamepad_button, 63, UINT32_MAX - 1}};
+    i::Map large;
+    for (unsigned action = 0; action < 128; ++action)
+        large.push_back({"action" + std::to_string(action), i::ActionType::axis, std::vector<i::Binding>(32, wide)});
+    i::validate(large);
+    rejects([&] { (void)i::serialize_map(large); });
+}
+void chord_persistence() {
+    Scene source;
+    auto object = source.create("authored chord");
+    auto input = object.add_component<i::ActionInput>(chord_map(7));
+    input->context().process(key_event(4, 7));
+    input->context().process(key_event(224, 7));
+    check(input->context().state("chord").pressed, "Source chord did not activate");
+    ComponentCodecs source_codecs;
+    i::add_component_codec(source_codecs);
+    const auto prefab = Prefab::capture(object, source_codecs);
+    check(prefab.nodes()[0].components[0].type == "anima.action-input.v2", "Action input codec did not use version 2");
+    input->context().set_focused(false);
+    input->context().set_enabled(false);
+    const auto scene_document = serialize_scene(source, {}, source_codecs);
+    object.destroy();
+    ComponentCodecs destination_codecs;
+    i::add_component_codec(destination_codecs);
+    Scene destination;
+    rejects([&] { (void)prefab.instantiate(destination, identity(), {}); });
+    check(destination.size() == 0, "Missing destination input codec leaked an object");
+    auto instance = Prefab::deserialize(prefab.serialize({}), {}, destination_codecs)
+                        .instantiate(destination, identity(), destination_codecs);
+    auto loaded = load_scene(scene_document, {}, destination_codecs);
+    for (auto component : {instance.get_component<i::ActionInput>(), loaded->components<i::ActionInput>().front()}) {
+        auto &context = component->context();
+        check(context.enabled() && context.focused() && !context.state("chord").active &&
+                  !context.state("chord").pressed && context.actions()[0].bindings[0].modifiers[0].device == 7,
+              "Chord persistence restored runtime state or lost authored device selection");
+        context.process(key_event(4, 8));
+        context.process(key_event(224, 8));
+        context.process(key_event(4, 7));
+        check(!context.state("chord").active, "Restored chord accepted a foreign modifier");
+        context.process(key_event(224, 7));
+        check(context.state("chord").pressed, "Restored chord failed to accept fresh matching events");
+    }
+    auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
+    nodes[0].components[0].type = "anima.action-input.v1";
+    rejects([&] { (void)Prefab(nodes, destination_codecs); });
+    nodes[0] = prefab.nodes()[0];
+    nodes.push_back(nodes[0]);
+    nodes[1].parent = 0;
+    nodes[1].key = {};
+    const auto before = destination.size();
+    for (const auto &payload : invalid_component_payloads(nodes[0].components[0].state, "version")) {
+        nodes[1].components[0].state = payload;
+        rejects([&] { (void)Prefab(nodes, destination_codecs).instantiate(destination); });
+        check(destination.size() == before, "Late malformed chord component leaked staged objects");
+    }
+}
+void chord_staging() {
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto input = first->create().add_component<i::ActionInput>(chord_map());
+    auto other = second->create().add_component<i::ActionInput>(chord_map());
+    input->context().process(key_event(4, 5));
+    for (unsigned device = 0; device < 1024; ++device)
+        other->context().process(key_event(4, device));
+    i::begin_frame(scenes);
+    rejects([&] { i::dispatch(scenes, key_event(224, 5)); });
+    for (auto component : {input, other})
+        check(!component->context().state("chord").active && !component->context().state("chord").pressed,
+              "Later modifier capacity failure partially published scene-set chord state");
+    other->context().process(key_event(4, 0, 0));
+    i::dispatch(scenes, key_event(4, 5));
+    check(!input->context().state("chord").active && !other->context().state("chord").active,
+          "Rejected scene-set modifier remained in observed physical state");
+    i::dispatch(scenes, key_event(224, 5));
+    check(input->context().state("chord").pressed && other->context().state("chord").pressed,
+          "Fresh modifier failed after releasing observed capacity");
+}
 template <class F> bool rejects_driver(F f) noexcept {
     try {
         f();
@@ -183,11 +314,11 @@ void run() {
     i::Map map{{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}};
     check(i::serialize_map(i::deserialize_map(i::serialize_map(map))) == i::serialize_map(map),
           "Map did not round-trip");
-    rejects([] { (void)i::deserialize_map(R"({"version":2,"actions":[]})"); });
-    rejects([] { (void)i::deserialize_map(R"({"version":1,"actions":[],"unknown":0})"); });
+    rejects([] { (void)i::deserialize_map(R"({"version":1,"actions":[]})"); });
+    rejects([] { (void)i::deserialize_map(R"({"version":2,"actions":[],"unknown":0})"); });
     rejects([] {
         (void)i::deserialize_map(
-            R"({"version":1,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":4294967296,"channel":0,"scale":1,"deadzone":0}]}]})");
+            R"({"version":2,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":4294967296,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})");
     });
     Scene scene;
     auto object = scene.create();
@@ -247,6 +378,9 @@ void run() {
 int main() {
     try {
         run();
+        chord_configuration();
+        chord_persistence();
+        chord_staging();
         std::cout << "PASS input scene enablement, configuration, prefab and rollback\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';

@@ -55,19 +55,14 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
         for (const auto &world : renderer->pose->world)
             object.set_local_matrix(world);
     }
-    object.set_local_matrix(identity());
-    auto destination = object.add_mesh(renderer->mesh);
-    destination.set_visible(renderer->visible);
-    const auto &instance = validation.instance(object.id());
-    require(renderer->material_factors.empty() || renderer->material_factors.size() == instance.factors.size(),
+    require(renderer->material_factors.empty() ||
+                renderer->material_factors.size() == renderer->mesh->materials()->material_data.size(),
             "Prefab variant material factors do not match the mesh");
-    require(renderer->primitive_visible.empty() ||
-                renderer->primitive_visible.size() == instance.primitive_visible.size(),
+    require(renderer->primitive_visible.empty() || renderer->primitive_visible.size() == renderer->mesh->draws().size(),
             "Prefab variant primitive visibility does not match the mesh");
-    for (std::size_t i = 0; i < renderer->material_factors.size(); ++i)
-        destination.set_material_factor(i, renderer->material_factors[i]);
-    for (std::size_t i = 0; i < renderer->primitive_visible.size(); ++i)
-        destination.set_primitive_visible(i, renderer->primitive_visible[i]);
+    for (auto factor : renderer->material_factors)
+        for (auto channel : {factor.x, factor.y, factor.z})
+            require(std::isfinite(channel) && channel >= 0 && channel <= 1, "Invalid prefab variant material factor");
     object.destroy();
 }
 struct MeshNames {

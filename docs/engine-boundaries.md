@@ -33,6 +33,8 @@ prefab documents use version 3 exclusively. Whole scene sets use a version-1
 envelope with namespace-qualified reference mappings and atomic replacement.
 Version-1 prefab variants store a base resource key and typed overrides, resolving
 to ordinary prefabs through explicit resource and codec configuration.
+Version-1 prefab compositions mount concrete resources into one hierarchy while
+keeping each part's authored component-reference scope separate.
 `ComponentCodecs` registers stable
 component type keys; explicit resolver callbacks supply shared resources. Failed
 decoding rolls back staged objects and owned resources. Custom codecs validate

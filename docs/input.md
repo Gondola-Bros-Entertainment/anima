@@ -15,7 +15,10 @@ i::Context controls({
         {{i::ControlKind::key, 4}, i::Channel::x, -1}, // SDL physical A
         {{i::ControlKind::key, 26}, i::Channel::y, 1},
         {{i::ControlKind::key, 22}, i::Channel::y, -1}}},
-    {"interact", i::ActionType::button, {{{i::ControlKind::key, 44}}}}
+    {"interact", i::ActionType::button, {{{i::ControlKind::key, 44}}}},
+    {"save", i::ActionType::button, {
+        {{i::ControlKind::key, 22}, i::Channel::x, 1, 0,
+         {{i::ControlKind::key, 224}}}}} // SDL physical Left Ctrl+S
 });
 controls.begin_frame();
 controls.process({i::EventType::control, {i::ControlKind::key, 44, 0}, 1});
@@ -29,8 +32,9 @@ A map contains up to 128 uniquely named actions, each with up to 32 bindings.
 Names are 1–128 printable ASCII characters without spaces. Button, scalar-axis
 and two-axis actions share the same input events. A binding selects a key, mouse
 button, gamepad button or gamepad axis, plus its device, X/Y channel, signed scale
-and axial deadzone. Y bindings require a two-axis action. An empty binding list
-is valid and leaves that action inactive.
+and axial deadzone. It can also require up to four digital modifier controls.
+Y bindings require a two-axis action. An empty binding list is valid and leaves
+that action inactive.
 
 Control codes are bounded to 0–511 for keys, 1–32 for mouse buttons, 0–63 for
 pad buttons and 0–15 for pad axes. Core code has no SDL types; an adapter chooses
@@ -53,9 +57,9 @@ zero. Duplicate held values do not generate new presses. Action reads return
 copies and unknown names throw. Copies of a Context have independent definitions,
 physical values and edge latches; contexts are used on one caller thread.
 
-The context retains only nonzero physical controls observed by its bindings,
-with a maximum of 1024 active physical controls. Invalid events and capacity
-exhaustion reject before changing accepted state. It starts no threads and reads
+The context retains only nonzero physical controls observed by its primary
+bindings or modifiers, with a maximum of 1024 active physical controls. Invalid
+events and capacity exhaustion reject before changing accepted state. It starts no threads and reads
 no OS devices or clocks. Applications choose frame/fixed-step consumption; do not
 replay the same pressed edge in every catch-up simulation tick unintentionally.
 
@@ -64,10 +68,28 @@ replay the same pressed edge in every catch-up simulation tick unintentionally.
 Bindings may select a concrete uint32 device ID or `any_device`. Events require
 concrete IDs; zero can represent an unknown or virtual device. Device IDs are
 separate for keyboard, mouse and gamepad classes. A wildcard binding takes the
-greatest absolute value of its matching controls; ties use the lowest device ID.
+greatest absolute value of its matching controls whose modifiers are satisfied;
+ties use the lowest device ID.
 Separate keyboards retain independent pressed state, so releasing one does not
 release a key still held on another. A disconnect clears only that device class
 and ID, including both gamepad buttons and axes, then reevaluates remaining input.
+
+A chord contributes only while every modifier is held. Modifiers may be keys,
+mouse buttons or gamepad buttons; axes cannot be modifiers. Repeating a control's
+kind/code within one binding, including its primary control, is rejected. Pressing
+the modifier before or after the primary control has the same result. Releasing
+a required modifier releases the action when no other eligible source keeps it
+active; pressing it again can trigger another press while the primary remains held.
+Chords do not consume events or suppress other actions bound to their controls.
+
+All controls from the same device class in a chord must come from one device.
+For example, one gamepad's shoulder button cannot enable another gamepad's axis.
+An explicit device ID on either the primary or a modifier fixes that class's
+device; conflicting explicit IDs are invalid. Wildcards select a device that
+satisfies every control of that class. Different classes select independently,
+so a keyboard modifier can qualify a mouse button even when their IDs differ.
+For analog primaries, the greatest-magnitude choice is made among eligible
+devices: an unqualified stronger axis does not mask a qualified weaker one.
 
 Selectors are application-owned configuration, not persistent hardware identity.
 SDL instance IDs can change across sessions. Authored maps should normally use
@@ -111,13 +133,16 @@ See [runtime ordering](runtime-lifecycle.md).
 No Scene callbacks, frame phases or game callbacks are invoked. Direct access to
 `context()` is available; callers using it directly own enablement/scheduling.
 
-`serialize_map` / `deserialize_map` are the version-1 configuration format with
-strict field/type/count validation and a 1 MiB input bound. The
-`anima.action-input.v1` component codec stores that configuration; Scene persistence
+`serialize_map` / `deserialize_map` use the current version-2 configuration format
+with strict field/type/count validation and a 1 MiB bound on both input and output.
+Each binding includes a `modifiers` array, including when it is empty. The
+`anima.action-input.v2` component codec stores that configuration; Scene persistence
 stores component enablement. It stores no live held values, focus, edge latches or
 OS device handles. Instances own independent maps and state, and malformed prefab
 components participate in rollback. Use these functions for binding profiles or an
 explicit [asset importer](asset-reimport.md), with file IO chosen by the application.
+Version-1 configurations and component identifiers are rejected; the engine does
+not retain compatibility readers. Scene and prefab envelope versions are unchanged.
 
 ## SDL integration
 
@@ -157,8 +182,8 @@ There is no event consumption/priority stack or automatic UI focus arbitration.
 
 ## Qualification
 
-`input_actions` covers taps, repeats, opposition/diagonal values, deadzones, device
-isolation/removal, focus, cancellation, rebinding and capacity. `input_scene`
+`input_actions` covers taps, repeats, opposition/diagonal values, deadzones, chords,
+device isolation/removal, focus, cancellation, rebinding and capacity. `input_scene`
 covers configuration, independent prefab state, enablement and transactional
 failure. `input_sdl` exercises conversion using injected events without any OS
 initialization. Independent copied core, assets and input-only SDL consumers use

@@ -329,8 +329,9 @@ Scene::Id Scene::add(std::shared_ptr<const Mesh> asset) {
     require(bool(asset), "Null mesh");
     return create({}, std::move(asset)).id();
 }
-void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh) {
+void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *initial_pose) {
     auto &entry = slot(id);
+    require(mesh || !initial_pose, "An initial pose requires a mesh");
     if (!mesh) {
         entry.value = {};
         entry.pose.reset();
@@ -340,12 +341,15 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh) {
     }
     Instance next;
     next.asset = std::move(mesh);
+    std::optional<Pose> next_pose;
+    if (initial_pose)
+        next_pose = *initial_pose;
     for (const auto &material : next.asset->materials_->material_data)
         next.factors.push_back(material.factor);
     next.primitive_visible.resize(next.asset->draws_.size(), true);
-    pose(next, next.asset->rest_, entry.world);
+    pose(next, next_pose ? *next_pose : next.asset->rest_, entry.world);
     // Allocate before publishing. Replacement keeps the object's transform, but
-    // resets the mesh-specific pose and overrides to the new resource defaults.
+    // resets overrides and uses either the authored initial pose or mesh defaults.
     if (!entry.value.asset) {
         auto renderer = std::make_shared<detail::ComponentRecord>(object(id));
         renderer->value = std::make_unique<detail::ComponentBox<MeshRenderer>>(object(id), MeshRenderer(object(id)));
@@ -361,7 +365,7 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh) {
     entry.value = std::move(next);
     entry.value.active = entry.active_hierarchy;
     component(id, typeid(MeshRenderer))->enabled = true;
-    entry.pose.reset();
+    entry.pose = std::move(next_pose);
 }
 void Scene::remove(Id id) {
     auto &root = slot(id);

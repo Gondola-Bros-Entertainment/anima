@@ -114,7 +114,7 @@ class Scene {
     Slot &slot(Id id);
     GameObject create_with_key(ObjectKey key, std::string name, std::shared_ptr<const Mesh> mesh);
     const Slot &slot(Id id) const;
-    void assign_mesh(Id id, std::shared_ptr<const Mesh> mesh);
+    void assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *initial_pose = nullptr);
     void set_local_transform(Id id, const Mat4 &local);
     void reparent(Id id, std::optional<Id> parent, ReparentMode mode);
     std::vector<Id> subtree(Id id) const;
@@ -184,6 +184,7 @@ class GameObject {
     friend class MeshRenderer;
     friend class FittedSet;
     friend class Prefab;
+    friend class PrefabComposition;
     friend struct AttachmentSet;
     friend struct detail::ScenePersistence;
     GameObject(std::weak_ptr<detail::SceneLifetime> lifetime, Scene::Id id) : lifetime_(std::move(lifetime)), id_(id) {}

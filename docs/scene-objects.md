@@ -359,8 +359,71 @@ to 4,096 bytes and component operation lists to 1,024 entries each. The resolved
 prefab retains the normal object/component bounds. Mesh naming and resolution are
 explicit, checked and shared once per resource key in the variant document.
 
-Variants do not add, delete, reparent or rekey objects. Prefab nesting and structural
-overrides need a separate contract for remapping opaque component references.
+Variants do not add, delete, reparent or rekey objects. Use [prefab composition](#prefab-composition)
+to mount concrete prefab resources into a reusable hierarchy. Structural overrides
+need a separate contract for remapping opaque component references.
+
+## Prefab composition
+
+`PrefabComposition` describes a tree of prefab instances using resource keys,
+named parts and mount points. It stores no scenes, component bindings or resolved
+prefabs. Applications provide resources through the same `PrefabResolver` used by
+variants and supply destination codecs for each instantiation.
+
+```cpp
+#include <anima/prefab_composition.hpp>
+
+anima::PrefabComposition::Part body;
+body.key = "body";
+body.prefab = "prefabs/vehicle";
+anima::PrefabComposition::Part light;
+light.key = "light";
+light.prefab = "prefabs/lamp";
+light.parent = anima::PrefabComposition::Mount{"body", lamp_socket_key};
+light.placement = lamp_offset;
+anima::PrefabComposition assembly({body, light});
+
+auto document = assembly.serialize();
+auto loaded = anima::PrefabComposition::deserialize(document);
+auto instance = loaded.instantiate(scene, resolve_prefab, destination_codecs);
+// The same API can mount the entire composition under an existing GameObject.
+auto attached = loaded.instantiate(parent_object, resolve_prefab, destination_codecs);
+```
+
+The first part is the sole root and has no parent. Each later part mounts beneath
+an authored `ObjectKey` in an earlier named part. Part keys identify instances;
+prefab keys identify resources, and multiple parts may share one resource. Each
+placement multiplies that prefab's root local transform. The call's optional
+placement applies before the first part's placement; descendants inherit the
+result through their mounts. Normal activation and transform inheritance apply.
+
+Instantiation resolves each resource key once, retaining immutable snapshots for
+that operation. It checks every mount, component type and total object count before
+creating destination objects, then creates the entire native hierarchy before any
+component decoder runs. Each part has its own authored object-reference context:
+two copies of a prefab can share authored keys while their cyclic, forward, self
+and null links remain instance-local. Opaque component payloads are never rewritten.
+
+The destination registry is borrowed only for the call. A later instantiation may
+use changed resources or different services; existing instances remain unchanged.
+All staged objects and owned resources are removed if construction or decoding
+fails. Existing destination objects remain unless an application callback changes
+them; arbitrary resolver/decoder side effects are not transactional. Resolvers
+should select immutable resources, and decoders should restore their own object.
+Instantiation can run from a normal component update callback. It does not advance
+clocks or lifecycle hooks; normal subsequent scene phases handle new components.
+
+The strict version-1 `anima.prefab-composition` manifest contains `version`, `kind`
+and `parts`. Each part has `key`, `prefab`, nullable `parent`, and a 16-scalar
+`placement`; parent objects contain `part` and a decimal-string `object` key.
+Missing, duplicate and unknown fields reject. Limits are 1,024 parts, 4,096 bytes
+per part/resource key, 65,536 total resolved objects and 16 MiB per document.
+
+Resources resolve to concrete `Prefab` snapshots, including application-resolved
+variants. Recursive composition resources, authored links between parts and
+overrides crossing part boundaries remain separate contracts. To bake an instance,
+use normal scene persistence or `Prefab::capture` with codecs that re-encode its
+live links; this produces ordinary flat authored data instead of a live dependency.
 
 ## Stable object keys and component references
 
@@ -606,8 +669,9 @@ side effects from user callbacks are not transactional.
 Set serialization/restoration is synchronous and rejects nested scheduling or
 membership changes. Cross-scene references in a complete set document do not imply
 automatic repair after unloading/replacing just one scene, persistent-object
-migration, prefab nesting or asynchronous streaming. [Prefab variants](#prefab-variants)
-operate on one concrete prefab's existing hierarchy.
+migration, recursive prefab composition or asynchronous streaming. [Prefab variants](#prefab-variants)
+operate on one concrete prefab's existing hierarchy; [composition](#prefab-composition)
+mounts concrete prefab resources with separate reference scopes.
 
 ## Cameras
 
