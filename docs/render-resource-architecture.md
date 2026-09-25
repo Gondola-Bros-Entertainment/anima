@@ -125,8 +125,8 @@ state, conservative bounds, stale handles, snapshot budgets and an external
 application consuming only public targets and headers.
 
 ```sh
-python3 tools/engine/gpu_resource_smoke.py build/desktop/consumer-desktop/build/consumer --fatal
-python3 tools/engine/gpu_replacement_smoke.py build/desktop/consumer-desktop/build/consumer --viewer build/desktop/anima
+python3 tools/engine/gpu_resource_smoke.py build/desktop/consumer-suite/build/consumer_desktop --fatal
+python3 tools/engine/gpu_replacement_smoke.py build/desktop/consumer-suite/build/consumer_desktop --viewer build/desktop/anima
 ```
 
 The resource runner compares CPU-deformed static geometry against GPU skinning,

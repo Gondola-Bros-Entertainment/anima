@@ -20,9 +20,9 @@ CI covers Debug and Release headless builds on Linux, macOS and Windows,
 including copied core/asset consumers. Each platform also builds the optional
 libraries, Vulkan renderer, shaders, viewer and UI together in Debug. Those jobs
 check Jolt, Box2D, RmlUi documents, SDL input conversion and dummy-device audio
-output, along with their independent consumers. They compile the independent
-UI/desktop API consumer without executing the two consumers that open Vulkan
-windows.
+output, along with their independent consumers. Desktop/UI consumers also run
+their public API checks without arguments; GPU execution requires explicit
+arguments and remains part of local qualification.
 
 Linux Clang and macOS AppleClang Debug jobs check the headless runtime, optional
 libraries, bundled parsers and copied consumers under AddressSanitizer and
@@ -34,9 +34,11 @@ All platforms use Ninja and a bounded compiler cache; Windows uses native MSVC
 and also caches vcpkg dependency binaries. Windows CI embeds debug information
 in object files and disables precompiled headers so compilation can be cached
 without relaxing cache correctness. Cache hits never skip configuration,
-linking or tests. Two consumer builds run concurrently, with two compiler
-processes each; ordinary runtime tests run in parallel. Compiler cache
-statistics in each job distinguish cold runs from subsequent cache reuse.
+linking or tests. Independent consumers share one external engine/dependency
+build, with separate executables for each public target. Isolated configuration
+checks still verify each mode's dependency boundaries. CI reports configuration,
+compilation and API execution in separate steps; runtime tests run in parallel.
+Compiler cache statistics distinguish cold runs from subsequent cache reuse.
 
 Repository checks validate documentation links, lint workflow syntax and shell
 commands with actionlint, and scan the complete fetched Git history with Gitleaks.
@@ -93,11 +95,15 @@ libraries. On Windows, use the selected MSVC generator/toolchain and pass
 `--config Release` to the build and `-C Release` to CTest for a multiconfiguration
 generator. Keep dependency linkage and configuration consistent.
 
-CTest includes copied consumer projects. They configure Anima as an external
-dependency through public targets, with engine tools/tests disabled. They forward
-the selected compilers and `ANIMA_ENABLE_SANITIZERS`, including instrumentation of
-the consumer executable. Arbitrary parent compiler flags are not forwarded.
-Optional-module selection determines the test count.
+CTest configures each copied consumer independently to check optional dependency
+boundaries. A `consumer_build` fixture then builds one external project containing
+separate applications for the enabled public targets, with engine tools/tests
+disabled. Runtime checks use those executables without rebuilding. CTest includes
+the build fixture automatically when selecting an individual runtime check.
+Consumers forward the selected compilers and `ANIMA_ENABLE_SANITIZERS`, including
+application instrumentation; arbitrary parent compiler flags are not forwarded.
+Standalone `CONSUMER_MODE` builds remain available for minimal configurations and
+device checks. Optional-module selection determines the test count.
 
 ## Address and undefined-behavior sanitizers
 

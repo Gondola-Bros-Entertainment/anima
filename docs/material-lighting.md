@@ -159,9 +159,9 @@ cmake --build --preset desktop
 ctest --preset desktop
 python3 tools/engine/gpu_material_smoke.py build/desktop/anima
 python3 tools/engine/gpu_surface_smoke.py build/desktop/anima
-python3 tools/engine/gpu_environment_smoke.py build/desktop/consumer-desktop/build/consumer
-python3 tools/engine/gpu_foliage_smoke.py build/desktop/consumer-desktop/build/consumer
-python3 tools/engine/gpu_resource_smoke.py build/desktop/consumer-desktop/build/consumer --asset MODEL.glb
+python3 tools/engine/gpu_environment_smoke.py build/desktop/consumer-suite/build/consumer_desktop
+python3 tools/engine/gpu_foliage_smoke.py build/desktop/consumer-suite/build/consumer_desktop
+python3 tools/engine/gpu_resource_smoke.py build/desktop/consumer-suite/build/consumer_desktop --asset MODEL.glb
 ```
 
 The foliage runner checks known visible areas before/after minification, isolates

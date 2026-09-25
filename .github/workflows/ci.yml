@@ -104,7 +104,7 @@ jobs:
       PROFILE: ${{ matrix.profile }}
       CONFIGURATION: ${{ matrix.configuration }}
       CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.os == 'macos-15' && '3' || '4' }}
-      CCACHE_MAXSIZE: 500M
+      CCACHE_MAXSIZE: ${{ matrix.os == 'windows-2022' && matrix.profile != 'headless' && '1G' || '500M' }}
       CCACHE_COMPILERCHECK: content
       HOMEBREW_NO_AUTO_UPDATE: '1'
       HOMEBREW_NO_INSTALL_CLEANUP: '1'
@@ -281,36 +281,22 @@ jobs:
           ctest --test-dir build/ci -C "$CONFIGURATION"
           --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           --timeout 600 --no-tests=error --label-exclude consumer
-      # Two independent builds with two compiler processes each keep small
-      # configurations moving without unbounded nested parallelism.
-      - name: Test independent consumers
-        env:
-          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      - name: Check isolated consumer configurations
         run: >-
           ctest --test-dir build/ci -C "$CONFIGURATION"
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
-          --label-regex consumer --exclude-regex '^consumer_(desktop|ui)$'
-      # These executables open Vulkan windows. Hosted CI checks their linkage;
-      # physical-device execution remains part of local qualification.
-      - name: Configure public UI consumer
-        if: matrix.profile == 'full'
-        run: |
-          args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION" -DANIMA_SOURCE_DIR="$PWD"
-                -DCONSUMER_MODE=ui -DBUILD_TESTING=ON -DANIMA_WARNINGS_AS_ERRORS=ON
-                -DANIMA_FETCH_SDL=ON
-                "-DFETCHCONTENT_SOURCE_DIR_SDL3=$PWD/build/ci/_deps/sdl3-src"
-                "-DFETCHCONTENT_SOURCE_DIR_RMLUI=$PWD/build/ci/_deps/rmlui-src"
-                -DSDL_SHARED=OFF -DSDL_STATIC=ON
-                -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            args+=(-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
-                   "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-                   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
-          fi
-          cmake -S tests/consumer -B build/desktop-consumer "${args[@]}"
-      - name: Build public UI and desktop API consumer
-        if: matrix.profile == 'full'
-        run: cmake --build build/desktop-consumer --config "$CONFIGURATION"
+          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 180 --no-tests=error --label-regex '^consumer-configure$'
+      - name: Build independent consumers
+        run: >-
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --timeout 1200 --no-tests=error
+          --label-regex '^consumer-build$'
+      - name: Test independent public APIs
+        run: >-
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 60 --no-tests=error --label-regex '^consumer-runtime$'
+          --fixture-exclude-setup '^consumer_build$'
       - name: Compiler cache statistics
         if: always()
         run: ccache --show-stats

@@ -208,8 +208,9 @@ rotation, teleport and kinematic authored-origin semantics. Compound contacts
 verify partial and final child separation. `physics_scene` tests fixed ordering,
 removal, enablement, teardown, compound/hull persistence, local mass centers and
 malformed-payload rollback. Separate `consumer_physics` and
-`consumer_physics_scene` projects build through public targets; `consumer_core`
-rejects accidental Jolt configuration. Run:
+`consumer_physics_scene` applications link through public targets and share one
+dependency build. Isolated configuration checks, including `consumer_configure_core`,
+reject accidental Jolt dependencies. Run:
 
 ```sh
 cmake --preset headless -DANIMA_BUILD_PHYSICS=ON
