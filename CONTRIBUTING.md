@@ -38,3 +38,6 @@ source tree.
 Submit only material you are authorized to contribute. Contributions to Anima's
 original code and documentation use [Apache-2.0](LICENSE); preserve third-party
 notices and licenses when modifying dependency integration or test assets.
+
+Report suspected vulnerabilities through the [security policy](SECURITY.md).
+Keep credentials in local ignored files and check staged changes before pushing.

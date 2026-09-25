@@ -36,6 +36,32 @@ std::optional<double> triangle_hit(anima::Vec3 from, anima::Vec3 to, anima::Vec3
         return t;
     return {};
 }
+void translated_queries() {
+    using namespace anima;
+    // A planar ramp has analytic contact and distance results regardless of
+    // the cell diagonal. Its internal crossings need not fit float coordinates.
+    for (const float origin : {-1e6F, 0.F, 1e6F})
+        for (const bool reverse : {false, true}) {
+            const Heightfield field{
+                2, 2, origin, 0, 1, 1, reverse ? std::vector<float>{1, 0, 1, 0} : std::vector<float>{0, 1, 0, 1}};
+            const Vec3 from{origin + (reverse ? 1 : 0), 0, .3F}, to{origin + (reverse ? 0 : 1), 0, .4F};
+            for (const float height : {.2F, .8F}) {
+                const auto hit =
+                    intersect_heightfield(field.view(), from + Vec3{0, height, 0}, to + Vec3{0, height, 0});
+                require(bool(hit), "Translated planar ramp lost segment contact");
+                near(hit->fraction, height, 1e-8);
+                near(hit->position.y, height);
+            }
+            const auto distance = std::hypot(1.0, 1.0, double(to.z) - from.z);
+            for (const double budget : {.2, .75, 2.0}) {
+                const auto motion = move_on_heightfield(field.view(), from, to, budget);
+                near(motion.fraction, std::min(1.0, budget / distance), 1e-8);
+                near(motion.distance, std::min(budget, distance), 1e-8);
+                near(motion.position.y, motion.fraction);
+                require(!motion.blocked, "Translated planar ramp blocked motion");
+            }
+        }
+}
 } // namespace
 int main() {
     using namespace anima;
@@ -99,6 +125,7 @@ int main() {
         bad.columns = std::numeric_limits<std::size_t>::max();
         invalid([&] { validate_heightfield(bad.view()); });
 
+        translated_queries();
         std::mt19937 random(715);
         std::uniform_real_distribution<float> unit(0, 1);
         Heightfield mesh{8, 7, -3, -2, .75F, 1.25F, {}};
@@ -125,7 +152,8 @@ int main() {
             if (actual)
                 near(actual->fraction, *reference, 2e-5);
         }
-        std::cout << "PASS terrain sampling, triangle normals, edges, budgeted slopes, narrow ridges and 200 "
+        std::cout << "PASS terrain sampling, triangle normals, edges, budgeted slopes, narrow ridges, translated "
+                     "queries and 200 "
                      "independent ray checks\n";
         return 0;
     } catch (const std::exception &error) {

@@ -60,7 +60,7 @@ rejected null inputs, recoverable failures and last-owner retirement.
 After building and testing the desktop preset, run:
 
 ```sh
-python3 tools/engine/gpu_resource_smoke.py build/desktop/consumer-desktop/build/consumer --fatal --output build/verification/resource-preparation
+python3 tools/engine/gpu_resource_smoke.py build/desktop/consumer-suite/build/consumer_desktop --fatal --output build/verification/resource-preparation
 ```
 
 Use the configuration subdirectory for multi-configuration generators. The fatal

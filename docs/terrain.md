@@ -38,6 +38,9 @@ Segment traversal clips to the grid, visits crossed cells and splits each cell
 at its diagonal. It does not sample at a fixed step that could skip narrow
 ridges. Starting inside the terrain solid produces contact at the first in-grid
 point. `clearance` raises terrain vertically; it is not a sphere/capsule sweep.
+Traversal positions, contact fractions and surface distances use double
+intermediates; only returned positions narrow to float. This avoids rounding
+triangle crossings before computing contact or consuming a movement budget.
 
 Movement follows the supplied X/Z segment. Both endpoints must lie in the grid;
 their Y coordinates are finite but replaced by terrain height. The caller owns
@@ -47,6 +50,9 @@ height change: a planar piece costs `sqrt(dx*dx + dy*dy + dz*dz)`. Budget exhaus
 stops partway through a piece; encountering a steeper triangle sets `blocked`.
 The returned boundary point may need a caller-owned contact margin before a
 later point query chooses its neighbouring triangle.
+The reported fraction and distance describe the traversed surface before rounding
+the returned position to float, so reconstructing distance from that position can
+differ at large coordinates.
 
 Queries allocate no memory, mutate no state and contain no game movement speed,
 networking, actor ownership or graphics policy. An owning grid allocates only
@@ -60,7 +66,7 @@ sliding along steep contours require additional systems. Streaming, terrain LOD,
 seam management and world origin rebasing are not implemented by these queries.
 
 The heightfield test covers interpolation/diagonals, non-square spacing, borders,
-invalid input, vertical and clipped segments, distance budgets, both directions
-across narrow ridges and 200 ray comparisons against an independent brute-force
-triangle intersection calculation. The standalone external consumer calls all
-four functions using only the public core target.
+invalid input, vertical and clipped segments, distance budgets, translated planar
+ramps, both directions across narrow ridges and 200 ray comparisons against an
+independent brute-force triangle intersection calculation. The standalone external
+consumer calls all four functions using only the public core target.

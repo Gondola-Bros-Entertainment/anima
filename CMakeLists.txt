@@ -27,12 +27,14 @@ endif()
 include(cmake/AnimaRuntime.cmake)
 option(ANIMA_FETCH_SDL "Fetch pinned SDL 3.4.2 instead of using an installed package" OFF)
 option(ANIMA_WARNINGS_AS_ERRORS "Treat Anima compiler warnings as errors" OFF)
+include(cmake/AnimaSanitizers.cmake)
 option(ANIMA_BUILD_DOCS "Provide the optional local Doxygen reference target" OFF)
 if(ANIMA_BUILD_DOCS)
     add_subdirectory(docs)
 endif()
 
 function(anima_target_defaults target)
+    anima_enable_sanitizers(${target})
     target_compile_features(${target} PUBLIC cxx_std_20)
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
     if(MSVC)
@@ -70,11 +72,13 @@ endif()
 
 if(ANIMA_BUILD_ASSETS OR ANIMA_BUILD_UI)
     add_library(anima_image_dependencies STATIC src/assets/image.cpp)
+    anima_enable_sanitizers(anima_image_dependencies)
     target_include_directories(anima_image_dependencies SYSTEM PUBLIC third_party/stb)
 endif()
 
 if(ANIMA_BUILD_ASSETS)
     add_library(anima_asset_dependencies STATIC src/assets/third_party.cpp)
+    anima_enable_sanitizers(anima_asset_dependencies)
     target_include_directories(anima_asset_dependencies SYSTEM PUBLIC third_party/cgltf third_party/stb)
     target_compile_features(anima_asset_dependencies PRIVATE cxx_std_20)
     add_library(anima_assets STATIC
@@ -426,29 +430,63 @@ if(ANIMA_BUILD_TESTS)
     if(ANIMA_BUILD_ASSETS AND ANIMA_BUILD_PHYSICS AND ANIMA_BUILD_PHYSICS2D)
         list(APPEND anima_consumer_modes runtime)
     endif()
-    foreach(mode IN LISTS anima_consumer_modes)
-        add_test(NAME consumer_${mode}
+    set(anima_consumer_sdl_args)
+    foreach(option STATIC SHARED VIDEO RENDER GPU CAMERA WAYLAND UNIX_CONSOLE_BUILD)
+        if(DEFINED SDL_${option})
+            list(APPEND anima_consumer_sdl_args "-DCONSUMER_SDL_${option}=${SDL_${option}}")
+        endif()
+    endforeach()
+    function(anima_add_consumer_check name)
+        add_test(NAME "${name}"
             COMMAND "${CMAKE_COMMAND}"
+                ${ARGN}
                 "-DANIMA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-                "-DCONSUMER_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/consumer-${mode}"
-                "-DCONSUMER_MODE=${mode}" "-DCONSUMER_CONFIG=$<CONFIG>"
+                "-DCONSUMER_CONFIG=$<CONFIG>"
                 "-DCONSUMER_GENERATOR=${CMAKE_GENERATOR}"
                 "-DCONSUMER_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
                 "-DCONSUMER_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
                 "-DCONSUMER_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                "-DCONSUMER_C_COMPILER=${CMAKE_C_COMPILER}"
+                "-DCONSUMER_SANITIZERS=${ANIMA_ENABLE_SANITIZERS}"
+                "-DCONSUMER_MSVC_DEBUG_INFORMATION_FORMAT=${CMAKE_MSVC_DEBUG_INFORMATION_FORMAT}"
+                "-DCONSUMER_DISABLE_PRECOMPILE_HEADERS=${CMAKE_DISABLE_PRECOMPILE_HEADERS}"
                 "-DCONSUMER_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
                 "-DCONSUMER_INPUT_SDL_HEADERS=${ANIMA_INPUT_SDL_INCLUDE_DIR}"
                 "-DCONSUMER_SDL_DIR=${SDL3_DIR}"
                 "-DCONSUMER_FETCH_SDL=${ANIMA_FETCH_SDL}"
                 "-DCONSUMER_SDL_SOURCE=${anima_sdl_source}"
-                "-DCONSUMER_SDL_STATIC=${SDL_STATIC}"
-                "-DCONSUMER_SDL_SHARED=${SDL_SHARED}"
+                ${anima_consumer_sdl_args}
                 "-DCONSUMER_RMLUI_SOURCE=${anima_rmlui_source}"
                 "-DCONSUMER_JOLT_SOURCE=${anima_jolt_source}"
                 "-DCONSUMER_BOX2D_SOURCE=${anima_box2d_source}"
                 "-DCONSUMER_TOOLCHAIN=${CMAKE_TOOLCHAIN_FILE}"
                 "-DCONSUMER_TRIPLET=${VCPKG_TARGET_TRIPLET}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer/run.cmake")
-        set_tests_properties(consumer_${mode} PROPERTIES TIMEOUT 600 LABELS consumer)
+    endfunction()
+    set(anima_consumer_suite "${CMAKE_CURRENT_BINARY_DIR}/consumer-suite")
+    string(JOIN "," anima_consumer_suite_modes ${anima_consumer_modes})
+    anima_add_consumer_check(consumer_build
+        "-DCONSUMER_BINARY_DIR=${anima_consumer_suite}"
+        "-DCONSUMER_MODES=${anima_consumer_suite_modes}" -DCONSUMER_ACTION=build)
+    set_tests_properties(consumer_build PROPERTIES
+        FIXTURES_SETUP consumer_build TIMEOUT 1200 LABELS "consumer;consumer-build")
+    set(anima_consumer_executable_dir "${anima_consumer_suite}/build")
+    get_property(anima_consumer_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if(anima_consumer_multi_config)
+        string(APPEND anima_consumer_executable_dir "/$<CONFIG>")
+    endif()
+    foreach(mode IN LISTS anima_consumer_modes)
+        anima_add_consumer_check(consumer_configure_${mode}
+            "-DCONSUMER_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/consumer-configure-${mode}"
+            "-DCONSUMER_MODE=${mode}" -DCONSUMER_ACTION=configure)
+        set_tests_properties(consumer_configure_${mode} PROPERTIES
+            TIMEOUT 180 LABELS "consumer;consumer-configure")
+        add_test(NAME consumer_${mode}
+            COMMAND "${anima_consumer_executable_dir}/consumer_${mode}${CMAKE_EXECUTABLE_SUFFIX}")
+        set_tests_properties(consumer_${mode} PROPERTIES
+            FIXTURES_REQUIRED consumer_build TIMEOUT 60 LABELS "consumer;consumer-runtime")
+        if(mode STREQUAL "audio_output")
+            set_tests_properties(consumer_${mode} PROPERTIES ENVIRONMENT "SDL_AUDIO_DRIVER=dummy" TIMEOUT 20)
+        endif()
     endforeach()
 endif()

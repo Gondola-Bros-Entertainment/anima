@@ -12,6 +12,11 @@ if(ANIMA_FETCH_SDL)
         GIT_TAG 683181b47cfabd293e3ea409f838915b8297a4fd # release-3.4.2
         GIT_PROGRESS TRUE)
     FetchContent_MakeAvailable(SDL3)
+    foreach(target SDL3-static SDL3-shared)
+        if(TARGET ${target})
+            anima_enable_sanitizers(${target})
+        endif()
+    endforeach()
     set(anima_sdl_source "${sdl3_SOURCE_DIR}")
 else()
     # Consumer runtime-copy helpers must also see the imported SDL targets.

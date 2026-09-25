@@ -19,7 +19,7 @@ defaults:
 
 jobs:
   repository:
-    name: 1. Repository checks
+    name: Repository checks
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -27,24 +27,87 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
       - name: Check documentation links
         run: python tools/check_repository.py
+      - name: Check workflow syntax and shell commands
+        run: |
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")
+          archive="$tool_dir/actionlint.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          printf '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  %s\n' "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" --directory "$tool_dir" actionlint
+          "$tool_dir/actionlint" -color
+      - name: Scan full Git history for secrets
+        run: |
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/gitleaks.XXXXXX")
+          archive="$tool_dir/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$archive"
+          printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" --directory "$tool_dir" gitleaks
+          GITLEAKS_BIN="$tool_dir/gitleaks" python - <<'PY'
+          import os
+          from pathlib import Path
+          import secrets
+          import subprocess
+          import tempfile
 
-  headless:
-    name: 2. Headless / ${{ matrix.os }} / ${{ matrix.configuration }}
+          # Verify detection with a generated, unusable token; never print it.
+          with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
+              Path(directory, "canary.txt").write_text("token = \"gh" + "p_" + secrets.token_hex(18) + "\"\n")
+              result = subprocess.run(
+                  [os.environ["GITLEAKS_BIN"], "dir", "--redact", "--no-banner", directory],
+                  capture_output=True, text=True, check=False,
+              )
+              if result.returncode != 1:
+                  raise SystemExit("Secret scanner failed its detection canary")
+          print("PASS secret scanner detection canary")
+          PY
+          "$tool_dir/gitleaks" git --redact --no-banner --log-opts=--all .
+
+  codeql:
+    name: CodeQL
     needs: repository
     if: github.event.repository.private == false
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  build:
+    name: ${{ matrix.profile }} / ${{ matrix.os }} / ${{ matrix.configuration }}
+    needs: repository
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2022]
         configuration: [Debug, Release]
+        profile: [headless]
+        include:
+          - {os: ubuntu-24.04, configuration: Debug, profile: full}
+          - {os: macos-15, configuration: Debug, profile: full}
+          - {os: windows-2022, configuration: Debug, profile: full}
+          - {os: ubuntu-24.04, configuration: Debug, profile: sanitizers}
+          - {os: macos-15, configuration: Debug, profile: sanitizers}
+          - {os: windows-2022, configuration: RelWithDebInfo, profile: sanitizers}
+    env:
+      PROFILE: ${{ matrix.profile }}
+      CONFIGURATION: ${{ matrix.configuration }}
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.os == 'macos-15' && '3' || '4' }}
+      CCACHE_MAXSIZE: ${{ matrix.os == 'windows-2022' && matrix.profile != 'headless' && '1G' || '500M' }}
+      CCACHE_COMPILERCHECK: content
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,66 +115,195 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
-      - name: Configure
-        run: >-
-          cmake -S . -B build/headless
-          -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
-          -DANIMA_BUILD_DESKTOP=OFF
-          -DANIMA_BUILD_ASSETS=ON
-          -DANIMA_BUILD_TESTS=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-      - name: Build
-        run: cmake --build build/headless --config ${{ matrix.configuration }} --parallel 2
-      - name: Test runtime and copied consumers
-        run: >-
-          ctest --test-dir build/headless -C ${{ matrix.configuration }}
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
-
-  optional:
-    name: 3. Optional libraries / Linux
-    needs: headless
-    if: github.event.repository.private == false
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14'
-      - name: Install FreeType
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
+          packages=(ninja-build ccache)
+          if [[ "$PROFILE" != headless ]]; then
+            packages+=(libfreetype6-dev)
+          fi
+          if [[ "$PROFILE" == sanitizers ]]; then
+            packages+=(clang llvm)
+          fi
+          if [[ "$PROFILE" == full ]]; then
+            packages+=(libvulkan-dev glslc libx11-dev libxext-dev libxrandr-dev
+                       libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libasound2-dev)
+          fi
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libfreetype6-dev
-      - name: Configure physics, documents, input and audio
-        run: >-
-          cmake -S . -B build/optional
-          -DCMAKE_BUILD_TYPE=Debug
-          -DANIMA_BUILD_DESKTOP=OFF
-          -DANIMA_BUILD_ASSETS=ON
-          -DANIMA_BUILD_TESTS=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-          -DANIMA_BUILD_PHYSICS=ON
-          -DANIMA_BUILD_PHYSICS2D=ON
-          -DANIMA_BUILD_UI_DOCUMENTS=ON
-          -DANIMA_BUILD_INPUT_SDL=ON
-          -DANIMA_BUILD_AUDIO_OUTPUT=ON
-          -DANIMA_FETCH_SDL=ON
-          -DANIMA_INPUT_SDL_INCLUDE_DIR="$PWD/build/optional/_deps/sdl3-src/include"
-          -DSDL_SHARED=OFF -DSDL_STATIC=ON
-          -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
-          -DSDL_UNIX_CONSOLE_BUILD=ON
+          sudo apt-get install --no-install-recommends -y "${packages[@]}"
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          packages=(ninja ccache)
+          if [[ "$PROFILE" != headless ]]; then
+            packages+=(freetype)
+          fi
+          if [[ "$PROFILE" == full ]]; then
+            packages+=(vulkan-loader shaderc)
+          fi
+          brew install "${packages[@]}"
+      - name: Initialize native Windows compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $before = @{}
+          Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools not found" }
+          & "$installation/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          Get-ChildItem Env: | Where-Object { $before[$_.Name] -ne $_.Value } | ForEach-Object {
+            "$($_.Name)=$($_.Value)" >> $env:GITHUB_ENV
+          }
+          'CC=cl' >> $env:GITHUB_ENV
+          'CXX=cl' >> $env:GITHUB_ENV
+          ninja --version
+      - name: Install Windows compiler cache
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "$env:RUNNER_TEMP/ccache.zip"
+          Invoke-WebRequest https://github.com/ccache/ccache/releases/download/v4.14/ccache-4.14-windows-x86_64.zip -OutFile $archive
+          $expected = '2568347a697e103ca1b073981c704ad76fb2507d066c38dba038dd73399d968f'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw "ccache checksum mismatch"
+          }
+          Expand-Archive $archive "$env:RUNNER_TEMP/ccache-tool"
+          "$env:RUNNER_TEMP/ccache-tool/ccache-4.14-windows-x86_64" >> $env:GITHUB_PATH
+      - name: Enable Ninja and compiler cache
+        run: |
+          {
+            echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
+            echo 'CMAKE_GENERATOR=Ninja'
+            echo 'CMAKE_C_COMPILER_LAUNCHER=ccache'
+            echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
+          } >> "$GITHUB_ENV"
+      - name: Restore compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-
+      - name: Identify Windows dependency toolchain
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $cache = "$env:RUNNER_TEMP/vcpkg-cache"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
+          $revision = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+      - name: Restore Windows dependency binaries
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
+        id: windows-dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
+        shell: pwsh
+        run: |
+          $packages = @('freetype[core]:x64-windows-static-md')
+          if ($env:PROFILE -eq 'full') {
+            $packages += @('vulkan:x64-windows-static-md', 'shaderc:x64-windows-static-md')
+          }
+          vcpkg install @packages --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installed = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md"
+          "$installed/tools/shaderc" >> $env:GITHUB_PATH
+          "$installed/bin" >> $env:GITHUB_PATH
+          "$installed/debug/bin" >> $env:GITHUB_PATH
+      - name: Save Windows dependency binaries
+        if: runner.os == 'Windows' && matrix.profile != 'headless' && steps.windows-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
+      - name: Reset compiler cache statistics
+        run: ccache --zero-stats
+      - name: Configure
+        run: |
+          args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION"
+                -DANIMA_BUILD_DESKTOP=OFF -DANIMA_BUILD_ASSETS=ON
+                -DANIMA_BUILD_TESTS=ON -DANIMA_WARNINGS_AS_ERRORS=ON)
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON)
+          fi
+          if [[ "$PROFILE" != headless ]]; then
+            args+=(-DANIMA_BUILD_PHYSICS=ON -DANIMA_BUILD_PHYSICS2D=ON
+                   -DANIMA_BUILD_UI_DOCUMENTS=ON -DANIMA_BUILD_INPUT_SDL=ON
+                   -DANIMA_BUILD_AUDIO_OUTPUT=ON -DANIMA_FETCH_SDL=ON
+                   "-DANIMA_INPUT_SDL_INCLUDE_DIR=$PWD/build/ci/_deps/sdl3-src/include"
+                   -DSDL_SHARED=OFF -DSDL_STATIC=ON
+                   -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
+          fi
+          if [[ "$RUNNER_OS" == Windows && "$PROFILE" != headless ]]; then
+            args+=("-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+                   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
+          fi
+          if [[ "$PROFILE" == full ]]; then
+            args+=(-DANIMA_BUILD_DESKTOP=ON -DANIMA_BUILD_UI=ON -DSDL_WAYLAND=OFF)
+          elif [[ "$PROFILE" == sanitizers ]]; then
+            args+=(-DANIMA_ENABLE_SANITIZERS=ON -DSDL_VIDEO=OFF -DSDL_UNIX_CONSOLE_BUILD=ON)
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              args+=("-DCMAKE_CONFIGURATION_TYPES=$CONFIGURATION")
+              asan_options=continue_on_error=0:strict_string_checks=1:alloc_dealloc_mismatch=1
+            else
+              export CC=clang CXX=clang++
+              asan_options=halt_on_error=1:strict_string_checks=1
+              if [[ "$RUNNER_OS" == Linux ]]; then
+                asan_options+=:detect_leaks=1
+              fi
+              echo 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1' >> "$GITHUB_ENV"
+            fi
+            echo "ASAN_OPTIONS=$asan_options" >> "$GITHUB_ENV"
+          fi
+          cmake -S . -B build/ci "${args[@]}"
+      - name: Locate Windows ASan runtime
+        if: runner.os == 'Windows' && matrix.profile == 'sanitizers'
+        shell: pwsh
+        run: |
+          $compilerFile = Get-ChildItem build/ci/CMakeFiles/*/CMakeCXXCompiler.cmake | Select-Object -First 1
+          $match = Select-String -Path $compilerFile.FullName -Pattern '^set\(CMAKE_CXX_COMPILER "([^"]+)"\)'
+          $compilerDirectory = Split-Path $match.Matches[0].Groups[1].Value
+          if (!(Test-Path "$compilerDirectory/clang_rt.asan_dynamic-x86_64.dll")) {
+            throw "MSVC AddressSanitizer runtime missing beside the selected compiler"
+          }
+          $compilerDirectory >> $env:GITHUB_PATH
       - name: Build
-        run: cmake --build build/optional --parallel 2
-      - name: Test optional libraries and copied consumers
+        run: cmake --build build/ci --config "$CONFIGURATION"
+      - name: Test runtime and CLI
         run: >-
-          ctest --test-dir build/optional -C Debug
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 600 --no-tests=error --label-exclude consumer
+      - name: Check isolated consumer configurations
+        run: >-
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 180 --no-tests=error --label-regex '^consumer-configure$'
+      - name: Build independent consumers
+        run: >-
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --timeout 1200 --no-tests=error
+          --label-regex '^consumer-build$'
+      - name: Test independent public APIs
+        run: >-
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 60 --no-tests=error --label-regex '^consumer-runtime$'
+          --fixture-exclude-setup '^consumer_build$'
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache --show-stats
 
   documentation:
-    name: 4. Doxygen reference
-    needs: optional
+    name: Doxygen reference
+    needs: repository
     if: github.event.repository.private == false
     runs-on: macos-15
     timeout-minutes: 15
@@ -127,3 +319,18 @@ jobs:
           cmake --build build/docs --target anima_docs
           test -s build/docs/reference/html/index.html
           test -s build/docs/reference/xml/index.xml
+
+  required:
+    name: CI required
+    needs: [repository, codeql, build, documentation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every CI stage to pass
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$JOB_RESULTS"
+          printf '%s\n' "$JOB_RESULTS" | jq --exit-status 'all(.[]; .result == "success")'

@@ -275,8 +275,13 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
     const auto encode_health = [](const components_test::Health &value, const ObjectReferences &) {
         return std::to_string(value.value);
     };
-    const auto decode_health = [](GameObject object, std::string_view value, const ObjectReferences &) {
-        (void)object.add_component<components_test::Health>(std::stoi(std::string(value)));
+    unsigned decodes = 0;
+    const auto decode_health = [&](GameObject object, std::string_view value, const ObjectReferences &) {
+        ++decodes;
+        std::size_t parsed = 0;
+        (void)object.add_component<components_test::Health>(std::stoi(std::string(value), &parsed));
+        if (parsed != value.size())
+            throw std::invalid_argument("Health state must contain only an integer");
     };
     codecs.add<components_test::Health>("consumer.health.v1", encode_health, decode_health);
     rejects([&] { codecs.add<components_test::Health>("duplicate", encode_health, decode_health); });
@@ -294,20 +299,14 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
     require(component_scene->components<components_test::Health>().front()->value == 42,
             "Scene roundtrip dropped a user-defined component");
     rejects([&] { (void)load_scene(saved_components, resolve); });
-    ComponentCodecs failing_codecs;
-    unsigned decodes = 0;
-    failing_codecs.add<components_test::Health>(
-        "consumer.health.v1", encode_health,
-        [&](GameObject object, std::string_view value, const ObjectReferences &references) {
-            ++decodes;
-            decode_health(object, value, references);
-            throw std::runtime_error("Component decoder failure");
-        });
-    const auto failing = Prefab::deserialize(encoded, resolve, failing_codecs);
-    require(decodes == 0, "Prefab validation ran application component constructors");
+    nodes.assign(composed.nodes().begin(), composed.nodes().end());
+    nodes[0].components[0].state = "42trailing";
+    const auto before_decodes = decodes;
+    const auto failing = Prefab::deserialize(Prefab(nodes, codecs).serialize(name), resolve, codecs);
+    require(decodes == before_decodes, "Prefab validation ran application component constructors");
     const auto before_failure = target.size();
     rejects([&] { (void)failing.instantiate(target); });
-    require(decodes == 1 && target.size() == before_failure && custom_health->value == 7,
+    require(decodes == before_decodes + 1 && target.size() == before_failure && custom_health->value == 7,
             "Failed component restoration leaked a prefab or changed another instance");
 }
 inline void run() {

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def check(root=ROOT):
     errors = []
-    paths = [root / "README.md", root / "CONTRIBUTING.md"]
+    paths = sorted(root.glob("*.md"))
     for directory in ("docs", "third_party", "tests/ui/assets"):
         paths.extend((root / directory).rglob("*.md"))
     for path in paths:
