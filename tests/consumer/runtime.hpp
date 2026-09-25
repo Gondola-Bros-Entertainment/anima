@@ -5,6 +5,8 @@
 #include <anima/navigation_scene.hpp>
 #include <anima/physics2d_scene.hpp>
 #include <anima/physics_scene.hpp>
+#include <anima/prefab_composition.hpp>
+#include <anima/prefab_variant.hpp>
 #include <anima/scene_set.hpp>
 #include <array>
 #include <cmath>
@@ -217,8 +219,52 @@ inline void prefab_destinations() {
               restored.children().front().get_component<AudioSource>()->clip() == clip,
           "Destination override depended on the expired original session");
     restored.destroy();
+    // A variant borrows one immutable base snapshot and explicitly chooses the
+    // destination registry, even after the base's original session has expired.
+    auto base = std::make_shared<const Prefab>(prefab);
+    PrefabVariant::Override change;
+    change.key = base->nodes().front().key;
+    change.name = "relocated variant";
+    const PrefabVariant variant("runtime-base", {change});
+    unsigned resolutions = 0;
+    const PrefabResolver resolve = [&](std::string_view key) {
+        check(key == "runtime-base", "Variant changed its base resource identity");
+        ++resolutions;
+        return base;
+    };
+    const auto specialized = variant.resolve(resolve, destination_codecs);
+    check(resolutions == 1 && destination_volume.size() == 0 && destination_plane.size() == 0 &&
+              destination.size() == 1,
+          "Resolving a variant constructed runtime objects or resource owners");
+    auto specialized_instance = specialized.instantiate(destination);
+    synchronize_audio(destination, destination_audio);
+    check(specialized_instance.name() == "relocated variant" &&
+              destination_volume.owns(specialized_instance.get_component<physics::RigidBody>()->body()) &&
+              destination_plane.owns(
+                  specialized_instance.children().front().get_component<physics2d::RigidBody>()->body()) &&
+              specialized_instance.children().front().get_component<AudioSource>()->playing(),
+          "Variant instance lost its explicit destination physics or audio bindings");
+    specialized_instance.destroy();
+    const PrefabComposition assembled({{"root", "runtime-base", {}, identity()}});
+    auto assembled_instance = assembled.instantiate(destination, resolve, destination_codecs);
+    synchronize_audio(destination, destination_audio);
+    check(destination_volume.owns(assembled_instance.get_component<physics::RigidBody>()->body()) &&
+              destination_plane.owns(
+                  assembled_instance.children().front().get_component<physics2d::RigidBody>()->body()) &&
+              assembled_instance.children().front().get_component<AudioSource>()->playing(),
+          "Prefab composition reused expired source bindings instead of its destination services");
+    assembled_instance.destroy();
+    const PrefabComposition paired(
+        {{"root", "runtime-base", {}, identity()},
+         {"nested", "runtime-base", PrefabComposition::Mount{"root", base->nodes()[1].key}, identity()}});
+    // The second part exceeds the destination's one-voice capacity after both
+    // physics backends and the earlier part's voice have allocated resources.
+    rejects([&] { (void)paired.instantiate(destination, resolve, destination_codecs); });
     const auto failing = make_codecs(destination_volume, destination_plane, destination_audio, true);
     rejects([&] { (void)prefab.instantiate(destination, identity(), failing); });
+    const auto failing_variant = variant.resolve(resolve, failing);
+    rejects([&] { (void)failing_variant.instantiate(destination); });
+    rejects([&] { (void)paired.instantiate(destination, resolve, failing); });
     std::array<float, 2> samples{};
     destination_audio.render(samples);
     const auto available_voice = destination_audio.sound(clip);

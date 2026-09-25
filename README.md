@@ -58,7 +58,7 @@ exercise these interfaces with the engine's tools and tests disabled.
 | Module | Public targets | Capabilities |
 | --- | --- | --- |
 | Core | `anima::core` | Math, fixed-step timing, geometry queries, action input, A* navigation and buffered audio mixing |
-| Assets and scenes | `anima::assets` | GLB import, shared meshes, objects/components, hierarchy, additive scenes, prefabs, animation, cameras and directional lighting |
+| Assets and scenes | `anima::assets` | GLB import, shared meshes, objects/components, hierarchy, additive scenes, prefabs/variants/composition, animation, cameras and directional lighting |
 | 3D physics | `anima::physics`, `anima::physics_scene` | Optional Jolt simulation, checked bodies, hulls/compounds, queries and scene/prefab integration |
 | 2D physics | `anima::physics2d`, `anima::physics2d_scene` | Optional Box2D simulation, checked bodies, queries and scene/prefab integration |
 | SDL adapters | `anima::input_sdl`, `anima::audio_output` | Independent input-event conversion and audio-device output |

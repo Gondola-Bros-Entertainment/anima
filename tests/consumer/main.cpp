@@ -30,6 +30,8 @@
 #include "camera.hpp"
 #include "lifecycle.hpp"
 #include "lighting.hpp"
+#include "prefab_composition.hpp"
+#include "prefab_variant.hpp"
 #include "presentation.hpp"
 #include "references.hpp"
 #include "scene_objects.hpp"
@@ -291,6 +293,8 @@ int main(int argc, char **argv) {
         lifecycle_test::run();
         references_test::run();
         scene_set_test::run();
+        prefab_variant_test::run();
+        prefab_composition_test::run();
         consume_audio_scene();
         camera_consumer::run();
         lighting_consumer::run();
