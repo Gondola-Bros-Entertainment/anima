@@ -11,9 +11,10 @@ class PrefabVariant {
     // requires the remaining defaults. A mesh with no pose uses its rest pose;
     // empty override arrays use the mesh defaults.
     struct Renderer {
+        Renderer() : visible(true) {}
         std::shared_ptr<const Mesh> mesh;
         std::optional<Pose> pose;
-        bool visible = true;
+        bool visible;
         std::vector<Vec3> material_factors;
         std::vector<bool> primitive_visible;
     };
