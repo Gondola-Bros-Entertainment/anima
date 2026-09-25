@@ -35,6 +35,8 @@ jobs:
           python-version: '3.14'
       - name: Check documentation links
         run: python tools/check_repository.py
+      - name: Test build maintenance tools
+        run: python -m unittest discover -s tools/engine -p 'test_*.py'
       - name: Check workflow syntax and shell commands
         run: |
           tool_dir=$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")

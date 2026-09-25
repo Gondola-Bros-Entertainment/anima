@@ -115,6 +115,55 @@ application instrumentation; arbitrary parent compiler flags are not forwarded.
 Standalone `CONSUMER_MODE` builds remain available for minimal configurations and
 device checks. Optional-module selection determines the test count.
 
+Reuse build directories for successive changes with the same toolchain/options.
+Debug symbols and sanitizer objects are sizable; additional build directories also
+retain independent consumer artifacts. When retiring a configuration, clean both
+projects before archiving its small qualification logs:
+
+```sh
+cmake --build build/runtime --target clean
+cmake --build build/runtime/consumer-suite/build --target clean
+```
+
+The second command applies when that consumer suite has been configured. Cleaning
+the parent does not clean nested consumer projects. These targets remove generated
+build products while preserving source checkouts and downloaded dependency sources.
+
+For several configurations, use the repository-local cleanup helper. It previews
+immediate `build/` directories containing `CMakeCache.txt`; repeat `--keep` for the
+configurations still in use. Stop builds before running cleanup.
+
+```sh
+python3 tools/engine/clean_builds.py --keep runtime --keep sanitizers
+python3 tools/engine/clean_builds.py --apply --keep runtime --keep sanitizers
+```
+
+The preview changes nothing. `--apply` runs each selected configuration's CMake
+`clean` target, including nested consumer configurations. It never deletes files
+or directories itself: CMake identifies generated outputs, preserving authored
+assets, source files, logs, evidence and configuration metadata. Non-CMake entries,
+symlinks/junctions, Git checkouts and nested worktrees are retained automatically.
+Configurations hosting `FETCHCONTENT_SOURCE_DIR_*` dependencies of retained builds
+are also retained, following references transitively through nested CMake caches.
+The helper accepts no alternate cleanup root and does not touch system caches.
+
+Reported directory sizes include sources and evidence, so they are estimates of
+the selected footprint, not promised reclaimed space. Check the reported free
+space after cleanup. Before starting a large build, run a separate nonmutating
+preflight with an appropriate reserve:
+
+```sh
+python3 tools/engine/clean_builds.py --min-free-gib 20
+```
+
+This exits unsuccessfully when the reserve is unavailable. If combined with
+`--apply`, the threshold is evaluated after cleanup. The safety regression tests
+use temporary fixtures and mock every CMake invocation:
+
+```sh
+python3 tools/engine/test_clean_builds.py
+```
+
 ## Address and undefined-behavior sanitizers
 
 `ANIMA_ENABLE_SANITIZERS` enables ASan and UBSan with GCC/Clang on Linux/macOS,

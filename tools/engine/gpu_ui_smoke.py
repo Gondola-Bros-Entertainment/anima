@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from generate_ui_fixtures import generate
 from gpu_preview_smoke import read_ppm
 from gpu_replacement_smoke import clear
 from gpu_smoke import discard_captures, run
@@ -101,11 +102,12 @@ def verify(images, scale):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("consumer", type=Path)
-    parser.add_argument("--assets", type=Path, default=Path("tests/ui/assets"))
+    parser.add_argument("--assets", type=Path, default=Path("tests/ui/assets"), help="source controls/font fixtures")
     parser.add_argument("--output", type=Path, default=Path("build/verification/ui"))
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    assets = generate(args.assets, output / "fixtures")
     os.environ.setdefault("VK_LAYER_VALIDATE_SYNC", "1")
     records = []
     for mode, extra in [("default", []), ("fallback", ["--no-present-fences"])]:
@@ -115,7 +117,7 @@ def main():
             path.unlink()
         log = run(
             args.consumer.resolve(strict=True),
-            ["--ui", str(directory), str(args.assets.resolve(strict=True)), *extra],
+            ["--ui", str(directory), str(assets), *extra],
             output,
             mode,
         )

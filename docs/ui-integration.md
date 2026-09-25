@@ -191,3 +191,8 @@ assets and verifies additive panel synchronization and teardown without graphics
 Both use the consolidated consumer dependency build. Run these checks with the
 [local qualification workflow](local-qualification.md). GPU rendering, DPI and
 hardware input need separate desktop checks.
+
+UI tests generate their 2×2 RGBA image from numeric texels into build output;
+the repository contains no image fixture. The test target and GPU smoke harness
+stage that image alongside the control document and licensed font automatically.
+See the [fixture instructions](../tests/ui/assets/README.md) for direct consumer runs.
