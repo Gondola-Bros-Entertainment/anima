@@ -93,7 +93,8 @@ if(ANIMA_ENABLE_SANITIZERS)
     # The application opts into instrumentation explicitly; the public library
     # target already supplies the sanitizer runtimes needed at the final link.
     if(MSVC)
-        target_compile_options(consumer PRIVATE /fsanitize=address /Zi)
+        set_property(TARGET consumer PROPERTY MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+        target_compile_options(consumer PRIVATE /fsanitize=address)
     else()
         target_compile_options(consumer PRIVATE
             -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)

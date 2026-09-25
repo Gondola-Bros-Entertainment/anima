@@ -142,8 +142,35 @@ jobs:
             packages+=(vulkan-loader shaderc)
           fi
           brew install "${packages[@]}"
+      - name: Initialize native Windows compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $before = @{}
+          Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools not found" }
+          & "$installation/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          Get-ChildItem Env: | Where-Object { $before[$_.Name] -ne $_.Value } | ForEach-Object {
+            "$($_.Name)=$($_.Value)" >> $env:GITHUB_ENV
+          }
+          'CC=cl' >> $env:GITHUB_ENV
+          'CXX=cl' >> $env:GITHUB_ENV
+          ninja --version
+      - name: Install Windows compiler cache
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "$env:RUNNER_TEMP/ccache.zip"
+          Invoke-WebRequest https://github.com/ccache/ccache/releases/download/v4.14/ccache-4.14-windows-x86_64.zip -OutFile $archive
+          $expected = '2568347a697e103ca1b073981c704ad76fb2507d066c38dba038dd73399d968f'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw "ccache checksum mismatch"
+          }
+          Expand-Archive $archive "$env:RUNNER_TEMP/ccache-tool"
+          "$env:RUNNER_TEMP/ccache-tool/ccache-4.14-windows-x86_64" >> $env:GITHUB_PATH
       - name: Enable Ninja and compiler cache
-        if: runner.os != 'Windows'
         run: |
           {
             echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
@@ -152,7 +179,6 @@ jobs:
             echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
           } >> "$GITHUB_ENV"
       - name: Restore compiler cache
-        if: runner.os != 'Windows'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
@@ -198,13 +224,15 @@ jobs:
           path: ${{ runner.temp }}/vcpkg-cache
           key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
       - name: Reset compiler cache statistics
-        if: runner.os != 'Windows'
         run: ccache --zero-stats
       - name: Configure
         run: |
           args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION"
                 -DANIMA_BUILD_DESKTOP=OFF -DANIMA_BUILD_ASSETS=ON
                 -DANIMA_BUILD_TESTS=ON -DANIMA_WARNINGS_AS_ERRORS=ON)
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON)
+          fi
           if [[ "$PROFILE" != headless ]]; then
             args+=(-DANIMA_BUILD_PHYSICS=ON -DANIMA_BUILD_PHYSICS2D=ON
                    -DANIMA_BUILD_UI_DOCUMENTS=ON -DANIMA_BUILD_INPUT_SDL=ON
@@ -214,7 +242,7 @@ jobs:
                    -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
           fi
           if [[ "$RUNNER_OS" == Windows && "$PROFILE" != headless ]]; then
-            args+=(-A x64 "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+            args+=("-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
                    -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
           fi
           if [[ "$PROFILE" == full ]]; then
@@ -275,7 +303,8 @@ jobs:
                 -DSDL_SHARED=OFF -DSDL_STATIC=ON
                 -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
           if [[ "$RUNNER_OS" == Windows ]]; then
-            args+=(-A x64 "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+            args+=(-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+                   "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
                    -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
           fi
           cmake -S tests/consumer -B build/desktop-consumer "${args[@]}"
@@ -283,7 +312,7 @@ jobs:
         if: matrix.profile == 'full'
         run: cmake --build build/desktop-consumer --config "$CONFIGURATION"
       - name: Compiler cache statistics
-        if: always() && runner.os != 'Windows'
+        if: always()
         run: ccache --show-stats
 
   documentation:

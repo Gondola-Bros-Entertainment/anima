@@ -30,8 +30,10 @@ UndefinedBehaviorSanitizer. Linux also enables LeakSanitizer. Findings fail the
 job. Windows also checks the optional runtime and consumers with native MSVC
 AddressSanitizer in RelWithDebInfo. MSVC does not provide UndefinedBehaviorSanitizer.
 
-Linux/macOS builds use Ninja and a bounded compiler cache. Windows caches vcpkg
-dependency binaries and uses Visual Studio. Cache hits never skip configuration,
+All platforms use Ninja and a bounded compiler cache; Windows uses native MSVC
+and also caches vcpkg dependency binaries. Windows CI embeds debug information
+in object files and disables precompiled headers so compilation can be cached
+without relaxing cache correctness. Cache hits never skip configuration,
 linking or tests. Two consumer builds run concurrently, with two compiler
 processes each; ordinary runtime tests run in parallel. Compiler cache
 statistics in each job distinguish cold runs from subsequent cache reuse.
@@ -141,7 +143,8 @@ ctest --test-dir build/sanitizers -C RelWithDebInfo --output-on-failure --no-tes
 Run from the matching Visual Studio developer environment so the ASan runtime DLL
 is on `PATH`. MSVC's default Debug `/RTC` checks and Edit-and-Continue `/ZI` are
 incompatible with ASan; configuration rejects them instead of changing unrelated
-compiler flags. The sanitizer targets disable incremental linking. Windows CI uses
+compiler flags. The sanitizer targets use embedded `/Z7` debug information and
+produce linker PDBs with `/DEBUG`, while disabling incremental linking. Windows CI uses
 `ASAN_OPTIONS=continue_on_error=0:strict_string_checks=1:alloc_dealloc_mismatch=1`;
 Linux leak options and MSVC-unsupported `halt_on_error` are not set there.
 

@@ -178,10 +178,10 @@ inline int run(int argc, char **argv) {
         auto candidate = std::make_shared<anima::Scene>();
         (void)candidate->add(anima::Mesh::compile(*asset));
         if (prepare_fatal) {
-            const std::array pending{candidate->instance(candidate->instances().front()).asset};
-            const anima::MeshPreparation prepared(pending.front());
+            const std::array candidate_meshes{candidate->instance(candidate->instances().front()).asset};
+            const anima::MeshPreparation candidate_preparation(candidate_meshes.front());
             rejects<anima::RendererFatalError>(
-                [&] { renderer.prepare_mesh(prepared, {anima::parse_renderer_failure_stage(fatal)}); });
+                [&] { renderer.prepare_mesh(candidate_preparation, {anima::parse_renderer_failure_stage(fatal)}); });
         } else
             rejects<anima::RendererFatalError>(
                 [&] { renderer.set_scenes({candidate}, {anima::parse_renderer_failure_stage(fatal)}); });
@@ -224,9 +224,9 @@ inline int run(int argc, char **argv) {
     for (const auto *stage : {"vertex", "index", "texture", "texture-upload", "descriptors", "ready"}) {
         {
             const std::array candidate{anima::Mesh::compile(*asset)};
-            const anima::MeshPreparation prepared(candidate.front());
+            const anima::MeshPreparation candidate_preparation(candidate.front());
             rejects<std::runtime_error>(
-                [&] { renderer.prepare_mesh(prepared, {anima::parse_renderer_failure_stage(stage)}); });
+                [&] { renderer.prepare_mesh(candidate_preparation, {anima::parse_renderer_failure_stage(stage)}); });
         }
         capture(std::string("preload-rollback-") + stage);
         {

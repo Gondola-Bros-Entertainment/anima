@@ -13,6 +13,11 @@ function(anima_add_jolt)
     set(CPP_EXCEPTIONS_ENABLED ON)
     set(CPP_RTTI_ENABLED ON)
     set(DOUBLE_PRECISION OFF)
+    if(MSVC AND (ANIMA_ENABLE_SANITIZERS OR DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT))
+        # CMake supplies the selected debug format. Jolt's extra /Zi would
+        # override Embedded symbols and prevent safe compiler caching.
+        set(GENERATE_DEBUG_SYMBOLS OFF)
+    endif()
     FetchContent_Declare(jolt
         URL https://codeload.github.com/jrouwe/JoltPhysics/tar.gz/e77f175595e64cb44218cc9d9d56fc365ad0e36a
         URL_HASH SHA256=1f32328fb763135de10a244568d6ccb2ed9b1e6593fafe6dc6db5b2719d330bd
