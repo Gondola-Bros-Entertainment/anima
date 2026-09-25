@@ -62,6 +62,13 @@ class SceneSet {
     // selection and old objects. Success keeps the namespace and enumeration slot.
     [[nodiscard]] SceneRef replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
                                    const ComponentCodecs &codecs = {});
+    // Whole-set document with shared object-reference scope, including links
+    // across scenes. Codecs are borrowed for this call, with read-only encoders.
+    [[nodiscard]] std::string serialize(const MeshName &name, const ComponentCodecs &codecs = {});
+    // Stage all native objects before restoring components, then replace the
+    // entire set. Failure preserves published membership and active selection.
+    // Success invalidates every old handle before any old component cleanup.
+    void restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs = {});
     void unload(SceneRef scene);
     void clear();
     [[nodiscard]] std::size_t size() const noexcept { return scenes_.size(); }

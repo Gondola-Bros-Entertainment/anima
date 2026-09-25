@@ -124,7 +124,7 @@ runtime system registry. Native components attach and update without codecs.
 Saving/loading needs explicit adapters because the application knows stable
 type/resource keys and destination service bindings.
 
-`serialize_scene`, `load_scene` and `SceneSet::load/replace` borrow a registry for
+`serialize_scene`, `load_scene` and `SceneSet` persistence methods borrow a registry for
 that operation; scenes retain none. `Prefab::capture`, its constructor and
 `deserialize` retain a registry copy for later `instantiate` calls. Physics codecs
 borrow checked world bindings; UI codecs borrow a checked document host; audio
@@ -151,6 +151,10 @@ gameplay code. There is no global registry or implicit destination lookup, keepi
 headless applications, independent sessions and optional modules isolated.
 
 Object-reference contexts map authored keys to one staged graph and remap prefab
-links per instance. They are operation-scoped, not service locators. Cross-document
-references, scene-set persistence and prefab variants/nesting remain separate
-incomplete contracts.
+links per instance. Whole-set serialization supplies one mapping across every
+scene, with document keys resolved through namespace/local-key entries. A complete
+restore creates all native objects before decoding linked components and publishes
+membership atomically. These contexts are operation-scoped, not service locators.
+See [scene-set persistence](scene-objects.md#persisting-a-complete-scene-set).
+Automatic repair after partial scene replacement, prefab nesting/variants,
+persistent-object migration and asynchronous streaming remain separate contracts.

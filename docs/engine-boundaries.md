@@ -29,7 +29,9 @@ applications own camera movement, transitions and drawable dimensions.
 environment settings independently of camera and geometry selection.
 
 JSON is the storage representation, not a second scene implementation. Scene and
-prefab documents use version 3 exclusively. `ComponentCodecs` registers stable
+prefab documents use version 3 exclusively. Whole scene sets use a version-1
+envelope with namespace-qualified reference mappings and atomic replacement.
+`ComponentCodecs` registers stable
 component type keys; explicit resolver callbacks supply shared resources. Failed
 decoding rolls back staged objects and owned resources. Custom codecs validate
 their payloads and obey the documented mutation boundary.
