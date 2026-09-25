@@ -9,7 +9,7 @@ optional [RmlUi integration](ui-integration.md).
 
 Requires CMake 3.25+, a C++20 compiler, and (desktop only) SDL3 3.2+ plus a Vulkan
 SDK with `glslc`. The tested SDK is 1.4.341.1. Use the same CPU architecture for
-all dependencies. Tests require Python 3.10+; Blender is optional authoring tooling.
+all dependencies. Tests and GPU verification tools require Python 3.10+.
 macOS uses MoltenVK; Windows/Linux need a Vulkan GPU driver.
 No GPU, SDL, Vulkan, image library or asset parser is needed for the `core` preset.
 The desktop configure step checks for headers declaring

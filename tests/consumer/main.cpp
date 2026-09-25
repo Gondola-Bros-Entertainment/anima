@@ -28,7 +28,6 @@
 #ifdef CONSUMER_ASSETS
 #include "audio_scene.hpp"
 #include "camera.hpp"
-#include "compiled_presentation.hpp"
 #include "lifecycle.hpp"
 #include "lighting.hpp"
 #include "presentation.hpp"
@@ -256,10 +255,6 @@ int main(int argc, char **argv) {
         audio.render(mixed);
         require(mixed[0] == .25F && mixed[1] == -.25F && !sound.playing(),
                 "Independent core consumer could not mix stereo audio");
-#ifdef CONSUMER_ASSETS
-        if (argc == 3 && std::string_view(argv[1]) == "--compiled-presentation")
-            return compiled_presentation_test::run(argv[2]);
-#endif
 #ifdef CONSUMER_UI
         ui_test::test_attribute_conversion();
         if (argc > 1 && std::string_view(argv[1]) == "--ui")

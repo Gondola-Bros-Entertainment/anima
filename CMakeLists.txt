@@ -392,9 +392,6 @@ if(ANIMA_BUILD_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME repository COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_repository.py")
-    add_test(NAME authoring_contracts COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/authoring/contracts.py")
-    set_tests_properties(authoring_contracts PROPERTIES LABELS "authoring" TIMEOUT 60)
     set(anima_consumer_modes core)
     if(ANIMA_BUILD_AUDIO_OUTPUT)
         list(APPEND anima_consumer_modes audio_output)

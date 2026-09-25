@@ -13,7 +13,7 @@ behavior and current limitations.
 ## Build
 
 The headless runtime requires CMake 3.25+ and a C++20 compiler. The default test
-configuration also requires Python 3.10+; Blender is not needed:
+configuration also requires Python 3.10+ for repository checks:
 
 ```sh
 git clone https://github.com/Gondola-Bros-Entertainment/anima.git
@@ -77,17 +77,14 @@ describe how applications supply content, policy and scheduling.
 - [Animation](docs/animation-evaluation.md) and [asset reimport](docs/asset-reimport.md)
 - [3D physics](docs/physics.md) and [2D physics](docs/physics2d.md)
 - [Audio](docs/audio.md), [input](docs/input.md), [navigation](docs/navigation.md) and [UI](docs/ui-integration.md)
-- [Optional Python/Blender authoring tools](docs/authoring.md)
 - [Local qualification](docs/local-qualification.md) and [API reference generation](docs/documentation.md)
 
 ## Development
 
 Public headers live in `include/anima`, implementations in `src`, applications
 in `apps`, and shaders in `shaders`. Tests and synthetic fixtures are in `tests`;
-GPU verification tools are in `tools/engine`. Optional offline authoring tools
-live in `python/anima_pipeline`, with Blender entry points in `tools/animation`.
-They export animation, props and fitted meshes from caller-supplied recipes.
-The C++ runtime libraries do not depend on this package or Blender.
+GPU verification tools are in `tools/engine`. Applications own their asset
+authoring and export pipelines; Anima imports and runs the resulting resources.
 
 macOS, Windows and Linux are development targets. Headless compiler checks and
 GPU/device qualification are separate: a successful build does not establish

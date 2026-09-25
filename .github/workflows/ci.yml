@@ -19,38 +19,19 @@ defaults:
 
 jobs:
   repository:
-    name: 1. Repository / Python ${{ matrix.python }}
+    name: 1. Repository checks
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ['3.10', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.14'
       - name: Check documentation links
-        if: matrix.python == '3.14'
         run: python tools/check_repository.py
-      - name: Test authoring contracts
-        run: |
-          python tests/authoring/contracts.py
-          python -O tests/authoring/contracts.py
-      - name: Build source and wheel distributions
-        run: |
-          python -m pip install build
-          python -m build python --outdir build/dist
-      - name: Verify distribution licenses
-        run: python tools/check_distribution.py
-      - name: Import the installed wheel
-        run: |
-          python -m pip install --no-deps build/dist/*.whl
-          python -c "import anima_pipeline; from importlib.metadata import version; print(version('anima-pipeline'))"
 
   headless:
     name: 2. Headless / ${{ matrix.os }} / ${{ matrix.configuration }}

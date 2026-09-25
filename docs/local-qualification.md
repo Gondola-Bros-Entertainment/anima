@@ -11,7 +11,7 @@ devices that hosted runners do not cover.
 ## Continuous integration
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
-requests and manual dispatch. Its stages run in order: repository and package
+requests and manual dispatch. Its stages run in order: repository
 checks, platform builds, optional libraries, then generated documentation. A failed
 stage stops later stages. The platform matrix runs at most three jobs at once.
 
@@ -20,9 +20,8 @@ including copied core/asset consumers. A Linux job
 also enables Jolt, Box2D, RmlUi documents, SDL input conversion and dummy-device
 audio output, with their applicable independent consumers.
 
-Separate jobs check Python 3.10 and 3.14 authoring contracts in normal and
-optimized modes, source/wheel license metadata, documentation links and Doxygen
-HTML/XML generation. CI does not run Blender, compile the Vulkan desktop renderer,
+Repository checks validate documentation links; the final stage generates Doxygen
+HTML/XML. CI does not compile the Vulkan desktop renderer
 or qualify physical GPUs, speakers or input devices. Use the relevant local checks
 for those paths.
 

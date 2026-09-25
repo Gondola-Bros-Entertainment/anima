@@ -67,6 +67,6 @@ placement, art direction, weather behavior and gameplay policy. The
 [rendering architecture](rendering-architecture.md) describes the default pipeline.
 
 Animation APIs accept caller-defined clips, masks, joints, sockets, roles and
-timelines. The [authoring package](authoring.md) accepts recipes, property names
-and material-conversion policy. Neither selects gameplay actions or imports a
-game's asset conventions.
+timelines. Applications own export recipes, authoring property names and material
+conversion. The runtime does not select gameplay actions or impose an application's
+asset conventions.

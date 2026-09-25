@@ -133,6 +133,5 @@ application checkout, network, display, GPU or downloaded dependency is needed.
 Run the engine presets described in the README. Gameplay and GPU qualification
 belong to the consuming application's additional tests.
 
-The [reusable authoring package](authoring.md) supplies Blender compilation,
-resource splitting, preservation and exact build receipts, with an independent
-Blender-to-public-C++ consumer. The C++ runtime is consumed from source through CMake.
+Applications own asset compilation, resource splitting and export validation.
+The C++ runtime is consumed from source through CMake.

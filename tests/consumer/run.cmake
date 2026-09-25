@@ -9,7 +9,7 @@ endif()
 # Only the tiny application's own files are copied. Anima is consumed in place as
 # an external source dependency; no engine implementation enters this fixture.
 file(MAKE_DIRECTORY "${CONSUMER_BINARY_DIR}/source")
-foreach(file CMakeLists.txt main.cpp presentation.hpp compiled_presentation.hpp replacement.hpp
+foreach(file CMakeLists.txt main.cpp presentation.hpp replacement.hpp
              camera.hpp lighting.hpp runtime.hpp scene_set.hpp references.hpp lifecycle.hpp audio_output.hpp audio_scene.hpp input.hpp resources.hpp reference.hpp culling.hpp ui.hpp environment.hpp foliage.hpp scene_objects.hpp components.hpp physics.hpp physics2d.hpp navigation.hpp documents.hpp)
     configure_file("${ANIMA_SOURCE_DIR}/tests/consumer/${file}" "${CONSUMER_BINARY_DIR}/source/${file}" COPYONLY)
 endforeach()
