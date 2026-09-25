@@ -6,6 +6,9 @@ namespace anima {
 // Stable application-owned keys, never serialized pointers or implicit paths.
 using MeshName = std::function<std::string(const std::shared_ptr<const Mesh> &)>;
 using MeshResolver = std::function<std::shared_ptr<const Mesh>(std::string_view)>;
+class Prefab;
+// Resolves an application-owned asset key to an immutable authored snapshot.
+using PrefabResolver = std::function<std::shared_ptr<const Prefab>(std::string_view)>;
 
 class Prefab {
   public:

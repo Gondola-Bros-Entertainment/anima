@@ -15,6 +15,7 @@ drivers or carry codecs through their update methods.
 | Component | Its body, voice, document or other resource handle | Destruction releases resources, including failed loading/prefab cleanup |
 | `Prefab` | Authored node data and a copy of configured codecs | Immutable resources may be shared; instances own independent mutable state |
 | `PrefabVariant` | A base resource key and typed authoring overrides | Resolves one immutable base snapshot with explicitly supplied codecs; retains no services |
+| `PrefabComposition` | Part/resource keys, mounts and placements | Resolves resources per instantiation and borrows destination codecs; each part has its own reference scope |
 
 Declare C++ members in dependency order: service owners, persistence configuration,
 then scenes. Reverse destruction releases scene-owned resources before services.
@@ -160,5 +161,8 @@ See [scene-set persistence](scene-objects.md#persisting-a-complete-scene-set).
 Variants preserve the base hierarchy and keys while overriding native state or
 component payloads. Resolve them with the destination registry before normal
 instantiation; see [prefab variants](scene-objects.md#prefab-variants).
-Automatic repair after partial scene replacement, prefab nesting,
+Compositions mount concrete prefab resources while preserving separate authored
+reference scopes. All native parts exist before component decoding, and failure
+removes the staged hierarchy and its resources. See [prefab composition](scene-objects.md#prefab-composition).
+Automatic repair after partial scene replacement, recursive prefab composition,
 persistent-object migration and asynchronous streaming remain separate contracts.

@@ -20,13 +20,13 @@ template <class F> void rejects(F operation) {
     }
     throw std::runtime_error("Invalid prefab variant operation was accepted");
 }
-inline std::shared_ptr<const Mesh> mesh() {
+inline std::shared_ptr<const Mesh> mesh(float extent = 1) {
     Asset asset;
     asset.nodes.resize(1);
     asset.materials.resize(1);
     SourcePrimitive primitive;
     primitive.material = 0;
-    for (const auto position : {Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}}) {
+    for (const auto position : {Vec3{0, 0, 0}, Vec3{extent, 0, 0}, Vec3{0, 1, 0}}) {
         SourceVertex vertex;
         vertex.position = position;
         vertex.normal = {0, 0, 1};
@@ -364,10 +364,36 @@ inline void composed_transforms() {
     rejects([&] { (void)overflowing_pose.resolve([&](auto) { return unscaled; }, {}); });
     check(unscaled->serialize({}) == unscaled_before, "Failed world-space pose validation changed the resolved base");
 }
+inline void deferred_renderer_bounds() {
+    const auto wide = mesh(std::numeric_limits<float>::max());
+    Prefab::Node root;
+    root.key = {41};
+    const auto base = std::make_shared<const Prefab>(std::vector{root});
+    PrefabVariant::Override change;
+    change.key = root.key;
+    change.renderer.emplace();
+    change.renderer->mesh = wide;
+    change.renderer->pose = wide->rest_pose();
+    change.renderer->pose->world[0][0] = 0.1F;
+    const PrefabVariant variant("base", {change});
+    const auto resolved = variant.resolve([&](auto) { return base; }, {});
+    Scene scene;
+    const auto instance = resolved.instantiate(scene);
+    const auto bounds = instance.renderer().bounds();
+    check(bounds.valid && std::isfinite(bounds.maximum.x) && bounds.maximum.x > 0 && instance.renderer().mesh() == wide,
+          "Variant rejected a finite authored pose because the mesh rest-pose bounds overflowed");
+
+    change.renderer->pose->world[0] = identity();
+    const PrefabVariant overflowing("base", {change});
+    rejects([&] { (void)overflowing.resolve([&](auto) { return base; }, {}); });
+    check(instance.valid() && scene.size() == 1 && !base->nodes()[0].mesh,
+          "Deferred variant bounds validation accepted overflow or changed existing authored/runtime state");
+}
 inline void run() {
     native_and_resources();
     links_and_bindings();
     component_order();
     composed_transforms();
+    deferred_renderer_bounds();
 }
 } // namespace prefab_variant_test

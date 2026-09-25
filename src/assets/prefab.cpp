@@ -1,4 +1,5 @@
 #include "../detail/json.hpp"
+#include "../detail/prefab_instantiation.hpp"
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_persistence.hpp"
 #include <anima/prefab.hpp>
@@ -14,6 +15,10 @@ struct ScenePersistence {
     }
     static std::uint64_t next_key(const Scene &scene) { return scene.next_key_; }
     static void next_key(Scene &scene, std::uint64_t value) { scene.next_key_ = value; }
+    static void assign_mesh(Scene &scene, Scene::Id object, const std::shared_ptr<const Mesh> &mesh,
+                            const std::optional<Pose> &pose) {
+        scene.assign_mesh(object, mesh, pose ? &*pose : nullptr);
+    }
     static Prefab::Node capture(GameObject object) {
         const auto &source = object.scene().slot(object.id());
         Prefab::Node node;
@@ -75,55 +80,17 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
 std::vector<GameObject> instantiate_nodes(Scene &scene, std::span<const Prefab::Node> nodes, const GameObject *parent,
                                           const Mat4 &placement, const ComponentCodecs *codecs,
                                           bool preserve_keys = false) {
-    std::vector<GameObject> objects, roots;
-    objects.reserve(nodes.size());
+    std::vector<GameObject> roots;
     roots.reserve(nodes.size());
+    const auto objects = detail::instantiate_prefab_nodes(scene, nodes, parent, placement, preserve_keys);
     try {
-        for (const auto &node : nodes) {
-            auto object = preserve_keys ? detail::ScenePersistence::create(scene, node.key, node.name, node.mesh)
-                                        : scene.create(node.name, node.mesh);
-            objects.push_back(object);
-            object.set_active(node.active);
-            if (node.parent)
-                object.set_parent(objects.at(*node.parent), ReparentMode::keep_local);
-            else {
-                roots.push_back(object);
-                if (parent)
-                    object.set_parent(*parent, ReparentMode::keep_local);
-            }
-            object.set_local_matrix(node.parent ? node.local : placement * node.local);
-            if (!node.mesh)
-                continue;
-            auto renderer = object.renderer();
-            if (node.pose)
-                renderer.set_pose(*node.pose);
-            renderer.set_visible(node.visible);
-            const auto &instance = scene.instance(object.id());
-            require(node.material_factors.empty() || node.material_factors.size() == instance.factors.size(),
-                    "Prefab material factors do not match the mesh");
-            require(node.primitive_visible.empty() ||
-                        node.primitive_visible.size() == instance.primitive_visible.size(),
-                    "Prefab primitive visibility does not match the mesh");
-            for (std::size_t i = 0; i < node.material_factors.size(); ++i)
-                renderer.set_material_factor(i, node.material_factors[i]);
-            for (std::size_t i = 0; i < node.primitive_visible.size(); ++i)
-                renderer.set_primitive_visible(i, node.primitive_visible[i]);
-        }
-        // All transforms, renderers and parent links exist before user components.
-        if (codecs) {
-            std::vector<ObjectReferences::Entry> entries;
-            entries.reserve(nodes.size());
-            for (std::size_t i = 0; i < nodes.size(); ++i)
-                entries.push_back({nodes[i].key, objects[i]});
-            const ObjectReferences references(entries);
-            for (std::size_t i = 0; i < nodes.size(); ++i)
-                codecs->restore(objects[i], nodes[i].components, references);
-        }
+        if (codecs)
+            detail::restore_prefab_components(objects, nodes, *codecs);
+        for (std::size_t i = 0; i < nodes.size(); ++i)
+            if (!nodes[i].parent)
+                roots.push_back(objects[i]);
     } catch (...) {
-        // Includes an object whose parenting/transform failed before it was linked.
-        for (auto it = objects.rbegin(); it != objects.rend(); ++it)
-            if (it->valid())
-                it->destroy();
+        detail::destroy_prefab_objects(objects);
         throw;
     }
     return roots;
@@ -309,6 +276,67 @@ Decoded decode(std::string_view document, std::string_view kind, const MeshResol
     return {std::move(nodes), next_key};
 }
 } // namespace
+
+namespace detail {
+void destroy_prefab_objects(std::span<const GameObject> objects) {
+    // Includes an object whose parenting/transform failed before it was linked.
+    for (auto it = objects.rbegin(); it != objects.rend(); ++it)
+        if (it->valid()) {
+            auto object = *it;
+            object.destroy();
+        }
+}
+std::vector<GameObject> instantiate_prefab_nodes(Scene &scene, std::span<const Prefab::Node> nodes,
+                                                 const GameObject *parent, const Mat4 &placement, bool preserve_keys) {
+    std::vector<GameObject> objects;
+    objects.reserve(nodes.size());
+    try {
+        for (const auto &node : nodes) {
+            // Establish the actual hierarchy/world transform before validating
+            // mesh bounds. An intermediate identity/local-only placement can
+            // overflow even when the final parent-composed transform is valid.
+            auto object =
+                preserve_keys ? ScenePersistence::create(scene, node.key, node.name, {}) : scene.create(node.name);
+            objects.push_back(object);
+            object.set_active(node.active);
+            if (node.parent)
+                object.set_parent(objects.at(*node.parent), ReparentMode::keep_local);
+            else if (parent)
+                object.set_parent(*parent, ReparentMode::keep_local);
+            object.set_local_matrix(node.parent ? node.local : placement * node.local);
+            if (!node.mesh)
+                continue;
+            ScenePersistence::assign_mesh(scene, object.id(), node.mesh, node.pose);
+            auto renderer = object.renderer();
+            renderer.set_visible(node.visible);
+            const auto &instance = scene.instance(object.id());
+            require(node.material_factors.empty() || node.material_factors.size() == instance.factors.size(),
+                    "Prefab material factors do not match the mesh");
+            require(node.primitive_visible.empty() ||
+                        node.primitive_visible.size() == instance.primitive_visible.size(),
+                    "Prefab primitive visibility does not match the mesh");
+            for (std::size_t i = 0; i < node.material_factors.size(); ++i)
+                renderer.set_material_factor(i, node.material_factors[i]);
+            for (std::size_t i = 0; i < node.primitive_visible.size(); ++i)
+                renderer.set_primitive_visible(i, node.primitive_visible[i]);
+        }
+    } catch (...) {
+        destroy_prefab_objects(objects);
+        throw;
+    }
+    return objects;
+}
+void restore_prefab_components(std::span<const GameObject> objects, std::span<const Prefab::Node> nodes,
+                               const ComponentCodecs &codecs) {
+    std::vector<ObjectReferences::Entry> entries;
+    entries.reserve(nodes.size());
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+        entries.push_back({nodes[i].key, objects[i]});
+    const ObjectReferences references(entries);
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+        codecs.restore(objects[i], nodes[i].components, references);
+}
+} // namespace detail
 
 Prefab::Prefab(std::vector<Node> nodes, ComponentCodecs codecs) : nodes_(std::move(nodes)), codecs_(std::move(codecs)) {
     require(nodes_.size() <= maximum_objects && !nodes_.empty(), "Invalid prefab object count");

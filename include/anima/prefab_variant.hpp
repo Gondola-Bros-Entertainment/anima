@@ -2,9 +2,6 @@
 #include <anima/prefab.hpp>
 
 namespace anima {
-// Resolves one application-owned asset key to an immutable authored snapshot.
-using PrefabResolver = std::function<std::shared_ptr<const Prefab>(std::string_view)>;
-
 class PrefabVariant {
   public:
     // A complete renderer replacement. A null mesh removes the renderer and
