@@ -40,8 +40,14 @@ build, with separate executables for each public target. Isolated configuration
 checks still verify each mode's dependency boundaries. CI reports configuration,
 compilation and API execution in separate steps; runtime tests run in parallel.
 Compiler cache statistics distinguish cold runs from subsequent cache reuse.
-The traced full Linux job disables caching so CodeQL observes every compilation;
-it reuses the existing build and consolidated consumers without an extra build.
+The traced full Linux job restores no prior compiler cache. Its primary build
+forces every compilation with `CCACHE_RECACHE=1`, letting CodeQL observe the full
+build while populating a fresh cache bounded to 1 GiB. The later independent build
+can reuse identical engine/dependency results; its new copied consumer translation
+units still compile under tracing. Matching debug-prefix maps normalize both build
+directories without relaxing cache correctness. Generated headers and precompiled
+headers can still cause safe misses. No extra build is added, and verbose consumer
+build logs expose configuration and Ninja progress.
 
 Repository checks validate documentation links, lint workflow syntax and shell
 commands with actionlint, and scan the complete fetched Git history with Gitleaks.

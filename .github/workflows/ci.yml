@@ -189,8 +189,11 @@ jobs:
             echo 'CMAKE_C_COMPILER_LAUNCHER=ccache'
             echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
             if [[ "$PROFILE" == full && "$RUNNER_OS" == Linux ]]; then
-              # CodeQL must observe compilation, including the consumer suite.
-              echo 'CCACHE_DISABLE=1'
+              # Normalize both build directories without weakening cache checks.
+              debug_maps="-fdebug-prefix-map=$GITHUB_WORKSPACE/build/ci=. -fdebug-prefix-map=$GITHUB_WORKSPACE/build/ci/consumer-suite/build=."
+              echo "CFLAGS=$debug_maps"
+              echo "CXXFLAGS=$debug_maps"
+              echo 'CCACHE_MAXSIZE=1G'
             fi
           } >> "$GITHUB_ENV"
       - name: Restore compiler cache
@@ -299,7 +302,13 @@ jobs:
           }
           $compilerDirectory >> $env:GITHUB_PATH
       - name: Build
-        run: cmake --build build/ci --config "$CONFIGURATION"
+        run: |
+          if [[ "$PROFILE" == full && "$RUNNER_OS" == Linux ]]; then
+            # Trace every primary compilation and cache its fresh result.
+            # New consumer translation units still compile in the later step.
+            export CCACHE_RECACHE=1
+          fi
+          cmake --build build/ci --config "$CONFIGURATION"
       - name: Test runtime and CLI
         run: >-
           ctest --test-dir build/ci -C "$CONFIGURATION"
@@ -313,7 +322,7 @@ jobs:
       - name: Build independent consumers
         run: >-
           ctest --test-dir build/ci -C "$CONFIGURATION"
-          --output-on-failure --timeout 1200 --no-tests=error
+          --verbose --output-on-failure --timeout 1200 --no-tests=error
           --label-regex '^consumer-build$'
       - name: Test independent public APIs
         run: >-
