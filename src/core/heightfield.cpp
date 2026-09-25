@@ -117,10 +117,14 @@ template <class Visit> void segments(HeightfieldView f, Vec3 from, Vec3 to, Visi
         cursor = end;
     }
 }
-Vec3 along(Vec3 from, Vec3 to, double t) {
-    return {float(double(from.x) + (double(to.x) - from.x) * t), float(double(from.y) + (double(to.y) - from.y) * t),
-            float(double(from.z) + (double(to.z) - from.z) * t)};
+struct Position {
+    double x{}, y{}, z{};
+};
+Position along(Vec3 from, Vec3 to, double t) {
+    return {double(from.x) + (double(to.x) - from.x) * t, double(from.y) + (double(to.y) - from.y) * t,
+            double(from.z) + (double(to.z) - from.z) * t};
 }
+Vec3 narrow(Position p) { return {float(p.x), float(p.y), float(p.z)}; }
 } // namespace
 void validate_heightfield(HeightfieldView f) {
     dimensions(f);
@@ -144,11 +148,11 @@ std::optional<HeightfieldHit> intersect_heightfield(HeightfieldView f, Vec3 from
     std::optional<HeightfieldHit> hit;
     segments(f, from, to, [&](double begin, double end, const Plane &plane) {
         const auto a = along(from, to, begin), b = along(from, to, end);
-        const auto da = double(a.y) - plane.at(a.x, a.z) - clearance, db = double(b.y) - plane.at(b.x, b.z) - clearance;
+        const auto da = a.y - plane.at(a.x, a.z) - clearance, db = b.y - plane.at(b.x, b.z) - clearance;
         if (da > 0 && db > 0)
             return true;
         const auto t = da <= 0 ? begin : begin + (end - begin) * da / (da - db);
-        hit = HeightfieldHit{t, along(from, to, t), plane.normal()};
+        hit = HeightfieldHit{t, narrow(along(from, to, t)), plane.normal()};
         return false;
     });
     return hit;
@@ -167,13 +171,14 @@ HeightfieldMotion move_on_heightfield(HeightfieldView f, Vec3 from, Vec3 to, dou
             return false;
         }
         auto a = along(from, to, begin), b = along(from, to, end);
-        a.y = float(plane.at(a.x, a.z));
-        b.y = float(plane.at(b.x, b.z));
-        const auto length = std::hypot(double(b.x) - a.x, double(b.y) - a.y, double(b.z) - a.z);
+        a.y = plane.at(a.x, a.z);
+        b.y = plane.at(b.x, b.z);
+        const auto length = std::hypot(b.x - a.x, b.y - a.y, b.z - a.z);
         const auto available = std::max(0.0, budget - result.distance);
         const auto fraction = length > available ? available / length : 1.0;
         result.fraction = begin + (end - begin) * fraction;
-        result.position = along(a, b, fraction);
+        result.position =
+            narrow({a.x + (b.x - a.x) * fraction, a.y + (b.y - a.y) * fraction, a.z + (b.z - a.z) * fraction});
         result.distance += length * fraction;
         return fraction == 1;
     });
