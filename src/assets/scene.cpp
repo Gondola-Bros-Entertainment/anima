@@ -201,6 +201,7 @@ void Scene::release() noexcept {
         entry.components.clear();
     }
     slots_.clear();
+    next_free_slot_ = 0;
     while (retired) {
         auto next = std::move(retired->retired_next);
         retired->disable();
@@ -282,7 +283,7 @@ GameObject Scene::create_with_key(ObjectKey key, std::string name, std::shared_p
     if (!lifetime_->scene)
         throw std::logic_error("Cannot create objects during scene teardown");
     require(key.value && !keys_.contains(key), "Duplicate or null scene object key");
-    std::size_t index = 0;
+    std::size_t index = next_free_slot_;
     while (index < slots_.size() && (slots_[index].alive || slots_[index].generation == UINT64_MAX))
         ++index;
     if (index == slots_.size())
@@ -291,6 +292,7 @@ GameObject Scene::create_with_key(ObjectKey key, std::string name, std::shared_p
     entry.name = std::move(name);
     entry.key = key;
     entry.alive = true;
+    next_free_slot_ = index + 1;
     ++object_count_;
     const Id id{owner_, entry.generation, index};
     try {
@@ -395,6 +397,7 @@ void Scene::remove(Id id) {
         }
         entry.components.clear();
         entry.alive = false;
+        next_free_slot_ = std::min(next_free_slot_, current.slot);
         entry.active_self = entry.active_hierarchy = true;
         --object_count_;
         if (entry.generation != UINT64_MAX)

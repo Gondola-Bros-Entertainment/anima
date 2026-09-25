@@ -132,6 +132,7 @@ class Scene {
     std::uint64_t next_key_ = 1; // Zero means exhausted; never wrap/reuse a retired key.
     std::map<ObjectKey, Id> keys_;
     std::vector<Slot> slots_;
+    std::size_t next_free_slot_{}; // Lower bound for the first reusable slot.
     std::vector<Id> active_;
     bool updating_{};
     std::size_t constructing_{};
