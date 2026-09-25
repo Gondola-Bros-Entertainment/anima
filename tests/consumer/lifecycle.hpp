@@ -198,8 +198,10 @@ inline void run() {
     ComponentCodecs codecs;
     codecs.add<Probe>(
         "probe.v1", [](const Probe &, const ObjectReferences &) { return "{}"; },
-        [&](GameObject object, std::string_view, const ObjectReferences &) {
+        [&](GameObject object, std::string_view state, const ObjectReferences &) {
             object.add_component<Probe>(loaded_counts);
+            if (state != "{}")
+                throw std::invalid_argument("Probe state must be an empty object");
         });
     Scene authored;
     auto root = authored.create("root"), leaf = authored.create("leaf");
@@ -227,15 +229,9 @@ inline void run() {
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     nodes[0].active = true;
     nodes[1].components[0].enabled = true;
-    ComponentCodecs broken;
-    broken.add<Probe>(
-        "probe.v1", [](const Probe &, const ObjectReferences &) { return "{}"; },
-        [&](GameObject object, std::string_view, const ObjectReferences &) {
-            object.add_component<Probe>(loaded_counts);
-            throw std::runtime_error("decode");
-        });
+    nodes[1].components[0].state = "malformed";
     const auto before = authored.size();
-    rejects([&] { (void)Prefab(nodes, broken).instantiate(authored); });
+    rejects([&] { (void)Prefab(nodes, codecs).instantiate(authored); });
     check(authored.size() == before && loaded_counts.enables == 1, "Failed loading published lifecycle hooks");
     // Callback backing counters outlive all scenes using them.
     copy.destroy();

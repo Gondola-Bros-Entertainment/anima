@@ -199,26 +199,30 @@ inline void run() {
     ComponentCodecs codecs;
     add_audio_component_codecs(codecs, audio, [&](auto) { return "tone"; }, [&](auto) { return clip; });
     Scene sound_scene;
-    auto source_object = sound_scene.create();
-    source_object.add_component<AudioSource>(audio, clip);
-    const auto audio_document = serialize_scene(sound_scene, {}, codecs);
-    source_object.destroy();
-    struct Failure {};
+    struct Failure {
+        bool valid{true};
+    };
     codecs.add<Failure>(
-        "test.failure.v1", [](const Failure &, const ObjectReferences &) { return ""; },
-        [&](GameObject object, std::string_view, const ObjectReferences &) {
+        "test.failure.v1",
+        [](const Failure &value, const ObjectReferences &) { return value.valid ? "{}" : "malformed"; },
+        [&](GameObject object, std::string_view state, const ObjectReferences &) {
             rejects([&] { set.unload(extra); });
             object.add_component<Failure>();
-            throw std::runtime_error("decode failed");
+            if (state != "{}")
+                throw std::invalid_argument("Fixture state must be an empty object");
         });
-    source_object = sound_scene.create();
+    auto source_object = sound_scene.create();
     source_object.add_component<AudioSource>(audio, clip);
-    source_object.add_component<Failure>();
+    auto failure = source_object.add_component<Failure>();
+    const auto audio_document = serialize_scene(sound_scene, {}, codecs);
+    failure->valid = false;
     const auto failed_document = serialize_scene(sound_scene, {}, codecs);
     source_object.destroy();
     rejects([&] { (void)set.replace(replacement, failed_document, {}, codecs); });
     check(replacement && extra && set.active().key() == "level", "Decode failure changed published membership");
     auto playing = set.load("audio", audio_document, {}, codecs);
+    check(playing->components<Failure>().size() == 1 && playing->components<Failure>()[0]->valid,
+          "Valid fixture state did not restore its component");
     auto retained_audio_view = playing.render_scene();
     auto source = playing->components<AudioSource>()[0];
     source->play();
