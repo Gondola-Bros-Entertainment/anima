@@ -27,11 +27,60 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
       - name: Check documentation links
         run: python tools/check_repository.py
+      - name: Check workflow syntax and shell commands
+        run: |
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")
+          archive="$tool_dir/actionlint.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          printf '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  %s\n' "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" --directory "$tool_dir" actionlint
+          "$tool_dir/actionlint" -color
+      - name: Scan full Git history for secrets
+        run: |
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/gitleaks.XXXXXX")
+          archive="$tool_dir/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$archive"
+          printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" --directory "$tool_dir" gitleaks
+          GITLEAKS_BIN="$tool_dir/gitleaks" python - <<'PY'
+          import os
+          from pathlib import Path
+          import secrets
+          import subprocess
+          import tempfile
+
+          # Verify detection with a generated, unusable token; never print it.
+          with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
+              Path(directory, "canary.txt").write_text("token = \"gh" + "p_" + secrets.token_hex(18) + "\"\n")
+              result = subprocess.run(
+                  [os.environ["GITLEAKS_BIN"], "dir", "--redact", "--no-banner", directory],
+                  capture_output=True, text=True, check=False,
+              )
+              if result.returncode != 1:
+                  raise SystemExit("Secret scanner failed its detection canary")
+          print("PASS secret scanner detection canary")
+          PY
+          "$tool_dir/gitleaks" git --redact --no-banner --log-opts=--all .
+
+  codeql:
+    name: CodeQL
+    needs: repository
+    if: github.event.repository.private == false
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
 
   headless:
     name: 2. Headless / ${{ matrix.os }} / ${{ matrix.configuration }}
@@ -65,6 +114,54 @@ jobs:
       - name: Test runtime and copied consumers
         run: >-
           ctest --test-dir build/headless -C ${{ matrix.configuration }}
+          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
+
+  sanitizers:
+    name: 3. ASan and UBSan / Linux
+    needs: headless
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install Clang, sanitizer symbolizer and FreeType
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang llvm libfreetype6-dev
+      - name: Configure instrumented runtime, optional libraries and consumers
+        run: >-
+          cmake -S . -B build/sanitizers
+          -DCMAKE_BUILD_TYPE=Debug
+          -DANIMA_BUILD_DESKTOP=OFF
+          -DANIMA_BUILD_ASSETS=ON
+          -DANIMA_BUILD_TESTS=ON
+          -DANIMA_WARNINGS_AS_ERRORS=ON
+          -DANIMA_ENABLE_SANITIZERS=ON
+          -DANIMA_BUILD_PHYSICS=ON
+          -DANIMA_BUILD_PHYSICS2D=ON
+          -DANIMA_BUILD_UI_DOCUMENTS=ON
+          -DANIMA_BUILD_INPUT_SDL=ON
+          -DANIMA_BUILD_AUDIO_OUTPUT=ON
+          -DANIMA_FETCH_SDL=ON
+          -DANIMA_INPUT_SDL_INCLUDE_DIR="$PWD/build/sanitizers/_deps/sdl3-src/include"
+          -DSDL_SHARED=OFF -DSDL_STATIC=ON
+          -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
+          -DSDL_UNIX_CONSOLE_BUILD=ON
+      - name: Build
+        run: cmake --build build/sanitizers --parallel 2
+      - name: Test with AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer
+        run: >-
+          ctest --test-dir build/sanitizers -C Debug
           --output-on-failure --parallel 2 --timeout 600 --no-tests=error
 
   optional:
@@ -109,9 +206,65 @@ jobs:
           ctest --test-dir build/optional -C Debug
           --output-on-failure --parallel 2 --timeout 600 --no-tests=error
 
+  desktop:
+    name: 3. Desktop and UI / Linux
+    needs: headless
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install Vulkan, shader compiler, FreeType and X11 headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libvulkan-dev glslc libfreetype6-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev
+      - name: Configure desktop and UI
+        run: >-
+          cmake -S . -B build/desktop
+          -DCMAKE_BUILD_TYPE=Debug
+          -DANIMA_BUILD_DESKTOP=ON
+          -DANIMA_BUILD_UI=ON
+          -DANIMA_BUILD_ASSETS=ON
+          -DANIMA_BUILD_TESTS=ON
+          -DANIMA_WARNINGS_AS_ERRORS=ON
+          -DANIMA_FETCH_SDL=ON
+          -DSDL_SHARED=OFF -DSDL_STATIC=ON
+          -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
+      - name: Build renderer, shaders, viewer and UI
+        run: cmake --build build/desktop --parallel 2
+      # The desktop and UI consumer executables open Vulkan windows. Their API
+      # linkage is checked below; physical-device tests remain local qualification.
+      - name: Test desktop CLI and non-GPU runtime
+        run: >-
+          ctest --test-dir build/desktop -C Debug
+          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
+          --exclude-regex '^consumer_(desktop|ui)$'
+      - name: Configure public UI consumer
+        run: >-
+          cmake -S tests/consumer -B build/desktop-consumer
+          -DCMAKE_BUILD_TYPE=Debug
+          -DANIMA_SOURCE_DIR="$PWD"
+          -DCONSUMER_MODE=ui
+          -DBUILD_TESTING=ON
+          -DANIMA_WARNINGS_AS_ERRORS=ON
+          -DANIMA_FETCH_SDL=ON
+          -DFETCHCONTENT_SOURCE_DIR_SDL3="$PWD/build/desktop/_deps/sdl3-src"
+          -DFETCHCONTENT_SOURCE_DIR_RMLUI="$PWD/build/desktop/_deps/rmlui-src"
+          -DSDL_SHARED=OFF -DSDL_STATIC=ON
+          -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
+      - name: Build public UI and desktop API consumer
+        run: cmake --build build/desktop-consumer --parallel 2
+
   documentation:
     name: 4. Doxygen reference
-    needs: optional
+    needs: [sanitizers, optional, desktop]
     if: github.event.repository.private == false
     runs-on: macos-15
     timeout-minutes: 15
@@ -127,3 +280,18 @@ jobs:
           cmake --build build/docs --target anima_docs
           test -s build/docs/reference/html/index.html
           test -s build/docs/reference/xml/index.xml
+
+  required:
+    name: CI required
+    needs: [repository, codeql, headless, sanitizers, optional, desktop, documentation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every CI stage to pass
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$JOB_RESULTS"
+          printf '%s\n' "$JOB_RESULTS" | jq --exit-status 'all(.[]; .result == "success")'

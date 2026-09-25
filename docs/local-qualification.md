@@ -12,18 +12,34 @@ devices that hosted runners do not cover.
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
 requests and manual dispatch. Its stages run in order: repository
-checks, platform builds, optional libraries, then generated documentation. A failed
-stage stops later stages. The platform matrix runs at most three jobs at once.
+checks, platform builds, sanitizer/optional-library/desktop builds in parallel,
+then generated documentation. A failed stage stops later stages. The platform
+matrix runs at most three jobs at once. The final `CI required` check fails if any required job
+fails, is cancelled or is skipped, providing one stable check for branch rules.
 
 CI covers Debug and Release headless builds on Linux, macOS and Windows,
-including copied core/asset consumers. A Linux job
-also enables Jolt, Box2D, RmlUi documents, SDL input conversion and dummy-device
-audio output, with their applicable independent consumers.
+including copied core/asset consumers. A Linux Clang Debug build also checks core,
+assets, optional runtime libraries, bundled parsers and copied consumers under
+AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer. Sanitizer findings
+fail the job. A separate Linux job checks Jolt, Box2D, RmlUi documents, SDL input
+conversion and dummy-device audio output without instrumentation, with their
+applicable independent consumers. Another Linux job
+compiles the Vulkan renderer, shaders, viewer, UI and an independent UI/desktop
+API consumer. It runs the ordinary headless and desktop CLI tests; it does not
+execute the two consumers that open Vulkan windows.
 
-Repository checks validate documentation links; the final stage generates Doxygen
-HTML/XML. CI does not compile the Vulkan desktop renderer
-or qualify physical GPUs, speakers or input devices. Use the relevant local checks
-for those paths.
+Repository checks validate documentation links, lint workflow syntax and shell
+commands with actionlint, and scan the complete fetched Git history with Gitleaks.
+Both tools use checksum-verified releases. A generated detection canary verifies
+the secret scanner before the real scan; findings are redacted in logs.
+Dependabot proposes weekly updates to the SHA-pinned GitHub Actions.
+
+The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions,
+C/C++ and Python with the security-extended query suite. Its C++ analysis uses
+`build-mode: none` to include optional modules. It is required by PR/push CI and
+also runs weekly. The documentation stage generates Doxygen HTML/XML. CI does
+not qualify physical GPUs, speakers or input devices. Use the relevant local
+checks for those paths.
 
 ## Source and dependencies
 
@@ -68,9 +84,38 @@ libraries. On Windows, use the selected MSVC generator/toolchain and pass
 generator. Keep dependency linkage and configuration consistent.
 
 CTest includes copied consumer projects. They configure Anima as an external
-dependency through public targets, with engine tools/tests disabled. These builds
-do not inherit parent sanitizer flags; report their results separately from
-instrumented engine checks. Optional-module selection determines the test count.
+dependency through public targets, with engine tools/tests disabled. They forward
+the selected compilers and `ANIMA_ENABLE_SANITIZERS`, including instrumentation of
+the consumer executable. Arbitrary parent compiler flags are not forwarded.
+Optional-module selection determines the test count.
+
+## Address and undefined-behavior sanitizers
+
+Use a separate Debug build with GCC or Clang on Linux/macOS:
+
+```sh
+CC=clang CXX=clang++ cmake --preset headless -B build/sanitizers \
+  -DANIMA_ENABLE_SANITIZERS=ON
+cmake --build build/sanitizers --parallel 2
+ASAN_OPTIONS=halt_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+  ctest --test-dir build/sanitizers --output-on-failure --no-tests=error
+```
+
+On Linux, add `detect_leaks=1:strict_string_checks=1` to `ASAN_OPTIONS`. Leave leak
+detection at its runtime default for macOS checks. Enable relevant optional
+modules with the same flags and dependency settings as the runtime build above.
+CI runs these checks on Linux with Clang, including the optional runtime modules.
+
+The option instruments Anima libraries, tools, tests, copied consumer executables,
+vendored image/GLB parsers, and source-built Jolt, Box2D, RmlUi and SDL targets.
+Installed packages such as FreeType or SDL remain uninstrumented. It enables ASan
+and UBSan together, retains frame pointers, and makes detected undefined behavior
+terminate the process so CTest reports a failure. Compilation flags stay private
+to the instrumented targets; their required sanitizer runtime link options reach
+the final executable. No global compiler flags or dependency ABI macros change.
+The option is off by default and rejects unsupported compilers/platforms at
+configuration time.
 
 ## SDL audio output
 

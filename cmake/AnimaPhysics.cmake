@@ -18,6 +18,7 @@ function(anima_add_jolt)
         URL_HASH SHA256=1f32328fb763135de10a244568d6ccb2ed9b1e6593fafe6dc6db5b2719d330bd
         SOURCE_SUBDIR Build DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_MakeAvailable(jolt)
+    anima_enable_sanitizers(Jolt)
     set(anima_jolt_source "${jolt_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()
 anima_add_jolt()

@@ -99,8 +99,9 @@ WAV fixtures and truncation rejection; output-buffer partitioning; and an SDL
 dummy-device test for queue bounds, clearing, moves, retained mixer lifetime and
 SDL subsystem ownership. A copied independent audio-output consumer builds with
 assets, desktop, input, physics and UI off and uses no SDL headers. Copied consumers
-configure separate builds and do not inherit the parent build's sanitizer flags;
-report their results separately from instrumented engine tests. The
+configure separate builds and forward `ANIMA_ENABLE_SANITIZERS` to instrument the
+engine and consumer executable. Arbitrary parent compiler flags are not forwarded;
+see [local qualification](local-qualification.md). The
 dummy test produces no physical sound and does not establish hardware latency.
 
 ## Scene listeners and sources

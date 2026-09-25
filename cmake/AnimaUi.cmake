@@ -19,6 +19,7 @@ function(anima_add_rmlui)
             -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/patches/RmlUiBoolString.cmake"
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_MakeAvailable(rmlui)
+    anima_enable_sanitizers(rmlui_core)
     set_target_properties(rmlui_debugger PROPERTIES EXCLUDE_FROM_ALL TRUE)
     set(anima_rmlui_source "${rmlui_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()
@@ -42,6 +43,7 @@ if(ANIMA_BUILD_UI)
     # Upstream SDL key translation, cursor/clipboard and composition helpers retain
     # upstream licenses; no sample window or standalone renderer backend is included.
     add_library(anima_rmlui_sdl STATIC "${anima_rmlui_source}/Backends/RmlUi_Platform_SDL.cpp")
+    anima_enable_sanitizers(anima_rmlui_sdl)
     target_include_directories(anima_rmlui_sdl SYSTEM PUBLIC "${anima_rmlui_source}/Backends")
     target_compile_definitions(anima_rmlui_sdl PUBLIC RMLUI_SDL_VERSION_MAJOR=3)
     target_link_libraries(anima_rmlui_sdl PUBLIC RmlUi::Core SDL3::SDL3)

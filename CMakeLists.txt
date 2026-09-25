@@ -27,12 +27,14 @@ endif()
 include(cmake/AnimaRuntime.cmake)
 option(ANIMA_FETCH_SDL "Fetch pinned SDL 3.4.2 instead of using an installed package" OFF)
 option(ANIMA_WARNINGS_AS_ERRORS "Treat Anima compiler warnings as errors" OFF)
+include(cmake/AnimaSanitizers.cmake)
 option(ANIMA_BUILD_DOCS "Provide the optional local Doxygen reference target" OFF)
 if(ANIMA_BUILD_DOCS)
     add_subdirectory(docs)
 endif()
 
 function(anima_target_defaults target)
+    anima_enable_sanitizers(${target})
     target_compile_features(${target} PUBLIC cxx_std_20)
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
     if(MSVC)
@@ -70,11 +72,13 @@ endif()
 
 if(ANIMA_BUILD_ASSETS OR ANIMA_BUILD_UI)
     add_library(anima_image_dependencies STATIC src/assets/image.cpp)
+    anima_enable_sanitizers(anima_image_dependencies)
     target_include_directories(anima_image_dependencies SYSTEM PUBLIC third_party/stb)
 endif()
 
 if(ANIMA_BUILD_ASSETS)
     add_library(anima_asset_dependencies STATIC src/assets/third_party.cpp)
+    anima_enable_sanitizers(anima_asset_dependencies)
     target_include_directories(anima_asset_dependencies SYSTEM PUBLIC third_party/cgltf third_party/stb)
     target_compile_features(anima_asset_dependencies PRIVATE cxx_std_20)
     add_library(anima_assets STATIC
@@ -436,6 +440,8 @@ if(ANIMA_BUILD_TESTS)
                 "-DCONSUMER_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
                 "-DCONSUMER_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
                 "-DCONSUMER_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                "-DCONSUMER_C_COMPILER=${CMAKE_C_COMPILER}"
+                "-DCONSUMER_SANITIZERS=${ANIMA_ENABLE_SANITIZERS}"
                 "-DCONSUMER_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
                 "-DCONSUMER_INPUT_SDL_HEADERS=${ANIMA_INPUT_SDL_INCLUDE_DIR}"
                 "-DCONSUMER_SDL_DIR=${SDL3_DIR}"
