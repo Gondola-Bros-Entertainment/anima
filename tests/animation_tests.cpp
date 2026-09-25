@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
         near(std::abs(antipodal[3]), 1, "Antipodal quaternion interpolation");
         const auto unit = anima::slerp({0, 0, 0, 2}, {0, 0, .001F, 1}, .5F);
         double norm = 0;
-        for (auto v : unit)
+        for (const double v : unit)
             norm += v * v;
         near(norm, 1, "Quaternion normalization");
         rejects([] { (void)anima::unit_quaternion({0, 0, 0, 0}); }, "Zero quaternion");
