@@ -99,6 +99,7 @@ jobs:
           - {os: windows-2022, configuration: Debug, profile: full}
           - {os: ubuntu-24.04, configuration: Debug, profile: sanitizers}
           - {os: macos-15, configuration: Debug, profile: sanitizers}
+          - {os: windows-2022, configuration: RelWithDebInfo, profile: sanitizers}
     env:
       PROFILE: ${{ matrix.profile }}
       CONFIGURATION: ${{ matrix.configuration }}
@@ -159,7 +160,7 @@ jobs:
           restore-keys: |
             ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-
       - name: Identify Windows dependency toolchain
-        if: runner.os == 'Windows' && matrix.profile == 'full'
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
         id: vcpkg
         shell: pwsh
         run: |
@@ -170,16 +171,20 @@ jobs:
           $revision = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
           "revision=$revision" >> $env:GITHUB_OUTPUT
       - name: Restore Windows dependency binaries
-        if: runner.os == 'Windows' && matrix.profile == 'full'
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-desktop-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
-      - name: Install Windows desktop dependencies
-        if: runner.os == 'Windows' && matrix.profile == 'full'
+          key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
         shell: pwsh
         run: |
-          vcpkg install 'freetype[core]:x64-windows-static-md' vulkan:x64-windows-static-md shaderc:x64-windows-static-md --clean-after-build
+          $packages = @('freetype[core]:x64-windows-static-md')
+          if ($env:PROFILE -eq 'full') {
+            $packages += @('vulkan:x64-windows-static-md', 'shaderc:x64-windows-static-md')
+          }
+          vcpkg install @packages --clean-after-build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $installed = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md"
           "$installed/tools/shaderc" >> $env:GITHUB_PATH
@@ -201,23 +206,39 @@ jobs:
                    -DSDL_SHARED=OFF -DSDL_STATIC=ON
                    -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
           fi
+          if [[ "$RUNNER_OS" == Windows && "$PROFILE" != headless ]]; then
+            args+=(-A x64 "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+                   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
+          fi
           if [[ "$PROFILE" == full ]]; then
             args+=(-DANIMA_BUILD_DESKTOP=ON -DANIMA_BUILD_UI=ON -DSDL_WAYLAND=OFF)
-            if [[ "$RUNNER_OS" == Windows ]]; then
-              args+=(-A x64 "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-                     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
-            fi
           elif [[ "$PROFILE" == sanitizers ]]; then
-            export CC=clang CXX=clang++
             args+=(-DANIMA_ENABLE_SANITIZERS=ON -DSDL_VIDEO=OFF -DSDL_UNIX_CONSOLE_BUILD=ON)
-            asan_options=halt_on_error=1:strict_string_checks=1
-            if [[ "$RUNNER_OS" == Linux ]]; then
-              asan_options+=:detect_leaks=1
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              args+=("-DCMAKE_CONFIGURATION_TYPES=$CONFIGURATION")
+              asan_options=continue_on_error=0:strict_string_checks=1:alloc_dealloc_mismatch=1
+            else
+              export CC=clang CXX=clang++
+              asan_options=halt_on_error=1:strict_string_checks=1
+              if [[ "$RUNNER_OS" == Linux ]]; then
+                asan_options+=:detect_leaks=1
+              fi
+              echo 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1' >> "$GITHUB_ENV"
             fi
             echo "ASAN_OPTIONS=$asan_options" >> "$GITHUB_ENV"
-            echo 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1' >> "$GITHUB_ENV"
           fi
           cmake -S . -B build/ci "${args[@]}"
+      - name: Locate Windows ASan runtime
+        if: runner.os == 'Windows' && matrix.profile == 'sanitizers'
+        shell: pwsh
+        run: |
+          $compilerFile = Get-ChildItem build/ci/CMakeFiles/*/CMakeCXXCompiler.cmake | Select-Object -First 1
+          $match = Select-String -Path $compilerFile.FullName -Pattern '^set\(CMAKE_CXX_COMPILER "([^"]+)"\)'
+          $compilerDirectory = Split-Path $match.Matches[0].Groups[1].Value
+          if (!(Test-Path "$compilerDirectory/clang_rt.asan_dynamic-x86_64.dll")) {
+            throw "MSVC AddressSanitizer runtime missing beside the selected compiler"
+          }
+          $compilerDirectory >> $env:GITHUB_PATH
       - name: Build
         run: cmake --build build/ci --config "$CONFIGURATION"
       - name: Test runtime and CLI

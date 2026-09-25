@@ -27,7 +27,8 @@ windows.
 Linux Clang and macOS AppleClang Debug jobs check the headless runtime, optional
 libraries, bundled parsers and copied consumers under AddressSanitizer and
 UndefinedBehaviorSanitizer. Linux also enables LeakSanitizer. Findings fail the
-job. Windows uses native MSVC; the combined sanitizer option does not support it.
+job. Windows also checks the optional runtime and consumers with native MSVC
+AddressSanitizer in RelWithDebInfo. MSVC does not provide UndefinedBehaviorSanitizer.
 
 Linux/macOS builds use Ninja and a bounded compiler cache. Windows caches vcpkg
 dependency binaries and uses Visual Studio. Cache hits never skip configuration,
@@ -98,7 +99,8 @@ Optional-module selection determines the test count.
 
 ## Address and undefined-behavior sanitizers
 
-Use a separate Debug build with GCC or Clang on Linux/macOS:
+`ANIMA_ENABLE_SANITIZERS` enables ASan and UBSan with GCC/Clang on Linux/macOS,
+and ASan with native MSVC on Windows. Use a separate Debug build on Linux/macOS:
 
 ```sh
 CC=clang CXX=clang++ cmake --preset headless -B build/sanitizers \
@@ -117,13 +119,31 @@ the optional runtime modules.
 
 The option instruments Anima libraries, tools, tests, copied consumer executables,
 vendored image/GLB parsers, and source-built Jolt, Box2D, RmlUi and SDL targets.
-Installed packages such as FreeType or SDL remain uninstrumented. It enables ASan
-and UBSan together, retains frame pointers, and makes detected undefined behavior
-terminate the process so CTest reports a failure. Compilation flags stay private
+Installed packages such as FreeType or SDL remain uninstrumented. On Linux/macOS,
+it retains frame pointers and makes detected undefined behavior terminate the
+process so CTest reports a failure. Compilation flags stay private
 to the instrumented targets; their required sanitizer runtime link options reach
 the final executable. No global compiler flags or dependency ABI macros change.
 The option is off by default and rejects unsupported compilers/platforms at
 configuration time.
+
+For Windows/MSVC, use a separate RelWithDebInfo configuration:
+
+```sh
+cmake -S . -B build/sanitizers -A x64 \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CONFIGURATION_TYPES=RelWithDebInfo \
+  -DANIMA_BUILD_DESKTOP=OFF -DANIMA_ENABLE_SANITIZERS=ON
+cmake --build build/sanitizers --config RelWithDebInfo --parallel 4
+ctest --test-dir build/sanitizers -C RelWithDebInfo --output-on-failure --no-tests=error
+```
+
+Run from the matching Visual Studio developer environment so the ASan runtime DLL
+is on `PATH`. MSVC's default Debug `/RTC` checks and Edit-and-Continue `/ZI` are
+incompatible with ASan; configuration rejects them instead of changing unrelated
+compiler flags. The sanitizer targets disable incremental linking. Windows CI uses
+`ASAN_OPTIONS=continue_on_error=0:strict_string_checks=1:alloc_dealloc_mismatch=1`;
+Linux leak options and MSVC-unsupported `halt_on_error` are not set there.
 
 ## SDL audio output
 
