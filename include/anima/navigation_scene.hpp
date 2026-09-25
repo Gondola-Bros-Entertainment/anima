@@ -1,6 +1,9 @@
 #pragma once
 #include <anima/navigation.hpp>
 #include <anima/scene.hpp>
+namespace anima::detail {
+struct NavigationSceneAccess;
+}
 namespace anima::navigation {
 class Agent {
   public:
@@ -14,14 +17,17 @@ class Agent {
     [[nodiscard]] Vec3 desired_velocity() const { return velocity_; }
 
   private:
-    friend void update_agents(Scene &, double);
+    friend struct anima::detail::NavigationSceneAccess;
     Follower follower_;
     float speed_, arrival_distance_;
     Vec3 velocity_{};
 };
 // Derives desired velocities from world positions. Does not move objects, call
 // Scene updates, advance physics or run callbacks. Disabled agents output zero.
+// Validates the complete selection before changing velocities or route cursors.
+// Call between scene phases; callbacks, construction and set mutation reject.
 void update_agents(Scene &scene, double seconds);
+void update_agents(SceneSet &scenes, double seconds);
 // Route points/cursor and steering parameters; no backend or world binding.
 void add_component_codec(ComponentCodecs &codecs);
 } // namespace anima::navigation

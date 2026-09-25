@@ -1,5 +1,6 @@
 #include "../detail/input.hpp"
 #include "../detail/json.hpp"
+#include "../detail/scene_driver.hpp"
 #include <anima/input_scene.hpp>
 namespace anima::input {
 namespace {
@@ -74,20 +75,23 @@ void add_component_codec(ComponentCodecs &codecs) {
             object.add_component<ActionInput>(deserialize_map(data));
         });
 }
-void begin_frame(Scene &scene) {
-    for (auto input : scene.components<ActionInput>()) {
+namespace {
+template <class Scenes> void begin_frame_scenes(Scenes &scenes) {
+    anima::detail::SceneDriver::check(scenes);
+    for (auto input : scenes.template components<ActionInput>()) {
         input->context().begin_frame();
         input->context().set_enabled(input.active());
     }
 }
-void dispatch(Scene &scene, const Event &event) {
+template <class Scenes> void dispatch_scenes(Scenes &scenes, const Event &event) {
+    anima::detail::SceneDriver::check(scenes);
     validate(event);
     struct Pending {
         ComponentRef<ActionInput> target;
         Context context;
     };
     std::vector<Pending> pending;
-    for (auto input : scene.components<ActionInput>()) {
+    for (auto input : scenes.template components<ActionInput>()) {
         auto context = input->context();
         context.set_enabled(input.active());
         context.process(event);
@@ -96,4 +100,9 @@ void dispatch(Scene &scene, const Event &event) {
     for (auto &p : pending)
         p.target->context() = std::move(p.context);
 }
+} // namespace
+void begin_frame(Scene &scene) { begin_frame_scenes(scene); }
+void begin_frame(SceneSet &scenes) { begin_frame_scenes(scenes); }
+void dispatch(Scene &scene, const Event &event) { dispatch_scenes(scene, event); }
+void dispatch(SceneSet &scenes, const Event &event) { dispatch_scenes(scenes, event); }
 } // namespace anima::input

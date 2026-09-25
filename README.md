@@ -73,6 +73,7 @@ describe how applications supply content, policy and scheduling.
 ## Documentation
 
 - [Scenes, components and persistence](docs/scene-objects.md)
+- [Runtime ownership and system ordering](docs/runtime-lifecycle.md)
 - [Cameras](docs/cameras.md), [lighting](docs/lighting.md) and [rendering](docs/rendering-architecture.md)
 - [Animation](docs/animation-evaluation.md) and [asset reimport](docs/asset-reimport.md)
 - [3D physics](docs/physics.md) and [2D physics](docs/physics2d.md)

@@ -176,6 +176,9 @@ input; navigation publishes zero desired velocity without consuming routes; UI
 hides inactive panels; physics excludes inactive bodies on its next fixed driver
 call. Call these drivers before rendering/mixing/querying their output after changing
 activation. `synchronize_lifecycle()` alone does not synchronize those systems.
+Input, navigation and UI drivers accept a whole `SceneSet` as well as one `Scene`;
+all drivers run between scene calls. See [runtime ownership and system ordering](runtime-lifecycle.md)
+for the frame sequence and the distinct UI event callback boundary.
 Physics still validates every body's world ownership and rigid transform, including
 inactive bodies, and dynamic bodies must remain scene roots. There is no automatic global pause or mixed 2D/3D driver scheduler. Explicit
 scene ownership and transitions are described below.
@@ -274,6 +277,24 @@ creates all native objects and links before restoring user components. Encoders
 must be read-only; decoders must restrict mutations to their supplied object's
 components. A decoder failure destroys the staged hierarchy. Codecs are retained
 by value in a prefab, so callback captures must have appropriate lifetimes.
+
+The ordinary `instantiate(scene, placement)` and `instantiate(parent, placement)`
+overloads use that retained registry, including its physics-world, audio-mixer and
+UI-host bindings. For an instance in another session, pass its configured registry:
+
+```cpp
+auto instance = prefab.instantiate(destination_scene, anima::identity(), destination_codecs);
+auto nested = prefab.instantiate(destination_parent, placement, destination_codecs);
+```
+
+These overloads borrow the supplied registry only for the call. They leave the
+prefab's authored data and retained registry unchanged, so subsequent ordinary
+instances still use the original bindings. Every serialized component type must
+exist in the destination registry before any object is created. Decoder failure
+removes the staged objects and their owned resources. Placement, activation and
+instance-local object-link remapping follow the same rules as ordinary
+instantiation; the registry supplies services rather than changing document keys
+or implicitly selecting resources from the destination scene.
 
 ## Stable object keys and component references
 
@@ -455,9 +476,71 @@ an invalid object for an unloaded namespace or missing/null key. Two scenes may
 safely contain the same ObjectKey. Runtime handles never rebind after unload;
 explicit address lookup may select a newly loaded scene using that namespace.
 Addresses do not keep targets alive. Single-scene/prefab codecs still resolve only
-their own captured graph and reject external links. Persistence operates on
-individual scenes or prefabs. Cross-document links and scene-set documents are
-not accepted, and loading never rebinds existing handles.
+their own captured graph and reject external links. Whole-set persistence supplies
+a shared reference context across the captured scenes; loading never rebinds
+existing handles.
+
+## Persisting a complete scene set
+
+```cpp
+const auto saved = scenes.serialize(name_mesh, codecs);
+// Decode every scene and component before replacing any live membership.
+scenes.restore(saved, resolve_mesh, destination_codecs);
+auto restored_player = scenes.find(player_address); // explicit new identity lookup
+renderer.set_scenes(scenes.render_scenes());        // refresh retained selection
+```
+
+`SceneSet::serialize` captures namespaces, insertion order, active selection and
+every scene's objects, hierarchy, local object keys and next-key allocator state.
+Component adapters receive one `ObjectReferences` context for the entire set.
+The existing `references.key(object)` and `references.resolve(key)` calls support
+forward, backward, cyclic and self links across scenes, even when different scenes
+have identical local object keys. Null remains zero. Links to stale objects or
+objects outside the captured set reject; runtime IDs and pointers are never saved.
+
+The strict version-1 `anima.scene-set` envelope has `version`, `kind`, `active`,
+`scenes` and `references` fields. Each scene entry contains `key` (namespace),
+`next_key` and `objects`. Object records use the existing version-3 scene node
+representation. Each reference row contains `key` (operation-wide document key),
+`scene` (namespace) and `object` (scene-local key). All object/reference keys are
+canonical decimal strings. The table must map every captured object exactly once;
+null/duplicate keys, duplicate destinations and missing targets reject. Capture
+assigns deterministic operation keys; they are scoped to that one document and
+are distinct from scene-local persistent identities.
+
+The inner object arrays are part of the set document and use its shared reference
+table. They cannot be extracted and loaded as standalone scene documents. Ordinary
+scene/prefab documents remain strict version 3 and keep their existing local
+reference scope. Component payloads stay opaque; codecs must use the provided
+context instead of storing `object.key()` directly for linked objects.
+
+Namespaces must be unique and obey the normal scene-set limits. `active` is null
+exactly when the set is empty; otherwise it names a member. A whole document is
+limited to 16 MiB, 1,024 scenes and 65,536 total objects, retaining existing node,
+component and resource-key limits. Mesh naming is checked across the complete set:
+two distinct meshes cannot claim one key. Loading resolves each mesh key once,
+allowing scenes to retain shared immutable resources.
+
+`restore` borrows the destination registry and stages a private set. Every native
+object, transform, hierarchy and renderer exists before any component decoder
+runs, so codecs can resolve links into later scenes. Other components may not yet
+be decoded: store linked object handles and inspect their components after loading.
+Initial lifecycle notifications wait for the next explicit synchronization/update.
+Codecs may attach components only to their supplied object; encoders/resource
+callbacks are read-only and must obey the normal persistence mutation boundary.
+
+Failure leaves the previous membership, active scene and object handles intact.
+Staged identities are invalidated together before releasing staged components and
+their resources. Success publishes the complete new membership and active selection,
+then invalidates every old scene/object handle before old component cleanup. Saved
+render views become empty; refresh renderer selection explicitly. Restore requires
+capacity for both the old and staged bodies, voices and documents. Arbitrary external
+side effects from user callbacks are not transactional.
+
+Set serialization/restoration is synchronous and rejects nested scheduling or
+membership changes. Cross-scene references in a complete set document do not imply
+automatic repair after unloading/replacing just one scene, persistent-object
+migration, prefab nesting/variants or asynchronous streaming.
 
 ## Cameras
 

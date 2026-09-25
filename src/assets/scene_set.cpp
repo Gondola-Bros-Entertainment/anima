@@ -1,3 +1,5 @@
+#include "../detail/scene_driver.hpp"
+#include "../detail/scene_persistence.hpp"
 #include <anima/scene_set.hpp>
 
 namespace anima {
@@ -83,6 +85,18 @@ SceneRef SceneSet::replace(SceneRef target, std::string_view document, const Mes
     old->scene->invalidate();
     old->scene->release();
     return SceneRef(next);
+}
+std::string SceneSet::serialize(const MeshName &name, const ComponentCodecs &codecs) {
+    const detail::SceneDriver::Scope scope(*this);
+    return detail::serialize_scene_set(*this, name, codecs);
+}
+void SceneSet::restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs) {
+    const Mutation mutation(*this);
+    auto staged = detail::load_scene_set(document, resolve, codecs);
+    // Publication cannot allocate. The staged owner now retires the old set;
+    // cleanup callbacks observe the complete committed replacement.
+    scenes_.swap(staged->scenes_);
+    active_.swap(staged->active_);
 }
 void SceneSet::unload(SceneRef scene) {
     const Mutation mutation(*this);

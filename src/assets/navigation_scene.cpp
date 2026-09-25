@@ -1,6 +1,36 @@
 #include "../detail/json.hpp"
 #include "../detail/navigation.hpp"
+#include "../detail/scene_driver.hpp"
 #include <anima/navigation_scene.hpp>
+namespace anima::detail {
+struct NavigationSceneAccess {
+    template <class Scenes> static void update(Scenes &scenes, double seconds) {
+        SceneDriver::check(scenes);
+        navigation_step(seconds);
+        // Stage the complete selection before consuming any route or velocity.
+        struct Update {
+            ComponentRef<navigation::Agent> component;
+            navigation::Follower follower;
+            Vec3 velocity;
+        };
+        std::vector<Update> updates;
+        for (auto component : scenes.template components<navigation::Agent>()) {
+            auto follower = component->follower_;
+            Vec3 velocity{};
+            if (component.active()) {
+                const auto m = component.object().world_matrix();
+                velocity =
+                    follower.steer({m[12], m[13], m[14]}, component->speed_, seconds, component->arrival_distance_);
+            }
+            updates.push_back({component, std::move(follower), velocity});
+        }
+        for (auto &update : updates) {
+            update.component->follower_ = std::move(update.follower);
+            update.component->velocity_ = update.velocity;
+        }
+    }
+};
+} // namespace anima::detail
 namespace anima::navigation {
 namespace {
 constexpr std::size_t maximum_component_bytes = 16 * 1024 * 1024;
@@ -23,29 +53,8 @@ void Agent::set_route(std::vector<Vec3> route, std::size_t next) {
     follower_.set_route(std::move(route), next);
     velocity_ = {};
 }
-void update_agents(Scene &scene, double seconds) {
-    // Stage results so a bad object transform cannot partially consume routes.
-    struct Update {
-        ComponentRef<Agent> component;
-        Follower follower;
-        Vec3 velocity;
-    };
-    std::vector<Update> updates;
-    detail::navigation_step(seconds);
-    for (auto component : scene.components<Agent>()) {
-        auto follower = component->follower_;
-        Vec3 velocity{};
-        if (component.active()) {
-            const auto m = component.object().world_matrix();
-            velocity = follower.steer({m[12], m[13], m[14]}, component->speed_, seconds, component->arrival_distance_);
-        }
-        updates.push_back({component, std::move(follower), velocity});
-    }
-    for (auto &update : updates) {
-        update.component->follower_ = std::move(update.follower);
-        update.component->velocity_ = update.velocity;
-    }
-}
+void update_agents(Scene &scene, double seconds) { detail::NavigationSceneAccess::update(scene, seconds); }
+void update_agents(SceneSet &scenes, double seconds) { detail::NavigationSceneAccess::update(scenes, seconds); }
 void add_component_codec(ComponentCodecs &codecs) {
     using Json = nlohmann::json;
     codecs.add<Agent>(

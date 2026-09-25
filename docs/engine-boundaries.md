@@ -21,13 +21,17 @@ A `Scene` owns `GameObject`s with transforms and native C++ components. A `Prefa
 constructs independent object assemblies through those same APIs. `SceneSet` owns
 additive scenes and explicit replacement/unload boundaries. See
 [scenes and objects](scene-objects.md) for identity, activation and lifetime rules.
+The [runtime lifecycle guide](runtime-lifecycle.md) explains service ownership,
+component phases, coordinated drivers and persistence-registry lifetimes.
 [Camera/view components](cameras.md) supply projection and explicit selection;
 applications own camera movement, transitions and drawable dimensions.
 [Scene lighting](lighting.md) resolves explicit directional-light links and
 environment settings independently of camera and geometry selection.
 
 JSON is the storage representation, not a second scene implementation. Scene and
-prefab documents use version 3 exclusively. `ComponentCodecs` registers stable
+prefab documents use version 3 exclusively. Whole scene sets use a version-1
+envelope with namespace-qualified reference mappings and atomic replacement.
+`ComponentCodecs` registers stable
 component type keys; explicit resolver callbacks supply shared resources. Failed
 decoding rolls back staged objects and owned resources. Custom codecs validate
 their payloads and obey the documented mutation boundary.

@@ -235,6 +235,8 @@ class ObjectReferences {
 };
 // Explicit persistence adapters; no reflection or global type registration.
 // Encoders are read-only. Decoders may attach components only to their supplied object.
+// Copies retain callback bindings to destination services, not new service instances.
+// Scenes borrow codecs during persistence; Prefab retains a configured copy.
 class ComponentCodecs {
   public:
     template <class T, class Encode, class Decode> void add(std::string key, Encode encode, Decode decode) {

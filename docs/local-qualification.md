@@ -12,7 +12,8 @@ devices that hosted runners do not cover.
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
 requests and manual dispatch. After the short repository checks, platform builds,
-CodeQL and documentation run in parallel. The final `CI required` check fails if
+Actions/Python analysis and documentation run in parallel. The full Linux build
+also supplies compiled C++ CodeQL analysis. The final `CI required` check fails if
 any required job fails, is cancelled or is skipped, providing one stable check
 for branch rules.
 
@@ -39,6 +40,8 @@ build, with separate executables for each public target. Isolated configuration
 checks still verify each mode's dependency boundaries. CI reports configuration,
 compilation and API execution in separate steps; runtime tests run in parallel.
 Compiler cache statistics distinguish cold runs from subsequent cache reuse.
+The traced full Linux job disables caching so CodeQL observes every compilation;
+it reuses the existing build and consolidated consumers without an extra build.
 
 Repository checks validate documentation links, lint workflow syntax and shell
 commands with actionlint, and scan the complete fetched Git history with Gitleaks.
@@ -46,10 +49,17 @@ Both tools use checksum-verified releases. A generated detection canary verifies
 the secret scanner before the real scan; findings are redacted in logs.
 Dependabot proposes weekly updates to the SHA-pinned GitHub Actions.
 
-The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions,
-C/C++ and Python with the security-extended query suite. Its C++ analysis uses
-`build-mode: none` to include optional modules. It is required by PR/push CI and
-also runs weekly. The documentation stage generates Doxygen HTML/XML. CI does
+The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions and
+Python with the security-extended query suite. C/C++ uses that suite with manual
+extraction of the existing full Linux build, including optional modules and copied
+consumers with their actual compiler configuration. These checks are required by
+PR/push CI. Weekly CI scanning uses one full Linux build plus Actions/Python and
+documentation checks; ordinary runs retain the complete platform matrix.
+CodeQL file coverage is not test coverage or a safety score. Compiled extraction
+covers the selected configuration, not every platform-specific preprocessor branch;
+copied fixtures can be attributed to their generated consumer paths. Inspect the
+analysis results and omitted files rather than treating a percentage as proof.
+The documentation stage generates Doxygen HTML/XML. CI does
 not qualify physical GPUs, speakers or input devices. Use the relevant local
 checks for those paths.
 
@@ -104,6 +114,55 @@ Consumers forward the selected compilers and `ANIMA_ENABLE_SANITIZERS`, includin
 application instrumentation; arbitrary parent compiler flags are not forwarded.
 Standalone `CONSUMER_MODE` builds remain available for minimal configurations and
 device checks. Optional-module selection determines the test count.
+
+Reuse build directories for successive changes with the same toolchain/options.
+Debug symbols and sanitizer objects are sizable; additional build directories also
+retain independent consumer artifacts. When retiring a configuration, clean both
+projects before archiving its small qualification logs:
+
+```sh
+cmake --build build/runtime --target clean
+cmake --build build/runtime/consumer-suite/build --target clean
+```
+
+The second command applies when that consumer suite has been configured. Cleaning
+the parent does not clean nested consumer projects. These targets remove generated
+build products while preserving source checkouts and downloaded dependency sources.
+
+For several configurations, use the repository-local cleanup helper. It previews
+immediate `build/` directories containing `CMakeCache.txt`; repeat `--keep` for the
+configurations still in use. Stop builds before running cleanup.
+
+```sh
+python3 tools/engine/clean_builds.py --keep runtime --keep sanitizers
+python3 tools/engine/clean_builds.py --apply --keep runtime --keep sanitizers
+```
+
+The preview changes nothing. `--apply` runs each selected configuration's CMake
+`clean` target, including nested consumer configurations. It never deletes files
+or directories itself: CMake identifies generated outputs, preserving authored
+assets, source files, logs, evidence and configuration metadata. Non-CMake entries,
+symlinks/junctions, Git checkouts and nested worktrees are retained automatically.
+Configurations hosting `FETCHCONTENT_SOURCE_DIR_*` dependencies of retained builds
+are also retained, following references transitively through nested CMake caches.
+The helper accepts no alternate cleanup root and does not touch system caches.
+
+Reported directory sizes include sources and evidence, so they are estimates of
+the selected footprint, not promised reclaimed space. Check the reported free
+space after cleanup. Before starting a large build, run a separate nonmutating
+preflight with an appropriate reserve:
+
+```sh
+python3 tools/engine/clean_builds.py --min-free-gib 20
+```
+
+This exits unsuccessfully when the reserve is unavailable. If combined with
+`--apply`, the threshold is evaluated after cleanup. The safety regression tests
+use temporary fixtures and mock every CMake invocation:
+
+```sh
+python3 tools/engine/test_clean_builds.py
+```
 
 ## Address and undefined-behavior sanitizers
 

@@ -18,8 +18,12 @@ class ActionInput {
 std::string serialize_map(const Map &map);
 Map deserialize_map(std::string_view data);
 void add_component_codec(ComponentCodecs &codecs);
+// Clear edge latches and reconcile enablement once before pumping events.
+// Drivers require idle scenes; they never run component hooks or advance time.
 void begin_frame(Scene &scene);
-// Stages all contexts so rejection never partially publishes a scene input event.
+void begin_frame(SceneSet &scenes);
+// Stages the complete selection so rejection never partially publishes an event.
 // Component enablement gates delivery; the application chooses target scenes.
 void dispatch(Scene &scene, const Event &event);
+void dispatch(SceneSet &scenes, const Event &event);
 } // namespace anima::input

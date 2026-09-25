@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from generate_ui_fixtures import generate
 from gpu_preview_smoke import read_ppm
 from gpu_replacement_smoke import clear
 from gpu_smoke import discard_captures, run
@@ -101,49 +103,52 @@ def verify(images, scale):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("consumer", type=Path)
-    parser.add_argument("--assets", type=Path, default=Path("tests/ui/assets"))
+    parser.add_argument("--assets", type=Path, default=Path("tests/ui/assets"), help="source controls/font fixtures")
     parser.add_argument("--output", type=Path, default=Path("build/verification/ui"))
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("VK_LAYER_VALIDATE_SYNC", "1")
     records = []
-    for mode, extra in [("default", []), ("fallback", ["--no-present-fences"])]:
-        directory = output / mode
-        directory.mkdir(exist_ok=True)
-        for path in directory.glob("*.ppm"):
-            path.unlink()
-        log = run(
-            args.consumer.resolve(strict=True),
-            ["--ui", str(directory), str(args.assets.resolve(strict=True)), *extra],
-            output,
-            mode,
-        )
-        result = next(
-            json.loads(line.removeprefix("RESULT "))
-            for line in log.splitlines()
-            if line.startswith("RESULT ")
-        )
-        assert result["frames"] == 36 and result["captures"] == 9 and result["clicks"] == 1, result
-        assert result["context_recreations"] == 4 and result["rejected_features"] == 2, result
-        assert result["ui_warnings"] == result["ui_errors"] == 0
-        images = {p.stem: read_ppm(p) for p in directory.glob("*.ppm")}
-        assert len(images) == result["captures"]
-        result.update(
-            case=mode,
-            pixel_checks=verify(images, result["display_scale"]),
-            capture_sha256={
-                p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in sorted(directory.glob("*.ppm"))
-            },
-        )
-        records.append(result)
+    try:
+        with TemporaryDirectory(prefix="anima-ui-smoke-") as temporary:
+            assets = generate(args.assets, Path(temporary))
+            for mode, extra in [("default", []), ("fallback", ["--no-present-fences"])]:
+                directory = output / mode
+                directory.mkdir(exist_ok=True)
+                for path in directory.glob("*.ppm"):
+                    path.unlink()
+                log = run(
+                    args.consumer.resolve(strict=True),
+                    ["--ui", str(directory), str(assets), *extra],
+                    output,
+                    mode,
+                )
+                result = next(
+                    json.loads(line.removeprefix("RESULT "))
+                    for line in log.splitlines()
+                    if line.startswith("RESULT ")
+                )
+                assert result["frames"] == 36 and result["captures"] == 9 and result["clicks"] == 1, result
+                assert result["context_recreations"] == 4 and result["rejected_features"] == 2, result
+                assert result["ui_warnings"] == result["ui_errors"] == 0
+                images = {p.stem: read_ppm(p) for p in directory.glob("*.ppm")}
+                assert len(images) == result["captures"]
+                result.update(
+                    case=mode,
+                    pixel_checks=verify(images, result["display_scale"]),
+                    capture_sha256={
+                        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted(directory.glob("*.ppm"))
+                    },
+                )
+                records.append(result)
+    finally:
+        discard_captures(output)
     (output / "summary.json").write_text(json.dumps({"runs": records}, indent=2) + "\n")
     print(
         "PASS two UI presentation paths: input, fonts, PNG, linear alpha, clipping, transforms, replacement and cleanup"
     )
-
-    discard_captures(output)
 
 
 if __name__ == "__main__":

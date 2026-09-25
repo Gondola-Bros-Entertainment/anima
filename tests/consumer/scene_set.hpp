@@ -97,6 +97,183 @@ struct PinnedCleanup {
         }
     }
 };
+struct SetLink {
+    GameObject target;
+};
+struct PersistenceCounts {
+    int live{}, enabled{}, destroyed{};
+    bool check_invalidation{}, all_invalid = true;
+    std::vector<GameObject> decoded;
+};
+struct SetOwned {
+    PersistenceCounts *counts;
+    bool accepted = true;
+    explicit SetOwned(PersistenceCounts &values) : counts(&values) { ++counts->live; }
+    ~SetOwned() {
+        --counts->live;
+        ++counts->destroyed;
+        if (counts->check_invalidation)
+            for (const auto &object : counts->decoded)
+                counts->all_invalid = counts->all_invalid && !object.valid();
+    }
+    void on_enable() noexcept { ++counts->enabled; }
+};
+inline ComponentCodecs persistence_codecs(PersistenceCounts &counts, SceneSet *destination = nullptr) {
+    ComponentCodecs codecs;
+    codecs.add<SetLink>(
+        "test.set-link.v1",
+        [](const SetLink &link, const ObjectReferences &references) { return references.key(link.target).string(); },
+        [](GameObject object, std::string_view state, const ObjectReferences &references) {
+            object.add_component<SetLink>(references.resolve(ObjectKey::parse(state)));
+        });
+    codecs.add<SetOwned>(
+        "test.set-owned.v1",
+        [](const SetOwned &value, const ObjectReferences &) { return value.accepted ? "ok" : "fail"; },
+        [&counts, destination](GameObject object, std::string_view state, const ObjectReferences &) {
+            if (destination) {
+                rejects([&] { destination->clear(); });
+                rejects([&] { destination->update(0); });
+                rejects([&] { (void)destination->serialize({}); });
+            }
+            object.add_component<SetOwned>(counts);
+            counts.decoded.push_back(object);
+            if (state != "ok")
+                throw std::invalid_argument("Rejected scene set fixture payload");
+        });
+    return codecs;
+}
+inline std::shared_ptr<const Mesh> persistence_mesh() {
+    Asset asset;
+    asset.nodes.resize(1);
+    SourcePrimitive primitive;
+    for (const auto position : {Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}}) {
+        SourceVertex vertex;
+        vertex.position = position;
+        vertex.normal = {0, 0, 1};
+        primitive.vertices.push_back(vertex);
+    }
+    asset.primitives.push_back(std::move(primitive));
+    return Mesh::compile(asset);
+}
+inline void persistence() {
+    PersistenceCounts authored_counts, restored_counts;
+    Counts retired_counts;
+    SceneSet authored, destination;
+    const auto mesh = persistence_mesh();
+    auto alpha = authored.create("alpha"), beta = authored.create("beta"), empty = authored.create("empty");
+    auto a = alpha->create("first", mesh), b = beta->create("second", mesh);
+    auto self = alpha->create("self"), null = alpha->create("null");
+    self.set_parent(a, ReparentMode::keep_local);
+    self.set_local_position({2, 0, 0});
+    a.add_component<SetLink>(b);
+    b.add_component<SetLink>(a);
+    self.add_component<SetLink>(self).set_enabled(false);
+    null.add_component<SetLink>(GameObject{});
+    a.add_component<SetOwned>(authored_counts);
+    auto bad_payload = b.add_component<SetOwned>(authored_counts);
+    b.set_active(false);
+    authored.set_active(beta);
+    auto deleted = alpha->create(), empty_deleted = empty->create();
+    const auto deleted_key = deleted.key(), empty_deleted_key = empty_deleted.key();
+    deleted.destroy();
+    empty_deleted.destroy();
+    check(a.key() == b.key(), "Persistence fixture must exercise duplicate scene-local keys");
+    auto codecs = persistence_codecs(authored_counts);
+    int named = 0, resolved = 0;
+    const MeshName name = [&](const auto &resource) {
+        check(resource == mesh, "Set capture changed shared mesh identity");
+        ++named;
+        return "shared-mesh";
+    };
+    const MeshResolver resolve = [&](std::string_view key) {
+        check(key == "shared-mesh", "Set restore changed mesh key");
+        ++resolved;
+        return mesh;
+    };
+    const auto document = authored.serialize(
+        [&](const auto &resource) {
+            rejects([&] { authored.clear(); });
+            rejects([&] { alpha->update(0); });
+            return name(resource);
+        },
+        codecs);
+    check(named == 1, "Set capture named one shared resource more than once");
+    rejects([&] { (void)serialize_scene(alpha.get(), name, codecs); });
+    bad_payload->accepted = false;
+    const auto failed_document = authored.serialize(name, codecs);
+    bad_payload->accepted = true;
+
+    auto old_alpha = destination.create("alpha"), old_beta = destination.create("beta");
+    auto old_a = old_alpha->create(), old_b = old_beta->create();
+    old_a.add_component<Probe>(retired_counts, destination, old_b);
+    old_b.add_component<Probe>(retired_counts, destination, old_a);
+    destination.set_active(old_beta);
+    destination.synchronize_lifecycle();
+    const auto old_address = destination.address(old_a);
+    const auto old_view = old_alpha.render_scene();
+    auto destination_codecs = persistence_codecs(restored_counts, &destination);
+    rejects([&] {
+        destination.restore(document, [](auto) -> std::shared_ptr<const Mesh> { return {}; }, destination_codecs);
+    });
+    rejects([&] { destination.restore(document, resolve); });
+    restored_counts.check_invalidation = true;
+    rejects([&] { destination.restore(failed_document, resolve, destination_codecs); });
+    check(old_alpha && old_beta && old_a.valid() && old_b.valid() && destination.active().key() == "beta" &&
+              destination.find(old_address).id() == old_a.id() && old_view->size() == 1 &&
+              retired_counts.disabled == 0 && restored_counts.live == 0 && restored_counts.destroyed == 2 &&
+              restored_counts.enabled == 0 && restored_counts.all_invalid,
+          "Failed set restore changed published scenes or failed to retire staged resources together");
+    restored_counts.check_invalidation = false;
+    resolved = 0;
+    destination.restore(document, resolve, destination_codecs);
+    check(resolved == 1 && !old_alpha && !old_beta && !old_a.valid() && !old_b.valid() && old_view->size() == 0 &&
+              retired_counts.disabled == 2 && retired_counts.destroyed == 2 && retired_counts.invalid == 2 &&
+              retired_counts.rejected == 2,
+          "Set restore did not atomically retire old scene identities or share resource resolution");
+    const auto selection = destination.scenes();
+    check(selection.size() == 3 && selection[0].key() == "alpha" && selection[1].key() == "beta" &&
+              selection[2].key() == "empty" && destination.active().key() == "beta",
+          "Set persistence lost scene enumeration, empty scenes or active selection");
+    auto restored_a = destination.find(SceneAddress{"alpha", a.key()});
+    auto restored_b = destination.find(SceneAddress{"beta", b.key()});
+    auto restored_self = destination.find(SceneAddress{"alpha", self.key()});
+    auto restored_null = destination.find(SceneAddress{"alpha", null.key()});
+    check(restored_a.get_component<SetLink>()->target.id() == restored_b.id() &&
+              restored_b.get_component<SetLink>()->target.id() == restored_a.id() &&
+              restored_self.get_component<SetLink>()->target.id() == restored_self.id() &&
+              !restored_null.get_component<SetLink>()->target.valid() &&
+              restored_self.parent()->id() == restored_a.id() && restored_self.local_position().x == 2 &&
+              !restored_self.get_component<SetLink>().enabled() && !restored_b.active_self() &&
+              restored_a.renderer().mesh() == mesh && restored_b.renderer().mesh() == mesh,
+          "Set persistence lost linked identities, hierarchy, activation or shared resources");
+    check(destination.find(old_address).id() == restored_a.id() && restored_a.id() != old_a.id() &&
+              restored_counts.live == 2 && restored_counts.enabled == 0 &&
+              destination.serialize(name, destination_codecs) == document,
+          "Set restore rebound old handles, ran lifecycle hooks or changed authored state");
+    destination.synchronize_lifecycle();
+    check(restored_counts.enabled == 1, "Restored set did not defer enabled lifecycle to synchronization");
+    restored_b.set_active(true);
+    destination.synchronize_lifecycle();
+    check(restored_counts.enabled == 2, "Restored inactive component failed to enable later");
+    check(selection[0]->create().key().value > deleted_key.value &&
+              selection[2]->create().key().value > empty_deleted_key.value,
+          "Set snapshot recycled deleted keys or lost empty-scene allocator history");
+
+    Scene outside;
+    a.get_component<SetLink>()->target = outside.create();
+    rejects([&] { (void)authored.serialize(name, codecs); });
+    a.get_component<SetLink>()->target = b;
+    auto collision = empty->create("different shared key", persistence_mesh());
+    rejects([&] { (void)authored.serialize([](const auto &) { return "same-key"; }, codecs); });
+    collision.destroy();
+    SceneSet vacant;
+    const auto vacant_document = vacant.serialize({});
+    restored_counts.check_invalidation = true;
+    destination.restore(vacant_document, {});
+    check(destination.size() == 0 && !destination.active() && !selection[0] && !restored_a.valid() &&
+              restored_counts.live == 0 && restored_counts.all_invalid && destination.serialize({}) == vacant_document,
+          "Empty set restore did not clear selection, retire resources or round-trip null activity");
+}
 inline void phases() {
     PhaseCounts counts;
     SceneSet set;
@@ -132,7 +309,8 @@ inline void phases() {
 }
 inline void run() {
     phases();
-    Counts counts;
+    persistence();
+    Counts counts, cleared;
     SceneSet set;
     check(set.size() == 0 && !set.active() && set.scenes().empty(), "Scene set not initially empty");
     rejects([&] { (void)set.create(""); });
@@ -235,7 +413,6 @@ inline void run() {
 
     // Clear invalidates all scenes before the first cleanup hook, even with retained views.
     auto left = replacement->create(), right = extra->create();
-    Counts cleared;
     left.add_component<Probe>(cleared, set, right);
     right.add_component<Probe>(cleared, set, left);
     replacement->synchronize_lifecycle();

@@ -174,9 +174,27 @@ enabled component can remain authored-hidden. Showing a panel directly through i
 transient; the next sync applies component visibility. Panels use screen-space
 layout, and applications update document contents explicitly.
 
+The driver also accepts a `SceneSet`. It requires idle scenes and validates every
+document before changing visibility. Native show/hide events may mutate objects;
+the current panel stays pinned through its event, removed panels and documents
+closed by earlier events are skipped, and new panels wait for the next call.
+Scheduling and membership stay locked through these events, so nested drivers,
+updates and scene-set changes reject. Call `UiDocuments::check_events()` to report
+captured failures. Callback effects are not transactional; see
+[runtime ownership and ordering](runtime-lifecycle.md).
+
 `ui_documents` tests ownership, literal text, typed values, expired nodes/events,
 self-disconnection, callback failures, shutdown across RmlUi recreation and
-component/prefab rollback. `consumer_ui_documents` builds a separate independent
-application with no graphics or asset dependencies. Run these checks with the
+component/prefab rollback. `consumer_ui_documents` builds an independent
+application with no graphics or asset dependencies; `consumer_ui_scene` adds
+assets and verifies additive panel synchronization and teardown without graphics.
+Both use the consolidated consumer dependency build. Run these checks with the
 [local qualification workflow](local-qualification.md). GPU rendering, DPI and
 hardware input need separate desktop checks.
+
+UI tests generate their 2×2 RGBA image from numeric texels into temporary storage;
+the repository contains no image fixture and builds create no images. The test
+wrapper and GPU smoke harness stage the control document and licensed font there,
+then remove all temporary fixtures on success or failure. GPU readback images are
+also removed after validation, including failed runs; text/JSON evidence remains.
+See the [fixture instructions](../tests/ui/assets/README.md) for direct consumer runs.

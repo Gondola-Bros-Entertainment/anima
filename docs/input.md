@@ -104,6 +104,10 @@ The driver reconciles component enablement at `begin_frame` and each `dispatch`.
 Disabling cancels the context; a later enable does not revive ignored controls.
 Dispatch stages every context before publishing changes, so a later capacity or
 validation failure does not partially deliver the event to earlier components.
+Both functions also accept a `SceneSet`; dispatch stages all its scenes together,
+and `begin_frame` clears their edges once before the shared event pump. Drivers
+require idle scenes and reject component callbacks, construction and set mutation.
+See [runtime ordering](runtime-lifecycle.md).
 No Scene callbacks, frame phases or game callbacks are invoked. Direct access to
 `context()` is available; callers using it directly own enablement/scheduling.
 

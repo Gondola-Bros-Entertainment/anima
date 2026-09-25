@@ -15,12 +15,16 @@ class UiPanel {
     [[nodiscard]] bool visible() const { return visible_; }
 
   private:
-    friend void sync_ui_panels(Scene &);
     std::string asset_key_;
     UiDocument document_;
     bool visible_ = true;
 };
-// Reconcile inherited activation, component enablement and visibility before UI layout/input.
+// Reconcile inherited activation, component enablement and visibility before UI
+// layout/input. Requires idle scenes. Validate all documents before publication;
+// native show/hide events may mutate objects, so callback effects are not atomic.
+// Removed panels/closed documents are skipped; additions wait until the next call.
+// Nested drivers, scene phases and set membership changes are rejected during events.
 void sync_ui_panels(Scene &scene);
+void sync_ui_panels(SceneSet &scenes);
 void add_ui_component_codec(ComponentCodecs &codecs, UiDocuments &host, UiDocumentResolver resolve);
 } // namespace anima
