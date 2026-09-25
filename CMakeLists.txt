@@ -102,6 +102,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/scene_set.cpp
     src/assets/components.cpp
     src/assets/prefab.cpp
+    src/assets/prefab_variant.cpp
     src/assets/mesh.cpp
     src/assets/terrain.cpp
     src/assets/animator.cpp
@@ -176,6 +177,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_scene_reference_tests PRIVATE anima::assets)
         anima_target_defaults(anima_scene_reference_tests)
         add_test(NAME scene_references COMMAND anima_scene_reference_tests)
+        add_executable(anima_prefab_variant_tests tests/prefab_variant_tests.cpp)
+        target_link_libraries(anima_prefab_variant_tests PRIVATE anima::assets)
+        anima_target_defaults(anima_prefab_variant_tests)
+        add_test(NAME prefab_variants COMMAND anima_prefab_variant_tests)
         add_executable(anima_scene_set_tests tests/scene_set_tests.cpp)
         target_link_libraries(anima_scene_set_tests PRIVATE anima::assets)
         anima_target_defaults(anima_scene_set_tests)

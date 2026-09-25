@@ -14,6 +14,7 @@ drivers or carry codecs through their update methods.
 | `Scene` | Objects, hierarchy and component attachments | Teardown invalidates handles before cleanup; active calls may pin removed values until they return |
 | Component | Its body, voice, document or other resource handle | Destruction releases resources, including failed loading/prefab cleanup |
 | `Prefab` | Authored node data and a copy of configured codecs | Immutable resources may be shared; instances own independent mutable state |
+| `PrefabVariant` | A base resource key and typed authoring overrides | Resolves one immutable base snapshot with explicitly supplied codecs; retains no services |
 
 Declare C++ members in dependency order: service owners, persistence configuration,
 then scenes. Reverse destruction releases scene-owned resources before services.
@@ -156,5 +157,8 @@ scene, with document keys resolved through namespace/local-key entries. A comple
 restore creates all native objects before decoding linked components and publishes
 membership atomically. These contexts are operation-scoped, not service locators.
 See [scene-set persistence](scene-objects.md#persisting-a-complete-scene-set).
-Automatic repair after partial scene replacement, prefab nesting/variants,
+Variants preserve the base hierarchy and keys while overriding native state or
+component payloads. Resolve them with the destination registry before normal
+instantiation; see [prefab variants](scene-objects.md#prefab-variants).
+Automatic repair after partial scene replacement, prefab nesting,
 persistent-object migration and asynchronous streaming remain separate contracts.

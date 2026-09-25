@@ -5,6 +5,7 @@
 #include <anima/navigation_scene.hpp>
 #include <anima/physics2d_scene.hpp>
 #include <anima/physics_scene.hpp>
+#include <anima/prefab_variant.hpp>
 #include <anima/scene_set.hpp>
 #include <array>
 #include <cmath>
@@ -217,8 +218,36 @@ inline void prefab_destinations() {
               restored.children().front().get_component<AudioSource>()->clip() == clip,
           "Destination override depended on the expired original session");
     restored.destroy();
+    // A variant borrows one immutable base snapshot and explicitly chooses the
+    // destination registry, even after the base's original session has expired.
+    auto base = std::make_shared<const Prefab>(prefab);
+    PrefabVariant::Override change;
+    change.key = base->nodes().front().key;
+    change.name = "relocated variant";
+    const PrefabVariant variant("runtime-base", {change});
+    unsigned resolutions = 0;
+    const PrefabResolver resolve = [&](std::string_view key) {
+        check(key == "runtime-base", "Variant changed its base resource identity");
+        ++resolutions;
+        return base;
+    };
+    const auto specialized = variant.resolve(resolve, destination_codecs);
+    check(resolutions == 1 && destination_volume.size() == 0 && destination_plane.size() == 0 &&
+              destination.size() == 1,
+          "Resolving a variant constructed runtime objects or resource owners");
+    auto specialized_instance = specialized.instantiate(destination);
+    synchronize_audio(destination, destination_audio);
+    check(specialized_instance.name() == "relocated variant" &&
+              destination_volume.owns(specialized_instance.get_component<physics::RigidBody>()->body()) &&
+              destination_plane.owns(
+                  specialized_instance.children().front().get_component<physics2d::RigidBody>()->body()) &&
+              specialized_instance.children().front().get_component<AudioSource>()->playing(),
+          "Variant instance lost its explicit destination physics or audio bindings");
+    specialized_instance.destroy();
     const auto failing = make_codecs(destination_volume, destination_plane, destination_audio, true);
     rejects([&] { (void)prefab.instantiate(destination, identity(), failing); });
+    const auto failing_variant = variant.resolve(resolve, failing);
+    rejects([&] { (void)failing_variant.instantiate(destination); });
     std::array<float, 2> samples{};
     destination_audio.render(samples);
     const auto available_voice = destination_audio.sound(clip);

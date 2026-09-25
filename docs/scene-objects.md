@@ -296,6 +296,72 @@ instance-local object-link remapping follow the same rules as ordinary
 instantiation; the registry supplies services rather than changing document keys
 or implicitly selecting resources from the destination scene.
 
+## Prefab variants
+
+`PrefabVariant` stores a base prefab resource key and typed overrides for existing
+authored object keys. It owns authoring data and shared immutable mesh resources;
+it holds no scenes, runtime components or service bindings.
+
+```cpp
+#include <anima/prefab_variant.hpp>
+
+anima::PrefabVariant::Override root;
+root.key = base_prefab->nodes().front().key;
+root.name = "Armored sentry";
+root.set_components.push_back({"mygame.health.v1", "150", true});
+anima::PrefabVariant variant("prefabs/sentry", {root});
+
+auto document = variant.serialize(name_mesh);
+auto loaded = anima::PrefabVariant::deserialize(document, resolve_mesh);
+auto resolved = loaded.resolve(resolve_prefab, destination_codecs);
+auto instance = resolved.instantiate(destination_scene);
+```
+
+`PrefabResolver` returns a `shared_ptr<const Prefab>` for the application-owned
+resource key. Resolution borrows the callback once, takes one immutable base
+snapshot and returns an ordinary `Prefab`. Unspecified fields inherit from that
+snapshot. Resolving again after an application supplies a changed base adopts its
+new inherited values; previously resolved prefabs and live instances stay unchanged.
+The resolver supplies concrete prefabs. Recursive variant graphs, dependency
+loading, cycle handling and automatic hot reload are separate application workflows.
+
+An override selects an existing nonzero `ObjectKey` and may supply `name`, `local`
+or `active`. Its optional `renderer` replaces the complete mesh, pose, visibility,
+material factors and primitive visibility together. An absent renderer inherits;
+`Renderer{}` explicitly removes it. A replacement mesh starts with that override's
+own pose and arrays; an absent pose and empty arrays select normal mesh defaults.
+Renderer replacement intentionally stops inheriting all renderer fields from future bases.
+
+`set_components` replaces or adds complete opaque payloads by codec type key.
+Replacement preserves the existing component's position; new types append in the
+supplied order. `remove_components` removes existing types. Unknown object targets,
+missing removals, duplicate targets/types and conflicting set/remove operations
+reject. A changed base that removes a targeted object or a component listed in
+`remove_components` therefore fails explicitly. An absent component targeted by
+`set_components` is added. Hierarchy, node order and authored object keys are preserved.
+
+Resolution requires explicit destination codecs and validates the resulting native
+prefab without running component encoders or decoders. The returned prefab retains
+that registry using the normal lifetime rules. Linked payloads still use the base's
+authored keys, so ordinary instantiation remaps forward, cyclic, self and null links
+for each instance. Opaque malformed payloads or missing link targets fail when
+instantiated, with normal staged-object/resource cleanup. Do not author overrides
+using spawned instance keys: these can differ from the base's authored keys.
+
+The strict version-1 `anima.prefab-variant` document contains `version`, `kind`,
+`base` and `overrides`. Each override has `key`, `name`, `local`, `active`, `renderer`,
+`set_components` and `remove_components`; nullable native fields mean inheritance.
+Renderer objects contain `mesh`, `pose`, `visible`, `material_factors` and
+`primitive_visible`. Component entries use the existing `type`, `state` and
+`enabled` representation. Readers reject missing, duplicate or unknown fields.
+Documents are limited to 16 MiB and 65,536 overrides; resource/type keys are bounded
+to 4,096 bytes and component operation lists to 1,024 entries each. The resolved
+prefab retains the normal object/component bounds. Mesh naming and resolution are
+explicit, checked and shared once per resource key in the variant document.
+
+Variants do not add, delete, reparent or rekey objects. Prefab nesting and structural
+overrides need a separate contract for remapping opaque component references.
+
 ## Stable object keys and component references
 
 `GameObject::key()` returns a persistent `ObjectKey`, distinct from its runtime
@@ -540,7 +606,8 @@ side effects from user callbacks are not transactional.
 Set serialization/restoration is synchronous and rejects nested scheduling or
 membership changes. Cross-scene references in a complete set document do not imply
 automatic repair after unloading/replacing just one scene, persistent-object
-migration, prefab nesting/variants or asynchronous streaming.
+migration, prefab nesting or asynchronous streaming. [Prefab variants](#prefab-variants)
+operate on one concrete prefab's existing hierarchy.
 
 ## Cameras
 
