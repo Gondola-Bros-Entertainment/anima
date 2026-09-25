@@ -11,22 +11,29 @@ devices that hosted runners do not cover.
 ## Continuous integration
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
-requests and manual dispatch. Its stages run in order: repository
-checks, platform builds, sanitizer/optional-library/desktop builds in parallel,
-then generated documentation. A failed stage stops later stages. The platform
-matrix runs at most three jobs at once. The final `CI required` check fails if any required job
-fails, is cancelled or is skipped, providing one stable check for branch rules.
+requests and manual dispatch. After the short repository checks, platform builds,
+CodeQL and documentation run in parallel. The final `CI required` check fails if
+any required job fails, is cancelled or is skipped, providing one stable check
+for branch rules.
 
 CI covers Debug and Release headless builds on Linux, macOS and Windows,
-including copied core/asset consumers. A Linux Clang Debug build also checks core,
-assets, optional runtime libraries, bundled parsers and copied consumers under
-AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer. Sanitizer findings
-fail the job. A separate Linux job checks Jolt, Box2D, RmlUi documents, SDL input
-conversion and dummy-device audio output without instrumentation, with their
-applicable independent consumers. Another Linux job
-compiles the Vulkan renderer, shaders, viewer, UI and an independent UI/desktop
-API consumer. It runs the ordinary headless and desktop CLI tests; it does not
-execute the two consumers that open Vulkan windows.
+including copied core/asset consumers. Each platform also builds the optional
+libraries, Vulkan renderer, shaders, viewer and UI together in Debug. Those jobs
+check Jolt, Box2D, RmlUi documents, SDL input conversion and dummy-device audio
+output, along with their independent consumers. They compile the independent
+UI/desktop API consumer without executing the two consumers that open Vulkan
+windows.
+
+Linux Clang and macOS AppleClang Debug jobs check the headless runtime, optional
+libraries, bundled parsers and copied consumers under AddressSanitizer and
+UndefinedBehaviorSanitizer. Linux also enables LeakSanitizer. Findings fail the
+job. Windows uses native MSVC; the combined sanitizer option does not support it.
+
+Linux/macOS builds use Ninja and a bounded compiler cache. Windows caches vcpkg
+dependency binaries and uses Visual Studio. Cache hits never skip configuration,
+linking or tests. Consumer tests run one at a time, with each build using the
+runner's available cores; ordinary runtime tests run in parallel. Compiler cache
+statistics in each job distinguish cold runs from subsequent cache reuse.
 
 Repository checks validate documentation links, lint workflow syntax and shell
 commands with actionlint, and scan the complete fetched Git history with Gitleaks.
@@ -105,7 +112,8 @@ UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
 On Linux, add `detect_leaks=1:strict_string_checks=1` to `ASAN_OPTIONS`. Leave leak
 detection at its runtime default for macOS checks. Enable relevant optional
 modules with the same flags and dependency settings as the runtime build above.
-CI runs these checks on Linux with Clang, including the optional runtime modules.
+CI runs these checks on Linux with Clang and macOS with AppleClang, including
+the optional runtime modules.
 
 The option instruments Anima libraries, tools, tests, copied consumer executables,
 vendored image/GLB parsers, and source-built Jolt, Box2D, RmlUi and SDL targets.

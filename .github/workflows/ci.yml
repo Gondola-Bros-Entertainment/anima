@@ -19,7 +19,7 @@ defaults:
 
 jobs:
   repository:
-    name: 1. Repository checks
+    name: Repository checks
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -82,51 +82,31 @@ jobs:
       security-events: write
     uses: ./.github/workflows/codeql.yml
 
-  headless:
-    name: 2. Headless / ${{ matrix.os }} / ${{ matrix.configuration }}
+  build:
+    name: ${{ matrix.profile }} / ${{ matrix.os }} / ${{ matrix.configuration }}
     needs: repository
-    if: github.event.repository.private == false
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2022]
         configuration: [Debug, Release]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14'
-      - name: Configure
-        run: >-
-          cmake -S . -B build/headless
-          -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
-          -DANIMA_BUILD_DESKTOP=OFF
-          -DANIMA_BUILD_ASSETS=ON
-          -DANIMA_BUILD_TESTS=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-      - name: Build
-        run: cmake --build build/headless --config ${{ matrix.configuration }} --parallel 2
-      - name: Test runtime and copied consumers
-        run: >-
-          ctest --test-dir build/headless -C ${{ matrix.configuration }}
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
-
-  sanitizers:
-    name: 3. ASan and UBSan / Linux
-    needs: headless
-    if: github.event.repository.private == false
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+        profile: [headless]
+        include:
+          - {os: ubuntu-24.04, configuration: Debug, profile: full}
+          - {os: macos-15, configuration: Debug, profile: full}
+          - {os: windows-2022, configuration: Debug, profile: full}
+          - {os: ubuntu-24.04, configuration: Debug, profile: sanitizers}
+          - {os: macos-15, configuration: Debug, profile: sanitizers}
     env:
-      CC: clang
-      CXX: clang++
-      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
-      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      PROFILE: ${{ matrix.profile }}
+      CONFIGURATION: ${{ matrix.configuration }}
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.os == 'macos-15' && '3' || '4' }}
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPILERCHECK: content
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -134,138 +114,151 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
-      - name: Install Clang, sanitizer symbolizer and FreeType
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
+          packages=(ninja-build ccache)
+          if [[ "$PROFILE" != headless ]]; then
+            packages+=(libfreetype6-dev)
+          fi
+          if [[ "$PROFILE" == sanitizers ]]; then
+            packages+=(clang llvm)
+          fi
+          if [[ "$PROFILE" == full ]]; then
+            packages+=(libvulkan-dev glslc libx11-dev libxext-dev libxrandr-dev
+                       libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libasound2-dev)
+          fi
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y clang llvm libfreetype6-dev
-      - name: Configure instrumented runtime, optional libraries and consumers
-        run: >-
-          cmake -S . -B build/sanitizers
-          -DCMAKE_BUILD_TYPE=Debug
-          -DANIMA_BUILD_DESKTOP=OFF
-          -DANIMA_BUILD_ASSETS=ON
-          -DANIMA_BUILD_TESTS=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-          -DANIMA_ENABLE_SANITIZERS=ON
-          -DANIMA_BUILD_PHYSICS=ON
-          -DANIMA_BUILD_PHYSICS2D=ON
-          -DANIMA_BUILD_UI_DOCUMENTS=ON
-          -DANIMA_BUILD_INPUT_SDL=ON
-          -DANIMA_BUILD_AUDIO_OUTPUT=ON
-          -DANIMA_FETCH_SDL=ON
-          -DANIMA_INPUT_SDL_INCLUDE_DIR="$PWD/build/sanitizers/_deps/sdl3-src/include"
-          -DSDL_SHARED=OFF -DSDL_STATIC=ON
-          -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
-          -DSDL_UNIX_CONSOLE_BUILD=ON
+          sudo apt-get install --no-install-recommends -y "${packages[@]}"
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          packages=(ninja ccache)
+          if [[ "$PROFILE" != headless ]]; then
+            packages+=(freetype)
+          fi
+          if [[ "$PROFILE" == full ]]; then
+            packages+=(vulkan-loader shaderc)
+          fi
+          brew install "${packages[@]}"
+      - name: Enable Ninja and compiler cache
+        if: runner.os != 'Windows'
+        run: |
+          {
+            echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
+            echo 'CMAKE_GENERATOR=Ninja'
+            echo 'CMAKE_C_COMPILER_LAUNCHER=ccache'
+            echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
+          } >> "$GITHUB_ENV"
+      - name: Restore compiler cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-
+      - name: Identify Windows dependency toolchain
+        if: runner.os == 'Windows' && matrix.profile == 'full'
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $cache = "$env:RUNNER_TEMP/vcpkg-cache"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
+          $revision = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+      - name: Restore Windows dependency binaries
+        if: runner.os == 'Windows' && matrix.profile == 'full'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-desktop-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
+      - name: Install Windows desktop dependencies
+        if: runner.os == 'Windows' && matrix.profile == 'full'
+        shell: pwsh
+        run: |
+          vcpkg install 'freetype[core]:x64-windows-static-md' vulkan:x64-windows-static-md shaderc:x64-windows-static-md --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installed = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md"
+          "$installed/tools/shaderc" >> $env:GITHUB_PATH
+          "$installed/bin" >> $env:GITHUB_PATH
+          "$installed/debug/bin" >> $env:GITHUB_PATH
+      - name: Reset compiler cache statistics
+        if: runner.os != 'Windows'
+        run: ccache --zero-stats
+      - name: Configure
+        run: |
+          args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION"
+                -DANIMA_BUILD_DESKTOP=OFF -DANIMA_BUILD_ASSETS=ON
+                -DANIMA_BUILD_TESTS=ON -DANIMA_WARNINGS_AS_ERRORS=ON)
+          if [[ "$PROFILE" != headless ]]; then
+            args+=(-DANIMA_BUILD_PHYSICS=ON -DANIMA_BUILD_PHYSICS2D=ON
+                   -DANIMA_BUILD_UI_DOCUMENTS=ON -DANIMA_BUILD_INPUT_SDL=ON
+                   -DANIMA_BUILD_AUDIO_OUTPUT=ON -DANIMA_FETCH_SDL=ON
+                   "-DANIMA_INPUT_SDL_INCLUDE_DIR=$PWD/build/ci/_deps/sdl3-src/include"
+                   -DSDL_SHARED=OFF -DSDL_STATIC=ON
+                   -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
+          fi
+          if [[ "$PROFILE" == full ]]; then
+            args+=(-DANIMA_BUILD_DESKTOP=ON -DANIMA_BUILD_UI=ON -DSDL_WAYLAND=OFF)
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              args+=(-A x64 "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+                     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
+            fi
+          elif [[ "$PROFILE" == sanitizers ]]; then
+            export CC=clang CXX=clang++
+            args+=(-DANIMA_ENABLE_SANITIZERS=ON -DSDL_VIDEO=OFF -DSDL_UNIX_CONSOLE_BUILD=ON)
+            asan_options=halt_on_error=1:strict_string_checks=1
+            if [[ "$RUNNER_OS" == Linux ]]; then
+              asan_options+=:detect_leaks=1
+            fi
+            echo "ASAN_OPTIONS=$asan_options" >> "$GITHUB_ENV"
+            echo 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1' >> "$GITHUB_ENV"
+          fi
+          cmake -S . -B build/ci "${args[@]}"
       - name: Build
-        run: cmake --build build/sanitizers --parallel 2
-      - name: Test with AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer
+        run: cmake --build build/ci --config "$CONFIGURATION"
+      - name: Test runtime and CLI
         run: >-
-          ctest --test-dir build/sanitizers -C Debug
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
-
-  optional:
-    name: 3. Optional libraries / Linux
-    needs: headless
-    if: github.event.repository.private == false
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14'
-      - name: Install FreeType
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libfreetype6-dev
-      - name: Configure physics, documents, input and audio
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 600 --no-tests=error --label-exclude consumer
+      # Each consumer configures and links its own build. Serial CTest scheduling
+      # gives that build the runner's cores without nested oversubscription.
+      - name: Test independent consumers
         run: >-
-          cmake -S . -B build/optional
-          -DCMAKE_BUILD_TYPE=Debug
-          -DANIMA_BUILD_DESKTOP=OFF
-          -DANIMA_BUILD_ASSETS=ON
-          -DANIMA_BUILD_TESTS=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-          -DANIMA_BUILD_PHYSICS=ON
-          -DANIMA_BUILD_PHYSICS2D=ON
-          -DANIMA_BUILD_UI_DOCUMENTS=ON
-          -DANIMA_BUILD_INPUT_SDL=ON
-          -DANIMA_BUILD_AUDIO_OUTPUT=ON
-          -DANIMA_FETCH_SDL=ON
-          -DANIMA_INPUT_SDL_INCLUDE_DIR="$PWD/build/optional/_deps/sdl3-src/include"
-          -DSDL_SHARED=OFF -DSDL_STATIC=ON
-          -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
-          -DSDL_UNIX_CONSOLE_BUILD=ON
-      - name: Build
-        run: cmake --build build/optional --parallel 2
-      - name: Test optional libraries and copied consumers
-        run: >-
-          ctest --test-dir build/optional -C Debug
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
-
-  desktop:
-    name: 3. Desktop and UI / Linux
-    needs: headless
-    if: github.event.repository.private == false
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14'
-      - name: Install Vulkan, shader compiler, FreeType and SDL platform headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libvulkan-dev glslc libfreetype6-dev \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxss-dev libxtst-dev libasound2-dev
-      - name: Configure desktop and UI
-        run: >-
-          cmake -S . -B build/desktop
-          -DCMAKE_BUILD_TYPE=Debug
-          -DANIMA_BUILD_DESKTOP=ON
-          -DANIMA_BUILD_UI=ON
-          -DANIMA_BUILD_ASSETS=ON
-          -DANIMA_BUILD_TESTS=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-          -DANIMA_FETCH_SDL=ON
-          -DSDL_SHARED=OFF -DSDL_STATIC=ON
-          -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
-      - name: Build renderer, shaders, viewer and UI
-        run: cmake --build build/desktop --parallel 2
-      # The desktop and UI consumer executables open Vulkan windows. Their API
-      # linkage is checked below; physical-device tests remain local qualification.
-      - name: Test desktop CLI and non-GPU runtime
-        run: >-
-          ctest --test-dir build/desktop -C Debug
-          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
-          --exclude-regex '^consumer_(desktop|ui)$'
+          ctest --test-dir build/ci -C "$CONFIGURATION"
+          --output-on-failure --parallel 1 --timeout 600 --no-tests=error
+          --label-regex consumer --exclude-regex '^consumer_(desktop|ui)$'
+      # These executables open Vulkan windows. Hosted CI checks their linkage;
+      # physical-device execution remains part of local qualification.
       - name: Configure public UI consumer
-        run: >-
-          cmake -S tests/consumer -B build/desktop-consumer
-          -DCMAKE_BUILD_TYPE=Debug
-          -DANIMA_SOURCE_DIR="$PWD"
-          -DCONSUMER_MODE=ui
-          -DBUILD_TESTING=ON
-          -DANIMA_WARNINGS_AS_ERRORS=ON
-          -DANIMA_FETCH_SDL=ON
-          -DFETCHCONTENT_SOURCE_DIR_SDL3="$PWD/build/desktop/_deps/sdl3-src"
-          -DFETCHCONTENT_SOURCE_DIR_RMLUI="$PWD/build/desktop/_deps/rmlui-src"
-          -DSDL_SHARED=OFF -DSDL_STATIC=ON
-          -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
+        if: matrix.profile == 'full'
+        run: |
+          args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION" -DANIMA_SOURCE_DIR="$PWD"
+                -DCONSUMER_MODE=ui -DBUILD_TESTING=ON -DANIMA_WARNINGS_AS_ERRORS=ON
+                -DANIMA_FETCH_SDL=ON
+                "-DFETCHCONTENT_SOURCE_DIR_SDL3=$PWD/build/ci/_deps/sdl3-src"
+                "-DFETCHCONTENT_SOURCE_DIR_RMLUI=$PWD/build/ci/_deps/rmlui-src"
+                -DSDL_SHARED=OFF -DSDL_STATIC=ON
+                -DSDL_WAYLAND=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(-A x64 "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+                   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
+          fi
+          cmake -S tests/consumer -B build/desktop-consumer "${args[@]}"
       - name: Build public UI and desktop API consumer
-        run: cmake --build build/desktop-consumer --parallel 2
+        if: matrix.profile == 'full'
+        run: cmake --build build/desktop-consumer --config "$CONFIGURATION"
+      - name: Compiler cache statistics
+        if: always() && runner.os != 'Windows'
+        run: ccache --show-stats
 
   documentation:
-    name: 4. Doxygen reference
-    needs: [sanitizers, optional, desktop]
+    name: Doxygen reference
+    needs: repository
     if: github.event.repository.private == false
     runs-on: macos-15
     timeout-minutes: 15
@@ -284,7 +277,7 @@ jobs:
 
   required:
     name: CI required
-    needs: [repository, codeql, headless, sanitizers, optional, desktop, documentation]
+    needs: [repository, codeql, build, documentation]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

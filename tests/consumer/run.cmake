@@ -66,7 +66,11 @@ if(CONSUMER_MODE MATCHES "^(physics2d|runtime)" AND CONSUMER_BOX2D_SOURCE)
     list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_BOX2D=${CONSUMER_BOX2D_SOURCE}")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" ${configure_args} COMMAND_ERROR_IS_FATAL ANY)
-execute_process(COMMAND "${CMAKE_COMMAND}" --build "${CONSUMER_BINARY_DIR}/build"
-    --config "${CONSUMER_CONFIG}" --parallel 2 COMMAND_ERROR_IS_FATAL ANY)
+set(build_args --build "${CONSUMER_BINARY_DIR}/build" --config "${CONSUMER_CONFIG}")
+# Respect the caller's build budget; retain the bounded default for ordinary CTest runs.
+if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" STREQUAL "")
+    list(APPEND build_args --parallel 2)
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" ${build_args} COMMAND_ERROR_IS_FATAL ANY)
 execute_process(COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${CONSUMER_BINARY_DIR}/build"
     -C "${CONSUMER_CONFIG}" --output-on-failure --no-tests=error COMMAND_ERROR_IS_FATAL ANY)
