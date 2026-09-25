@@ -244,7 +244,8 @@ PrefabVariant PrefabVariant::deserialize(std::string_view document, const MeshRe
     detail::json_fields(parsed, {"version", "kind", "base", "overrides"});
     require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
             "Unsupported prefab variant document version");
-    require(parsed.at("kind") == document_kind, "Invalid prefab variant document kind");
+    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == document_kind,
+            "Invalid prefab variant document kind");
     auto base = parsed.at("base").get<std::string>();
     validate_key(base);
     const auto &values = parsed.at("overrides");
