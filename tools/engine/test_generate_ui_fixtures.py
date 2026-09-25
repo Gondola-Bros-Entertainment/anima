@@ -3,11 +3,14 @@
 
 from pathlib import Path
 import struct
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 import zlib
 
-from generate_ui_fixtures import checker_png, generate
+import gpu_ui_smoke
+from generate_ui_fixtures import ASSETS, checker_png, generate, run_consumer
 
 
 class FixtureTests(unittest.TestCase):
@@ -53,6 +56,71 @@ class FixtureTests(unittest.TestCase):
                 generate(source, source)
             with self.assertRaises(ValueError):
                 generate(source, source / "generated")
+
+    def test_test_wrapper_removes_images_on_success_and_failure(self):
+        with TemporaryDirectory() as temporary:
+            consumer = Path(temporary) / "consumer"
+            consumer.touch()
+            for code in (0, 7):
+                with self.subTest(returncode=code):
+                    fixtures = []
+
+                    def execute(command, check):
+                        self.assertFalse(check)
+                        self.assertEqual(command[0], str(consumer.resolve()))
+                        directory = Path(command[1]).parent
+                        fixtures.append(directory)
+                        self.assertEqual((directory / "checker.png").read_bytes(), checker_png())
+                        self.assertTrue((directory / "controls.rml").is_file())
+                        return subprocess.CompletedProcess(command, code)
+
+                    with patch("generate_ui_fixtures.subprocess.run", side_effect=execute):
+                        self.assertEqual(run_consumer(ASSETS, consumer), code)
+                    self.assertEqual(len(fixtures), 1)
+                    self.assertFalse(fixtures[0].exists())
+
+    def test_test_wrapper_removes_images_when_process_cannot_start(self):
+        with TemporaryDirectory() as temporary:
+            consumer = Path(temporary) / "consumer"
+            consumer.touch()
+            fixtures = []
+
+            def fail(command, check):
+                self.assertFalse(check)
+                fixtures.append(Path(command[1]).parent)
+                raise OSError("Cannot start synthetic test process")
+
+            with patch("generate_ui_fixtures.subprocess.run", side_effect=fail):
+                with self.assertRaises(OSError):
+                    run_consumer(ASSETS, consumer)
+            self.assertEqual(len(fixtures), 1)
+            self.assertFalse(fixtures[0].exists())
+
+    def test_gpu_failure_removes_fixture_and_partial_readback(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            consumer = root / "consumer"
+            consumer.touch()
+            output = root / "evidence"
+            fixtures = []
+
+            def fail(binary, arguments, directory, name):
+                self.assertEqual(binary, consumer.resolve())
+                self.assertEqual(name, "default")
+                fixtures.append(Path(arguments[2]))
+                self.assertTrue((fixtures[0] / "checker.png").is_file())
+                (Path(arguments[1]) / "partial.ppm").write_bytes(b"synthetic readback")
+                (directory / "failure.log").write_text("synthetic failure", encoding="utf-8")
+                raise RuntimeError("Synthetic GPU failure")
+
+            arguments = ["gpu_ui_smoke.py", str(consumer), "--assets", str(ASSETS), "--output", str(output)]
+            with patch("sys.argv", arguments), patch.object(gpu_ui_smoke, "run", side_effect=fail):
+                with self.assertRaises(RuntimeError):
+                    gpu_ui_smoke.main()
+            self.assertEqual(len(fixtures), 1)
+            self.assertFalse(fixtures[0].exists())
+            self.assertEqual(list(output.rglob("*.ppm")), [])
+            self.assertTrue((output / "failure.log").is_file())
 
 
 if __name__ == "__main__":

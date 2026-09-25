@@ -5,6 +5,9 @@ import argparse
 from pathlib import Path
 import shutil
 import struct
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
 import zlib
 
 
@@ -41,13 +44,25 @@ def generate(source, output):
     return output
 
 
+def run_consumer(source, consumer):
+    consumer = consumer.resolve(strict=True)
+    with TemporaryDirectory(prefix="anima-ui-fixtures-") as temporary:
+        fixtures = generate(source, Path(temporary))
+        return subprocess.run([str(consumer), str(fixtures / "controls.rml")], check=False).returncode
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assets", type=Path, default=ASSETS, help="source controls and licensed font fixtures")
-    parser.add_argument("--output", type=Path, required=True, help="generated fixture directory, normally under build/")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--run", type=Path, help="run a document test binary with automatically removed temporary fixtures")
+    action.add_argument("--output", type=Path, help="explicitly retain generated fixtures in this directory")
     args = parser.parse_args()
+    if args.run:
+        return run_consumer(args.assets, args.run)
     print(f"Generated UI fixtures in {generate(args.assets, args.output)}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

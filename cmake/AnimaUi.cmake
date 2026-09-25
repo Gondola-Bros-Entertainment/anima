@@ -58,20 +58,7 @@ endif()
 
 if(ANIMA_BUILD_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    set(anima_ui_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/ui-fixtures")
-    add_custom_command(
-        OUTPUT "${anima_ui_fixture_dir}/checker.png" "${anima_ui_fixture_dir}/controls.rml"
-            "${anima_ui_fixture_dir}/LatoLatin-Regular.ttf" "${anima_ui_fixture_dir}/LICENSE.txt"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/engine/generate_ui_fixtures.py"
-            --assets "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets" --output "${anima_ui_fixture_dir}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/engine/generate_ui_fixtures.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets/controls.rml"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets/LatoLatin-Regular.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets/LICENSE.txt"
-        VERBATIM)
-    add_custom_target(anima_ui_fixtures DEPENDS "${anima_ui_fixture_dir}/checker.png")
     add_executable(anima_ui_document_tests tests/ui_document_tests.cpp)
-    add_dependencies(anima_ui_document_tests anima_ui_fixtures)
     if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_ui_document_tests PRIVATE anima::ui_scene RmlUi::Core)
         target_compile_definitions(anima_ui_document_tests PRIVATE TEST_UI_SCENE=1)
@@ -79,5 +66,7 @@ if(ANIMA_BUILD_TESTS)
         target_link_libraries(anima_ui_document_tests PRIVATE anima::ui_documents RmlUi::Core)
     endif()
     anima_target_defaults(anima_ui_document_tests)
-    add_test(NAME ui_documents COMMAND anima_ui_document_tests "${anima_ui_fixture_dir}/controls.rml")
+    add_test(NAME ui_documents COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/engine/generate_ui_fixtures.py"
+        --assets "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets" --run "$<TARGET_FILE:anima_ui_document_tests>")
 endif()
