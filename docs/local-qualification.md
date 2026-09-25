@@ -11,8 +11,12 @@ devices that hosted runners do not cover.
 ## Continuous integration
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
-requests and manual dispatch. It covers Debug and Release headless builds on
-Linux, macOS and Windows, including copied core/asset consumers. A Linux job
+requests and manual dispatch. Its stages run in order: repository and package
+checks, platform builds, optional libraries, then generated documentation. A failed
+stage stops later stages. The platform matrix runs at most three jobs at once.
+
+CI covers Debug and Release headless builds on Linux, macOS and Windows,
+including copied core/asset consumers. A Linux job
 also enables Jolt, Box2D, RmlUi documents, SDL input conversion and dummy-device
 audio output, with their applicable independent consumers.
 

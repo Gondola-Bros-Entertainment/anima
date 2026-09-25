@@ -178,8 +178,10 @@ std::filesystem::path fixture(const Temp &temp, const std::string &kind) {
     integer(glb, static_cast<std::uint32_t>(bin.size()));
     integer(glb, 0x004e4942);
     glb.insert(glb.end(), bin.begin(), bin.end());
-    if (kind == "truncated")
-        glb.resize(glb.size() - 16);
+    if (kind == "truncated") {
+        require(glb.size() >= 16, "Synthetic GLB is too short to truncate");
+        glb.erase(glb.end() - 16, glb.end());
+    }
     const auto path = temp.directory / (kind + ".glb");
     std::ofstream output(path, std::ios::binary);
     output.write(glb.data(), static_cast<std::streamsize>(glb.size()));
