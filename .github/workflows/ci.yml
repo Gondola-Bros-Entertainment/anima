@@ -172,7 +172,8 @@ jobs:
           "revision=$revision" >> $env:GITHUB_OUTPUT
       - name: Restore Windows dependency binaries
         if: runner.os == 'Windows' && matrix.profile != 'headless'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: windows-dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-cache
           key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
@@ -190,6 +191,12 @@ jobs:
           "$installed/tools/shaderc" >> $env:GITHUB_PATH
           "$installed/bin" >> $env:GITHUB_PATH
           "$installed/debug/bin" >> $env:GITHUB_PATH
+      - name: Save Windows dependency binaries
+        if: runner.os == 'Windows' && matrix.profile != 'headless' && steps.windows-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
       - name: Reset compiler cache statistics
         if: runner.os != 'Windows'
         run: ccache --zero-stats
@@ -246,12 +253,14 @@ jobs:
           ctest --test-dir build/ci -C "$CONFIGURATION"
           --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           --timeout 600 --no-tests=error --label-exclude consumer
-      # Each consumer configures and links its own build. Serial CTest scheduling
-      # gives that build the runner's cores without nested oversubscription.
+      # Two independent builds with two compiler processes each keep small
+      # configurations moving without unbounded nested parallelism.
       - name: Test independent consumers
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: '2'
         run: >-
           ctest --test-dir build/ci -C "$CONFIGURATION"
-          --output-on-failure --parallel 1 --timeout 600 --no-tests=error
+          --output-on-failure --parallel 2 --timeout 600 --no-tests=error
           --label-regex consumer --exclude-regex '^consumer_(desktop|ui)$'
       # These executables open Vulkan windows. Hosted CI checks their linkage;
       # physical-device execution remains part of local qualification.

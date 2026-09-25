@@ -32,8 +32,8 @@ AddressSanitizer in RelWithDebInfo. MSVC does not provide UndefinedBehaviorSanit
 
 Linux/macOS builds use Ninja and a bounded compiler cache. Windows caches vcpkg
 dependency binaries and uses Visual Studio. Cache hits never skip configuration,
-linking or tests. Consumer tests run one at a time, with each build using the
-runner's available cores; ordinary runtime tests run in parallel. Compiler cache
+linking or tests. Two consumer builds run concurrently, with two compiler
+processes each; ordinary runtime tests run in parallel. Compiler cache
 statistics in each job distinguish cold runs from subsequent cache reuse.
 
 Repository checks validate documentation links, lint workflow syntax and shell
@@ -129,10 +129,10 @@ configuration time.
 
 For Windows/MSVC, use a separate RelWithDebInfo configuration:
 
-```sh
-cmake -S . -B build/sanitizers -A x64 \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_CONFIGURATION_TYPES=RelWithDebInfo \
+```powershell
+cmake -S . -B build/sanitizers -A x64 `
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+  -DCMAKE_CONFIGURATION_TYPES=RelWithDebInfo `
   -DANIMA_BUILD_DESKTOP=OFF -DANIMA_ENABLE_SANITIZERS=ON
 cmake --build build/sanitizers --config RelWithDebInfo --parallel 4
 ctest --test-dir build/sanitizers -C RelWithDebInfo --output-on-failure --no-tests=error
