@@ -89,6 +89,12 @@ endif()
 
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE anima::core)
+if(ANIMA_ENABLE_SANITIZERS)
+    # The application opts into instrumentation explicitly; the public library
+    # target already supplies the sanitizer runtimes needed at the final link.
+    target_compile_options(consumer PRIVATE
+        -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+endif()
 target_compile_features(consumer PRIVATE cxx_std_20)
 if(MSVC)
     target_compile_options(consumer PRIVATE /W4 /WX /permissive- /utf-8)

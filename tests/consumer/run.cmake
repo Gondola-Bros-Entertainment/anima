@@ -16,6 +16,7 @@ endforeach()
 set(configure_args -S "${CONSUMER_BINARY_DIR}/source" -B "${CONSUMER_BINARY_DIR}/build"
     -G "${CONSUMER_GENERATOR}" "-DANIMA_SOURCE_DIR=${ANIMA_SOURCE_DIR}" "-DCONSUMER_MODE=${CONSUMER_MODE}"
     "-DCMAKE_BUILD_TYPE=${CONSUMER_CONFIG}" -DBUILD_TESTING=ON -DANIMA_WARNINGS_AS_ERRORS=ON)
+list(APPEND configure_args "-DANIMA_ENABLE_SANITIZERS=${CONSUMER_SANITIZERS}")
 if(CONSUMER_TOOLCHAIN)
     list(APPEND configure_args "-DCMAKE_TOOLCHAIN_FILE=${CONSUMER_TOOLCHAIN}")
 endif()
@@ -30,6 +31,9 @@ if(CONSUMER_TOOLSET)
 endif()
 if(CONSUMER_CXX_COMPILER)
     list(APPEND configure_args "-DCMAKE_CXX_COMPILER=${CONSUMER_CXX_COMPILER}")
+endif()
+if(CONSUMER_C_COMPILER)
+    list(APPEND configure_args "-DCMAKE_C_COMPILER=${CONSUMER_C_COMPILER}")
 endif()
 if(CONSUMER_PREFIX_PATH)
     string(REPLACE ";" "\\;" escaped_prefix "${CONSUMER_PREFIX_PATH}")
@@ -65,4 +69,4 @@ execute_process(COMMAND "${CMAKE_COMMAND}" ${configure_args} COMMAND_ERROR_IS_FA
 execute_process(COMMAND "${CMAKE_COMMAND}" --build "${CONSUMER_BINARY_DIR}/build"
     --config "${CONSUMER_CONFIG}" --parallel 2 COMMAND_ERROR_IS_FATAL ANY)
 execute_process(COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${CONSUMER_BINARY_DIR}/build"
-    -C "${CONSUMER_CONFIG}" --output-on-failure COMMAND_ERROR_IS_FATAL ANY)
+    -C "${CONSUMER_CONFIG}" --output-on-failure --no-tests=error COMMAND_ERROR_IS_FATAL ANY)
