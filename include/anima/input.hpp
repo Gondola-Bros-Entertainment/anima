@@ -21,6 +21,10 @@ struct Binding {
     Control control;
     Channel channel = Channel::x;
     float scale = 1, deadzone = 0; // Signed scale; axial deadzone remapped to [0,1].
+    // Up to four distinct digital controls, all held. Controls of one device
+    // class share one physical device; concrete selectors fix that class.
+    // Keyboard, mouse and gamepad classes select devices independently.
+    std::vector<Control> modifiers{};
 };
 enum class ActionType { button, axis, vector2 };
 struct Action {
@@ -69,7 +73,7 @@ class Context {
   private:
     std::size_t index(std::string_view name) const;
     void evaluate();
-    float read(Control control) const;
+    float read(const Binding &binding) const;
     Map map_;
     std::vector<State> states_;
     std::map<Control, float> values_;
