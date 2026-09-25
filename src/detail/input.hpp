@@ -5,6 +5,7 @@ namespace anima::input::limits {
 inline constexpr std::size_t actions = 128;
 inline constexpr std::size_t action_name_bytes = 128;
 inline constexpr std::size_t bindings_per_action = 32;
+inline constexpr std::size_t modifiers_per_binding = 4;
 inline constexpr std::size_t active_controls = 1024;
 inline constexpr std::size_t document_bytes = 1024 * 1024;
 inline constexpr unsigned key_code = 511;

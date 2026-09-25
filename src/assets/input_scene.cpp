@@ -5,7 +5,7 @@
 namespace anima::input {
 namespace {
 using Json = nlohmann::json;
-constexpr unsigned document_version = 1;
+constexpr unsigned document_version = 2;
 unsigned integer(const Json &v, std::uint64_t maximum) {
     if (!v.is_number_integer() || v.get<std::int64_t>() < 0 || v.get<std::uint64_t>() > maximum)
         throw std::invalid_argument("Invalid input configuration integer");
@@ -16,23 +16,37 @@ float number(const Json &v) {
         throw std::invalid_argument("Invalid input configuration number");
     return v.get<float>();
 }
+Control control_value(const Json &value) {
+    return {static_cast<ControlKind>(integer(value.at("kind"), static_cast<unsigned>(ControlKind::gamepad_axis))),
+            static_cast<std::uint16_t>(integer(value.at("code"), limits::key_code)),
+            integer(value.at("device"), UINT32_MAX)};
+}
 } // namespace
 std::string serialize_map(const Map &map) {
     validate(map);
     Json actions = Json::array();
     for (const auto &a : map) {
         Json bindings = Json::array();
-        for (const auto &b : a.bindings)
+        for (const auto &b : a.bindings) {
+            auto modifiers = Json::array();
+            for (auto modifier : b.modifiers)
+                modifiers.push_back(
+                    {{"kind", static_cast<int>(modifier.kind)}, {"code", modifier.code}, {"device", modifier.device}});
             bindings.push_back({{"kind", static_cast<int>(b.control.kind)},
                                 {"code", b.control.code},
                                 {"device", b.control.device},
                                 {"channel", static_cast<int>(b.channel)},
                                 {"scale", b.scale},
-                                {"deadzone", b.deadzone}});
+                                {"deadzone", b.deadzone},
+                                {"modifiers", modifiers}});
+        }
         actions.push_back(
             {{"name", a.name}, {"type", static_cast<int>(a.type)}, {"threshold", a.threshold}, {"bindings", bindings}});
     }
-    return Json{{"version", document_version}, {"actions", actions}}.dump();
+    auto document = Json{{"version", document_version}, {"actions", actions}}.dump();
+    if (document.size() > limits::document_bytes)
+        throw std::invalid_argument("Input configuration exceeds byte limit");
+    return document;
 }
 Map deserialize_map(std::string_view data) {
     const auto j = detail::parse_json(data, limits::document_bytes);
@@ -51,14 +65,20 @@ Map deserialize_map(std::string_view data) {
                       {},
                       number(a.at("threshold"))};
         for (const auto &b : a.at("bindings")) {
-            detail::json_fields(b, {"kind", "code", "device", "channel", "scale", "deadzone"});
-            action.bindings.push_back(
-                {{static_cast<ControlKind>(integer(b.at("kind"), static_cast<unsigned>(ControlKind::gamepad_axis))),
-                  static_cast<std::uint16_t>(integer(b.at("code"), limits::key_code)),
-                  integer(b.at("device"), UINT32_MAX)},
-                 static_cast<Channel>(integer(b.at("channel"), static_cast<unsigned>(Channel::y))),
-                 number(b.at("scale")),
-                 number(b.at("deadzone"))});
+            detail::json_fields(b, {"kind", "code", "device", "channel", "scale", "deadzone", "modifiers"});
+            const auto &modifiers = b.at("modifiers");
+            if (!modifiers.is_array() || modifiers.size() > limits::modifiers_per_binding)
+                throw std::invalid_argument("Invalid input modifier count");
+            Binding binding{control_value(b),
+                            static_cast<Channel>(integer(b.at("channel"), static_cast<unsigned>(Channel::y))),
+                            number(b.at("scale")),
+                            number(b.at("deadzone")),
+                            {}};
+            for (const auto &modifier : modifiers) {
+                detail::json_fields(modifier, {"kind", "code", "device"});
+                binding.modifiers.push_back(control_value(modifier));
+            }
+            action.bindings.push_back(std::move(binding));
         }
         map.push_back(std::move(action));
     }
@@ -67,7 +87,7 @@ Map deserialize_map(std::string_view data) {
 }
 void add_component_codec(ComponentCodecs &codecs) {
     codecs.add<ActionInput>(
-        "anima.action-input.v1",
+        "anima.action-input.v2",
         [](const ActionInput &input, const ObjectReferences &) {
             return serialize_map(Map(input.context().actions().begin(), input.context().actions().end()));
         },

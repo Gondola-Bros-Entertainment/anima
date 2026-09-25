@@ -24,6 +24,32 @@ void control(Control c) {
 ControlKind device_class(ControlKind value) {
     return value == ControlKind::gamepad_axis ? ControlKind::gamepad_button : value;
 }
+void compatible(Control first, Control second) {
+    if (first.kind == second.kind && first.code == second.code)
+        throw std::invalid_argument("Repeated input chord control");
+    if (device_class(first.kind) == device_class(second.kind) && first.device != any_device &&
+        second.device != any_device && first.device != second.device)
+        throw std::invalid_argument("Input chord device selectors conflict");
+}
+bool observes(const Binding &binding, Control source) {
+    const auto same_device = [source](Control selector) {
+        return device_class(selector.kind) != device_class(source.kind) || selector.device == any_device ||
+               selector.device == source.device;
+    };
+    const auto matches = [source](Control selector) {
+        return selector.kind == source.kind && selector.code == source.code &&
+               (selector.device == any_device || selector.device == source.device);
+    };
+    if (!same_device(binding.control))
+        return false;
+    bool matched = matches(binding.control);
+    for (auto modifier : binding.modifiers) {
+        if (!same_device(modifier))
+            return false;
+        matched |= matches(modifier);
+    }
+    return matched;
+}
 void action(const Action &a) {
     if (a.name.empty() || a.name.size() > limits::action_name_bytes || a.type < ActionType::button ||
         a.type > ActionType::vector2 || a.bindings.size() > limits::bindings_per_action ||
@@ -34,6 +60,17 @@ void action(const Action &a) {
             throw std::invalid_argument("Input action names must be printable ASCII without spaces");
     for (const auto &b : a.bindings) {
         control(b.control);
+        if (b.modifiers.size() > limits::modifiers_per_binding)
+            throw std::invalid_argument("Input binding exceeds four modifiers");
+        for (std::size_t i = 0; i < b.modifiers.size(); ++i) {
+            const auto modifier = b.modifiers[i];
+            control(modifier);
+            if (modifier.kind == ControlKind::gamepad_axis)
+                throw std::invalid_argument("Input chord modifiers must be digital");
+            compatible(b.control, modifier);
+            for (std::size_t previous = 0; previous < i; ++previous)
+                compatible(b.modifiers[previous], modifier);
+        }
         if (b.channel < Channel::x || b.channel > Channel::y ||
             (a.type != ActionType::vector2 && b.channel != Channel::x) || !std::isfinite(b.scale) ||
             std::abs(b.scale) > limits::maximum_binding_scale || !std::isfinite(b.deadzone) || b.deadzone < 0 ||
@@ -123,25 +160,66 @@ void Context::rebind(std::string_view name, std::vector<Binding> bindings) {
     map_[i].bindings.swap(candidate.bindings);
     cancel();
 }
-float Context::read(Control c) const {
+float Context::read(const Binding &binding) const {
+    const auto primary_class = device_class(binding.control.kind);
+    const auto held = [&](ControlKind group, std::uint32_t device) {
+        for (auto modifier : binding.modifiers) {
+            if (device_class(modifier.kind) != group)
+                continue;
+            if (modifier.device != any_device && modifier.device != device)
+                return false;
+            modifier.device = device;
+            if (!values_.contains(modifier))
+                return false;
+        }
+        return true;
+    };
+    // Other classes choose their own device, once per binding. Every modifier
+    // in that class must still be held on the same candidate device.
+    for (auto group : {ControlKind::key, ControlKind::mouse_button, ControlKind::gamepad_button}) {
+        if (group == primary_class)
+            continue;
+        const Control *anchor = nullptr;
+        for (const auto &modifier : binding.modifiers)
+            if (device_class(modifier.kind) == group && (!anchor || modifier.device != any_device))
+                anchor = &modifier;
+        if (!anchor)
+            continue;
+        bool accepted = false;
+        if (anchor->device != any_device)
+            accepted = held(group, anchor->device);
+        else {
+            auto control = *anchor;
+            control.device = 0;
+            for (auto it = values_.lower_bound(control);
+                 it != values_.end() && it->first.kind == control.kind && it->first.code == control.code; ++it)
+                if (held(group, it->first.device)) {
+                    accepted = true;
+                    break;
+                }
+        }
+        if (!accepted)
+            return 0;
+    }
+    auto c = binding.control;
     if (c.device != any_device) {
         const auto it = values_.find(c);
-        return it == values_.end() ? 0 : it->second;
+        return it == values_.end() || !held(primary_class, c.device) ? 0 : it->second;
     }
     float value{};
     c.device = 0;
     for (auto it = values_.lower_bound(c); it != values_.end() && it->first.kind == c.kind && it->first.code == c.code;
          ++it)
-        if (std::abs(it->second) > std::abs(value))
+        if (std::abs(it->second) > std::abs(value) && held(primary_class, it->first.device))
             value = it->second;
-    return value; // Greatest magnitude; ties choose the lowest device ID.
+    return value; // Greatest eligible magnitude; ties choose the lowest device ID.
 }
 void Context::evaluate() {
     for (std::size_t i = 0; i < map_.size(); ++i) {
         const auto &a = map_[i];
         double x{}, y{};
         for (const auto &b : a.bindings) {
-            const float raw = read(b.control);
+            const float raw = read(b);
             const float adjusted =
                 std::copysign(std::max(0.F, std::abs(raw) - b.deadzone) / (1 - b.deadzone), raw) * b.scale;
             if (a.type == ActionType::button)
@@ -187,8 +265,7 @@ void Context::process(const Event &e) {
     bool observed = false;
     for (const auto &a : map_)
         for (const auto &b : a.bindings)
-            observed |= b.control.kind == e.source.kind && b.control.code == e.source.code &&
-                        (b.control.device == any_device || b.control.device == e.source.device);
+            observed |= observes(b, e.source);
     if (!observed)
         return;
     if (e.value == 0)
