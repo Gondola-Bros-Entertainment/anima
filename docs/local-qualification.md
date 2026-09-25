@@ -12,8 +12,7 @@ devices that hosted runners do not cover.
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
 requests and manual dispatch. After the short repository checks, platform builds,
-Actions/Python analysis and documentation run in parallel. The full Linux build
-also supplies compiled C++ CodeQL analysis. The final `CI required` check fails if
+CodeQL and documentation run in parallel. The final `CI required` check fails if
 any required job fails, is cancelled or is skipped, providing one stable check
 for branch rules.
 
@@ -40,14 +39,7 @@ build, with separate executables for each public target. Isolated configuration
 checks still verify each mode's dependency boundaries. CI reports configuration,
 compilation and API execution in separate steps; runtime tests run in parallel.
 Compiler cache statistics distinguish cold runs from subsequent cache reuse.
-The traced full Linux job restores no prior compiler cache. Its primary build
-forces every compilation with `CCACHE_RECACHE=1`, letting CodeQL observe the full
-build while populating a fresh cache bounded to 1 GiB. The later independent build
-can reuse identical engine/dependency results; its new copied consumer translation
-units still compile under tracing. Matching debug-prefix maps normalize both build
-directories without relaxing cache correctness. Generated headers and precompiled
-headers can still cause safe misses. No extra build is added, and verbose consumer
-build logs expose configuration and Ninja progress.
+Verbose consumer build logs expose configuration and Ninja progress.
 
 Repository checks validate documentation links, lint workflow syntax and shell
 commands with actionlint, and scan the complete fetched Git history with Gitleaks.
@@ -55,16 +47,23 @@ Both tools use checksum-verified releases. A generated detection canary verifies
 the secret scanner before the real scan; findings are redacted in logs.
 Dependabot proposes weekly updates to the SHA-pinned GitHub Actions.
 
-The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions and
-Python with the security-extended query suite. C/C++ uses that suite with manual
-extraction of the existing full Linux build, including optional modules and copied
-consumers with their actual compiler configuration. These checks are required by
-PR/push CI. Weekly CI scanning uses one full Linux build plus Actions/Python and
-documentation checks; ordinary runs retain the complete platform matrix.
-CodeQL file coverage is not test coverage or a safety score. Compiled extraction
-covers the selected configuration, not every platform-specific preprocessor branch;
-copied fixtures can be attributed to their generated consumer paths. Inspect the
-analysis results and omitted files rather than treating a percentage as proof.
+The reusable [CodeQL workflow](../.github/workflows/codeql.yml) scans Actions,
+C/C++ and Python with GitHub's default security query suite. C++ uses `build-mode: none`
+in its own job, with no engine or downloaded dependency builds. Its analysis
+configuration excludes `third_party/**` and `build/**`, keeping repository-owned
+source, public headers, apps, tests, tooling and workflows in scope. CodeQL infers
+compilation settings from the repository, so this is not a scan of every compiled
+configuration. Compiler, runtime and sanitizer checks remain separate. CodeQL is
+required by PR/push CI and also runs weekly. The default suite favors high-precision
+findings; the additional lower-confidence queries from `security-extended` are not
+enabled. This uses GitHub's standard no-build mode within the existing reusable
+workflow, rather than the separately managed default-setup feature.
+
+File coverage is not test coverage or a safety score. PR analysis can report only
+findings relevant to the changed lines; zero PR results do not establish that the
+repository has zero alerts. Inspect the default-branch analysis and open alerts
+when reporting the repository's status.
+
 The documentation stage generates Doxygen HTML/XML. CI does
 not qualify physical GPUs, speakers or input devices. Use the relevant local
 checks for those paths.

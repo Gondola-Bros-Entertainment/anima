@@ -5,8 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: '23 6 * * 2'
 
 permissions:
   contents: read
@@ -77,7 +75,7 @@ jobs:
           "$tool_dir/gitleaks" git --redact --no-banner --log-opts=--all .
 
   codeql:
-    name: CodeQL (Actions/Python)
+    name: CodeQL
     needs: repository
     if: github.event.repository.private == false
     permissions:
@@ -87,30 +85,23 @@ jobs:
     uses: ./.github/workflows/codeql.yml
 
   build:
-    name: ${{ matrix.profile == 'full' && matrix.os == 'ubuntu-24.04' && github.event.repository.private == false && 'C++ CodeQL + ' || '' }}${{ matrix.profile }} / ${{ matrix.os }} / ${{ matrix.configuration }}
+    name: ${{ matrix.profile }} / ${{ matrix.os }} / ${{ matrix.configuration }}
     needs: repository
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
-    permissions:
-      contents: read
-      actions: read
-      security-events: write
     strategy:
       fail-fast: false
-      # Weekly scanning reuses the full Linux build. Changes still run all twelve
-      # platform/configuration checks, including each sanitizer configuration.
-      matrix: >-
-        ${{ fromJSON(github.event_name == 'schedule' &&
-          '{"include":[{"os":"ubuntu-24.04","configuration":"Debug","profile":"full"}]}' ||
-          '{"os":["ubuntu-24.04","macos-15","windows-2022"],
-            "configuration":["Debug","Release"],"profile":["headless"],
-            "include":[
-              {"os":"ubuntu-24.04","configuration":"Debug","profile":"full"},
-              {"os":"macos-15","configuration":"Debug","profile":"full"},
-              {"os":"windows-2022","configuration":"Debug","profile":"full"},
-              {"os":"ubuntu-24.04","configuration":"Debug","profile":"sanitizers"},
-              {"os":"macos-15","configuration":"Debug","profile":"sanitizers"},
-              {"os":"windows-2022","configuration":"RelWithDebInfo","profile":"sanitizers"}]}') }}
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        configuration: [Debug, Release]
+        profile: [headless]
+        include:
+          - {os: ubuntu-24.04, configuration: Debug, profile: full}
+          - {os: macos-15, configuration: Debug, profile: full}
+          - {os: windows-2022, configuration: Debug, profile: full}
+          - {os: ubuntu-24.04, configuration: Debug, profile: sanitizers}
+          - {os: macos-15, configuration: Debug, profile: sanitizers}
+          - {os: windows-2022, configuration: RelWithDebInfo, profile: sanitizers}
     env:
       PROFILE: ${{ matrix.profile }}
       CONFIGURATION: ${{ matrix.configuration }}
@@ -188,16 +179,8 @@ jobs:
             echo 'CMAKE_GENERATOR=Ninja'
             echo 'CMAKE_C_COMPILER_LAUNCHER=ccache'
             echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
-            if [[ "$PROFILE" == full && "$RUNNER_OS" == Linux ]]; then
-              # Normalize both build directories without weakening cache checks.
-              debug_maps="-fdebug-prefix-map=$GITHUB_WORKSPACE/build/ci=. -fdebug-prefix-map=$GITHUB_WORKSPACE/build/ci/consumer-suite/build=."
-              echo "CFLAGS=$debug_maps"
-              echo "CXXFLAGS=$debug_maps"
-              echo 'CCACHE_MAXSIZE=1G'
-            fi
           } >> "$GITHUB_ENV"
       - name: Restore compiler cache
-        if: matrix.profile != 'full' || runner.os != 'Linux'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
@@ -244,14 +227,6 @@ jobs:
           key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
       - name: Reset compiler cache statistics
         run: ccache --zero-stats
-      - name: Initialize C++ CodeQL
-        id: cpp-codeql
-        if: matrix.profile == 'full' && runner.os == 'Linux'
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          languages: c-cpp
-          build-mode: manual
-          queries: security-extended
       - name: Configure
         run: |
           args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION"
@@ -302,13 +277,7 @@ jobs:
           }
           $compilerDirectory >> $env:GITHUB_PATH
       - name: Build
-        run: |
-          if [[ "$PROFILE" == full && "$RUNNER_OS" == Linux ]]; then
-            # Trace every primary compilation and cache its fresh result.
-            # New consumer translation units still compile in the later step.
-            export CCACHE_RECACHE=1
-          fi
-          cmake --build build/ci --config "$CONFIGURATION"
+        run: cmake --build build/ci --config "$CONFIGURATION"
       - name: Test runtime and CLI
         run: >-
           ctest --test-dir build/ci -C "$CONFIGURATION"
@@ -330,11 +299,6 @@ jobs:
           --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           --timeout 60 --no-tests=error --label-regex '^consumer-runtime$'
           --fixture-exclude-setup '^consumer_build$'
-      - name: Analyze C++ CodeQL
-        if: success() && steps.cpp-codeql.outcome == 'success'
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          category: /language:c-cpp
       - name: Compiler cache statistics
         if: always()
         run: ccache --show-stats
