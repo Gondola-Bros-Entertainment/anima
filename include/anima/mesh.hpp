@@ -35,10 +35,10 @@ struct IndexedDraw {
     std::string mesh_name;
 };
 
-/// Limits for Mesh::compile_static; with both zero the source compiles into one Mesh.
+/// Limits for Mesh::compile_static; with #max_vertices zero the source compiles into one Mesh.
 struct MeshCompileOptions {
     /// Maximum triangle corners, and so vertices and indices, in each resulting Mesh; zero for no limit, or
-    /// at least 3.
+    /// at least 3. A nonzero limit also gives each Mesh the primitives of only one material.
     std::size_t max_vertices{};
     /// Maximum texture width and height. A larger texture is replaced by its first mip level that fits, from
     /// texture_mips() with alpha coverage preserved for masked base colors. Zero keeps authored sizes.
@@ -71,9 +71,10 @@ class Mesh {
     /// placement, to bound individual uploads.
     ///
     /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks
-    /// oversized textures, then starts a new Mesh at every material change between consecutive primitives and
-    /// whenever MeshCompileOptions::max_vertices would be exceeded, splitting primitives between whole
-    /// triangles. Each result keeps every node but only the materials and textures it uses. Throws
+    /// oversized textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at
+    /// every material change between consecutive primitives and whenever MeshCompileOptions::max_vertices would
+    /// be exceeded, splitting primitives between whole triangles. Each result keeps every node but only the
+    /// materials and textures it uses; a source without primitives gives one Mesh with only its nodes. Throws
     /// `std::invalid_argument` for a `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of
     /// whole triangles, `std::runtime_error` when @p source has skins or animations, and what compile() throws.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
