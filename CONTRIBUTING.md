@@ -5,7 +5,8 @@ content, gameplay rules, scheduling and deployment policy. Read the relevant
 subsystem guide and [engine boundaries](docs/engine-boundaries.md) before changing
 a public contract.
 
-Use C++20 and the repository's `.clang-format`. Keep backend types private where
+Use C++20 and the repository's `.clang-format`; CI rejects first-party sources
+that clang-format 22.1.8 would change. Keep backend types private where
 the public module promises dependency isolation. Validate inputs before publishing
 state, make resource ownership explicit, and document exceptions and rollback.
 Scene and prefab documents use one current format; do not add compatibility

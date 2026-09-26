@@ -44,18 +44,14 @@ void require(bool condition, const char *message) {
 // Engine-authored two-pixel PNGs exercise the 8-bit row copy and the 16-bit
 // grayscale-to-RGBA conversion through stb's public in-memory decoding API.
 constexpr unsigned char rgb8_png[]{
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
-    0, 0, 0, 2, 0, 0, 0, 1, 8, 2, 0, 0, 0, 123, 64, 232,
-    221, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 0, 4,
-    255, 1, 7, 0, 1, 255, 226, 35, 158, 89, 0, 0, 0, 0, 73, 69,
-    78, 68, 174, 66, 96, 130,
+    137, 80, 78, 71, 13, 10,  26,  10,  0,   0,  0, 13, 73, 72, 68, 82, 0,  0,   0,   2,  0,   0,   0, 1,
+    8,   2,  0,  0,  0,  123, 64,  232, 221, 0,  0, 0,  13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 0, 4,
+    255, 1,  7,  0,  1,  255, 226, 35,  158, 89, 0, 0,  0,  0,  73, 69, 78, 68,  174, 66, 96,  130,
 };
 constexpr unsigned char gray16_png[]{
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
-    0, 0, 0, 2, 0, 0, 0, 1, 16, 0, 0, 0, 0, 129, 217, 252,
-    21, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 16, 50, 89, 125,
-    22, 0, 3, 12, 1, 191, 110, 185, 198, 93, 0, 0, 0, 0, 73, 69,
-    78, 68, 174, 66, 96, 130,
+    137, 80, 78, 71, 13, 10,  26,  10,  0,   0,  0, 13, 73, 72, 68, 82, 0,  0,   0,   2,  0,  0,   0,  1,
+    16,  0,  0,  0,  0,  129, 217, 252, 21,  0,  0, 0,  13, 73, 68, 65, 84, 120, 156, 99, 16, 50,  89, 125,
+    22,  0,  3,  12, 1,  191, 110, 185, 198, 93, 0, 0,  0,  0,  73, 69, 78, 68,  174, 66, 96, 130,
 };
 
 void decode_small_pngs() {
@@ -72,8 +68,7 @@ void decode_small_pngs() {
         stbi_load_16_from_memory(gray16_png, static_cast<int>(sizeof(gray16_png)), &width, &height, &channels, 4),
         stbi_image_free};
     require(rgba && width == 2 && height == 1 && channels == 1, "16-bit PNG decoding failed");
-    const std::array<unsigned short, 8> expected_rgba{0x1234, 0x1234, 0x1234, 0xffff,
-                                                   0xabcd, 0xabcd, 0xabcd, 0xffff};
+    const std::array<unsigned short, 8> expected_rgba{0x1234, 0x1234, 0x1234, 0xffff, 0xabcd, 0xabcd, 0xabcd, 0xffff};
     for (std::size_t i = 0; i < expected_rgba.size(); ++i)
         require(rgba.get()[i] == expected_rgba[i], "16-bit PNG channel conversion changed");
 }

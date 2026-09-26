@@ -45,6 +45,18 @@ jobs:
           printf '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  %s\n' "$archive" | sha256sum --check --strict
           tar -xzf "$archive" --directory "$tool_dir" actionlint
           "$tool_dir/actionlint" -color
+      - name: Check C++ formatting
+        run: |
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/clang-format.XXXXXX")
+          wheel="$tool_dir/clang-format.whl"
+          # The clang-format project's Linux x86-64 build of 22.1.8; the wheel is a zip archive.
+          curl --fail --silent --show-error --location --retry 3 \
+            https://files.pythonhosted.org/packages/e5/88/b82c066fa807da4ca2518fecf79071361f6324b77375e5e92c059c0697fd/clang_format-22.1.8-py2.py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl \
+            --output "$wheel"
+          printf 'b00cff6bfd1f1686f073a4fdf1cb937dbd58bf7510c659477805c03afdea0816  %s\n' "$wheel" | sha256sum --check --strict
+          unzip -q -j "$wheel" clang_format/data/bin/clang-format -d "$tool_dir"
+          git ls-files -z -- '*.cpp' '*.hpp' '*.h' '*.inc' ':(exclude)third_party' |
+            xargs -0 "$tool_dir/clang-format" --dry-run --Werror
       - name: Scan full Git history for secrets
         run: |
           tool_dir=$(mktemp -d "$RUNNER_TEMP/gitleaks.XXXXXX")
