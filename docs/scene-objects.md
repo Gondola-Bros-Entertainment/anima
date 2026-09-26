@@ -791,8 +791,8 @@ operations remain useful for engine subsystems that maintain compact membership.
 CPU compilation does not mean GPU residency. `MeshPreparation` builds CPU mip
 chains; `prepare_mesh`/`prepare_meshes` perform synchronous renderer-side preparation.
 Uploads can fail, and GPU resources retire through the existing frame-fence path.
-See [resource preparation](resource-preparation.md) and
-[resource ownership](render-resource-architecture.md). No frame-time deadline or
+See [resource preparation](../include/anima/desktop/vulkan_renderer.hpp) and
+[resource ownership](../include/anima/desktop/vulkan_renderer.hpp). No frame-time deadline or
 asynchronous upload guarantee is implied by the object API.
 
 The independent consumers in `tests/consumer/scene_objects.hpp`, `lifecycle.hpp` and `components.hpp`

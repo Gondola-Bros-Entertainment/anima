@@ -59,7 +59,7 @@ transaction: later file edits are found by the next refresh.
 
 Scene objects and GPU resources are not changed by a refresh. The application
 prepares replacement meshes from accepted assets and publishes them using the
-existing [scene](scene-objects.md) and [resource preparation](resource-preparation.md)
+existing [scene](scene-objects.md) and [resource preparation](../include/anima/desktop/vulkan_renderer.hpp)
 contracts. Animation binding, component state and save-data migration are explicit
 consumer decisions. `load_asset(bytes)` and `load_motion_asset(bytes)` parse
 embedded GLB snapshots without retaining their input buffers or opening files.

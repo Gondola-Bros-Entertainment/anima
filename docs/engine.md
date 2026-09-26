@@ -125,7 +125,7 @@ edge texels. Untextured materials use a white texture. An sRGB swapchain encodes
 lit result; a shader fallback encodes for UNORM swapchains. The glTF scalar metallic
 and roughness factors drive GGX specular reflection and diffuse suppression.
 Normal, metallic-roughness, occlusion and emissive maps and KHR_materials_unlit are
-supported. See [material lighting](material-lighting.md) for texture/UV conventions,
+supported. See [material lighting](../include/anima/desktop/vulkan_renderer.hpp) for texture/UV conventions,
 the configurable environment, sky, directional shadows, limitations and verification.
 
 LINEAR channels interpolate translation/scale linearly and normalized rotations

@@ -74,7 +74,7 @@ describe how applications supply content, policy and scheduling.
 
 - [Scenes, components and persistence](docs/scene-objects.md)
 - [Runtime ownership and system ordering](docs/runtime-lifecycle.md)
-- [Cameras](docs/cameras.md), [lighting](docs/lighting.md) and [rendering](docs/rendering-architecture.md)
+- [Cameras](docs/cameras.md), [lighting](include/anima/lighting.hpp) and [rendering](include/anima/desktop/vulkan_renderer.hpp)
 - [Animation](docs/animation-evaluation.md) and [asset reimport](docs/asset-reimport.md)
 - [3D physics](docs/physics.md) and [2D physics](docs/physics2d.md)
 - [Audio](docs/audio.md), [input](docs/input.md), [navigation](docs/navigation.md) and [UI](docs/ui-integration.md)

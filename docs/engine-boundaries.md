@@ -25,7 +25,7 @@ The [runtime lifecycle guide](runtime-lifecycle.md) explains service ownership,
 component phases, coordinated drivers and persistence-registry lifetimes.
 [Camera/view components](cameras.md) supply projection and explicit selection;
 applications own camera movement, transitions and drawable dimensions.
-[Scene lighting](lighting.md) resolves explicit directional-light links and
+[Scene lighting](../include/anima/lighting.hpp) resolves explicit directional-light links and
 environment settings independently of camera and geometry selection.
 
 JSON is the storage representation, not a second scene implementation. Scene and
@@ -72,7 +72,7 @@ Standard materials, lights, shadows and backgrounds are engine facilities.
 Reusable water, cloud and skybox modules also belong in the engine when optional,
 configurable and explicit about resource/pass ownership. Applications supply world
 placement, art direction, weather behavior and gameplay policy. The
-[rendering architecture](rendering-architecture.md) describes the default pipeline.
+[rendering architecture](../include/anima/desktop/vulkan_renderer.hpp) describes the default pipeline.
 
 Animation APIs accept caller-defined clips, masks, joints, sockets, roles and
 timelines. Applications own export recipes, authoring property names and material
