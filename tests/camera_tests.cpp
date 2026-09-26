@@ -1,29 +1,33 @@
 #include "component_payloads.hpp"
+#include "near.hpp"
 #include <anima/assets/render_visibility.hpp>
 #include <anima/camera.hpp>
 #include <anima/scene_set.hpp>
-#include <iostream>
+#include <doctest/doctest.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <iterator>
 #include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace anima;
 namespace {
-void check(bool value, const char *message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-void near(float a, float b) { check(std::abs(a - b) < 2e-5F, "Camera numeric mismatch"); }
-template <class F> void rejects(F f) {
-    bool caught = false;
-    try {
-        f();
-    } catch (const std::exception &) {
-        caught = true;
-    }
-    check(caught, "Expected camera rejection");
-}
-void equal(const Mat4 &a, const Mat4 &b) {
-    for (unsigned i = 0; i < 16; ++i)
-        near(a[i], b[i]);
+constexpr float tolerance = 2e-5F; // Clip coordinates, view origins and view-projection elements.
+constexpr auto busy_scene = "Scene drivers require an idle live scene";
+constexpr auto no_view = "Camera selection requires one active view";
+constexpr auto dead_camera = "Selected camera must be a live object in the scene selection";
+constexpr auto inactive_camera = "Selected camera must have an active Camera component";
+constexpr auto skewed_axes = "Camera world axes must be orthogonal and right-handed";
+constexpr auto invalid_lens = "Invalid camera lens settings";
+constexpr auto duplicate_codec = "Duplicate component codec";
+// Whether each element of @p a is within the tolerance of the one of @p b.
+bool same(const Mat4 &a, const Mat4 &b) {
+    return std::equal(a.begin(), a.end(), b.begin(), [](float x, float y) { return x == Near{y, tolerance}; });
 }
 Vec3 project(const Mat4 &m, Vec3 p) {
     const float w = m[3] * p.x + m[7] * p.y + m[11] * p.z + m[15];
@@ -39,59 +43,141 @@ auto view(Scene &scene, GameObject selected) {
     result->camera = selected;
     return result;
 }
-void projection_and_pose() {
-    Scene scene;
-    auto eye = camera(scene);
-    auto selected = view(scene, eye);
-    auto lens = eye.get_component<Camera>();
+// A lens that sees from 1 to 11 units ahead, with a 90 degree field or an orthographic height of 4.
+CameraSettings lens_settings(CameraProjection projection) {
     CameraSettings settings;
+    settings.projection = projection;
     settings.vertical_fov_degrees = 90;
+    settings.orthographic_height = 4;
     settings.near_plane = 1;
     settings.far_plane = 11;
-    lens->configure(settings);
-    auto m = view_matrix(scene, 2);
-    near(project(m, {0, 0, -1}).z, 0);
-    near(project(m, {0, 0, -11}).z, 1);
-    near(project(m, {2, 1, -1}).x, 1);
-    near(project(m, {2, 1, -1}).y, -1);
-    near(view_origin(m)[3], 1);
-    check(RenderFrustum(m).intersects({{-.1F, -.1F, -3}, {.1F, .1F, -2}, true}), "Camera culling lost visible box");
-    check(!RenderFrustum(m).intersects({{20, 0, -3}, {21, 1, -2}, true}), "Camera culling retained outside box");
-    settings.projection = CameraProjection::orthographic;
-    settings.orthographic_height = 4;
-    lens->configure(settings);
-    m = view_matrix(scene, 2);
-    near(project(m, {4, 2, -1}).x, 1);
-    near(project(m, {4, 2, -1}).y, -1);
-    near(project(m, {4, 2, -1}).z, 0);
-    near(project(m, {4, 2, -11}).z, 1);
-    near(view_origin(m)[3], 0);
-    auto parent = scene.create();
-    parent.set_transform({.translation = {10, 3, 4}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
-    eye.set_parent(parent, ReparentMode::keep_local);
-    eye.set_local_position({1, 0, 0});
-    m = view_matrix(scene, 2);
-    near(project(m, {8, 3, 5}).z, 0);
-    near(project(m, {8, 3, 15}).z, 1);
-    const auto scaled = m;
-    eye.clear_parent();
-    eye.set_transform({.translation = {8, 3, 4}, .rotation = {0, 1, 0, 0}});
-    equal(scaled, view_matrix(scene, 2));
-    auto invalid = eye.world_matrix();
-    invalid[4] = .3F;
-    eye.set_world_matrix(invalid);
-    rejects([&] { (void)view_matrix(scene, 2); });
-    for (float scale : {0.F, -1.F}) {
-        eye.set_transform({.scale = {scale, 1, 1}});
-        rejects([&] { (void)view_matrix(scene, 2); });
+    return settings;
+}
+// A scene whose one view selects a camera with lens_settings().
+struct Viewed {
+    Scene scene;
+    GameObject eye = camera(scene);
+    ComponentRef<CameraView> selected = view(scene, eye);
+    explicit Viewed(CameraProjection projection) { eye.get_component<Camera>()->configure(lens_settings(projection)); }
+};
+// A component payload and the message its decoding throws.
+struct Payload {
+    std::string state, error;
+};
+// invalid_component_payloads(valid, field) with their errors, in its order: an empty object, which lacks @p first,
+// the codec's first field, then @p field renamed, an unknown field, @p field duplicated, @p field duplicated through
+// an escape and nesting past the limit. A payload over the 64 KiB limit follows.
+std::vector<Payload> invalid_payloads(const std::string &valid, const std::string &field, const std::string &first) {
+    const auto states = invalid_component_payloads(valid, field);
+    const std::string errors[]{"Missing JSON field: " + first,   "Missing JSON field: " + field,
+                               "Unknown JSON field: unexpected", "Duplicate JSON document field",
+                               "Duplicate JSON document field",  "JSON document exceeds nesting limit"};
+    REQUIRE(states.size() == std::size(errors));
+    std::vector<Payload> result;
+    for (std::size_t i = 0; i < states.size(); ++i)
+        result.push_back({states[i], errors[i]});
+    result.push_back({std::string(64 * 1024 + 1, ' '), "JSON document exceeds byte limit"});
+    return result;
+}
+struct Reentry {
+    SceneSet *scenes;
+    Scene *scene;
+    unsigned *calls;
+    void on_update(double) {
+        CHECK_THROWS_WITH_AS(view_matrix(*scene, 1), busy_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(view_matrix(*scenes, 1), "Scene drivers cannot run during set mutation or scheduling",
+                             std::logic_error);
+        ++*calls;
     }
-    eye.set_world_matrix(identity());
-    for (float aspect : {0.F, -1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(),
-                         std::numeric_limits<float>::denorm_min()})
-        rejects([&] { (void)view_matrix(scene, aspect); });
-    const auto accepted = view_matrix(scene, 2);
+};
+struct Construction {
+    Construction(Scene &scene) { CHECK_THROWS_WITH_AS(view_matrix(scene, 1), busy_scene, std::logic_error); }
+};
+// A rig whose view selects its child camera, with the camera codecs registered.
+struct Rig {
+    ComponentCodecs codecs;
+    Scene scene;
+    GameObject root = scene.create("rig");
+    ComponentRef<CameraView> selected = root.add_component<CameraView>();
+    GameObject eye = camera(scene);
+    CameraSettings lens{CameraProjection::orthographic, 73, 8, .2F, 500};
+    Rig() {
+        add_camera_component_codecs(codecs);
+        eye.set_parent(root, ReparentMode::keep_local);
+        eye.set_position({3, 2, 1});
+        selected->camera = eye; // The view decodes before its child's Camera.
+        eye.get_component<Camera>()->configure(lens);
+    }
+};
+} // namespace
+
+TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan clip space") {
+    Viewed viewed(CameraProjection::perspective);
+    auto m = view_matrix(viewed.scene, 2);
+    CHECK(project(m, {0, 0, -1}).z == Near{0, tolerance});
+    CHECK(project(m, {0, 0, -11}).z == Near{1, tolerance});
+    CHECK(project(m, {2, 1, -1}).x == Near{1, tolerance});
+    CHECK(project(m, {2, 1, -1}).y == Near{-1, tolerance});
+    CHECK(view_origin(m)[3] == Near{1, tolerance});
+    CHECK(RenderFrustum(m).intersects({{-.1F, -.1F, -3}, {.1F, .1F, -2}, true}));
+    CHECK_FALSE(RenderFrustum(m).intersects({{20, 0, -3}, {21, 1, -2}, true}));
+    viewed.eye.get_component<Camera>()->configure(lens_settings(CameraProjection::orthographic));
+    m = view_matrix(viewed.scene, 2);
+    CHECK(project(m, {4, 2, -1}).x == Near{1, tolerance});
+    CHECK(project(m, {4, 2, -1}).y == Near{-1, tolerance});
+    CHECK(project(m, {4, 2, -1}).z == Near{0, tolerance});
+    CHECK(project(m, {4, 2, -11}).z == Near{1, tolerance});
+    CHECK(view_origin(m)[3] == Near{0, tolerance});
+}
+
+TEST_CASE("The view follows the camera's world pose and ignores its positive scale") {
+    Viewed viewed(CameraProjection::orthographic);
+    auto parent = viewed.scene.create();
+    parent.set_transform({.translation = {10, 3, 4}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
+    viewed.eye.set_parent(parent, ReparentMode::keep_local);
+    viewed.eye.set_local_position({1, 0, 0});
+    // The parent's half turn about Y puts the eye at (8, 3, 4), looking along +Z.
+    const auto scaled = view_matrix(viewed.scene, 2);
+    CHECK(project(scaled, {8, 3, 5}).z == Near{0, tolerance});
+    CHECK(project(scaled, {8, 3, 15}).z == Near{1, tolerance});
+    viewed.eye.clear_parent();
+    viewed.eye.set_transform({.translation = {8, 3, 4}, .rotation = {0, 1, 0, 0}});
+    CHECK(same(scaled, view_matrix(viewed.scene, 2)));
+}
+
+TEST_CASE("Sheared, collapsed and mirrored camera axes are rejected") {
+    Viewed viewed(CameraProjection::orthographic);
+    auto sheared = identity();
+    sheared[4] = .3F;
+    viewed.eye.set_world_matrix(sheared);
+    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), skewed_axes, std::invalid_argument);
+    viewed.eye.set_transform({.scale = {0, 1, 1}});
+    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), "Camera world axes must be nonzero", std::invalid_argument);
+    viewed.eye.set_transform({.scale = {-1, 1, 1}});
+    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), skewed_axes, std::invalid_argument);
+}
+
+TEST_CASE("An aspect that is not finite and positive, or that overflows the projection, is rejected") {
+    Viewed viewed(CameraProjection::orthographic);
+    for (float aspect : {0.F, -1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        CAPTURE(aspect);
+        CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, aspect), "Camera aspect must be finite and positive",
+                             std::invalid_argument);
+    }
+    // Finite and positive, but the orthographic width 2 / (height * aspect) is not a finite float.
+    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, std::numeric_limits<float>::denorm_min()),
+                         math_error_message(MathErrorCode::nonfinite_matrix), MathError);
+}
+
+TEST_CASE("Invalid lens settings are rejected and keep the accepted view") {
+    Viewed viewed(CameraProjection::orthographic);
+    auto lens = viewed.eye.get_component<Camera>();
+    const auto settings = lens->settings();
+    const auto accepted = view_matrix(viewed.scene, 2);
     for (unsigned field = 0; field < 5; ++field) {
+        CAPTURE(field);
         auto bad = settings;
+        const char *error = invalid_lens;
         if (field == 0)
             bad.vertical_fov_degrees = 180;
         if (field == 1)
@@ -100,74 +186,63 @@ void projection_and_pose() {
             bad.near_plane = 0;
         if (field == 3)
             bad.far_plane = bad.near_plane;
-        if (field == 4)
+        if (field == 4) {
             bad.projection = static_cast<CameraProjection>(99);
-        rejects([&] { lens->configure(bad); });
-        equal(accepted, view_matrix(scene, 2));
+            error = "Unknown camera projection";
+        }
+        CHECK_THROWS_WITH_AS(lens->configure(bad), error, std::invalid_argument);
+        CHECK(same(accepted, view_matrix(viewed.scene, 2)));
     }
-    (void)selected;
 }
-void selection_and_lifetime() {
+
+TEST_CASE("View resolution requires one active view of a live camera with an active lens") {
     SceneSet set;
     auto a = set.create("a"), b = set.create("b");
     auto eye = camera(a.get());
     auto selected = view(b.get(), eye);
     const auto accepted = view_matrix(set, 1);
     set.set_active(b);
-    equal(accepted, view_matrix(set, 1));
-    rejects([&] { (void)view_matrix(b.get(), 1); }); // Foreign to this standalone selection.
+    CHECK(same(accepted, view_matrix(set, 1)));
+    // The view's camera is foreign to b on its own.
+    CHECK_THROWS_WITH_AS(view_matrix(b.get(), 1), dead_camera, std::invalid_argument);
     auto other = camera(b.get());
     other.set_position({4, 0, 0});
     selected->camera = other;
-    near(view_origin(view_matrix(set, 1))[0], 4);
+    CHECK(view_origin(view_matrix(set, 1))[0] == Near{4, tolerance});
     auto extra = view(a.get(), eye);
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), "Camera selection has multiple active views", std::invalid_argument);
     extra.set_enabled(false);
-    (void)view_matrix(set, 1);
+    CHECK_NOTHROW(view_matrix(set, 1));
     selected.set_enabled(false);
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
     selected.set_enabled(true);
     auto group = b->create();
     other.set_parent(group);
     group.set_active(false);
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), inactive_camera, std::invalid_argument);
     group.set_active(true);
     other.get_component<Camera>().set_enabled(false);
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), inactive_camera, std::invalid_argument);
     other.remove_component<Camera>();
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), inactive_camera, std::invalid_argument);
     other.add_component<Camera>(); // Link deliberately selects the object's current attachment.
-    (void)view_matrix(set, 1);
+    CHECK_NOTHROW(view_matrix(set, 1));
     other.destroy();
     (void)camera(b.get());
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
     selected->camera = {};
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
     selected->camera = eye;
     set.unload(a);
     a = set.create("a");
     (void)camera(a.get());
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
     set.clear();
-    check(!selected, "View handle retained unloaded scene");
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_FALSE(selected.valid());
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
 }
-struct Reentry {
-    SceneSet *scenes;
-    Scene *scene;
-    unsigned *calls;
-    void on_update(double) {
-        rejects([&] { (void)view_matrix(*scene, 1); });
-        rejects([&] { (void)view_matrix(*scenes, 1); });
-        ++*calls;
-    }
-};
-struct Construction {
-    Construction(Scene &scene) {
-        rejects([&] { (void)view_matrix(scene, 1); });
-    }
-};
-void boundaries() {
+
+TEST_CASE("Views do not resolve from component hooks or construction") {
     SceneSet set;
     auto scene = set.create("level");
     auto eye = camera(scene.get());
@@ -176,95 +251,91 @@ void boundaries() {
     eye.add_component<Reentry>(&set, &scene.get(), &calls);
     eye.add_component<Construction>(scene.get());
     set.update(0);
-    check(calls == 1, "Camera test callback did not run");
-    (void)view_matrix(set, 1);
+    CHECK(calls == 1);
+    CHECK_NOTHROW(view_matrix(set, 1));
     selected.object().set_active(false);
-    rejects([&] { (void)view_matrix(set, 1); });
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
 }
-void persistence() {
-    ComponentCodecs codecs;
-    add_camera_component_codecs(codecs);
-    Scene scene;
-    auto root = scene.create("rig");
-    auto selected = root.add_component<CameraView>();
-    auto eye = camera(scene);
-    eye.set_parent(root, ReparentMode::keep_local);
-    eye.set_position({3, 2, 1});
-    selected->camera = eye; // View decodes before its child's Camera.
-    CameraSettings settings{CameraProjection::orthographic, 73, 8, .2F, 500};
-    eye.get_component<Camera>()->configure(settings);
-    auto prefab = Prefab::deserialize(Prefab::capture(root, codecs).serialize({}), {}, codecs);
+
+TEST_CASE_FIXTURE(Rig, "Camera links remap per prefab instance, and lenses and activation persist") {
+    const auto prefab = Prefab::deserialize(Prefab::capture(root, codecs).serialize({}), {}, codecs);
     auto first = prefab.instantiate(scene), second = prefab.instantiate(scene);
-    check(first.get_component<CameraView>()->camera.id() == first.children()[0].id() &&
-              second.get_component<CameraView>()->camera.id() == second.children()[0].id(),
-          "Prefab camera link not remapped");
+    CHECK(first.get_component<CameraView>()->camera.id() == first.children()[0].id());
+    CHECK(second.get_component<CameraView>()->camera.id() == second.children()[0].id());
     first.set_active(false);
     second.get_component<CameraView>().set_enabled(false);
     const auto accepted = view_matrix(scene, 2);
-    auto restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
-    equal(accepted, view_matrix(*restored, 2));
-    check(!restored->find(first.key()).active_self() &&
-              !restored->find(second.key()).get_component<CameraView>().enabled(),
-          "Camera view activation lost");
-    const auto &lens = restored->find(eye.key()).get_component<Camera>()->settings();
-    check(lens.projection == settings.projection && lens.vertical_fov_degrees == 73 && lens.orthographic_height == 8 &&
-              lens.near_plane == .2F && lens.far_plane == 500,
-          "Camera lens persistence lost settings");
-    rejects([&] { add_camera_component_codecs(codecs); });
-    equal(accepted, view_matrix(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs), 2));
-    selected->camera = second.children()[0];
-    rejects([&] { (void)Prefab::capture(root, codecs); });
+    const auto restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
+    CHECK(same(accepted, view_matrix(*restored, 2)));
+    CHECK_FALSE(restored->find(first.key()).active_self());
+    CHECK_FALSE(restored->find(second.key()).get_component<CameraView>().enabled());
+    const auto &restored_lens = restored->find(eye.key()).get_component<Camera>()->settings();
+    CHECK(restored_lens.projection == lens.projection);
+    CHECK(restored_lens.vertical_fov_degrees == 73);
+    CHECK(restored_lens.orthographic_height == 8);
+    CHECK(restored_lens.near_plane == .2F);
+    CHECK(restored_lens.far_plane == 500);
+    CHECK_THROWS_WITH_AS(add_camera_component_codecs(codecs), duplicate_codec, std::invalid_argument);
+    // The failed registration left the codecs as they were.
+    CHECK(same(accepted, view_matrix(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs), 2)));
+}
+
+TEST_CASE_FIXTURE(Rig, "Capturing a link outside the prefab is rejected, and a null link stays null") {
+    selected->camera = camera(scene);
+    CHECK_THROWS_WITH_AS(Prefab::capture(root, codecs), "Object reference is stale or outside the captured graph",
+                         std::invalid_argument);
     selected->camera = {};
-    auto empty = Prefab::capture(root, codecs).instantiate(scene);
-    check(!empty.get_component<CameraView>()->camera.valid(), "Null selection was rebound");
-    empty.destroy();
-    selected->camera = eye;
+    const auto unlinked = Prefab::capture(root, codecs).instantiate(scene);
+    CHECK_FALSE(unlinked.get_component<CameraView>()->camera.valid());
+}
+
+TEST_CASE_FIXTURE(Rig, "Invalid camera payloads are rejected without leaking staged objects") {
+    const auto accepted = view_matrix(scene, 2);
+    const auto prefab = Prefab::capture(root, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     for (unsigned node : {0U, 1U}) {
+        CAPTURE(node);
         auto &data = nodes[node].components[0].state;
         const auto valid = data;
-        const auto field = node == 0 ? "camera" : "near_plane";
-        auto invalids = invalid_component_payloads(valid, field);
-        invalids.push_back(std::string(64 * 1024 + 1, ' '));
+        std::vector<Payload> payloads;
         if (node == 0) {
-            for (auto invalid : {"{\"camera\":0}", "{\"camera\":\"01\"}", "{\"camera\":\"99999\"}"})
-                invalids.emplace_back(invalid);
+            payloads = invalid_payloads(valid, "camera", "camera");
+            payloads.push_back({R"({"camera":0})", "Camera view requires an object key string"});
+            payloads.push_back({R"({"camera":"01"})", "Invalid object key"});
+            payloads.push_back({R"({"camera":"99999"})", "Object reference target is missing or expired"});
         } else {
-            for (const auto bad : {"true", "\"1\"", "-1", "1e100"}) {
+            payloads = invalid_payloads(valid, "near_plane", "projection");
+            for (const auto &[bad, error] :
+                 {std::pair{"true", "Invalid camera number"}, std::pair{"\"1\"", "Invalid camera number"},
+                  std::pair{"-1", invalid_lens}, std::pair{"1e100", "JSON number outside the float range"}}) {
                 auto invalid = valid;
                 const auto begin = invalid.find("\"near_plane\":") + 13;
                 const auto end = invalid.find_first_of(",}", begin);
                 invalid.replace(begin, end - begin, bad);
-                invalids.push_back(invalid);
+                payloads.push_back({invalid, error});
             }
         }
-        for (const auto &invalid : invalids) {
-            data = invalid;
+        for (std::size_t index = 0; index < payloads.size(); ++index) {
+            CAPTURE(index);
+            data = payloads[index].state;
             const auto size = scene.size();
-            rejects([&] { (void)Prefab(nodes, codecs).instantiate(scene); });
-            check(scene.size() == size, "Invalid camera payload leaked staged objects");
-            equal(accepted, view_matrix(scene, 2));
+            CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), payloads[index].error.c_str(),
+                                 std::invalid_argument);
+            CHECK(scene.size() == size);
+            CHECK(same(accepted, view_matrix(scene, 2)));
         }
         data = valid;
     }
-    // Failing the second codec registration must not publish the first.
+}
+
+TEST_CASE("A failed codec registration publishes neither codec") {
     ComponentCodecs conflict;
     conflict.add<CameraView>(
         "anima.camera-view.v1", [](const CameraView &, const ObjectReferences &) { return "{}"; },
         [](GameObject o, std::string_view, const ObjectReferences &) { o.add_component<CameraView>(); });
-    rejects([&] { add_camera_component_codecs(conflict); });
-    rejects([&] { (void)Prefab::capture(eye, conflict); });
-}
-} // namespace
-int main() {
-    try {
-        projection_and_pose();
-        selection_and_lifetime();
-        boundaries();
-        persistence();
-        std::cout << "PASS camera projection, selection, persistence and lifetime\n";
-    } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
+    CHECK_THROWS_WITH_AS(add_camera_component_codecs(conflict), duplicate_codec, std::invalid_argument);
+    Scene scene;
+    const auto eye = camera(scene);
+    // The camera codec, registered before the conflict, was not published either.
+    CHECK_THROWS_WITH_AS(Prefab::capture(eye, conflict), "Component has no persistence codec", std::invalid_argument);
 }
