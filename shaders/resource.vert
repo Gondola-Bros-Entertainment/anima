@@ -13,6 +13,7 @@ layout(location = 0) out vec3 worldNormal;
 layout(location = 1) out vec3 baseColor;
 layout(location = 2) out vec2 texcoord;
 layout(location = 3) out vec3 worldPosition;
+layout(location = 6) flat out float orientation;
 layout(set = 2, binding = 0, std430) readonly buffer Poses { mat4 matrices[]; }
 poses;
 layout(push_constant) uniform Draw {
@@ -43,6 +44,9 @@ void main() {
     // CPU-reference parity applies to non-singular transforms.
     worldNormal = n;
     worldTangent = vec4(mat3(transform) * tangent.xyz, tangent.w * (determinant < 0.0 ? -1.0 : 1.0));
+    // A negative determinant reverses winding, as glTF specifies for mirrored nodes, so the fragment shader
+    // flips gl_FrontFacing by this sign. The provoking (first) vertex supplies it for the whole triangle.
+    orientation = determinant < 0.0 ? -1.0 : 1.0;
     vertexAlpha = alpha;
     worldPosition = mat3(transform) * position + transform[3].xyz;
     gl_Position = draw.viewProjection * vec4(worldPosition, 1.0);

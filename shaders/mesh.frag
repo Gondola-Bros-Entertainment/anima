@@ -6,6 +6,7 @@ layout(location = 2) in vec2 texcoord;
 layout(location = 3) in vec3 worldPosition;
 layout(location = 4) in vec4 worldTangent;
 layout(location = 5) in float vertexAlpha;
+layout(location = 6) flat in float orientation;
 #include "material.glsl"
 layout(push_constant) uniform Surface {
     layout(offset = 64) vec4 viewOrigin;
@@ -41,6 +42,9 @@ vec3 light(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float metallic, float a
     return (diffuse + fresnel * distribution * visibility) * nl;
 }
 void main() {
+    // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
+    // they rasterize as back faces; its negative orientation restores them to the front.
+    float facing = (gl_FrontFacing ? 1.0 : -1.0) * orientation;
     vec3 n = unit(worldNormal);
     // Authored tangent frames survive skinning and mirrored instance transforms.
     // Assets without TANGENT use a per-triangle cotangent frame; degenerate UVs
@@ -54,7 +58,7 @@ void main() {
     // correction even when their shading normal differs from the polygon.
     vec3 geometricNormal = unit(cross(dp1, dp2));
     geometricNormal *= dot(geometricNormal, worldNormal) < 0.0 ? -1.0 : 1.0;
-    geometricNormal *= gl_FrontFacing ? 1.0 : -1.0;
+    geometricNormal *= facing;
     float receiverFacing = dot(geometricNormal, environment.sunDirection.xyz);
     vec3 dn1 = dFdx(n), dn2 = dFdy(n);
     float curvature = sqrt((dot(dn1, dn1) + dot(dn2, dn2)) / max(dot(dp1, dp1) + dot(dp2, dp2), 1e-12));
@@ -90,7 +94,7 @@ void main() {
         if (valid)
             n = unit(t * mapped.x + b * mapped.y + n * mapped.z);
     }
-    n *= gl_FrontFacing ? 1.0 : -1.0;
+    n *= facing;
     vec4 base = texture(baseColorTexture, texcoord);
     if (material.detail.y >= 0.0 && base.a * material.emissiveAlpha.a * vertexAlpha < material.detail.y)
         discard;

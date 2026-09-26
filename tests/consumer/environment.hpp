@@ -8,7 +8,10 @@
 #include <fstream>
 #include <limits>
 #include <numbers>
+#include <sstream>
+#include <string>
 #include <string_view>
+#include <vector>
 namespace environment_test {
 inline std::shared_ptr<const anima::Asset> fixture(bool sloped = false) {
     auto asset = std::make_shared<anima::Asset>();
@@ -84,6 +87,188 @@ inline std::shared_ptr<const anima::Asset> curved_fixture() {
     }
     asset->primitives.push_back(std::move(primitive));
     return asset;
+}
+constexpr std::size_t rgb_channels = 3;
+// An 8-bit RGB image that VulkanRenderer::request_capture wrote as a binary PPM, top row first.
+struct CapturedImage {
+    std::uint32_t width{}, height{};
+    std::vector<std::uint8_t> rgb;
+};
+inline CapturedImage read_capture(const std::filesystem::path &path) {
+    constexpr unsigned channel_max = 255;
+    std::ifstream input(path, std::ios::binary);
+    std::string magic;
+    unsigned maximum = 0;
+    CapturedImage image;
+    input >> magic >> image.width >> image.height >> maximum;
+    input.get(); // The single whitespace byte that ends the header.
+    resource_test::require(input && magic == "P6" && maximum == channel_max, "Capture is not an 8-bit binary PPM");
+    image.rgb.resize(std::size_t(image.width) * image.height * rgb_channels);
+    input.read(reinterpret_cast<char *>(image.rgb.data()), static_cast<std::streamsize>(image.rgb.size()));
+    resource_test::require(bool(input), "Capture ended before its pixels");
+    return image;
+}
+// Mean of each channel over the pixels within @p radius of the pixel that contains @p at.
+inline std::array<double, rgb_channels> window_mean(const CapturedImage &image, std::array<float, 2> at, int radius) {
+    const auto column = static_cast<long>(std::floor(at[0])), row = static_cast<long>(std::floor(at[1]));
+    resource_test::require(column - radius >= 0 && row - radius >= 0 && column + radius < long(image.width) &&
+                               row + radius < long(image.height),
+                           "Sample window leaves the capture");
+    std::array<double, rgb_channels> sum{};
+    for (auto y = row - radius; y <= row + radius; ++y)
+        for (auto x = column - radius; x <= column + radius; ++x)
+            for (std::size_t c = 0; c < rgb_channels; ++c)
+                sum[c] += image.rgb[(std::size_t(y) * image.width + std::size_t(x)) * rgb_channels + c];
+    const auto count = double((2 * radius + 1) * (2 * radius + 1));
+    for (auto &value : sum)
+        value /= count;
+    return sum;
+}
+// Pixel coordinates of @p world under @p view_projection in a @p width by @p height image.
+inline std::array<float, 2> project(const anima::Mat4 &view_projection, anima::Vec3 world, std::uint32_t width,
+                                    std::uint32_t height) {
+    const auto clip = [&](unsigned row) {
+        return view_projection[row] * world.x + view_projection[4 + row] * world.y +
+               view_projection[8 + row] * world.z + view_projection[12 + row];
+    };
+    const auto w = clip(3);
+    return {(clip(0) / w + 1) * .5F * float(width), (clip(1) / w + 1) * .5F * float(height)};
+}
+// Appends a square face centered on @p center that spans @p u and @p v either way, wound counterclockwise about
+// its normal, cross(u, v).
+inline void add_face(anima::SourcePrimitive &primitive, anima::Vec3 center, anima::Vec3 u, anima::Vec3 v) {
+    const std::array corners{center - u - v, center + u - v, center + u + v, center - u + v};
+    for (const auto corner : {0U, 1U, 2U, 0U, 2U, 3U}) {
+        anima::SourceVertex vertex;
+        vertex.position = corners[corner];
+        vertex.normal = anima::normalized(anima::cross(u, v));
+        primitive.vertices.push_back(vertex);
+    }
+}
+// A matte box centered on its origin with half extents @p half, or with @p ground only its face toward +Y.
+inline std::shared_ptr<const anima::Asset> box_fixture(anima::Vec3 half, bool ground = false) {
+    auto asset = std::make_shared<anima::Asset>();
+    asset->nodes.resize(1);
+    anima::Material matte;
+    matte.name = ground ? "ground" : "matte box";
+    matte.factor = {.8F, .8F, .8F};
+    asset->materials.push_back(matte);
+    anima::SourcePrimitive primitive;
+    primitive.material = 0;
+    const anima::Vec3 x{half.x, 0, 0}, y{0, half.y, 0}, z{0, 0, half.z};
+    if (ground)
+        add_face(primitive, {}, z, x);
+    else {
+        add_face(primitive, x, y, z);
+        add_face(primitive, x * -1.F, z, y);
+        add_face(primitive, y, z, x);
+        add_face(primitive, y * -1.F, x, z);
+        add_face(primitive, z, x, y);
+        add_face(primitive, z * -1.F, y, x);
+    }
+    asset->primitives.push_back(std::move(primitive));
+    return asset;
+}
+// A mesh and its (-1, 1, 1) mirror image under the same light shade as mirror images, casting and receiving
+// shadows alike. The sun, the camera and the shadow region lie in the plane x = 0 that relates them, and each
+// cube stands on its own ground tile, the mirrored cube's tile being the other tile mirrored.
+template <class Capture>
+void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesystem::path &output, Capture &&capture) {
+    using anima::operator*;
+    constexpr float half = .5F, offset = 1.5F, turn = .5235988F; // 30 degrees about +Y.
+    constexpr anima::Vec3 tile_half{offset, 0, 3};               // Covers a cube and its shadow.
+    constexpr float tile_z = -1;
+    constexpr anima::Quat unrotated{0, 0, 0, 1};
+    constexpr float matrix_tolerance = 1e-6F;
+    constexpr int window_radius = 3;             // Pixels around each sample, which sits well inside its face.
+    constexpr double face_tolerance = 3;         // Channel levels between the means of corresponding samples.
+    constexpr double lit_margin = 30;            // Channel levels by which a sunlit face outshines its shadow.
+    constexpr int symmetry_tolerance = 16;       // Channel levels between a pixel and its reflection.
+    constexpr double mismatch_limit = .002;      // Fraction of reflected pixel pairs allowed beyond the tolerance.
+    constexpr float shadow_z = -2.2F;            // Ground depth inside each cube's shadow and in view past it.
+    constexpr anima::Vec3 sunlit{2.2F, 0, 1.2F}; // Ground in front of the right cube, outside every shadow.
+    auto scene = std::make_shared<anima::Scene>();
+    const auto tile = anima::Mesh::compile(*box_fixture(tile_half, true));
+    auto ground = scene->create("ground", tile);
+    auto mirrored_ground = scene->create("mirrored ground", tile);
+    ground.set_transform({{-offset, 0, tile_z}, unrotated, {1, 1, 1}});
+    mirrored_ground.set_transform({{offset, 0, tile_z}, unrotated, {-1, 1, 1}});
+    const auto cube = anima::Mesh::compile(*box_fixture({half, half, half}));
+    auto original = scene->create("original", cube);
+    auto mirrored = scene->create("mirrored", cube);
+    original.set_transform({{-offset, half, 0}, {0, std::sin(turn / 2), 0, std::cos(turn / 2)}, {1, 1, 1}});
+    mirrored.set_transform({{offset, half, 0}, {0, -std::sin(turn / 2), 0, std::cos(turn / 2)}, {-1, 1, 1}});
+    const anima::Mat4 reflection{-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    for (const auto &[left, right] : {std::pair{ground, mirrored_ground}, std::pair{original, mirrored}}) {
+        const auto expected = reflection * left.world_matrix(), actual = right.world_matrix();
+        for (std::size_t i = 0; i < actual.size(); ++i)
+            resource_test::require(std::abs(actual[i] - expected[i]) < matrix_tolerance,
+                                   "A mirrored object is not its counterpart's reflection");
+    }
+    anima::Environment lighting;
+    lighting.sun.direction = {0, .342F, .94F}; // 20 degrees above the horizon, behind the camera.
+    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.radiance = {};
+    lighting.ambient_sky = {.25F, .3F, .4F};
+    lighting.ambient_ground = {.04F, .03F, .02F};
+    lighting.shadow.enabled = true;
+    lighting.shadow.center = {0, 0, -1};
+    lighting.shadow.extent = 4;
+    lighting.shadow.depth = 20;
+    lighting.shadow.resolution = 1024;
+    const auto view = anima::perspective(4.F / 3, .05F, 50) * anima::look_at({0, 5, 3}, {0, 0, -1});
+    renderer.set_view(view);
+    renderer.set_environment(lighting);
+    renderer.set_scenes({scene});
+    capture("mirrored-shading");
+    const auto image = read_capture(output / "mirrored-shading.ppm");
+    struct Sample {
+        const char *name;
+        anima::Vec3 original, mirrored;
+    };
+    const auto face = [&](const char *name, anima::Vec3 local) {
+        return Sample{name, anima::point(original.world_matrix(), local), anima::point(mirrored.world_matrix(), local)};
+    };
+    const std::array samples{face("front face", {0, 0, half}), face("top face", {0, half, 0}),
+                             Sample{"ground shadow", {-offset, 0, shadow_z}, {offset, 0, shadow_z}},
+                             Sample{"sunlit ground", {-sunlit.x, sunlit.y, sunlit.z}, sunlit}};
+    std::array<std::array<double, rgb_channels>, std::tuple_size_v<decltype(samples)>> originals{};
+    std::ostringstream report;
+    bool matched = true;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        originals[i] = window_mean(image, project(view, samples[i].original, image.width, image.height), window_radius);
+        const auto reflected =
+            window_mean(image, project(view, samples[i].mirrored, image.width, image.height), window_radius);
+        report << samples[i].name << ": original";
+        for (const auto value : originals[i])
+            report << ' ' << std::lround(value);
+        report << ", mirrored";
+        for (const auto value : reflected)
+            report << ' ' << std::lround(value);
+        report << "; ";
+        for (std::size_t c = 0; c < rgb_channels; ++c)
+            matched = matched && std::abs(originals[i][c] - reflected[c]) <= face_tolerance;
+    }
+    std::size_t mismatched = 0;
+    for (std::uint32_t y = 0; y < image.height; ++y)
+        for (std::uint32_t x = 0; x < image.width / 2; ++x) {
+            const auto left = (std::size_t(y) * image.width + x) * rgb_channels;
+            const auto right = (std::size_t(y) * image.width + (image.width - 1 - x)) * rgb_channels;
+            for (std::size_t c = 0; c < rgb_channels; ++c)
+                if (std::abs(int(image.rgb[left + c]) - int(image.rgb[right + c])) > symmetry_tolerance) {
+                    ++mismatched;
+                    break;
+                }
+        }
+    const auto mismatch = double(mismatched) / (double(image.width / 2) * image.height);
+    report << "reflected pixels beyond " << symmetry_tolerance << " levels: " << mismatch * 100 << "%";
+    std::cout << "MIRRORED SHADING " << report.str() << '\n';
+    // Without light and shadow to compare, matching samples would prove nothing.
+    resource_test::require(originals[0][0] > originals[2][0] + lit_margin &&
+                               originals[3][0] > originals[2][0] + lit_margin,
+                           "The original cube's front face or its ground is not sunlit, or its shadow is missing");
+    if (!matched || mismatch > mismatch_limit)
+        throw std::runtime_error("Mirrored draws shade differently: " + report.str());
 }
 inline int run(int argc, char **argv) {
     using resource_test::require;
@@ -380,10 +565,11 @@ inline int run(int argc, char **argv) {
     environment.shadow.enabled = false;
     renderer.set_environment(environment);
     capture("sky-shadows-disabled");
+    check_mirrored_shading(renderer, output, capture);
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Environment GPU validation failed");
     std::cout << "PASS environment: shadow casters, detail-pass visibility, invalid-setting rejection, lighting "
-                 "replacement and retirement\n";
+                 "replacement, mirrored shading and retirement\n";
     return 0;
 }
 } // namespace environment_test

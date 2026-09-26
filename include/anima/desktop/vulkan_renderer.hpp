@@ -226,6 +226,11 @@ struct ResourceStats {
 /// and shadow passes alike. Unlit materials show their base color without lighting, shadows or emission, cast
 /// no shadows and still receive fog and exposure. Skinned vertices blend up to four joint matrices on the GPU.
 /// Normals use the inverse transpose of the vertex's matrix, and a singular matrix gives the normal +Y.
+/// Triangles wound counterclockwise on screen face the viewer, and a back face shades with its normal
+/// reversed. A matrix with a negative determinant, such as a scale of (-1, 1, 1), reverses the winding of the
+/// triangles it places, as glTF specifies for mirrored nodes, so a mirrored draw shades as the mirror image of
+/// its original; in a skinned triangle, the first vertex's blended matrix decides. Nothing is culled by facing,
+/// so shadow casting does not depend on it.
 ///
 /// Swapchains follow the window's pixel size with FIFO presentation. Recreation after a resize or an
 /// out-of-date or suboptimal result waits for the device to go idle, so it can stall briefly. Display output is
