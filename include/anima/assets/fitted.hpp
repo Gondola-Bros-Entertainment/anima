@@ -72,10 +72,10 @@ class FittedLibrary {
     }
     /// Items that fit this body, by id.
     const auto &definitions() const { return definitions_; }
-    /// Item @p id. Throws unless it fits this body.
+    /// Item @p id. Throws `std::out_of_range` unless it fits this body.
     const FittedDefinition &definition(std::string_view id) const;
     /// Loads item @p id, sharing one FittedAsset per model file and slot while it is alive. Throws
-    /// unless the item fits this body, and as load_asset and FittedAsset do.
+    /// `std::out_of_range` unless the item fits this body, and as load_asset and FittedAsset do.
     std::shared_ptr<const FittedAsset> load(std::string_view id) const;
     /// Meshes of loaded items that are still alive.
     std::vector<std::shared_ptr<const Mesh>> resident_assets() const;

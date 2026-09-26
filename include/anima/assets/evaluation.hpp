@@ -52,7 +52,7 @@ class EvaluationRig {
     /// and valid, acyclic parents, every skin joint of @p asset is mapped, and @p asset's own
     /// hierarchy is valid and acyclic.
     EvaluationRig(const Asset &asset, std::vector<EvaluationJoint> joints);
-    /// Index of the joint named @p name. Throws for an unknown name.
+    /// Index of the joint named @p name. Throws `std::out_of_range` for an unknown name.
     [[nodiscard]] std::size_t joint(std::string_view name) const;
     /// Asset node of joint @p joint. Throws `std::out_of_range` for an invalid index.
     [[nodiscard]] std::size_t asset_node(std::size_t joint) const { return joints_.at(joint).asset_node; }

@@ -76,7 +76,7 @@ class AssetPreview {
     AssetPreview(AssetPreview &&) noexcept = default;
     AssetPreview &operator=(AssetPreview &&) noexcept = default;
     /// Selects the manifest clip named @p clip with its manifest metadata, playing it from the
-    /// start when @p play is true. Throws `std::runtime_error` for a clip the manifest does not
+    /// start when @p play is true. Throws `std::out_of_range` for a clip the manifest does not
     /// declare.
     void select(const std::string &clip, bool play = true);
     /// Shows the rest pose and pauses.

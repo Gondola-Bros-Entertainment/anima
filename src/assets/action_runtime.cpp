@@ -126,7 +126,7 @@ struct ActionRuntime::Impl {
     const ActionDefinition &definition(std::string_view id) const {
         const auto found = actions_.find(id);
         if (found == actions_.end())
-            throw std::invalid_argument("Unknown action: " + std::string(id));
+            throw std::out_of_range("Unknown action: " + std::string(id));
         return found->second;
     }
     // Generic caller timing contract: no inventory, damage, class or network rules.
@@ -257,7 +257,7 @@ struct ActionRuntime::Impl {
 };
 ActionRuntime::ActionRuntime(std::shared_ptr<const Asset> asset, std::shared_ptr<const MotionRuntime> motion,
                              std::string_view document)
-    : impl_(detail::json_step([&] {
+    : impl_(presentation_data::decode_step([&] {
           return std::make_shared<Impl>(std::move(asset), std::move(motion), presentation_data::parse(document));
       })) {}
 ActionWeight ActionRuntime::weight(std::string_view document) {

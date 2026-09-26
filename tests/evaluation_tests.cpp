@@ -81,6 +81,13 @@ void affine_tests() {
 void rig_tests() {
     const auto asset = fixture();
     const EvaluationRig rig(asset, joints());
+    bool unknown_joint = false;
+    try {
+        (void)rig.joint("missing");
+    } catch (const std::out_of_range &error) {
+        unknown_joint = std::string_view(error.what()) == "Unknown evaluation joint: missing";
+    }
+    check(unknown_joint, "An unknown evaluation joint was not reported as std::out_of_range");
     auto source = sample_pose(asset);
     // Unequal scale plus differently oriented child induces real affine shear.
     Transform chest;

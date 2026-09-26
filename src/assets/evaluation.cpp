@@ -190,7 +190,7 @@ std::size_t EvaluationRig::joint(std::string_view name) const {
     for (std::size_t i = 0; i < joints_.size(); ++i)
         if (joints_[i].name == name)
             return i;
-    throw std::invalid_argument("Unknown evaluation joint: " + std::string(name));
+    throw std::out_of_range("Unknown evaluation joint: " + std::string(name));
 }
 bool EvaluationRig::descendant(std::size_t child, std::size_t ancestor) const {
     require(child < size() && ancestor < size(), "Invalid evaluation joint index");

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <locale>
 #include <sstream>
+#include <string_view>
 
 namespace presentation_test {
 using namespace anima;
@@ -23,6 +24,23 @@ template <class F> void rejects(F operation) {
         return;
     }
     throw std::runtime_error("Invalid presentation contract accepted");
+}
+// Requires operation to throw an Error whose message is exactly expected.
+template <class Error, class F> void rejects_as(F operation, const std::string &expected) {
+    try {
+        operation();
+    } catch (const Error &error) {
+        if (error.what() == expected)
+            return;
+        throw std::runtime_error("Expected \"" + expected + "\", got \"" + error.what() + "\"");
+    }
+    throw std::runtime_error("Expected rejection: " + expected);
+}
+// text with its first from replaced by to; the fixture must contain from.
+inline std::string with_first(std::string text, std::string_view from, std::string_view to) {
+    const auto at = text.find(from);
+    check(at != std::string::npos, "Fixture text to replace is missing");
+    return text.replace(at, from.size(), to);
 }
 inline std::string matrix_json(const Mat4 &matrix) {
     std::ostringstream out;
@@ -524,6 +542,44 @@ inline void run() {
         rejects([&] {
             ActionRuntime invalid(actor.actor.asset, motion, R"({"schema_version":1,"schema_version":1,"actions":[]})");
         });
+        rejects_as<std::out_of_range>([&] { (void)runtime.definition("absent"); }, "Unknown action: absent");
+        rejects_as<std::out_of_range>([&] { (void)motion->clip("absent"); }, "Missing animation: absent");
+        rejects_as<std::out_of_range>([&] { (void)motion->metadata("absent"); }, "Unknown base motion/action: absent");
+        rejects_as<std::out_of_range>([&] { (void)motion->layer_mask("absent"); }, "Unknown handling layer: absent");
+        rejects_as<std::out_of_range>([&] { (void)motion->contact_end_node("absent"); },
+                                      "Unknown motion chain: absent");
+        MotionLayer unknown_layer;
+        unknown_layer.clip = "drift";
+        unknown_layer.mask = "absent";
+        MotionControls unknown_mask;
+        unknown_mask.layers.push_back(unknown_layer);
+        rejects_as<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_mask); },
+                                      "Unknown motion mask: absent");
+        MotionControls unknown_joint;
+        unknown_joint.offsets.push_back({.joint = "absent"});
+        rejects_as<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_joint); },
+                                      "Unknown evaluation joint: absent");
+        rejects_as<std::out_of_range>([&] { (void)choices.resolve("absent", "use", actor.capabilities); },
+                                      "Missing presentation reference: absent");
+        rejects_as<std::invalid_argument>(
+            [&] {
+                ActionRuntime unknown(actor.actor.asset, motion,
+                                      with_first(actions, R"("clip":"signal")", R"("clip":"absent")"));
+            },
+            "Missing animation: absent");
+        rejects_as<std::invalid_argument>(
+            [&] {
+                ActionRuntime unknown(
+                    actor.actor.asset, motion,
+                    with_first(actions, R"("props":[)", R"("contacts":{"absent":[[0,1],[1,1]]},"props":[)"));
+            },
+            "Unknown motion chain: absent");
+        rejects_as<std::invalid_argument>(
+            [&] {
+                ActionSetCatalog unknown(
+                    R"({"version":1,"sets":{"operator":{"use":[{"action":"absent","requires":[]}]}}})", runtime);
+            },
+            "Unknown action: absent");
         MotionControls contact;
         const auto end = point(baseline.world[sockets.at("starboard").node], {});
         contact.contacts.push_back({"starboard", end, {2, 0, 1}, 1, {}});
@@ -555,6 +611,12 @@ inline void run() {
                weights + "}]}";
     };
     InteractionRuntime interaction(actors, interaction_document(edge));
+    rejects_as<std::invalid_argument>(
+        [&] {
+            InteractionRuntime unknown(
+                actors, with_first(interaction_document(edge), R"("chain":"starboard")", R"("chain":"absent")"));
+        },
+        "Unknown motion chain: absent");
     auto parent_world = identity();
     parent_world[12] = 3;
     parent_world[14] = -2;

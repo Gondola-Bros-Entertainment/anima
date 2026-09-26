@@ -113,11 +113,11 @@ const Animation &find_animation(const Asset &asset, std::string_view name) {
     for (const auto &clip : asset.animations)
         if (clip.name == name) {
             if (result)
-                throw std::runtime_error("Ambiguous animation name: " + std::string(name));
+                throw std::invalid_argument("Ambiguous animation name: " + std::string(name));
             result = &clip;
         }
     if (!result)
-        throw std::runtime_error("Missing animation: " + std::string(name));
+        throw std::out_of_range("Missing animation: " + std::string(name));
     return *result;
 }
 std::size_t unique_node(const Asset &asset, const std::string &name) {
@@ -125,11 +125,11 @@ std::size_t unique_node(const Asset &asset, const std::string &name) {
     for (std::size_t i = 0; i < asset.nodes.size(); ++i)
         if (asset.nodes[i].name == name) {
             if (result != asset.nodes.size())
-                throw std::runtime_error("Ambiguous node name: " + name);
+                throw std::invalid_argument("Ambiguous node name: " + name);
             result = i;
         }
     if (result == asset.nodes.size())
-        throw std::runtime_error("Missing node: " + name);
+        throw std::out_of_range("Missing node: " + name);
     return result;
 }
 } // namespace anima

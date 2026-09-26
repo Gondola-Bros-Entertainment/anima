@@ -10,7 +10,7 @@
 /// Part of the `anima::assets` target. Documents are UTF-8 JSON of at most 4 MiB and 64 nesting
 /// levels; duplicate and unknown fields are rejected. Invalid documents and arguments, including
 /// JSON syntax errors and values of the wrong JSON type, throw `std::invalid_argument` unless
-/// stated.
+/// stated. An action id argument that the runtime lacks throws `std::out_of_range`.
 
 namespace anima {
 /// One evaluation of an action instance, on the caller's authoritative clock.
@@ -141,11 +141,11 @@ class ActionRuntime {
     /// not have. Intervals are two numbers in [0, 1]; weight curves are as in weight(). Masks must
     /// exist in @p motion, and a handling layer's clip must use its declared mask.
     ///
-    /// Throws also for a null @p asset or @p motion; `std::runtime_error` for an unknown clip and
-    /// `std::out_of_range` for an unknown contact chain.
+    /// Clips and contact chains must also exist in @p motion. Throws also for a null @p asset or
+    /// @p motion.
     ActionRuntime(std::shared_ptr<const Asset> asset, std::shared_ptr<const MotionRuntime> motion,
                   std::string_view document);
-    /// Action @p id. Throws for an unknown id.
+    /// Action @p id. Throws `std::out_of_range` for an unknown id.
     const ActionDefinition &definition(std::string_view id) const;
     /// Checks the caller's timing and handling for action @p id.
     ///
@@ -166,8 +166,9 @@ class ActionRuntime {
     /// Every action, by id.
     const Definitions &definitions() const;
     /// Playback rate for @p request: 1, or the action's duration divided by
-    /// ActionRequest::duration when that is set. Throws for an unknown action, a zero instance, or
-    /// a duration that is not positive and finite or is set for a held action.
+    /// ActionRequest::duration when that is set. Throws `std::out_of_range` for an unknown action,
+    /// and for a zero instance or a duration that is not positive and finite or is set for a held
+    /// action.
     double scale(const ActionRequest &request) const;
     /// Evaluates @p request over @p base, a pose of the motion's model.
     ///

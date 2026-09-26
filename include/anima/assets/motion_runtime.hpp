@@ -19,9 +19,10 @@
 ///
 /// Contracts are UTF-8 JSON of at most 4 MiB and 64 nesting levels; duplicate and unknown fields
 /// are rejected at every level. Invalid contracts and arguments, including JSON syntax errors,
-/// missing fields and values of the wrong JSON type, throw `std::invalid_argument` unless stated;
-/// motion GLB failures and node or clip names that match nothing or several things throw
-/// `std::runtime_error`.
+/// missing fields, values of the wrong JSON type and names that match no node, joint, clip, mask or
+/// chain or several nodes, throw `std::invalid_argument` unless stated. A clip, layer, mask, chain
+/// or joint name argument that the runtime lacks throws `std::out_of_range`, and motion GLB
+/// failures throw `std::runtime_error`.
 
 namespace anima {
 /// One layer for MotionRuntime::evaluate.
@@ -109,7 +110,7 @@ class MotionRuntime {
     /// parent name and a rest world matrix within `1e-5`. A layer's `owned_joints` must list
     /// exactly its mask's joints and `context_joints` their parents outside the mask, and its clip
     /// may animate only those joints. Every motion clip must be exactly one base clip or layer,
-    /// with at least one base clip. Unknown parent names throw `std::out_of_range`.
+    /// with at least one base clip.
     MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract);
     /// Reads the file that Manifest::motion_contract names beside the manifest and constructs a
     /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
@@ -129,15 +130,17 @@ class MotionRuntime {
     /// Whether one chain's start joint is at or below the other's. Throws `std::out_of_range` for an
     /// unknown chain.
     bool contacts_overlap(std::string_view first, std::string_view second) const;
-    /// Motion clip @p name, a base clip or handling layer.
+    /// Motion clip @p name, a base clip or handling layer. Throws `std::out_of_range` for an unknown
+    /// name.
     const Animation &clip(std::string_view name) const;
-    /// Metadata of base clip @p name. Throws for handling layers and unknown names.
+    /// Metadata of base clip @p name. Throws `std::out_of_range` for handling layers and unknown
+    /// names.
     const ClipMetadata &metadata(std::string_view name) const;
     /// Base clips by name, without handling layers.
     const std::map<std::string, ClipMetadata, std::less<>> &clips() const;
     /// Whether @p name is a handling layer.
     bool is_layer(std::string_view name) const;
-    /// Mask of handling layer @p name. Throws for other names.
+    /// Mask of handling layer @p name. Throws `std::out_of_range` for other names.
     const std::string &layer_mask(std::string_view name) const;
     /// Model pose with clip @p name sampled at @p time seconds, clamped to the clip rather than
     /// looped. Model nodes that the motion lacks keep their rest transforms.
@@ -147,7 +150,7 @@ class MotionRuntime {
     /// sampled pose, with local transforms; otherwise the result is world-only.
     Pose compose(std::string_view motion, double time, std::string_view carry) const;
     /// Checks that the masks of the nonempty handling layers in @p carries share no joint. Throws
-    /// for overlapping masks or unknown layers.
+    /// `std::invalid_argument` for overlapping masks and `std::out_of_range` for an unknown layer.
     void validate_carries(std::span<const std::string_view> carries) const;
     /// compose() with several carry layers, applied in order after validate_carries().
     Pose compose_loadout(std::string_view motion, double time, std::span<const std::string_view> carries) const;
@@ -159,9 +162,9 @@ class MotionRuntime {
     /// the result so far.
     ///
     /// Empty controls return @p source unchanged; otherwise the pose is world-only. Throws beyond
-    /// the MotionControls limits, for an invalid weight, an unknown joint, a handling layer on
-    /// another mask or an override with a reference clip, and `std::out_of_range` for an unknown
-    /// mask or chain.
+    /// the MotionControls limits, for an invalid weight, a handling layer on another mask or an
+    /// override with a reference clip, and `std::out_of_range` for an unknown clip, mask, chain or
+    /// joint.
     MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 
   private:

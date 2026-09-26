@@ -47,8 +47,9 @@ class ActionSetCatalog {
     /// defined in @p actions, and `requires`, a list of unique capabilities.
     ActionSetCatalog(std::string_view document, const ActionRuntime &actions);
     /// Action of the most specific variant of @p set and @p slot: the one with the most
-    /// requirements, all of which @p capabilities include; see resolve_action. Throws for an
-    /// unknown set or slot, no compatible variant or a tie.
+    /// requirements, all of which @p capabilities include; see resolve_action. Throws
+    /// `std::out_of_range` for an unknown set or slot, and `std::invalid_argument` when no variant
+    /// is compatible or several tie.
     const std::string &resolve(std::string_view set, std::string_view slot, const Capabilities &capabilities) const;
 
   private:

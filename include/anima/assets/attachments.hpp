@@ -14,9 +14,10 @@
 /// (visuals) are independent records. Frames are column-major matrices; distances are in meters.
 /// Documents are UTF-8 JSON of at most 4 MiB and 64 nesting levels; duplicate and unknown fields
 /// are rejected. Invalid documents and arguments, including JSON syntax errors and values of the
-/// wrong JSON type, throw `std::invalid_argument` unless stated. Model load failures and node or
-/// clip names that match nothing or several things throw `std::runtime_error`. Item eligibility
-/// and gameplay rules belong to the caller.
+/// wrong JSON type, throw `std::invalid_argument` unless stated, as do documents that name a node,
+/// clip, item, visual, handling, socket or marker that does not exist. An argument naming one that
+/// does not exist throws `std::out_of_range`, and model load failures throw `std::runtime_error`.
+/// Item eligibility and gameplay rules belong to the caller.
 
 namespace anima {
 /// A support contact: while active, a motion chain moves a secondary body socket onto a prop
@@ -152,19 +153,19 @@ class AttachmentLibrary {
     /// The catalog as given; the library does not validate it again.
     const AttachmentCatalog catalog;
     explicit AttachmentLibrary(AttachmentCatalog definition);
-    /// Item @p id. Throws for an unknown id.
+    /// Item @p id. Throws `std::out_of_range` for an unknown id.
     const AttachmentDefinition &item(std::string_view id) const;
-    /// Visual @p id. Throws for an unknown id.
+    /// Visual @p id. Throws `std::out_of_range` for an unknown id.
     const AttachmentVisual &visual(std::string_view id) const;
-    /// Handling profile of item @p item_id, or the empty handling for an empty id. Throws for
-    /// unknown ids.
+    /// Handling profile of item @p item_id, or the empty handling for an empty id. Throws
+    /// `std::out_of_range` for an unknown id.
     const AttachmentHandling &motion(std::string_view item_id) const;
     /// Loads the model of visual @p visual_id; loads of the same file share its Asset and Mesh
     /// while they are alive.
     ///
-    /// Throws for an unknown visual or an animated model without
-    /// AttachmentVisual::animation_tracks, and `std::runtime_error` when the model fails to load or
-    /// lacks a node or clip that the visual names.
+    /// Throws `std::out_of_range` for an unknown visual, `std::invalid_argument` for an animated
+    /// model without AttachmentVisual::animation_tracks, and `std::runtime_error` when the model
+    /// fails to load or does not have exactly one node or clip of each name that the visual uses.
     std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id) const;
     /// Meshes of loaded models that are still alive.
     std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
@@ -199,8 +200,8 @@ Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual
 AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, const AttachmentVisual &visual,
                                               const Asset &asset, const Pose &pose);
 /// Marker @p name in prop model space. A marker listed in AttachmentVisual::marker_nodes follows
-/// its node in @p pose, so it needs @p asset and @p pose. Throws for an unknown marker or a
-/// missing pose.
+/// its node in @p pose, so it needs @p asset and @p pose. Throws `std::out_of_range` for an unknown
+/// marker and `std::invalid_argument` for a missing pose.
 Mat4 attachment_marker(const AttachmentVisual &visual, const Asset *asset, const Pose *pose, std::string_view name);
 /// One attached item in a scene.
 struct AttachmentInstance {
@@ -217,8 +218,8 @@ struct AttachmentInstance {
     ///
     /// The new item is added to @p scene as a root instance with an identity transform; place it
     /// with attachment_placement. Returns false and changes nothing when @p id is already
-    /// attached. Throws for an unknown item or socket and as AttachmentLibrary::load does; the old
-    /// item stays attached when loading fails.
+    /// attached. Throws `std::out_of_range` for an unknown item or socket, and as
+    /// AttachmentLibrary::load does; the old item stays attached when loading fails.
     bool equip(Scene &scene, const AttachmentLibrary &library,
                const std::map<std::string, AttachmentSocket, std::less<>> &sockets, std::string_view id);
 };
@@ -259,8 +260,9 @@ struct AttachmentSet {
 /// Each contact moves its chain so that its body socket frame meets its prop marker, with the prop
 /// placed through @p primary in @p source. Weights come from @p weights by chain name (default 1,
 /// each in [0, 1]); a zero weight skips the contact. Animated markers need @p prop_asset and
-/// @p prop_pose. With no active contact, returns @p source unchanged. Throws for an invalid weight
-/// or unknown socket, and as MotionRuntime::evaluate and attachment_marker do.
+/// @p prop_pose. With no active contact, returns @p source unchanged. Throws
+/// `std::invalid_argument` for an invalid weight, `std::out_of_range` for an unknown socket, and as
+/// MotionRuntime::evaluate and attachment_marker do.
 MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const Pose &source, std::string_view clip,
                                            const AttachmentHandling &handling, const AttachmentVisual &visual,
                                            const AttachmentBinding &primary,
@@ -275,7 +277,7 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const P
 /// MotionRuntime::validate_carries). With @p exclusive_primary, no two roles may share a primary
 /// socket node; pose layers and contact chains always need unique ownership. Each support contact
 /// chain must end at its declared socket's node, overlap no other contact chain and move no
-/// role's primary socket. Throws `std::out_of_range` for an unknown chain.
+/// role's primary socket. Throws `std::out_of_range` for an unknown chain or socket.
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
                                    const AttachmentSet &attachments,
                                    const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
