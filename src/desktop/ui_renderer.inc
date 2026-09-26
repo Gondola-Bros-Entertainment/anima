@@ -1,4 +1,21 @@
 // Included only inside VulkanRenderer::Impl when ANIMA_BUILD_UI is enabled.
+// Vulkan has no sampler mode without mipmapping. As the note on VkSamplerCreateInfo describes, NEAREST mip
+// selection with a maximum level of detail of 0.25 always samples the base level, while the computed level of
+// detail still chooses between the minification and magnification filters, which a maximum of 0 would not.
+static constexpr float ui_non_mipmapped_max_lod = .25F;
+// The View push constant block of ui.vert, member for member: a column-major mat4, then two vec2.
+using UiMat4 = decltype(detail::UiBatch::transform);
+using UiVec2 = decltype(detail::UiBatch::translation);
+struct UiPushConstants {
+    UiMat4 transform;
+    UiVec2 translation;
+    UiVec2 dimensions;
+};
+// The push constant layout packs the block without padding, since each vec2 starts at a multiple of its
+// alignment. The struct declares the members in the block's order and must hold exactly their floats.
+static_assert(sizeof(UiPushConstants) ==
+                  sizeof(float) * (std::tuple_size_v<UiMat4> + std::tuple_size_v<UiVec2> + std::tuple_size_v<UiVec2>),
+              "UI push constants must match the size of ui.vert's View block");
 struct UiBuffer {
     VkDevice device{};
     VkBuffer buffer{};
@@ -46,7 +63,7 @@ void create_ui_layout() {
     descriptor.bindingCount = 1;
     descriptor.pBindings = &binding;
     check(vkCreateDescriptorSetLayout(device, &descriptor, nullptr, &ui_texture_layout), "Create UI texture layout");
-    const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 20 * sizeof(float)};
+    const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(UiPushConstants)};
     VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout.pushConstantRangeCount = layout.setLayoutCount = 1;
     layout.pPushConstantRanges = &push;
@@ -107,7 +124,7 @@ void upload_ui_texture(const UiTexturePtr &source) {
     sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
     sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler.maxLod = .25F;
+    sampler.maxLod = ui_non_mipmapped_max_lod;
     check(vkCreateSampler(device, &sampler, nullptr, &texture.sampler), "Create UI sampler");
     VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     buffer.size = source->rgba.size();
@@ -237,13 +254,9 @@ void record_ui(const detail::UiFrame &frame) {
                        {static_cast<std::uint32_t>(right - left), static_cast<std::uint32_t>(bottom - top)}};
         }
         vkCmdSetScissor(command, 0, 1, &scissor);
-        std::array<float, 20> push{};
-        std::copy(batch.transform.begin(), batch.transform.end(), push.begin());
-        push[16] = batch.translation[0];
-        push[17] = batch.translation[1];
-        push[18] = static_cast<float>(extent.width);
-        push[19] = static_cast<float>(extent.height);
-        vkCmdPushConstants(command, ui_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), push.data());
+        const UiPushConstants push{
+            batch.transform, batch.translation, {static_cast<float>(extent.width), static_cast<float>(extent.height)}};
+        vkCmdPushConstants(command, ui_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
         const auto descriptor = ui_images.at(batch.texture ? batch.texture : ui_white)->descriptor;
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_pipeline_layout, 0, 1, &descriptor, 0,
                                 nullptr);
