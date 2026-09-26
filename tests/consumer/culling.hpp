@@ -1,5 +1,7 @@
 #pragma once
+#include "gpu_checks.hpp"
 #include "resources.hpp"
+#include <set>
 
 namespace culling_test {
 inline int run(int argc, char **argv) {
@@ -22,15 +24,9 @@ inline int run(int argc, char **argv) {
     const auto b = scene->add(compiled);
     scene->set_pose(b, compiled->rest_pose(), remote_world);
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    require(SDL_Init(SDL_INIT_VIDEO), "Culling consumer SDL initialization failed");
-    struct Quit {
-        ~Quit() { SDL_Quit(); }
-    } quit;
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima culling verification", 800, 600,
-                         SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE),
-        SDL_DestroyWindow};
-    require(bool(window), "Culling consumer window failed");
+    gpu_check::Video video;
+    const auto window =
+        gpu_check::window("Anima culling verification", 800, 600, SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     anima::RendererOptions options;
     options.validation = true;
     options.profile = true;
@@ -43,10 +39,9 @@ inline int run(int argc, char **argv) {
     const auto original_palette_a = scene->instance(a).palette;
     const auto original_palette_b = scene->instance(b).palette;
     const auto started = std::chrono::steady_clock::now();
-    std::filesystem::create_directories(output);
     auto frame = [&] {
         for (;;) {
-            require(std::chrono::steady_clock::now() - started < std::chrono::seconds(90), "Culling watchdog");
+            require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Culling watchdog");
             SDL_Event event{};
             while (SDL_PollEvent(&event)) {
                 require(event.type != SDL_EVENT_QUIT && event.type != SDL_EVENT_WINDOW_CLOSE_REQUESTED,
@@ -59,16 +54,25 @@ inline int run(int argc, char **argv) {
             SDL_Delay(5);
         }
     };
+    // Every case renders the same frame with culling off and on, which must match exactly. The images that
+    // later checks compare are kept.
+    gpu_check::Captures captures(output);
+    const std::set<std::string, std::less<>> kept{"visible", "hierarchy-inactive", "hierarchy-reactivated",
+                                                  "all-outside", "returned"};
+    unsigned cases = 0;
+    bool culled_any = false;
     auto compare = [&](const std::string &name) {
         renderer.set_frustum_culling(false);
-        renderer.request_capture(output / (name + "-off.ppm"));
+        renderer.request_capture();
         frame();
+        auto off = gpu_check::take(renderer);
         const auto unculled = renderer.resource_stats();
         require(unculled.draw_calls == unculled.candidate_draws && !unculled.culled_draws && !unculled.culled_instances,
                 "Disabled culling omitted visible draws");
         renderer.set_frustum_culling(true);
-        renderer.request_capture(output / (name + "-on.ppm"));
+        renderer.request_capture();
         frame();
+        auto on = gpu_check::take(renderer);
         const auto culled = renderer.resource_stats();
         require(culled.draw_calls + culled.culled_draws == culled.candidate_draws &&
                     culled.instances + culled.culled_instances == culled.candidate_instances,
@@ -76,6 +80,15 @@ inline int run(int argc, char **argv) {
         require(culled.mesh_uploads == unculled.mesh_uploads &&
                     culled.resident_geometry_bytes == unculled.resident_geometry_bytes,
                 "Culling changed geometry residency");
+        if (!gpu_check::same(off, on)) {
+            captures.add(name + "-off", std::move(off));
+            captures.add(name + "-on", std::move(on));
+            captures.fail("Culling changed the rendered pixels of " + name, {name + "-off", name + "-on"});
+        }
+        if (kept.contains(name))
+            captures.add(name + "-on", std::move(on));
+        ++cases;
+        culled_any = culled_any || culled.culled_draws;
         std::cout << "CASE {\"name\":\"" << name << "\",\"candidate_draws\":" << culled.candidate_draws
                   << ",\"draw_calls\":" << culled.draw_calls << ",\"culled_draws\":" << culled.culled_draws
                   << ",\"culled_instances\":" << culled.culled_instances
@@ -171,8 +184,15 @@ inline int run(int argc, char **argv) {
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings && stats.scene_generations == 2,
             "Culling validation failed or rebuilt the scene");
-    std::cout
-        << "PASS culling resource ownership, reentry and camera changes; validation_warnings=0 validation_errors=0\n";
+    constexpr unsigned least_cases = 11;
+    require(cases >= least_cases && culled_any, "Too few culling cases, or none culled a draw");
+    captures.require_foreground("visible-on", "The visible instance did not render");
+    captures.require_foreground("returned-on", "The returning instance did not render");
+    captures.require_clear("all-outside-on", "A view with every instance outside drew geometry");
+    captures.require_clear("hierarchy-inactive-on", "An inactive hierarchy drew geometry");
+    captures.require_same("hierarchy-reactivated-on", "visible-on", "Reactivating the hierarchy changed its image");
+    std::cout << "PASS culling resource ownership, reentry and camera changes in " << cases
+              << " identical on/off pairs; validation_warnings=0 validation_errors=0\n";
     return 0;
 }
 } // namespace culling_test
