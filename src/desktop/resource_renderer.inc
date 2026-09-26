@@ -295,7 +295,7 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
             fatal = true;
             throw RendererFatalError(error.what());
         }
-        throw;
+        throw std::runtime_error(error.what()); // VulkanFailure is private.
     } catch (const InjectedRendererFailure &error) {
         if (fatal)
             throw RendererFatalError("Device lost while retiring resource upload");
@@ -333,7 +333,7 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
             fatal = true;
             throw RendererFatalError(error.what());
         }
-        throw;
+        throw std::runtime_error(error.what()); // VulkanFailure is private.
     } catch (...) {
         if (fatal)
             throw RendererFatalError("Device lost while retiring resource preparation");

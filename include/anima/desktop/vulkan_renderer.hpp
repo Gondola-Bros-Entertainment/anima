@@ -245,7 +245,8 @@ class VulkanRenderer {
     /// supports swapchains and can present to the window; the first draw() with a drawable window creates the
     /// swapchain. Throws `std::invalid_argument` for a null @p window, what set_scenes() throws for the
     /// initial selection, InjectedRendererFailure for RendererOptions::fail_after and `std::runtime_error`
-    /// for other failures; completed stages are released before the exception propagates.
+    /// for other failures, including failed Vulkan calls; completed stages are released before the exception
+    /// propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -290,9 +291,9 @@ class VulkanRenderer {
     /// previous selection stays and meshes uploaded so far stay cached. It throws `std::invalid_argument` for a
     /// mesh beyond device limits (more vertices than the indexed-draw range, or a texture larger than the 2D
     /// image limit), `std::length_error` when the palettes exceed the storage-buffer range, `std::runtime_error`
-    /// for other failures, InjectedRendererFailure as SceneReplacementOptions::fail_after requests, and
-    /// RendererFatalError for device loss or a fence timeout. The swapchain is untouched, so this works while
-    /// the window is minimized.
+    /// for other failures, including failed Vulkan calls such as allocations, InjectedRendererFailure as
+    /// SceneReplacementOptions::fail_after requests, and RendererFatalError for device loss or a fence timeout.
+    /// The swapchain is untouched, so this works while the window is minimized.
     ///
     /// Selected scenes remain the caller's to change between draws; each draw() prepares their current content.
     /// A scene that its SceneSet unloads or replaces stays selected but is empty.
@@ -304,8 +305,8 @@ class VulkanRenderer {
     /// does nothing. Waits for the frame in flight and leaves the selection, view and poses unchanged. Not
     /// atomic: after a failure, meshes uploaded earlier stay cached while they have other owners. Throws
     /// `std::invalid_argument` for a mesh beyond device limits, `std::runtime_error` for other upload failures,
-    /// InjectedRendererFailure as ResourcePreparationOptions::fail_after requests, and RendererFatalError for
-    /// device loss or a fence timeout.
+    /// including failed Vulkan calls, InjectedRendererFailure as ResourcePreparationOptions::fail_after
+    /// requests, and RendererFatalError for device loss or a fence timeout.
     void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, ResourcePreparationOptions options = {});
     /// Uploads MeshPreparation::asset() as prepare_meshes() does, using the preparation's mip chains instead of
     /// computing them here. Allocation and upload still run synchronously on this thread. @p preparation is
