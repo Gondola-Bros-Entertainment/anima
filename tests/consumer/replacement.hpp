@@ -4,6 +4,7 @@
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/scene.hpp>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <typeinfo>
 
 namespace replacement_test {
 inline void require(bool condition, const char *message) {
@@ -122,6 +124,66 @@ inline void reject_failed_swapchain(bool disable_present_fences) {
                 !stats.presented_frames,
             "Failed swapchain cleanup failed");
 }
+// A capture that cannot be written consumes its request: the draw that submits the frame reports it once, the
+// frame counts if it was presented, and later draws present and count without writing again.
+inline void reject_unwritable_capture(const std::filesystem::path &output, bool disable_present_fences) {
+    constexpr unsigned later_frames = 3; // Enough to show the write is not retried.
+    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
+        SDL_CreateWindow("Anima capture failure consumer", 320, 240, SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY),
+        SDL_DestroyWindow};
+    require(bool(window), "SDL window creation failed");
+    anima::RendererOptions options;
+    options.validation = true;
+    options.disable_present_fences = disable_present_fences;
+    anima::VulkanRenderer renderer(window.get(), options);
+    renderer.set_view(anima::identity());
+    const auto started = std::chrono::steady_clock::now();
+    std::uint64_t presented = 0;
+    const auto frame = [&] {
+        for (;;) {
+            require(std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+                    "Capture failure watchdog expired");
+            SDL_Event event{};
+            while (SDL_PollEvent(&event)) {
+            }
+            if (renderer.draw()) {
+                ++presented;
+                return;
+            }
+            SDL_Delay(5);
+        }
+    };
+    frame();
+    const auto directory = output / "unwritable-capture"; // A directory cannot be opened as the capture file.
+    std::filesystem::create_directories(directory);
+    renderer.request_capture(directory);
+    const auto unwritable = "Cannot open capture output: " + directory.string();
+    bool reported = false;
+    try {
+        frame();
+    } catch (const std::runtime_error &error) {
+        require(typeid(error) == typeid(std::runtime_error) && error.what() == unwritable,
+                "An unwritable capture was reported as another failure");
+        reported = true;
+    }
+    require(reported, "An unwritable capture was not reported");
+    try {
+        for (unsigned i = 0; i < later_frames; ++i)
+            frame();
+    } catch (const std::runtime_error &error) {
+        throw std::runtime_error("A reported capture failure recurred: " + std::string(error.what()));
+    }
+    // The reporting draw() also presented and counted its frame, unless presentation reported the swapchain out
+    // of date. It cannot return that outcome, but an out-of-date frame makes the next draw() recreate the
+    // swapchain once more.
+    constexpr std::uint32_t capture_swapchains = 2; // The first swapchain, then one recreated for the capture.
+    const auto stats = renderer.shutdown();
+    const bool counted = stats.presented_frames == presented + 1;
+    const bool out_of_date = stats.presented_frames == presented && stats.swapchain_generations > capture_swapchains;
+    require((counted || out_of_date) && !stats.captured && !stats.capture_count && !stats.validation_errors &&
+                !stats.validation_warnings,
+            "A failed capture changed frame or capture statistics");
+}
 inline int run(int argc, char **argv) {
     require(argc >= 3, "Usage: consumer --replace OUTPUT [--no-present-fences] [--fatal STAGE] [--asset GLB]");
     const std::filesystem::path output = argv[2];
@@ -146,6 +208,7 @@ inline int run(int argc, char **argv) {
         ~Quit() { SDL_Quit(); }
     } quit;
     reject_failed_swapchain(options.disable_present_fences);
+    reject_unwritable_capture(output, options.disable_present_fences);
     std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
         SDL_CreateWindow("Anima scene replacement consumer", 640, 480,
                          SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY),

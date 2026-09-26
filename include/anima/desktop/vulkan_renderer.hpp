@@ -99,7 +99,8 @@ class SceneResourceError : public std::runtime_error {
 
 /// Cumulative counters returned by VulkanRenderer::shutdown.
 struct RenderStats {
-    /// Frames presented. A frame whose presentation reports the swapchain out of date is not counted.
+    /// Frames presented. A frame whose presentation reports the swapchain out of date is not counted; a capture
+    /// that could not be written does not change whether its frame is counted.
     std::uint64_t presented_frames{};
     /// Swapchains created, including recreations.
     std::uint32_t swapchain_generations{};
@@ -260,9 +261,12 @@ class VulkanRenderer {
     /// Writes the next frame that draw() submits to @p path as a binary PPM, 8-bit RGB, creating missing
     /// parent directories; replaces any pending request. Throws `std::invalid_argument` for an empty path.
     ///
-    /// The swapchain is recreated first if it cannot be copied from. When the surface has no 8-bit BGRA or RGBA
-    /// format usable as a copy source, that draw() drops the request, keeps the current swapchain and throws
-    /// `std::runtime_error`; it also throws `std::runtime_error` when the file cannot be written.
+    /// The swapchain is recreated first if it cannot be copied from. A request that fails is consumed: one
+    /// draw() throws `std::runtime_error` for it, RenderStats::captured stays false, and later draws neither
+    /// retry nor report it. When the surface has no 8-bit BGRA or RGBA format usable as a copy source, that
+    /// draw() keeps the current swapchain and presents nothing; when the file cannot be written, it has already
+    /// submitted the frame and, unless presentation reported the swapchain out of date, presented and counted
+    /// it.
     void request_capture(std::filesystem::path path);
     /// Sets the view used for shading, fog, the sky and culling from a column-major Vulkan view-projection
     /// (clip Y down, depth 0 to 1), such as anima::view_matrix returns.
@@ -331,7 +335,8 @@ class VulkanRenderer {
     /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface
     /// loss, a fence timeout, any other Vulkan failure, or any failure to build a new swapchain once the
     /// previous one is released; and `std::runtime_error` for other failures, such as a surface that offers no
-    /// usable format, which leaves the current swapchain in place, or an unwritable capture file.
+    /// usable format, which leaves the current swapchain in place, or a capture request that fails, which only
+    /// that call reports (see request_capture()).
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;
