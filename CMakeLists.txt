@@ -152,6 +152,10 @@ if(ANIMA_BUILD_ASSETS)
         anima_target_defaults(anima_gltf_import_tests)
         add_test(NAME gltf_import COMMAND anima_gltf_import_tests)
         add_executable(anima_animation_tests tests/animation_tests.cpp)
+        # Its own doctest main reads the optional manifest argument, so it takes only the
+        # runner's include directory and definition rather than linking anima_test_main.
+        target_include_directories(anima_animation_tests SYSTEM PRIVATE third_party/doctest)
+        target_compile_definitions(anima_animation_tests PRIVATE DOCTEST_CONFIG_VOID_CAST_EXPRESSIONS)
         target_link_libraries(anima_animation_tests PRIVATE anima::assets)
         anima_target_defaults(anima_animation_tests)
         add_test(NAME animation_runtime COMMAND anima_animation_tests)
