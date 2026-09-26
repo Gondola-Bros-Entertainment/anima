@@ -266,6 +266,14 @@ int main(int argc, char **argv) {
         player.seek(1);
         player.resume();
         near(player.time(), 0, "Resume ended attack did not restart");
+        // A clip that does not loop stops at its end, so any finite step is accepted.
+        anima::Playback once;
+        once.select(asset.animations[0], attack);
+        require(once.advance(1e9).size() == 1 && once.finished(), "A long step on a clip that does not loop failed");
+        anima::Playback looping;
+        looping.select(asset.animations[0], {"test", true, {}});
+        rejects_as<std::invalid_argument>([&] { (void)looping.advance(asset.animations[0].duration * 10'001); },
+                                          "Playback step exceeds 10000 loops; split large offline advances");
         rejects([&] { (void)player.advance(-1); });
         rejects([&] { (void)player.advance(std::numeric_limits<double>::infinity()); });
         const anima::ClipMetadata loop{"test", true, {{.53, "loop_event"}}};

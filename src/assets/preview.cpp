@@ -61,8 +61,11 @@ std::vector<ClipEvent> Playback::advance(double elapsed) {
     if (!playing_ || !animation_ || elapsed == 0)
         return events;
     const auto duration = animation_->duration;
-    if (elapsed / duration > 10000)
-        throw std::runtime_error("Playback step exceeds 10000 loops; split large offline advances");
+    // A looping step crosses every event once per loop; a clip that does not loop stops at its end.
+    constexpr unsigned maximum_loops_per_step = 10'000;
+    if (metadata_.loop && elapsed / duration > maximum_loops_per_step)
+        throw std::invalid_argument("Playback step exceeds " + std::to_string(maximum_loops_per_step) +
+                                    " loops; split large offline advances");
     const auto from = elapsed_, to = metadata_.loop ? from + elapsed : std::min(from + elapsed, duration);
     if (!std::isfinite(to))
         throw std::runtime_error("Playback timeline overflow");

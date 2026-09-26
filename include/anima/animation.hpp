@@ -53,8 +53,8 @@ class Playback {
     /// new one, once per loop crossed; events at 0 are reported by the first nonzero advance while
     /// playing after select() or restart(). A non-looping clip stops and finishes at its end.
     /// Paused playback, no clip or a zero step reports nothing. Throws `std::invalid_argument` for
-    /// a negative or nonfinite step and `std::runtime_error` for a step longer than 10,000 clip
-    /// durations.
+    /// a negative or nonfinite step, and for a step longer than 10,000 clip durations on a looping
+    /// clip.
     [[nodiscard]] std::vector<ClipEvent> advance(double elapsed);
     /// Clip time in seconds; 0 before select().
     [[nodiscard]] double time() const noexcept;
