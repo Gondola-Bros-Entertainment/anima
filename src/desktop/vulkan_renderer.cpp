@@ -383,6 +383,10 @@ struct VulkanRenderer::Impl {
         if (!sdl_extensions)
             throw std::runtime_error(SDL_GetError());
         std::vector<const char *> enabled(sdl_extensions, sdl_extensions + count);
+        // The window system's surface extensions come from the installed drivers.
+        for (const auto *name : enabled)
+            if (!has_extension(extensions, name))
+                throw RendererUnavailableError(std::string("No installed Vulkan driver provides ") + name);
         VkInstanceCreateFlags flags = 0;
         if (has_extension(extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
             enabled.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -428,7 +432,11 @@ struct VulkanRenderer::Impl {
             info.ppEnabledLayerNames = &validation_layer;
             info.pNext = &debug;
         }
-        check(vkCreateInstance(&info, nullptr, &instance), "Create instance");
+        const auto created = vkCreateInstance(&info, nullptr, &instance);
+        if (created == VK_ERROR_INCOMPATIBLE_DRIVER)
+            throw RendererUnavailableError("No installed Vulkan driver supports Vulkan 1.1 (VkResult " +
+                                           std::to_string(created) + ")");
+        check(created, "Create instance");
         if (options.validation) {
             const auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
                 vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
@@ -488,7 +496,7 @@ struct VulkanRenderer::Impl {
             break;
         }
         if (!physical)
-            throw std::runtime_error("No Vulkan 1.1 graphics/present device with swapchain support");
+            throw RendererUnavailableError("No Vulkan 1.1 graphics/present device with swapchain support");
         std::vector<const char *> extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
         // Required when advertised by portability implementations, including MoltenVK.
         if (has_extension(selected_extensions, "VK_KHR_portability_subset"))
