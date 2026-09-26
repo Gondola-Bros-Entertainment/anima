@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +24,14 @@ constexpr std::uint8_t opaque = 255;
 constexpr std::size_t base_color_binding = 0, emissive_binding = 3;
 // Alpha-test cutoffs and alpha factors of the coverage fixture's materials.
 constexpr float strict_cutoff = .75F, loose_cutoff = .25F, half_alpha = .5F;
+constexpr float beyond_unit_factor = 2; // A base-color factor channel outside [0, 1].
+// Mesh::compile() rejections that static splitting must reproduce.
+constexpr auto invalid_material = "Invalid render primitive material";
+constexpr auto invalid_texture_reference = "Invalid material texture reference";
+constexpr auto invalid_factors = "Invalid material factors";
+constexpr auto texture_byte_mismatch = "MeshSnapshot texture byte count does not match dimensions";
+constexpr auto invalid_parent = "Invalid node parent";
+constexpr auto invalid_vertex = "Invalid render vertex";
 
 SourcePrimitive triangle(int material) {
     SourcePrimitive primitive;
@@ -103,6 +113,16 @@ Asset coverage_source() {
     for (std::size_t i = 0; i < source.materials.size(); ++i)
         source.primitives.push_back(triangle(static_cast<int>(i)));
     return source;
+}
+// Both split paths of Mesh::compile_static must reject @p source exactly as Mesh::compile() does.
+template <class Error> void rejects_like_compile(const Asset &source, const char *message) {
+    CHECK_THROWS_WITH_AS(Mesh::compile(source), message, Error);
+    for (const auto options :
+         {MeshCompileOptions{.max_vertices = triangle_corners}, MeshCompileOptions{.max_texture_edge = reduced_edge}}) {
+        CAPTURE(options.max_vertices);
+        CAPTURE(options.max_texture_edge);
+        CHECK_THROWS_WITH_AS(Mesh::compile_static(source, options), message, Error);
+    }
 }
 } // namespace
 
@@ -216,4 +236,65 @@ TEST_CASE("A texture within the limit keeps its texels once for every cutoff") {
     const auto &textures = meshes.front()->materials()->textures;
     REQUIRE(textures.size() == 1);
     CHECK(textures.front().rgba == source.textures.front().rgba);
+}
+
+TEST_CASE("Static splitting rejects an out-of-range material index as compile() does") {
+    auto source = static_source({0, 1});
+    source.primitives.back().material = static_cast<int>(source.materials.size());
+    rejects_like_compile<std::invalid_argument>(source, invalid_material);
+}
+
+TEST_CASE("Static splitting rejects an invalid material as compile() does, used or not") {
+    auto referencing = static_source({0, 1});
+    referencing.materials[1].normal_texture = static_cast<int>(referencing.textures.size());
+    rejects_like_compile<std::invalid_argument>(referencing, invalid_texture_reference);
+    auto unused = static_source({1}); // Material 0 is referenced by no primitive.
+    unused.materials[0].factor.x = beyond_unit_factor;
+    rejects_like_compile<std::invalid_argument>(unused, invalid_factors);
+}
+
+TEST_CASE("Static splitting rejects a malformed texture as compile() does, used or not") {
+    auto truncated = static_source({0, 1});
+    truncated.textures[0].rgba.pop_back(); // Material 0's texture is larger than the texture limit.
+    rejects_like_compile<std::invalid_argument>(truncated, texture_byte_mismatch);
+    auto unused = static_source({0, 1});
+    unused.textures.push_back({1, 1, {}, {}}); // No material samples it, and it has no texels.
+    rejects_like_compile<std::invalid_argument>(unused, texture_byte_mismatch);
+}
+
+TEST_CASE("Static pieces carry the source's mesh node count and import notices, as compile() does") {
+    auto source = static_source({0, 1, 0});
+    source.mesh_nodes = source.nodes.size();
+    source.notices = {"Imported for static splitting"};
+    const auto whole = Mesh::compile(source);
+    REQUIRE(whole->materials()->mesh_nodes == source.mesh_nodes);
+    REQUIRE(whole->materials()->notices == source.notices);
+    auto empty = source;
+    empty.primitives.clear();
+    for (const auto *input : {&source, &empty})
+        for (const auto options : {MeshCompileOptions{.max_vertices = triangle_corners},
+                                   MeshCompileOptions{.max_texture_edge = reduced_edge}}) {
+            CAPTURE(input->primitives.size());
+            CAPTURE(options.max_vertices);
+            const auto pieces = Mesh::compile_static(*input, options);
+            REQUIRE_FALSE(pieces.empty());
+            for (const auto &piece : pieces) {
+                CHECK(piece->materials()->mesh_nodes == source.mesh_nodes);
+                CHECK(piece->materials()->notices == source.notices);
+            }
+        }
+}
+
+TEST_CASE("Static splitting reports the first of several defects that compile() reports") {
+    // The node hierarchy is checked before any material.
+    auto hierarchy = static_source({0, 1});
+    hierarchy.nodes[0].parent = static_cast<int>(hierarchy.nodes.size()); // Past the last node.
+    hierarchy.materials[0].factor.x = beyond_unit_factor;
+    rejects_like_compile<std::runtime_error>(hierarchy, invalid_parent);
+    // Each primitive is checked whole, in order, so an earlier primitive's vertex comes before a later
+    // primitive's material index.
+    auto ordered = static_source({0, 1});
+    ordered.primitives[0].vertices[0].position.x = std::numeric_limits<float>::quiet_NaN();
+    ordered.primitives[1].material = static_cast<int>(ordered.materials.size());
+    rejects_like_compile<std::invalid_argument>(ordered, invalid_vertex);
 }

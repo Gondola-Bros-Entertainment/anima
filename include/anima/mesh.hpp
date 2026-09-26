@@ -75,10 +75,14 @@ class Mesh {
     /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks
     /// oversized textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at
     /// every material change between consecutive primitives and whenever MeshCompileOptions::max_vertices would
-    /// be exceeded, splitting primitives between whole triangles. Each result keeps every node but only the
-    /// materials and textures it uses; a source without primitives gives one Mesh with only its nodes. Throws
-    /// `std::invalid_argument` for a `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of
-    /// whole triangles, `std::runtime_error` when @p source has skins or animations, and what compile() throws.
+    /// be exceeded, splitting primitives between whole triangles. Each result keeps every node, Asset::mesh_nodes
+    /// and Asset::notices, as compile() does, but only the materials and textures it uses; a source without
+    /// primitives gives one Mesh with no materials or textures. Throws `std::invalid_argument` for a
+    /// `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of whole triangles, and
+    /// `std::runtime_error` when @p source has skins or animations, before anything else. Otherwise invalid
+    /// content anywhere in @p source, including materials and textures that no primitive uses, fails as
+    /// compile(source) would: its first defect in compile()'s order throws the same exception. Limits on the
+    /// size of one Mesh apply to each result.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Vertices that indices() refers to.

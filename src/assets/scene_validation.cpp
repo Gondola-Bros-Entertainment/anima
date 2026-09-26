@@ -1,3 +1,4 @@
+#include "surface_validation.hpp"
 #include <anima/assets/scene_validation.hpp>
 #include <limits>
 #include <stdexcept>
@@ -75,10 +76,13 @@ void validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget) {
         for (float value : draw.node_world)
             require(std::isfinite(value), "Non-finite scene node transform");
     }
-    for (const auto &material : scene.material_data)
-        validate_material(material, scene.textures);
+    detail::validate_surfaces(scene.material_data, scene.textures);
+}
+void detail::validate_surfaces(std::span<const Material> materials, std::span<const Texture> textures) {
+    for (const auto &material : materials)
+        validate_material(material, textures);
     std::size_t texture_bytes = 0;
-    for (const auto &texture : scene.textures) {
+    for (const auto &texture : textures) {
         require(texture.width && texture.height &&
                     texture.width <= std::numeric_limits<std::size_t>::max() / 4 / texture.height,
                 "Invalid scene texture dimensions");
