@@ -127,7 +127,8 @@ void run() {
         auto blocker = world.create(ignored);
         world.step(1. / 60);
         auto events = world.take_events();
-        // The static sensor can also overlap the static blocker; select visitor pair explicitly.
+        // The stationary sensor also overlaps the stationary blocker, which it must not report.
+        check(events.size() == 1, "Two stationary bodies reported a sensor overlap");
         unsigned starts = 0;
         for (auto e : events)
             if (e.first == visitor || e.second == visitor) {
@@ -253,12 +254,38 @@ void run_world_limit() {
     rejects([&] { (void)world.create(box({maximum_position + 1, 0}, {.5F, .5F})); });
     check(world.size() == 1, "Out-of-range body was created");
 }
+// A sensor pair is reported when either body can move, as in the 3D module: a dynamic sensor detects a
+// stationary sensor and a stationary body, but that stationary sensor and body never report each other.
+void run_sensor_motion_rule() {
+    World world({{0, 0}, 8});
+    auto zone_settings = box({}, {1, 1});
+    zone_settings.sensor = true;
+    auto zone = world.create(zone_settings);
+    auto wall = world.create(box({}, {1, 1}));
+    auto probe_settings = box({}, {.2F, .2F}, Motion::dynamic);
+    probe_settings.sensor = true;
+    auto probe = world.create(probe_settings);
+    world.step(1. / 60);
+    const auto events = world.take_events();
+    const auto reported = [&](const Body &a, const Body &b) {
+        for (const auto &e : events)
+            if (e.sensor && e.phase == ContactPhase::begin &&
+                ((e.first == a && e.second == b) || (e.first == b && e.second == a)))
+                return true;
+        return false;
+    };
+    check(reported(probe, zone), "A dynamic sensor did not detect a stationary sensor");
+    check(reported(probe, wall), "A dynamic sensor did not detect a stationary body");
+    check(!reported(zone, wall), "Two stationary bodies reported a sensor overlap");
+    check(events.size() == 2, "Unexpected sensor events");
+}
 } // namespace
 int main() {
     try {
         run();
         run_fixed_rotation_angle();
         run_world_limit();
+        run_sensor_motion_rule();
         std::cout << "PASS 2D physics lifetime, queries, sensors, sleeping and motion\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
