@@ -281,7 +281,7 @@ endif()
 
 if(ANIMA_BUILD_TESTS)
     add_executable(anima_input_tests tests/input_tests.cpp)
-    target_link_libraries(anima_input_tests PRIVATE anima::core)
+    target_link_libraries(anima_input_tests PRIVATE anima::core anima_test_main)
     anima_target_defaults(anima_input_tests)
     add_test(NAME input_actions COMMAND anima_input_tests)
     add_executable(anima_navigation_tests tests/navigation_tests.cpp)

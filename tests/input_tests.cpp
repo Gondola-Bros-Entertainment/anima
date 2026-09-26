@@ -1,24 +1,26 @@
+#include "near.hpp"
 #include <anima/input.hpp>
+#include <doctest/doctest.h>
+
 #include <cmath>
-#include <iostream>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <vector>
+
 namespace i = anima::input;
 namespace {
-void check(bool v, const char *m) {
-    if (!v)
-        throw std::runtime_error(m);
-}
-template <class F> void rejects(F f) {
-    bool caught = false;
-    try {
-        f();
-    } catch (const std::exception &) {
-        caught = true;
-    }
-    check(caught, "Expected input rejection");
-}
+constexpr float tolerance = 1e-6F;
+constexpr unsigned control_capacity = 1024; // Recorded controls per Context, documented in include/anima/input.hpp.
+constexpr auto code_range = "Input control code outside supported range";
+constexpr auto repeated = "Repeated input chord control";
+constexpr auto conflict = "Input chord device selectors conflict";
+constexpr auto binding_error = "Invalid input binding channel/scale/deadzone";
+constexpr auto over_capacity = "Input context exceeds 1024 active physical controls";
+
 i::Event key(unsigned code, bool down, unsigned device = 0) {
     return {i::EventType::control, {i::ControlKind::key, static_cast<std::uint16_t>(code), device}, down ? 1.F : 0.F};
 }
@@ -31,79 +33,215 @@ i::Binding chord(i::Control primary, std::vector<i::Control> modifiers) {
 i::Event event(i::ControlKind kind, unsigned code, unsigned device, float value = 1) {
     return {i::EventType::control, {kind, static_cast<std::uint16_t>(code), device}, value};
 }
-void chord_transitions() {
+i::Map movement_map() {
+    return {{"trigger", i::ActionType::button, {{{i::ControlKind::key, 4}}}},
+            {"move",
+             i::ActionType::vector2,
+             {{{i::ControlKind::key, 5}, i::Channel::x},
+              {{i::ControlKind::key, 6}, i::Channel::x, -1},
+              {{i::ControlKind::key, 7}, i::Channel::y}}}};
+}
+} // namespace
+
+TEST_CASE("Action state follows events across frames, devices, focus, enablement, copies and rebinding") {
+    static_assert(std::is_nothrow_move_assignable_v<i::Context>);
+    i::Context c(movement_map());
+    c.process(key(4, true));
+    c.process(key(4, true));
+    c.process(key(4, false));
+    auto s = c.state("trigger");
+    // A tap between frames latches both edges.
+    CHECK_FALSE(s.active);
+    CHECK(s.pressed);
+    CHECK(s.released);
+    CHECK(s.value.x == 0);
+    c.begin_frame();
+    CHECK_FALSE(c.state("trigger").pressed);
+    CHECK_FALSE(c.state("trigger").released);
+    c.process(key(5, true));
+    c.process(key(7, true));
+    s = c.state("move");
+    CHECK(s.value.x == Near{std::sqrt(.5F), tolerance}); // Diagonal movement is normalized.
+    CHECK(s.value.y == s.value.x);
+    c.process(key(6, true));
+    CHECK(c.state("move").value.x == 0); // Opposing keys cancel.
+    CHECK(c.state("move").value.y == 1);
+    c.process(key(4, true, 1));
+    c.process(key(4, true, 2));
+    c.process(key(4, false, 1));
+    CHECK(c.state("trigger").active); // Releasing one keyboard keeps another's press.
+    c.process({i::EventType::disconnect, {i::ControlKind::key, 0, 2}});
+    CHECK_FALSE(c.state("trigger").active);
+    CHECK(c.state("move").active); // Removing a keyboard forgets only its own controls.
+    c.process(key(4, true));
+    c.process({i::EventType::focus, {}, 0});
+    CHECK(c.state("trigger").canceled); // Losing focus cancels the pending press.
+    CHECK(c.state("trigger").released);
+    CHECK_FALSE(c.state("trigger").pressed);
+    c.process(key(4, true));
+    c.set_focused(true);
+    CHECK_FALSE(c.state("trigger").active); // Regaining focus replays nothing ignored meanwhile.
+    c.process(key(4, true));
+    c.begin_frame();
+    c.process(key(4, true));
+    CHECK_FALSE(c.state("trigger").pressed); // A repeated value does not press again.
+    CHECK(c.state("trigger").active);
+    i::Context snapshot;
+    snapshot = c;
+    c.set_enabled(false);
+    c.process(key(4, true));
+    c.set_enabled(true);
+    CHECK_FALSE(c.state("trigger").active); // Disabling canceled the original, not its copy.
+    CHECK(snapshot.state("trigger").active);
+    snapshot.rebind("trigger", {{{i::ControlKind::key, 9}}});
+    CHECK(snapshot.state("trigger").canceled); // Rebinding cancels the held action.
+    CHECK_FALSE(snapshot.state("trigger").active);
+    snapshot.process(key(4, true));
+    CHECK_FALSE(snapshot.state("trigger").active); // The old binding no longer applies.
+    snapshot.process(key(9, true));
+    CHECK(snapshot.state("trigger").active);
+    CHECK_THROWS_WITH_AS(snapshot.rebind("trigger", {{{i::ControlKind::key, 512}}}), code_range, std::invalid_argument);
+    CHECK(snapshot.state("trigger").active); // The rejected rebind changed nothing.
+    CHECK(snapshot.actions()[0].bindings[0].control.code == 9);
+}
+
+TEST_CASE("A paired gamepad axis applies its deadzone and signed bindings until the gamepad disconnects") {
+    i::Context analog(
+        {{"steer", i::ActionType::axis, {{{i::ControlKind::gamepad_axis, 0, 7}, i::Channel::x, 1, .2F}}},
+         {"negative", i::ActionType::button, {{{i::ControlKind::gamepad_axis, 0, 7}, i::Channel::x, -1}}}});
+    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 8}, 1});
+    CHECK(analog.state("steer").value.x == 0); // Another gamepad does not affect the paired one.
+    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 7}, .1F});
+    CHECK(analog.state("steer").value.x == 0); // The deadzone suppresses drift.
+    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 7}, .6F});
+    // Magnitudes beyond the deadzone are remapped to [0, 1].
+    CHECK(analog.state("steer").value.x == Near{.5F, tolerance});
+    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 7}, -1});
+    CHECK(analog.state("negative").active);
+    CHECK(analog.state("steer").value.x == -1);
+    analog.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, 7}});
+    CHECK_FALSE(analog.state("negative").active);
+    CHECK(analog.state("steer").value.x == 0);
+}
+
+TEST_CASE("Invalid events, unknown actions and invalid maps are rejected") {
+    i::Context c(movement_map());
+    CHECK_THROWS_WITH_AS(c.process({i::EventType::control, {i::ControlKind::key, 4, i::any_device}, 1}),
+                         "Input events require a concrete device identity", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(c.process({i::EventType::control, {i::ControlKind::key, 4, 0}, .5F}),
+                         "Invalid input control value", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(c.process({i::EventType::focus, {}, std::numeric_limits<float>::quiet_NaN()}),
+                         "Input focus must be 0 or 1", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(c.state("absent"), "Unknown input action", std::out_of_range);
+    CHECK_THROWS_WITH_AS(i::Context({{"same", i::ActionType::button, {}}, {"same", i::ActionType::button, {}}}),
+                         "Duplicate input action name", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::Context({{"bad name", i::ActionType::button, {}}}),
+                         "Input action names must be printable ASCII without spaces", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::Context({{"bad", i::ActionType::button, {{{}, i::Channel::y}}}}), binding_error,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::Context({{"bad", i::ActionType::button, {{{}, i::Channel::x, 1, 1}}}}), binding_error,
+                         std::invalid_argument);
+}
+
+TEST_CASE("A control beyond the recorded-control capacity is rejected without being recorded") {
+    i::Context capacity({{"held", i::ActionType::button, {{{i::ControlKind::gamepad_button, 0}}}}});
+    for (unsigned device = 0; device < control_capacity; ++device)
+        capacity.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, device}, 1});
+    CHECK_THROWS_WITH_AS(
+        capacity.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, control_capacity}, 1}),
+        over_capacity, std::length_error);
+    for (unsigned device = 0; device < control_capacity; ++device)
+        capacity.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, device}});
+    CHECK_FALSE(capacity.state("held").active); // The rejected gamepad was never recorded.
+}
+
+TEST_CASE("A chord's modifiers gate its primary in either order without consuming it") {
     const auto binding = chord({i::ControlKind::key, 4}, {{i::ControlKind::key, 224}});
     i::Context context(
         {{"chord", i::ActionType::button, {binding}}, {"plain", i::ActionType::button, {{{i::ControlKind::key, 4}}}}});
     context.process(key(4, true));
-    check(!context.state("chord").active, "Chord ignored its required modifier");
+    CHECK_FALSE(context.state("chord").active); // The primary alone does not complete the chord.
     context.process(key(224, true));
-    check(context.state("chord").pressed, "Modifier pressed after primary failed to complete chord");
-    check(context.state("plain").pressed && context.state("plain").active,
-          "Chord consumed its primary instead of also evaluating an ordinary action");
+    CHECK(context.state("chord").pressed); // A modifier pressed after the primary completes it.
+    CHECK(context.state("plain").pressed); // The chord does not consume its primary.
+    CHECK(context.state("plain").active);
     context.begin_frame();
     context.process(key(224, false));
     auto state = context.state("chord");
-    check(!state.active && state.released && !state.pressed && !state.canceled,
-          "Modifier release failed to release a chord or incorrectly canceled it");
+    // Releasing the modifier releases the chord without canceling it.
+    CHECK_FALSE(state.active);
+    CHECK(state.released);
+    CHECK_FALSE(state.pressed);
+    CHECK_FALSE(state.canceled);
     context.process(key(224, true));
     state = context.state("chord");
-    check(state.active && state.pressed && state.released && !state.canceled,
-          "Modifier release/repress lost between-frame edge latches");
+    // The release and the repress both stay latched until the next frame.
+    CHECK(state.active);
+    CHECK(state.pressed);
+    CHECK(state.released);
+    CHECK_FALSE(state.canceled);
     context.begin_frame();
     context.process(key(4, true));
     context.process(key(224, true));
-    check(context.state("chord").active && !context.state("chord").pressed,
-          "Repeated primary or modifier events retriggered a held chord");
+    CHECK(context.state("chord").active); // Repeated primary and modifier events do not press again.
+    CHECK_FALSE(context.state("chord").pressed);
     context.process(key(4, false));
     context.begin_frame();
     context.process(key(4, true));
-    check(context.state("chord").pressed, "Held modifier failed to gate a newly pressed primary");
+    CHECK(context.state("chord").pressed); // A held modifier gates a newly pressed primary.
     i::Context copy = context;
     context.set_focused(false);
     state = context.state("chord");
-    check(state.canceled && state.released && !state.pressed && copy.state("chord").active,
-          "Chord focus cancellation or context-copy isolation failed");
+    // Losing focus cancels the chord in this context only.
+    CHECK(state.canceled);
+    CHECK(state.released);
+    CHECK_FALSE(state.pressed);
+    CHECK(copy.state("chord").active);
     context.process(key(224, true));
     context.set_focused(true);
     context.begin_frame();
     context.process(key(4, true));
-    check(!context.state("chord").active, "Focus regain replayed held chord modifiers");
+    CHECK_FALSE(context.state("chord").active); // Regaining focus replays no held modifier.
     context.process(key(224, true));
     context.set_enabled(false);
     context.process(key(224, true));
     context.set_enabled(true);
     context.begin_frame();
     context.process(key(4, true));
-    check(!context.state("chord").active, "Re-enabling replayed held chord modifiers");
+    CHECK_FALSE(context.state("chord").active); // Nor does enabling the context again.
     context.process(key(224, true));
     const auto replacement = chord({i::ControlKind::key, 5}, {{i::ControlKind::key, 225}});
     context.rebind("chord", {replacement});
-    check(context.state("chord").canceled && !context.state("chord").active,
-          "Chord rebind retained prior physical state");
+    CHECK(context.state("chord").canceled); // Rebinding drops the prior physical state.
+    CHECK_FALSE(context.state("chord").active);
     context.begin_frame();
     context.process(key(5, true));
     context.process(key(224, true));
-    check(!context.state("chord").active, "Rebound chord accepted an old modifier");
+    CHECK_FALSE(context.state("chord").active); // The old modifier no longer applies.
     context.process(key(225, true));
-    check(context.state("chord").pressed && copy.state("chord").active &&
-              copy.actions()[0].bindings[0].modifiers[0].code == 224,
-          "Chord rebind lost fresh input or changed a copied binding");
+    CHECK(context.state("chord").pressed);
+    CHECK(copy.state("chord").active); // The copy keeps its own bindings.
+    CHECK(copy.actions()[0].bindings[0].modifiers[0].code == 224);
 }
-void chord_devices() {
+
+TEST_CASE("A chord takes its primary and modifiers from one keyboard") {
     i::Context keyboard(
         {{"chord", i::ActionType::button, {chord({i::ControlKind::key, 4}, {{i::ControlKind::key, 224}})}}});
     keyboard.process(key(4, true, 1));
     keyboard.process(key(224, true, 2));
-    check(!keyboard.state("chord").active, "Chord combined primary and modifier from different keyboards");
+    CHECK_FALSE(keyboard.state("chord").active); // Keys of different keyboards do not combine.
     keyboard.process(key(4, true, 2));
-    check(keyboard.state("chord").active, "Chord failed to use a complete second keyboard");
+    CHECK(keyboard.state("chord").active);
     keyboard.process({i::EventType::disconnect, {i::ControlKind::key, 0, 2}});
-    check(!keyboard.state("chord").active && keyboard.state("chord").released && !keyboard.state("chord").canceled,
-          "Disconnect failed to release the only complete chord");
+    // Removing the only complete keyboard releases the chord without canceling it.
+    CHECK_FALSE(keyboard.state("chord").active);
+    CHECK(keyboard.state("chord").released);
+    CHECK_FALSE(keyboard.state("chord").canceled);
     keyboard.process(key(224, true, 1));
-    check(keyboard.state("chord").active, "Disconnect cleared another keyboard's retained primary");
+    CHECK(keyboard.state("chord").active); // The other keyboard kept its primary.
+}
 
+TEST_CASE("Each device class of a chord selects its own device") {
     const auto mixed = chord({i::ControlKind::key, 4, 3}, {{i::ControlKind::mouse_button, 1},
                                                            {i::ControlKind::mouse_button, 2},
                                                            {i::ControlKind::gamepad_button, 0},
@@ -114,196 +252,127 @@ void chord_devices() {
     classes.process(event(i::ControlKind::mouse_button, 2, 9));
     classes.process(event(i::ControlKind::gamepad_button, 0, 7));
     classes.process(event(i::ControlKind::gamepad_button, 1, 6));
-    check(!classes.state("chord").active, "Chord split a modifier class across devices");
+    CHECK_FALSE(classes.state("chord").active); // No class has its modifiers on one device.
     classes.process(event(i::ControlKind::mouse_button, 2, 8));
-    check(!classes.state("chord").active, "Complete mouse modifiers masked an incomplete gamepad chord");
+    CHECK_FALSE(classes.state("chord").active); // The mouse modifiers are complete, the gamepad ones are not.
     classes.process(event(i::ControlKind::gamepad_button, 1, 7));
-    check(classes.state("chord").active, "Chord incorrectly required equal identities across device classes");
+    CHECK(classes.state("chord").active); // The classes need not share a device ID.
     classes.process(event(i::ControlKind::mouse_button, 1, 8, 0));
-    check(classes.state("chord").released && !classes.state("chord").canceled,
-          "Cross-class modifier release failed to release the action");
+    CHECK(classes.state("chord").released); // Releasing a modifier of any class releases the chord.
+    CHECK_FALSE(classes.state("chord").canceled);
+}
 
+TEST_CASE("A keyboard fixed by one key modifier applies to every key modifier of a chord") {
     i::Context secondary(
         {{"chord",
           i::ActionType::button,
           {chord({i::ControlKind::mouse_button, 1}, {{i::ControlKind::key, 224}, {i::ControlKind::key, 225, 7}})}}});
     secondary.process(event(i::ControlKind::mouse_button, 1, 3));
     secondary.process(key(225, true, 7));
+    // More keyboards than a context records; the chord observes none of them, since 225 selects keyboard 7.
     for (unsigned device = 100; device < 1200; ++device)
         secondary.process(key(224, true, device));
-    check(!secondary.state("chord").active, "Secondary fixed selector accepted another keyboard's modifier");
+    CHECK_FALSE(secondary.state("chord").active);
     secondary.process(key(224, true, 7));
-    check(secondary.state("chord").pressed,
-          "Secondary fixed selector incorrectly used the primary's device or observed unrelated keyboards");
+    CHECK(secondary.state("chord").pressed);
+}
 
-    auto axis = chord({i::ControlKind::gamepad_axis, 0}, {{i::ControlKind::gamepad_button, 0}});
+TEST_CASE("A wildcard chord axis reads the strongest gamepad that holds its modifiers") {
+    const auto axis = chord({i::ControlKind::gamepad_axis, 0}, {{i::ControlKind::gamepad_button, 0}});
     i::Context analog({{"steer", i::ActionType::axis, {axis}}});
     analog.process(event(i::ControlKind::gamepad_axis, 0, 1, .9F));
     analog.process(event(i::ControlKind::gamepad_axis, 0, 2, -.6F));
     analog.process(event(i::ControlKind::gamepad_button, 0, 2));
-    check(analog.state("steer").value.x == -.6F,
-          "Wildcard axis chose an ineligible stronger device before gating modifiers");
+    CHECK(analog.state("steer").value.x == -.6F); // Only gamepad 2 holds the modifier.
     analog.process(event(i::ControlKind::gamepad_button, 0, 1));
-    check(analog.state("steer").value.x == .9F, "Eligible stronger chord axis failed to win");
+    CHECK(analog.state("steer").value.x == .9F); // The stronger eligible axis wins.
     analog.process(event(i::ControlKind::gamepad_axis, 0, 1, .6F));
-    check(analog.state("steer").value.x == .6F, "Eligible equal-magnitude axes did not choose the lowest device ID");
+    CHECK(analog.state("steer").value.x == .6F); // Equal magnitudes choose the lowest device ID.
     analog.begin_frame();
     analog.process({i::EventType::disconnect, {i::ControlKind::gamepad_axis, 0, 1}});
-    check(analog.state("steer").value.x == -.6F && !analog.state("steer").released && !analog.state("steer").pressed &&
-              !analog.state("steer").canceled,
-          "Disconnect canceled a chord instead of falling back to another complete device");
+    // A disconnect falls back to the other complete gamepad without an edge or cancellation.
+    CHECK(analog.state("steer").value.x == -.6F);
+    CHECK_FALSE(analog.state("steer").released);
+    CHECK_FALSE(analog.state("steer").pressed);
+    CHECK_FALSE(analog.state("steer").canceled);
     analog.process(event(i::ControlKind::gamepad_button, 0, 2, 0));
-    check(analog.state("steer").released && analog.state("steer").value.x == 0,
-          "Modifier release retained a wildcard axis value");
+    CHECK(analog.state("steer").released); // Releasing the modifier zeroes the axis.
+    CHECK(analog.state("steer").value.x == 0);
+}
+
+TEST_CASE("A fixed modifier selector limits a wildcard chord axis to its gamepad") {
+    auto axis = chord({i::ControlKind::gamepad_axis, 0}, {{i::ControlKind::gamepad_button, 0}});
     axis.modifiers[0].device = 7;
     i::Context paired({{"steer", i::ActionType::axis, {axis}}});
+    // More gamepads than a context records; the chord observes none of them.
     for (unsigned device = 100; device < 1200; ++device)
         paired.process(event(i::ControlKind::gamepad_axis, 0, device));
     paired.process(event(i::ControlKind::gamepad_axis, 0, 7, .75F));
     paired.process(event(i::ControlKind::gamepad_button, 0, 7));
-    check(paired.state("steer").value.x == .75F,
-          "Fixed modifier pairing observed irrelevant wildcard-primary devices or exhausted physical capacity");
+    CHECK(paired.state("steer").value.x == .75F);
 }
-void chord_validation_and_capacity() {
+
+TEST_CASE("Invalid chords are rejected by construction and rebinding without changing the context") {
     const auto valid = chord({i::ControlKind::key, 4, 1}, {{i::ControlKind::key, 224, 1}});
     i::Context context({{"chord", i::ActionType::button, {valid}}});
     context.process(key(224, true, 1));
     context.process(key(4, true, 1));
-    for (const auto &modifiers : std::vector<std::vector<i::Control>>{
-             {{i::ControlKind::key, 225},
-              {i::ControlKind::key, 226},
-              {i::ControlKind::key, 227},
-              {i::ControlKind::key, 228},
-              {i::ControlKind::key, 229}},
-             {{i::ControlKind::gamepad_axis, 0}},
-             {{static_cast<i::ControlKind>(99), 0}},
-             {{i::ControlKind::key, 512}},
-             {{i::ControlKind::mouse_button, 0}},
-             {{i::ControlKind::key, 224}, {i::ControlKind::key, 224, 1}},
-             {{i::ControlKind::key, 4}},
-             {{i::ControlKind::key, 224, 2}},
-             {{i::ControlKind::gamepad_button, 0, 7}, {i::ControlKind::gamepad_button, 1, 8}},
-         }) {
-        auto invalid = valid;
-        invalid.modifiers = modifiers;
-        rejects([&] { (void)i::Context({{"chord", i::ActionType::button, {invalid}}}); });
-        rejects([&] { context.rebind("chord", {invalid}); });
-        check(context.state("chord").active && context.state("chord").pressed && !context.state("chord").released &&
-                  !context.state("chord").canceled && context.actions()[0].bindings[0].modifiers == valid.modifiers,
-              "Invalid chord rebind changed configuration, physical state or edge latches");
+    struct Invalid {
+        std::vector<i::Control> modifiers;
+        const char *error;
+    };
+    const std::vector<Invalid> invalids{
+        {{{i::ControlKind::key, 225},
+          {i::ControlKind::key, 226},
+          {i::ControlKind::key, 227},
+          {i::ControlKind::key, 228},
+          {i::ControlKind::key, 229}},
+         "Input binding exceeds four modifiers"},
+        {{{i::ControlKind::gamepad_axis, 0}}, "Input chord modifiers must be digital"},
+        {{{static_cast<i::ControlKind>(99), 0}}, "Unknown input control kind"},
+        {{{i::ControlKind::key, 512}}, code_range},
+        {{{i::ControlKind::mouse_button, 0}}, code_range},
+        {{{i::ControlKind::key, 224}, {i::ControlKind::key, 224, 1}}, repeated},
+        {{{i::ControlKind::key, 4}}, repeated},
+        {{{i::ControlKind::key, 224, 2}}, conflict},
+        {{{i::ControlKind::gamepad_button, 0, 7}, {i::ControlKind::gamepad_button, 1, 8}}, conflict},
+    };
+    for (std::size_t index = 0; index < invalids.size(); ++index) {
+        CAPTURE(index);
+        const auto &invalid = invalids[index];
+        auto binding = valid;
+        binding.modifiers = invalid.modifiers;
+        CHECK_THROWS_WITH_AS(i::Context({{"chord", i::ActionType::button, {binding}}}), invalid.error,
+                             std::invalid_argument);
+        CHECK_THROWS_WITH_AS(context.rebind("chord", {binding}), invalid.error, std::invalid_argument);
+        // Neither the configuration nor the recorded controls or edge latches changed.
+        const auto state = context.state("chord");
+        CHECK(state.active);
+        CHECK(state.pressed);
+        CHECK_FALSE(state.released);
+        CHECK_FALSE(state.canceled);
+        CHECK(context.actions()[0].bindings[0].modifiers == valid.modifiers);
     }
     context.process(key(224, false, 1));
-    check(context.state("chord").released, "Rejected rebind lost accepted modifier state");
+    CHECK(context.state("chord").released); // The accepted modifier is still recorded.
+}
 
+TEST_CASE("A chord modifier beyond the recorded-control capacity is rejected without being recorded") {
     i::Context capacity(
         {{"chord", i::ActionType::button, {chord({i::ControlKind::key, 4}, {{i::ControlKind::key, 224}})}}});
-    for (unsigned device = 0; device < 1024; ++device)
+    for (unsigned device = 0; device < control_capacity; ++device)
         capacity.process(key(4, true, device));
-    rejects([&] { capacity.process(key(224, true, 1023)); });
-    check(!capacity.state("chord").active && !capacity.state("chord").pressed,
-          "Capacity rejection partially applied a chord modifier");
+    const auto last = control_capacity - 1;
+    CHECK_THROWS_WITH_AS(capacity.process(key(224, true, last)), over_capacity, std::length_error);
+    CHECK_FALSE(capacity.state("chord").active);
+    CHECK_FALSE(capacity.state("chord").pressed);
     capacity.process(key(4, false, 0));
-    capacity.process(key(4, true, 1023));
-    check(!capacity.state("chord").active, "Rejected modifier remained in observed physical state");
-    capacity.process(key(224, true, 1023));
-    check(capacity.state("chord").pressed, "Freeing one observed control did not admit a valid chord modifier");
-    for (unsigned device = 0; device < 1024; ++device)
+    capacity.process(key(4, true, last));
+    CHECK_FALSE(capacity.state("chord").active); // The rejected modifier was not recorded.
+    capacity.process(key(224, true, last));
+    CHECK(capacity.state("chord").pressed); // Freeing one recorded control admits it.
+    for (unsigned device = 0; device < control_capacity; ++device)
         capacity.process({i::EventType::disconnect, {i::ControlKind::key, 0, device}});
-    check(!capacity.state("chord").active && capacity.state("chord").released,
-          "Disconnect cleanup retained capacity-bound chord state");
-}
-void run() {
-    static_assert(std::is_nothrow_move_assignable_v<i::Context>);
-    i::Context c({{"trigger", i::ActionType::button, {{{i::ControlKind::key, 4}}}},
-                  {"move",
-                   i::ActionType::vector2,
-                   {{{i::ControlKind::key, 5}, i::Channel::x},
-                    {{i::ControlKind::key, 6}, i::Channel::x, -1},
-                    {{i::ControlKind::key, 7}, i::Channel::y}}}});
-    c.process(key(4, true));
-    c.process(key(4, true));
-    c.process(key(4, false));
-    auto s = c.state("trigger");
-    check(!s.active && s.pressed && s.released && s.value.x == 0, "A between-frame tap was lost");
-    c.begin_frame();
-    check(!c.state("trigger").pressed && !c.state("trigger").released, "Edges not cleared");
-    c.process(key(5, true));
-    c.process(key(7, true));
-    s = c.state("move");
-    check(std::abs(s.value.x - std::sqrt(.5F)) < 1e-6F && s.value.y == s.value.x, "Diagonal movement not normalized");
-    c.process(key(6, true));
-    check(c.state("move").value.x == 0 && c.state("move").value.y == 1, "Opposing keys did not cancel");
-    c.process(key(4, true, 1));
-    c.process(key(4, true, 2));
-    c.process(key(4, false, 1));
-    check(c.state("trigger").active, "Releasing one keyboard cleared another");
-    c.process({i::EventType::disconnect, {i::ControlKind::key, 0, 2}});
-    check(!c.state("trigger").active && c.state("move").active, "Device removal leaked into other device state");
-    c.process(key(4, true));
-    c.process({i::EventType::focus, {}, 0});
-    check(c.state("trigger").canceled && c.state("trigger").released && !c.state("trigger").pressed,
-          "Focus loss did not cancel pending press");
-    c.process(key(4, true));
-    c.set_focused(true);
-    check(!c.state("trigger").active, "Focus regain replayed ignored input");
-    c.process(key(4, true));
-    c.begin_frame();
-    c.process(key(4, true));
-    check(!c.state("trigger").pressed && c.state("trigger").active, "Repeat input generated press");
-    i::Context snapshot;
-    snapshot = c;
-    c.set_enabled(false);
-    c.process(key(4, true));
-    c.set_enabled(true);
-    check(!c.state("trigger").active && snapshot.state("trigger").active, "Disable/copy isolation failed");
-    snapshot.rebind("trigger", {{{i::ControlKind::key, 9}}});
-    check(snapshot.state("trigger").canceled && !snapshot.state("trigger").active, "Rebind retained held action");
-    snapshot.process(key(4, true));
-    check(!snapshot.state("trigger").active, "Old binding still active");
-    snapshot.process(key(9, true));
-    check(snapshot.state("trigger").active, "New binding did not activate");
-    rejects([&] { snapshot.rebind("trigger", {{{i::ControlKind::key, 512}}}); });
-    check(snapshot.state("trigger").active && snapshot.actions()[0].bindings[0].control.code == 9,
-          "Invalid rebind mutated accepted state");
-    i::Context analog(
-        {{"steer", i::ActionType::axis, {{{i::ControlKind::gamepad_axis, 0, 7}, i::Channel::x, 1, .2F}}},
-         {"negative", i::ActionType::button, {{{i::ControlKind::gamepad_axis, 0, 7}, i::Channel::x, -1}}}});
-    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 8}, 1});
-    check(analog.state("steer").value.x == 0, "Foreign controller affected a paired context");
-    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 7}, .1F});
-    check(analog.state("steer").value.x == 0, "Deadzone did not suppress drift");
-    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 7}, .6F});
-    check(std::abs(analog.state("steer").value.x - .5F) < 1e-6F, "Deadzone remapping incorrect");
-    analog.process({i::EventType::control, {i::ControlKind::gamepad_axis, 0, 7}, -1});
-    check(analog.state("negative").active && analog.state("steer").value.x == -1, "Signed trigger binding failed");
-    analog.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, 7}});
-    check(!analog.state("negative").active && analog.state("steer").value.x == 0, "Gamepad removal retained axes");
-    rejects([&] { c.process({i::EventType::control, {i::ControlKind::key, 4, i::any_device}, 1}); });
-    rejects([&] { c.process({i::EventType::control, {i::ControlKind::key, 4, 0}, .5F}); });
-    rejects([&] { c.process({i::EventType::focus, {}, std::numeric_limits<float>::quiet_NaN()}); });
-    rejects([&] { (void)c.state("absent"); });
-    rejects([] { i::Context invalid({{"same", i::ActionType::button, {}}, {"same", i::ActionType::button, {}}}); });
-    rejects([] { i::Context invalid({{"bad name", i::ActionType::button, {}}}); });
-    rejects([] { i::Context invalid({{"bad", i::ActionType::button, {{{}, i::Channel::y}}}}); });
-    rejects([] { i::Context invalid({{"bad", i::ActionType::button, {{{}, i::Channel::x, 1, 1}}}}); });
-    i::Context capacity({{"held", i::ActionType::button, {{{i::ControlKind::gamepad_button, 0}}}}});
-    for (unsigned device = 0; device < 1024; ++device)
-        capacity.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, device}, 1});
-    rejects([&] { capacity.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 1024}, 1}); });
-    for (unsigned device = 0; device < 1024; ++device)
-        capacity.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, device}});
-    check(!capacity.state("held").active, "Capacity rejection stored an extra physical control");
-}
-} // namespace
-int main() {
-    try {
-        run();
-        chord_transitions();
-        chord_devices();
-        chord_validation_and_capacity();
-        std::cout << "PASS action input transitions, maps, devices, focus and rebinding\n";
-    } catch (const std::exception &e) {
-        std::cerr << e.what() << '\n';
-        return 1;
-    }
+    CHECK_FALSE(capacity.state("chord").active);
+    CHECK(capacity.state("chord").released);
 }
