@@ -11,10 +11,11 @@ Pose rigid_pose(GameObject object, Motion motion) {
     if (motion == Motion::dynamic && object.parent())
         throw std::invalid_argument("Dynamic rigid bodies must be scene roots");
     const auto m = object.world_matrix();
-    for (float value : {m[12], m[13], m[14]})
+    const auto position = translation_of(m);
+    for (float value : {position.x, position.y, position.z})
         if (!std::isfinite(value) || std::abs(value) > detail::maximum_vector_component)
             throw std::invalid_argument("Physics position outside supported range");
-    const Vec3 x{m[0], m[1], m[2]}, y{m[4], m[5], m[6]}, z{m[8], m[9], m[10]};
+    const Vec3 x = axis_x(m), y = axis_y(m), z = axis_z(m);
     if (std::abs(dot(x, x) - 1) > rigid_pose_tolerance || std::abs(dot(y, y) - 1) > rigid_pose_tolerance ||
         std::abs(dot(z, z) - 1) > rigid_pose_tolerance || std::abs(dot(x, y)) > rigid_pose_tolerance ||
         std::abs(dot(x, z)) > rigid_pose_tolerance || std::abs(dot(y, z)) > rigid_pose_tolerance ||
@@ -35,7 +36,7 @@ Pose rigid_pose(GameObject object, Motion motion) {
         q[k] = (m[k * 4 + i] + m[i * 4 + k]) / s;
         q[3] = (m[j * 4 + k] - m[k * 4 + j]) / s;
     }
-    return {{m[12], m[13], m[14]}, unit_quaternion(q)};
+    return {position, unit_quaternion(q)};
 }
 using Json = nlohmann::json;
 Json vec(Vec3 v) { return Json::array({v.x, v.y, v.z}); }

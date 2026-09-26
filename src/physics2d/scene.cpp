@@ -10,15 +10,17 @@ Pose planar_pose(GameObject object, Motion motion) {
     if (motion == Motion::dynamic && object.parent())
         throw std::invalid_argument("Dynamic 2D bodies must be scene roots");
     const auto m = object.world_matrix();
-    for (float value : {m[12], m[13]})
+    const auto position = translation_of(m);
+    for (float value : {position.x, position.y})
         if (!std::isfinite(value) || std::abs(value) > 1e6F)
             throw std::invalid_argument("2D physics position outside supported range");
     const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 1e-4F; };
-    if (!near(m[0] * m[0] + m[1] * m[1], 1) || !near(m[4] * m[4] + m[5] * m[5], 1) ||
-        !near(m[0] * m[4] + m[1] * m[5], 0) || !near(m[0] * m[5] - m[1] * m[4], 1) || !near(m[2], 0) ||
-        !near(m[6], 0) || !near(m[8], 0) || !near(m[9], 0) || !near(m[10], 1))
+    const auto x = axis_x(m), y = axis_y(m), z = axis_z(m);
+    if (!near(x.x * x.x + x.y * x.y, 1) || !near(y.x * y.x + y.y * y.y, 1) || !near(x.x * y.x + x.y * y.y, 0) ||
+        !near(x.x * y.y - x.y * y.x, 1) || !near(x.z, 0) || !near(y.z, 0) || !near(z.x, 0) || !near(z.y, 0) ||
+        !near(z.z, 1))
         throw std::invalid_argument("2D physics requires unit scale, XY translation and Z rotation without tilt/shear");
-    return {{m[12], m[13]}, std::atan2(m[1], m[0])};
+    return {{position.x, position.y}, std::atan2(x.y, x.x)};
 }
 using Json = nlohmann::json;
 Json vec(Vec2 v) { return Json::array({v.x, v.y}); }

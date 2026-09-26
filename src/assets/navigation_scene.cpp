@@ -19,8 +19,7 @@ struct NavigationSceneAccess {
             Vec3 velocity{};
             if (component.active()) {
                 const auto m = component.object().world_matrix();
-                velocity =
-                    follower.steer({m[12], m[13], m[14]}, component->speed_, seconds, component->arrival_distance_);
+                velocity = follower.steer(translation_of(m), component->speed_, seconds, component->arrival_distance_);
             }
             updates.push_back({component, std::move(follower), velocity});
         }
