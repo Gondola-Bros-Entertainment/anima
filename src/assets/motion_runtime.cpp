@@ -23,6 +23,7 @@ struct MotionRuntime::Impl {
             }
         }
         for (const auto &[name, value] : definition.at("chains").items()) {
+            detail::json_fields(value, {"joints", "minimum_angle", "maximum_angle"});
             const auto &joints = value.at("joints");
             if (name.empty() || joints.size() != 3)
                 throw std::invalid_argument("Invalid contact chain");
@@ -165,8 +166,12 @@ struct MotionRuntime::Impl {
   private:
     static std::vector<anima::EvaluationJoint> bind(const anima::Asset &asset, const anima::Manifest &manifest,
                                                     const nlohmann::json &data) {
+        // Every object is checked for unknown fields, as the other presentation readers do.
+        detail::json_fields(data, {"version", "skeleton", "evaluation", "resource", "clips", "layers"});
         const auto &skeleton = data.at("skeleton");
         const auto &definition = data.at("evaluation");
+        detail::json_fields(skeleton, {"id", "bind_signature", "joint_count"});
+        detail::json_fields(definition, {"version", "id", "parents", "masks", "chains"});
         if (data.at("version") != 3 || definition.at("version") != 1 ||
             definition.at("id").get<std::string>().empty() || skeleton.at("id") != manifest.skeleton_id ||
             skeleton.at("bind_signature") != manifest.bind_signature ||
@@ -216,6 +221,7 @@ struct MotionRuntime::Impl {
         for (std::size_t i = 0; i < rig_.size(); ++i)
             (void)anima::unique_node(*resource_, asset_->nodes[rig_.asset_node(i)].name);
         for (const auto &value : document.at("clips")) {
+            detail::json_fields(value, {"name", "loop", "events"}, {"reference_speed"});
             anima::ClipMetadata info;
             info.name = value.at("name").get<std::string>();
             info.loop = value.at("loop").get<bool>();
@@ -226,6 +232,7 @@ struct MotionRuntime::Impl {
             }
             double previous = -1;
             for (const auto &event : value.at("events")) {
+                detail::json_fields(event, {"time", "name"});
                 anima::ClipEvent cue{event.at("time").get<double>(), event.at("name").get<std::string>()};
                 if (!std::isfinite(cue.time) || cue.time < previous || cue.time < 0 ||
                     cue.time > clip(info.name).duration || cue.name.empty())
@@ -239,6 +246,7 @@ struct MotionRuntime::Impl {
                 throw std::invalid_argument("Duplicate/empty motion identity");
         }
         for (const auto &[name, value] : document.at("layers").items()) {
+            detail::json_fields(value, {"mask", "owned_joints", "context_joints"});
             const auto mask = value.at("mask").get<std::string>();
             const auto &roots = document.at("evaluation").at("masks").at(mask);
             std::set<std::string> owned, context;
