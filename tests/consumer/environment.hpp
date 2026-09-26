@@ -270,6 +270,64 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesyst
     if (!matched || mismatch > mismatch_limit)
         throw std::runtime_error("Mirrored draws shade differently: " + report.str());
 }
+// A box scaled to zero along Z shades as the square it collapses to, like an ordinary square facing +Z at the
+// mirror position. The sun and the camera lie in the plane x = 0 between them and nothing casts shadows, so only
+// their normals can differ. An upward square in view shows that a +Y normal would shade them differently.
+template <class Capture>
+void check_collapsed_shading(anima::VulkanRenderer &renderer, const std::filesystem::path &output, Capture &&capture) {
+    using anima::operator*;
+    constexpr float half = .5F, offset = 1.2F;
+    constexpr float quarter_turn = 1.5707964F; // Turns +Y to +Z about +X.
+    constexpr anima::Quat unrotated{0, 0, 0, 1};
+    constexpr int window_radius = 3;     // Pixels around each sample, which sits well inside its square.
+    constexpr double face_tolerance = 3; // Channel levels between the collapsed and the ordinary square.
+    constexpr double normal_margin = 20; // Channel levels by which the upward square differs from the ordinary one.
+    auto scene = std::make_shared<anima::Scene>();
+    auto collapsed = scene->create("collapsed", anima::Mesh::compile(*box_fixture({half, half, half})));
+    collapsed.set_transform({{-offset, half, 0}, unrotated, {1, 1, 0}});
+    const auto square = anima::Mesh::compile(*box_fixture({half, 0, half}, true)); // Faces +Y.
+    auto facing = scene->create("facing", square);
+    facing.set_transform(
+        {{offset, half, 0}, {std::sin(quarter_turn / 2), 0, 0, std::cos(quarter_turn / 2)}, {1, 1, 1}});
+    auto upward = scene->create("upward", square);
+    upward.set_transform({{0, 0, 1}, unrotated, {1, 1, 1}});
+    anima::Environment lighting;
+    lighting.sun.direction = {0, .342F, .94F}; // 20 degrees above the horizon, behind the camera.
+    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.radiance = {};
+    lighting.ambient_sky = {.25F, .3F, .4F};
+    lighting.ambient_ground = {.04F, .03F, .02F};
+    lighting.shadow.enabled = false;
+    const auto view = anima::perspective(4.F / 3, .05F, 50) * anima::look_at({0, 2, 5}, {0, half, 0});
+    renderer.set_view(view);
+    renderer.set_environment(lighting);
+    renderer.set_scenes({scene});
+    capture("collapsed-shading");
+    const auto image = read_capture(output / "collapsed-shading.ppm");
+    const auto sample = [&](anima::Vec3 world) {
+        return window_mean(image, project(view, world, image.width, image.height), window_radius);
+    };
+    const auto flattened = sample({-offset, half, 0}), ordinary = sample({offset, half, 0}), up = sample({0, 0, 1});
+    const std::array means{std::pair{"collapsed", flattened}, std::pair{"ordinary", ordinary}, std::pair{"upward", up}};
+    std::ostringstream report;
+    bool matched = true, distinct = false;
+    for (const auto &[name, value] : means) {
+        report << name;
+        for (const auto channel : value)
+            report << ' ' << std::lround(channel);
+        report << "; ";
+    }
+    for (std::size_t c = 0; c < rgb_channels; ++c) {
+        matched = matched && std::abs(flattened[c] - ordinary[c]) <= face_tolerance;
+        distinct = distinct || std::abs(up[c] - ordinary[c]) > normal_margin;
+    }
+    std::cout << "COLLAPSED SHADING " << report.str() << '\n';
+    // If +Y and +Z normals shaded alike here, a match would prove nothing.
+    if (!distinct)
+        throw std::runtime_error("The upward and the ordinary square shade alike: " + report.str());
+    if (!matched)
+        throw std::runtime_error("A collapsed draw shades unlike its flattened surface: " + report.str());
+}
 inline int run(int argc, char **argv) {
     using resource_test::require;
     using anima::operator*;
@@ -566,10 +624,11 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
     capture("sky-shadows-disabled");
     check_mirrored_shading(renderer, output, capture);
+    check_collapsed_shading(renderer, output, capture);
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Environment GPU validation failed");
     std::cout << "PASS environment: shadow casters, detail-pass visibility, invalid-setting rejection, lighting "
-                 "replacement, mirrored shading and retirement\n";
+                 "replacement, mirrored and collapsed shading and retirement\n";
     return 0;
 }
 } // namespace environment_test
