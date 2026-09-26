@@ -5,6 +5,7 @@
     {
       "name": "base",
       "hidden": true,
+      "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
@@ -32,16 +33,74 @@
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/desktop",
       "cacheVariables": { "ANIMA_BUILD_DESKTOP": true, "ANIMA_BUILD_ASSETS": true, "ANIMA_BUILD_AUDIO_OUTPUT": true }
+    },
+    {
+      "name": "full",
+      "displayName": "Every module: desktop, UI, physics, 2D physics, SDL input and audio output",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/full",
+      "cacheVariables": {
+        "ANIMA_BUILD_DESKTOP": true,
+        "ANIMA_BUILD_ASSETS": true,
+        "ANIMA_BUILD_UI": true,
+        "ANIMA_BUILD_UI_DOCUMENTS": true,
+        "ANIMA_BUILD_PHYSICS": true,
+        "ANIMA_BUILD_PHYSICS2D": true,
+        "ANIMA_BUILD_INPUT_SDL": true,
+        "ANIMA_BUILD_AUDIO_OUTPUT": true
+      }
     }
   ],
   "buildPresets": [
-    { "name": "core", "configurePreset": "core", "configuration": "Debug", "jobs": 2 },
-    { "name": "headless", "configurePreset": "headless", "configuration": "Debug", "jobs": 2 },
-    { "name": "desktop", "configurePreset": "desktop", "configuration": "Debug", "jobs": 2 }
+    { "name": "core", "configurePreset": "core" },
+    { "name": "headless", "configurePreset": "headless" },
+    { "name": "desktop", "configurePreset": "desktop" },
+    { "name": "full", "configurePreset": "full" }
   ],
   "testPresets": [
-    { "name": "core", "configurePreset": "core", "configuration": "Debug", "output": { "outputOnFailure": true } },
-    { "name": "headless", "configurePreset": "headless", "configuration": "Debug", "output": { "outputOnFailure": true } },
-    { "name": "desktop", "configurePreset": "desktop", "configuration": "Debug", "output": { "outputOnFailure": true } }
+    {
+      "name": "defaults",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "core", "inherits": "defaults", "configurePreset": "core" },
+    { "name": "headless", "inherits": "defaults", "configurePreset": "headless" },
+    { "name": "desktop", "inherits": "defaults", "configurePreset": "desktop" },
+    { "name": "full", "inherits": "defaults", "configurePreset": "full" }
+  ],
+  "workflowPresets": [
+    {
+      "name": "core",
+      "steps": [
+        { "type": "configure", "name": "core" },
+        { "type": "build", "name": "core" },
+        { "type": "test", "name": "core" }
+      ]
+    },
+    {
+      "name": "headless",
+      "steps": [
+        { "type": "configure", "name": "headless" },
+        { "type": "build", "name": "headless" },
+        { "type": "test", "name": "headless" }
+      ]
+    },
+    {
+      "name": "desktop",
+      "steps": [
+        { "type": "configure", "name": "desktop" },
+        { "type": "build", "name": "desktop" },
+        { "type": "test", "name": "desktop" }
+      ]
+    },
+    {
+      "name": "full",
+      "steps": [
+        { "type": "configure", "name": "full" },
+        { "type": "build", "name": "full" },
+        { "type": "test", "name": "full" }
+      ]
+    }
   ]
 }

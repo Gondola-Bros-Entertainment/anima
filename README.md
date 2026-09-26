@@ -10,23 +10,20 @@ manager or standalone player.
 
 ## Build
 
-The headless runtime requires CMake 3.25+ and a C++20 compiler:
+The headless runtime requires CMake 3.25+, Ninja and a C++20 compiler. Each preset's
+workflow configures, builds and tests it:
 
 ```sh
 git clone https://github.com/Gondola-Bros-Entertainment/anima.git
 cd anima
-cmake --preset headless
-cmake --build --preset headless
-ctest --preset headless --output-on-failure
+cmake --workflow --preset headless
 ```
 
 The `core` preset builds only the dependency-free library. The `desktop` preset adds
 the Vulkan renderer, SDL audio output and the `anima` viewer:
 
 ```sh
-cmake --preset desktop
-cmake --build --preset desktop
-ctest --preset desktop --output-on-failure
+cmake --workflow --preset desktop
 ./build/desktop/anima --validation
 ```
 
