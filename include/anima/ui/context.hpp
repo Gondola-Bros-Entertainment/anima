@@ -128,6 +128,11 @@ class UiContext {
     /// metrics and call VulkanRenderer::request_resize. Pass pointer coordinates as SDL reports
     /// them; the context scales them by the window's pixel density.
     ///
+    /// A wheel event scrolls the nearest scrollable element under the pointer the way SDL reports
+    /// it: right for a positive `x` and up for a positive `y`. SDL delivers those values with the
+    /// platform's natural-scrolling setting already applied, so `SDL_MouseWheelEvent::direction`,
+    /// which only records that setting, is ignored.
+    ///
     /// A press on a document captures the SDL mouse until its buttons are released; hiding or
     /// closing that document cancels the press, ends the capture and consumes the release. A
     /// press outside every document blurs the focused control. Losing window focus releases every

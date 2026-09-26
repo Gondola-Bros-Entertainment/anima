@@ -224,6 +224,18 @@ inline int run(int argc, char **argv) {
         frame();
     }
     require(scroll->GetScrollTop() > 0, "RmlUi overflow did not scroll");
+    // SDL's wheel x is positive to the right, as RmlUi's is, and its y is positive for scrolling up.
+    // Both already follow the platform's natural-scrolling setting, which direction only records.
+    auto rightward = wheel;
+    rightward.wheel.x = 1;
+    rightward.wheel.y = 0;
+    require(dispatch(rightward).consumed && scroll->GetScrollLeft() > 0, "A rightward wheel did not scroll right");
+    auto flipped_upward = wheel;
+    flipped_upward.wheel.y = 1;
+    flipped_upward.wheel.direction = SDL_MOUSEWHEEL_FLIPPED;
+    const float scrolled_down = scroll->GetScrollTop();
+    require(dispatch(flipped_upward).consumed && scroll->GetScrollTop() < scrolled_down,
+            "A flipped wheel scrolled against the direction its values report");
     require(click(input), "Refocusing input failed");
     ui.update();
     document.hide();

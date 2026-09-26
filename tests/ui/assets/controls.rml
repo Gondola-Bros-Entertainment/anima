@@ -12,7 +12,7 @@ selectbox { background-color: #203040; border-width: 1dp; border-color: white; }
 option { padding: 4dp; }
 option:hover, option:checked { background-color: #5080a0; }
 #scroll { width: 220dp; height: 54dp; overflow: auto; background-color: #15283b; }
-#scrollcontent { height: 160dp; width: 180dp; }
+#scrollcontent { height: 160dp; width: 400dp; }
 #clip { position: absolute; left: 350dp; top: 40dp; width: 100dp; height: 50dp; overflow: hidden; }
 #clipchild { display: block; width: 160dp; height: 80dp; background-color: #ff0000; }
 #alpha { position: absolute; left: 350dp; top: 120dp; width: 100dp; height: 80dp; background-color: #ffffff80; }
