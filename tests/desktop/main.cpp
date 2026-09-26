@@ -1,11 +1,13 @@
 #include "../../apps/desktop/viewer_application.hpp"
 #include "../consumer/gpu_checks.hpp"
 #ifdef ANIMA_HAS_ASSETS
+#include "../consumer/gltf_fixture.hpp"
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/preview.hpp>
 #endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -13,11 +15,20 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <tuple>
 using namespace anima::viewer;
 namespace {
 void sdl_check(bool success, const char *operation) {
     if (!success)
         throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
+}
+// Preview captures by name: the 11 named frames and 17 strides 4 frames apart from frame 180.
+constexpr unsigned stride_captures = 17, stride_start = 180, stride_frames = 4;
+constexpr std::uint32_t preview_captures = 11 + stride_captures;
+std::string stride_name(unsigned index) {
+    std::ostringstream name;
+    name << "stride_" << std::setw(3) << std::setfill('0') << index;
+    return name.str();
 }
 class Verification final : public ViewerDriver {
   public:
@@ -26,7 +37,9 @@ class Verification final : public ViewerDriver {
     // Reads the first frame back for check_first_frame().
     bool first_frame_{};
     std::optional<anima::CapturedImage> first_;
-    std::filesystem::path captures_;
+    // Plays the preview script and reads its frames back for check_preview().
+    bool preview_{};
+    std::map<std::string, anima::CapturedImage> previews_;
     void before_draw(const ViewerFrame &frame) override {
         auto *window = frame.window;
         auto &renderer = frame.renderer;
@@ -39,6 +52,12 @@ class Verification final : public ViewerDriver {
             } else
                 first_ = renderer.take_capture();
         }
+        // A frame is presented only after a draw() that completed its capture request.
+        if (pending_)
+            if (auto image = renderer.take_capture()) {
+                previews_.insert_or_assign(*pending_, std::move(*image));
+                pending_.reset();
+            }
         if (smoke_) {
             if (frames >= 20 && !resized) {
                 sdl_check(SDL_SetWindowSize(window, 800, 500), "Resize smoke window");
@@ -63,7 +82,7 @@ class Verification final : public ViewerDriver {
 #ifdef ANIMA_HAS_ASSETS
         auto *preview = frame.preview;
         auto *camera = frame.camera;
-        if (preview && !captures_.empty() && scripted_frame != frames) {
+        if (preview && preview_ && scripted_frame != frames) {
             scripted_frame = frames;
             if (frames == 140)
                 preview->select("Walk");
@@ -80,25 +99,26 @@ class Verification final : public ViewerDriver {
                 {164, "walk_paused_again"}, {175, "walk_mid"},   {190, "walk_early"}, {214, "walk_swing"},
                 {284, "walk_restart"},      {320, "bind_start"}, {340, "bind_later"}};
             if (const auto capture = captures.find(frames); capture != captures.end()) {
-                renderer.request_capture(captures_ / (capture->second + ".ppm"));
+                renderer.request_capture();
+                pending_ = capture->second;
                 std::cout << "CAPTURE " << capture->second << " frame=" << frames << " " << preview->status() << '\n';
-            } else if (frames >= 180 && frames <= 244 && (frames - 180) % 4 == 0) {
-                std::ostringstream name;
-                name << "stride_" << std::setw(3) << std::setfill('0') << (frames - 180) / 4 << ".ppm";
-                renderer.request_capture(captures_ / name.str());
+            } else if (frames >= stride_start && frames < stride_start + stride_captures * stride_frames &&
+                       (frames - stride_start) % stride_frames == 0) {
+                renderer.request_capture();
+                pending_ = stride_name(unsigned((frames - stride_start) / stride_frames));
             }
         }
         if (camera) {
             const auto dt = static_cast<float>(std::min(frame.seconds, .1));
             auto &camera_updates = frame.camera_updates;
-            if (smoke_ && captures_.empty() && frames >= 60) {
+            if (smoke_ && !preview_ && frames >= 60) {
                 camera->orbit(dt * 0.7F, 0);
                 ++camera_updates;
             }
         }
 #endif
     }
-    double playback_seconds(double elapsed) const override { return captures_.empty() ? elapsed : 1.0 / 60.0; }
+    double playback_seconds(double elapsed) const override { return preview_ ? 1.0 / 60.0 : elapsed; }
     bool passed(const ViewerResult &r) const override {
         constexpr unsigned asset_camera_updates = 60;
         bool passing = true;
@@ -114,14 +134,16 @@ class Verification final : public ViewerDriver {
                    "The window did not resize, minimize and restore with the swapchain following it");
         if (smoke_ && asset_)
             expect(r.camera_updates >= asset_camera_updates, "The asset smoke orbited its camera too few times");
-        if (!captures_.empty())
-            expect(r.renderer.capture_count >= 28, "The preview check wrote too few captures");
+        if (preview_)
+            expect(r.renderer.capture_count == preview_captures && previews_.size() == preview_captures,
+                   "The preview check did not read back its 28 frames");
         return passing;
     }
 
   private:
     bool resized{}, minimized{}, restored{}, resized_again{}, waiting_restore{};
     bool first_requested_{};
+    std::optional<std::string> pending_;
     std::chrono::steady_clock::time_point restore_at{};
     [[maybe_unused]] std::uint64_t scripted_frame = std::numeric_limits<std::uint64_t>::max();
 };
@@ -172,6 +194,89 @@ void check_first_frame(const anima::CapturedImage &image, const ViewerOptions &o
                      "The diagnostic triangle covers " + std::to_string(coverage) + " of the first frame",
                      {"first-frame"});
 }
+#ifdef ANIMA_HAS_ASSETS
+// A quad skinned to one joint, with two looping clips that move the joint along X and back: Idle by 0.15 over 2
+// seconds, Walk by 0.9 over 4. Writes preview.glb and its manifest, preview.asset.json, into @p directory.
+std::filesystem::path write_preview_fixture(const std::filesystem::path &directory) {
+    gltf_fixture::Builder builder;
+    const auto positions = builder.floats({-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, -1, 0, 1, 1, 0, -1, 1, 0}, "VEC3", true);
+    std::vector<float> normals, weights;
+    for (unsigned vertex = 0; vertex < 6; ++vertex) {
+        normals.insert(normals.end(), {0, 0, 1});
+        weights.insert(weights.end(), {1, 0, 0, 0});
+    }
+    const auto normal = builder.floats(normals, "VEC3");
+    const auto joints = builder.shorts(std::vector<std::uint16_t>(6 * 4, 0), "VEC4");
+    const auto weight = builder.floats(weights, "VEC4");
+    const auto inverse_bind = builder.floats({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}, "MAT4");
+    std::string animations;
+    for (const auto &[name, duration, travel] : {std::tuple{"Idle", 2.F, .15F}, std::tuple{"Walk", 4.F, .9F}}) {
+        const auto times = builder.floats({0, duration / 2, duration}, "SCALAR", true);
+        const auto translations = builder.floats({0, 0, 0, travel, 0, 0, 0, 0, 0}, "VEC3");
+        animations += std::string(animations.empty() ? "" : ",") + R"({"name":")" + name +
+                      R"(","samplers":[{"input":)" + std::to_string(times) + R"(,"output":)" +
+                      std::to_string(translations) +
+                      R"(}],"channels":[{"sampler":0,"target":{"node":1,"path":"translation"}}]})";
+    }
+    const auto glb = builder.glb(
+        R"("scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"children":[1,2]},{"name":"joint"},{"mesh":0,"skin":0}],)"
+        R"("skins":[{"joints":[1],"inverseBindMatrices":)" +
+        std::to_string(inverse_bind) + R"(}],"meshes":[{"primitives":[{"attributes":{"POSITION":)" +
+        std::to_string(positions) + R"(,"NORMAL":)" + std::to_string(normal) + R"(,"JOINTS_0":)" +
+        std::to_string(joints) + R"(,"WEIGHTS_0":)" + std::to_string(weight) +
+        R"(},"material":0}]}],"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.3,0.6,0.9,1],)"
+        R"("metallicFactor":0}}],"animations":[)" +
+        animations + "]");
+    std::filesystem::create_directories(directory);
+    std::ofstream model(directory / "preview.glb", std::ios::binary);
+    model.write(reinterpret_cast<const char *>(glb.data()), static_cast<std::streamsize>(glb.size()));
+    const auto manifest = directory / "preview.asset.json";
+    std::ofstream(manifest) << R"({"schema_version":1,"units":"meters","asset_id":"test.preview",)"
+                               R"("model":"preview.glb","skeleton":{"id":"test.rig","joint_count":1,"bind_signature":")"
+                            << std::string(64, '0') << R"("},"clips":[{"name":"Idle","loop":true,"events":[]},)"
+                            << R"({"name":"Walk","loop":true,"events":[]}],"equipment":[]})" << '\n';
+    model.close();
+    if (!model || !std::filesystem::exists(manifest))
+        throw std::runtime_error("Could not write the preview fixture");
+    return manifest;
+}
+// Idle and Walk move the quad, a paused pose holds, a restart reproduces its pose, the stride frames differ and
+// the bind pose holds.
+void check_preview(std::map<std::string, anima::CapturedImage> images, const std::filesystem::path &output) {
+    gpu_check::Captures captures(output);
+    for (auto &[name, image] : images)
+        captures.add(name, std::move(image));
+    constexpr double idle_motion = .0001, walk_motion = .001;
+    captures.require_changed("idle_start", "idle_mid", idle_motion, "Idle did not move the quad");
+    captures.require_changed("walk_start", "walk_mid", walk_motion, "Walk did not move the quad");
+    captures.require_changed("walk_early", "walk_swing", walk_motion, "Walk did not swing the quad");
+    captures.require_same("walk_paused", "walk_paused_again", "The paused pose moved");
+    captures.require_same("walk_swing", "walk_restart", "Restarting did not reproduce the pose");
+    std::vector<std::string> strides;
+    unsigned distinct = 0;
+    for (unsigned i = 0; i < stride_captures; ++i) {
+        strides.push_back(stride_name(i));
+        bool repeated = false;
+        for (unsigned earlier = 0; earlier < i && !repeated; ++earlier)
+            repeated = gpu_check::same(captures[strides[earlier]], captures[strides[i]]);
+        if (!repeated)
+            ++distinct;
+    }
+    constexpr unsigned least_distinct_strides = 14;
+    captures.require(distinct >= least_distinct_strides,
+                     "Only " + std::to_string(distinct) + " of the 17 stride frames differ", strides);
+    captures.require_same("bind_start", "bind_later", "The bind pose moved");
+}
+#endif
+// Removes the directory of a generated fixture when the check ends.
+struct RemovedDirectory {
+    std::filesystem::path path;
+    ~RemovedDirectory() {
+        std::error_code ignored;
+        if (!path.empty())
+            std::filesystem::remove_all(path, ignored);
+    }
+};
 } // namespace
 int main(int argc, char **argv) {
     try {
@@ -189,8 +294,8 @@ int main(int argc, char **argv) {
             };
             if (argument == "--smoke")
                 checks.smoke_ = true;
-            else if (argument == "--preview-smoke") {
-                checks.captures_ = next();
+            else if (argument == "--preview") {
+                checks.preview_ = true;
                 checks.smoke_ = true;
             } else if (argument == "--output")
                 output = next();
@@ -214,13 +319,23 @@ int main(int argc, char **argv) {
         }
         if (options.help) {
             std::cout << viewer_usage()
-                      << "anima_check: --smoke | --preview-smoke DIR | --fail-after STAGE, with --output DIR for the\n"
-                         "  images of a failed check. A run that draws its first frame compares it in memory.\n";
+                      << "anima_check: --smoke | --preview | --fail-after STAGE, with --output DIR for the images\n"
+                         "  of a failed check. A run that draws its first frame compares it in memory; --preview\n"
+                         "  plays a generated skinned quad unless --manifest names Idle and Walk clips.\n";
             return 0;
         }
-        if (!checks.captures_.empty()) {
-            if (options.manifest.empty())
-                throw std::invalid_argument("Preview check requires a manifest");
+        RemovedDirectory fixture;
+        if (checks.preview_) {
+#ifdef ANIMA_HAS_ASSETS
+            if (!options.asset.empty())
+                throw std::invalid_argument("The preview check takes --manifest, not --asset");
+            if (options.manifest.empty()) {
+                fixture.path = output / "preview-fixture";
+                options.manifest = write_preview_fixture(fixture.path);
+            }
+#else
+            throw std::invalid_argument("The preview check needs asset support");
+#endif
             if (options.frames && options.frames < 360)
                 throw std::invalid_argument("Preview check needs 360 frames");
             if (!options.frames)
@@ -236,9 +351,9 @@ int main(int argc, char **argv) {
         checks.asset_ = !options.asset.empty();
         checks.first_frame_ =
             options.manifest.empty() && options.renderer.fail_after == anima::RendererFailureStage::none;
-        if (checks.first_frame_) {
+        if (checks.first_frame_ || checks.preview_) {
             if (!options.renderer.capture.empty())
-                throw std::invalid_argument("anima_check compares its first frame in memory; omit --capture");
+                throw std::invalid_argument("anima_check compares its frames in memory; omit --capture");
             // The check takes the first frame when the viewer prepares the second.
             if (options.frames == 1)
                 throw std::invalid_argument("Checking the first frame needs at least 2 frames");
@@ -252,12 +367,18 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("The asset has no mesh nodes, primitives or triangles");
         }
 #endif
-        const auto status = run_viewer(options, &checks); // A copy: check_first_frame() reads the options.
-        if (status != 0 || !checks.first_frame_)
+        const auto status = run_viewer(options, &checks); // A copy: the checks below read the options.
+        if (status != 0)
             return status;
-        if (!checks.first_)
-            throw std::runtime_error("The first frame was not read back");
-        check_first_frame(*checks.first_, options, output);
+#ifdef ANIMA_HAS_ASSETS
+        if (checks.preview_)
+            check_preview(std::move(checks.previews_), output);
+#endif
+        if (checks.first_frame_) {
+            if (!checks.first_)
+                throw std::runtime_error("The first frame was not read back");
+            check_first_frame(*checks.first_, options, output);
+        }
         return 0;
     } catch (const DisplayUnavailable &error) {
         return gpu_check::unavailable(error);
