@@ -1,24 +1,19 @@
+// This suite supplies its own doctest main, which takes an optional exported GLB as its first argument.
+#define DOCTEST_CONFIG_IMPLEMENT
+#include "near.hpp"
 #include <anima/scene.hpp>
-#include <iostream>
-#include <limits>
-#include <stdexcept>
+#include <doctest/doctest.h>
+
+#include <cmath>
+#include <cstddef>
+#include <memory>
+#include <string>
 
 namespace {
-void require(bool value, const char *message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-void near(float a, float b, const char *message) { require(std::abs(a - b) < 1e-4F, message); }
-template <class F> void rejects(F action, const std::string &message) {
-    try {
-        action();
-    } catch (const std::exception &error) {
-        if (std::string(error.what()).find(message) != std::string::npos)
-            return;
-        throw;
-    }
-    throw std::runtime_error("Expected rejection: " + message);
-}
+constexpr float tolerance = 1e-4F; // Snapshot vertices and material factors against their independent sources.
+// Runs only when the first argument names an exported model, as CTest's exported_instances passes it.
+constexpr auto exported_case = "Snapshots of an exported model match its independent deformation";
+std::string exported_model;
 anima::Mat4 translation(float x) {
     auto m = anima::identity();
     m[12] = x;
@@ -67,6 +62,7 @@ std::shared_ptr<anima::Asset> asset() {
     source->animations.push_back(clip);
     return source;
 }
+// Checks snapshots of two instances of @p source against its independent CPU deformation.
 void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     const auto compiled = anima::Mesh::compile(*source);
     anima::Scene instances;
@@ -74,16 +70,16 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     const auto reference = anima::make_mesh_snapshot(*source, anima::sample_pose(*source));
     const auto count = reference.vertices.size();
     const auto initial = instances.snapshot();
-    require(initial.vertices.size() == count * 2 && initial.primitives.size() == source->primitives.size() * 2,
-            "Snapshot lost instance geometry");
-    require(initial.material_data.size() == source->materials.size() * 2 &&
-                initial.textures.size() == source->textures.size() * 2,
-            "Snapshot lost instance materials/textures");
+    REQUIRE(initial.vertices.size() == count * 2);
+    REQUIRE(initial.primitives.size() == source->primitives.size() * 2);
+    REQUIRE(initial.material_data.size() == source->materials.size() * 2);
+    CHECK(initial.textures.size() == source->textures.size() * 2);
+    // The second instance's materials refer to its own copy of the textures.
     for (std::size_t i = 0; i < source->materials.size(); ++i) {
+        CAPTURE(i);
         const auto texture = source->materials[i].texture;
-        require(initial.material_data[source->materials.size() + i].texture ==
-                    (texture < 0 ? -1 : texture + int(source->textures.size())),
-                "Snapshot failed to remap texture references");
+        CHECK(initial.material_data[source->materials.size() + i].texture ==
+              (texture < 0 ? -1 : texture + int(source->textures.size())));
     }
     auto world = translation(10);
     auto pose = anima::sample_pose(*source);
@@ -93,47 +89,56 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     auto expected = reference;
     anima::pose_mesh_snapshot(*source, pose, expected, 0, world);
     const auto posed = instances.snapshot();
+    REQUIRE(posed.vertices.size() == initial.vertices.size());
     for (std::size_t i = 0; i < count; ++i) {
-        require(anima::length(posed.vertices[i].position - expected.vertices[i].position) < 1e-4F &&
-                    anima::length(posed.vertices[i].normal - expected.vertices[i].normal) < 1e-4F &&
-                    posed.vertices[i].uv == expected.vertices[i].uv,
-                "Snapshot differs from independent source deformation");
-        require(anima::length(posed.vertices[count + i].position - reference.vertices[i].position) < 1e-4F,
-                "Posing one instance changed another");
+        CAPTURE(i);
+        CHECK(anima::length(posed.vertices[i].position - expected.vertices[i].position) < tolerance);
+        CHECK(anima::length(posed.vertices[i].normal - expected.vertices[i].normal) < tolerance);
+        CHECK(posed.vertices[i].uv == expected.vertices[i].uv);
+        // Posing one instance leaves the other at rest.
+        CHECK(anima::length(posed.vertices[count + i].position - reference.vertices[i].position) < tolerance);
     }
     const auto bytes = posed.vertices.size() * sizeof(anima::MeshVertex);
-    require(instances.snapshot({bytes}).vertices.size() == count * 2, "Exact snapshot budget rejected");
+    CHECK(instances.snapshot({bytes}).vertices.size() == count * 2);
     const auto accepted = instances.instance(a).palette;
-    rejects([&] { (void)instances.snapshot({bytes - 1}); }, "budget");
-    require(instances.instance(a).palette == accepted, "Rejected snapshot changed the pose");
+    const auto budget = "MeshSnapshot geometry needs " + std::to_string(bytes) + " bytes; budget is " +
+                        std::to_string(bytes - 1) + " bytes";
+    CHECK_THROWS_WITH_AS(instances.snapshot({bytes - 1}), budget.c_str(), anima::SceneCapacityError);
+    CHECK(instances.instance(a).palette == accepted);
     instances.set_visible(a, false);
     instances.set_primitive_visible(b, 0, false);
     const auto hidden = instances.snapshot();
-    require(!hidden.primitives.front().visible && !hidden.primitives[source->primitives.size()].visible,
-            "Snapshot lost explicit instance/primitive visibility");
+    CHECK_FALSE(hidden.primitives.front().visible);
+    CHECK_FALSE(hidden.primitives[source->primitives.size()].visible);
     instances.set_visible(a, true);
     if (!source->materials.empty()) {
         instances.set_material_factor(a, 0, {.2F, .4F, .8F});
         const auto colored = instances.snapshot();
-        near(colored.material_data[0].factor.x, .2F, "Snapshot lost material override");
-        near(colored.material_data[source->materials.size()].factor.x, source->materials[0].factor.x,
-             "Snapshot appearance leaked into another instance");
+        CHECK(colored.material_data[0].factor.x == Near{.2F, tolerance});
+        // The other instance keeps the source factor.
+        CHECK(colored.material_data[source->materials.size()].factor.x ==
+              Near{source->materials[0].factor.x, tolerance});
         for (std::size_t p = 0; p < source->primitives.size(); ++p)
             if (source->primitives[p].material == 0) {
+                CAPTURE(p);
+                // Vertex colors are multiplied by the override.
                 const auto offset = colored.primitives[p].first_vertex;
-                near(colored.vertices[offset].color.x, source->primitives[p].vertices[0].color.x * .2F,
-                     "Snapshot did not multiply vertex colour by the override");
+                CHECK(colored.vertices[offset].color.x ==
+                      Near{source->primitives[p].vertices[0].color.x * .2F, tolerance});
             }
         instances.clear_material_factor(a, 0);
-        near(instances.snapshot().material_data[0].factor.x, source->materials[0].factor.x,
-             "Clearing override failed to restore source material");
+        CHECK(instances.snapshot().material_data[0].factor.x == Near{source->materials[0].factor.x, tolerance});
     }
     instances.remove(a);
     instances.remove(b);
-    require(instances.snapshot({0}).vertices.empty(), "Empty scene cannot be inspected with a zero budget");
-    require(initial.vertices.size() == count * 2, "Snapshot borrowed mutable instance storage");
+    CHECK(instances.snapshot({0}).vertices.empty()); // A zero budget admits an empty scene.
+    CHECK(initial.vertices.size() == count * 2);     // The first snapshot owns its storage.
 }
-void seams() {
+} // namespace
+
+TEST_CASE("Instance snapshots match the independent deformation and keep instances apart") { snapshots(asset()); }
+
+TEST_CASE("Snapshots keep seams, skin influences, colors and rigid transforms") {
     auto source = asset();
     for (auto &primitive : source->primitives) {
         const auto triangle = primitive.vertices;
@@ -152,6 +157,7 @@ void seams() {
     const auto id = instances.add(anima::Mesh::compile(*source));
     auto reference = anima::make_mesh_snapshot(*source, anima::sample_pose(*source));
     for (double t : {.0, .17, .31, .8, 1.}) {
+        CAPTURE(t);
         const auto pose = anima::sample_pose(*source, &source->animations[0], t);
         anima::Transform transform;
         transform.translation = {2, float(t), -1};
@@ -161,25 +167,26 @@ void seams() {
         anima::pose_mesh_snapshot(*source, pose, reference, 0, world);
         instances.set_pose(id, pose, world);
         const auto actual = instances.snapshot();
+        REQUIRE(actual.vertices.size() == reference.vertices.size());
         for (std::size_t i = 0; i < reference.vertices.size(); ++i) {
+            CAPTURE(i);
             const auto &a = actual.vertices[i], &b = reference.vertices[i];
-            require(anima::length(a.position - b.position) < 1e-4F && anima::length(a.normal - b.normal) < 1e-4F &&
-                        anima::length(a.color - b.color) < 1e-4F && a.uv == b.uv,
-                    "Snapshot changed a seam, skin influence, material or rigid transform");
+            CHECK(anima::length(a.position - b.position) < tolerance);
+            CHECK(anima::length(a.normal - b.normal) < tolerance);
+            CHECK(anima::length(a.color - b.color) < tolerance);
+            CHECK(a.uv == b.uv);
         }
     }
 }
-} // namespace
+
+TEST_CASE(exported_case) { snapshots(anima::load_asset(exported_model)); }
+
 int main(int argc, char **argv) {
-    try {
-        snapshots(asset());
-        seams();
-        if (argc > 1)
-            snapshots(anima::load_asset(argv[1]));
-        std::cout << "PASS independent CPU snapshots, poses, materials, texture remapping, visibility and budgets\n";
-        return 0;
-    } catch (const std::exception &error) {
-        std::cerr << "FAIL: " << error.what() << '\n';
-        return 1;
-    }
+    doctest::Context context(argc, argv);
+    // doctest ignores the model path, which precedes any doctest option.
+    if (argc > 1 && argv[1][0] != '-')
+        exported_model = argv[1];
+    else
+        context.addFilter("test-case-exclude", exported_case);
+    return context.run();
 }

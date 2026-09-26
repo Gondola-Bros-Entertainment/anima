@@ -169,6 +169,10 @@ if(ANIMA_BUILD_ASSETS)
         add_test(NAME animation_interactions COMMAND anima_interaction_tests)
         add_executable(anima_scene_tests tests/scene_tests.cpp)
         target_link_libraries(anima_scene_tests PRIVATE anima::assets)
+        # Its own doctest main takes an optional exported GLB, so it uses the runner's doctest
+        # settings instead of linking anima_test_main.
+        target_include_directories(anima_scene_tests SYSTEM PRIVATE third_party/doctest)
+        target_compile_definitions(anima_scene_tests PRIVATE DOCTEST_CONFIG_VOID_CAST_EXPRESSIONS)
         anima_target_defaults(anima_scene_tests)
         add_test(NAME scene_snapshots COMMAND anima_scene_tests)
         add_executable(anima_scene_validation_tests tests/scene_validation_tests.cpp)
