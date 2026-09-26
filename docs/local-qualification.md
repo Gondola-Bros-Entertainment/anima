@@ -11,7 +11,7 @@ devices that hosted runners do not cover.
 ## Continuous integration
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
-requests and manual dispatch. After the short repository checks, platform builds,
+requests, merge queue groups and manual dispatch. After the short repository checks, platform builds,
 CodeQL and documentation run in parallel. The final `CI required` check fails if
 any required job fails, is cancelled or is skipped, providing one stable check
 for branch rules.
