@@ -88,11 +88,12 @@ cmake --build build/docs --target anima_docs
 CI builds headless, full and sanitizer configurations on Linux, macOS and Windows
 and runs every test. It also lints the workflows, checks formatting, scans the Git
 history for secrets, and runs CodeQL and the Doxygen build; `CI required` gates
-merging. CodeQL analyzes C++ from a traced build of every module, because extraction
-without a build infers compiler flags and include paths, which is less accurate for
-code with many external dependencies. Results in fetched dependencies and vendored
-headers are dropped before upload. Record the commands and results of checks CI
-cannot run, such as GPU and device checks, in the pull request.
+merging. CodeQL runs its `security-extended` queries on the workflows and on C++. It
+analyzes C++ from a traced build of every module, because extraction without a build
+infers compiler flags and include paths, which is less accurate for code with many
+external dependencies. Results in fetched dependencies and vendored headers are
+dropped before upload. Record the commands and results of checks CI cannot run, such
+as GPU and device checks, in the pull request.
 
 Submit only material you are authorized to contribute. Contributions to Anima's
 original code and documentation use [Apache-2.0](LICENSE); preserve third-party
