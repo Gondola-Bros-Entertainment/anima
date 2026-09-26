@@ -9,7 +9,8 @@ function(anima_add_box2d)
     set(BOX2D_COMPILE_WARNING_AS_ERROR OFF)
     FetchContent_Declare(box2d
         URL https://codeload.github.com/erincatto/box2d/tar.gz/refs/tags/v3.1.1
-        URL_HASH SHA256=fb6ef914b50f4312d7d921a600eabc12318bb3c55a0b8c0b90608fa4488ef2e4)
+        URL_HASH SHA256=fb6ef914b50f4312d7d921a600eabc12318bb3c55a0b8c0b90608fa4488ef2e4
+        SYSTEM)
     FetchContent_MakeAvailable(box2d)
     anima_enable_sanitizers(box2d)
     set(anima_box2d_source "${box2d_SOURCE_DIR}" PARENT_SCOPE)
@@ -18,7 +19,6 @@ anima_add_box2d()
 add_library(anima_physics2d STATIC src/physics2d/world.cpp)
 add_library(anima::physics2d ALIAS anima_physics2d)
 target_include_directories(anima_physics2d PUBLIC include)
-target_include_directories(anima_physics2d SYSTEM PRIVATE "${anima_box2d_source}/include")
 target_link_libraries(anima_physics2d PRIVATE box2d::box2d)
 anima_target_defaults(anima_physics2d)
 if(ANIMA_BUILD_ASSETS)

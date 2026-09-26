@@ -10,7 +10,8 @@ if(ANIMA_FETCH_SDL)
     FetchContent_Declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
         GIT_TAG 683181b47cfabd293e3ea409f838915b8297a4fd # release-3.4.2
-        GIT_PROGRESS TRUE)
+        GIT_PROGRESS TRUE
+        SYSTEM)
     FetchContent_MakeAvailable(SDL3)
     foreach(target SDL3-static SDL3-shared)
         if(TARGET ${target})

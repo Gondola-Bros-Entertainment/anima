@@ -16,7 +16,8 @@ function(anima_add_rmlui)
         URL https://codeload.github.com/mikke89/RmlUi/tar.gz/ba95ffe8bfb6370efb2cdcca927eaad4710c5413
         URL_HASH SHA256=1541ef5577115e9368f8ed389b29f0925ef6572f326a33d378ea16c3cfa2cde8
         PATCH_COMMAND "${CMAKE_COMMAND}" "-DRMLUI_SOURCE_DIR=<SOURCE_DIR>"
-            -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/patches/RmlUiBoolString.cmake")
+            -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/patches/RmlUiBoolString.cmake"
+        SYSTEM)
     FetchContent_MakeAvailable(rmlui)
     anima_enable_sanitizers(rmlui_core)
     set_target_properties(rmlui_debugger PROPERTIES EXCLUDE_FROM_ALL TRUE)
