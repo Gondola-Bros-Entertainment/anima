@@ -327,6 +327,22 @@ void rollback_and_lifetime() {
         check(orphan_scene.size() == before, "Invalid listener leaked prefab");
     }
 }
+// A bus of another mixer is rejected when the codecs are registered; accepting it made every later
+// restore throw from Audio::sound.
+void foreign_bus() {
+    Audio audio(8000);
+    Audio other(8000);
+    const auto foreign = other.bus();
+    check(!audio.owns(foreign) && other.owns(foreign) && audio.owns(AudioBus{}), "Bus ownership misreported");
+    bool rejected = false;
+    try {
+        (void)codecs_for(audio, clip(), foreign);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    check(rejected, "Audio codecs accepted another mixer's bus");
+    (void)codecs_for(audio, clip(), audio.bus());
+}
 } // namespace
 int main() {
     try {
@@ -334,6 +350,7 @@ int main() {
         validation();
         persistence();
         rollback_and_lifetime();
+        foreign_bus();
         std::cout << "PASS audio scene transforms, playback, ownership, persistence, rollback and teardown\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';

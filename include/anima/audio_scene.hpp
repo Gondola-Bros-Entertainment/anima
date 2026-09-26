@@ -134,8 +134,9 @@ using AudioClipResolver = std::function<std::shared_ptr<const AudioClip>(std::st
 /// persisted.
 ///
 /// Neither callback may mutate scenes, components or the mixer. Throws `std::invalid_argument` for
-/// an empty callback or when @p codecs already has a codec for either component type or key,
-/// leaving @p codecs unchanged, and `std::logic_error` for a moved-from mixer.
+/// an empty callback, a @p bus of another mixer, or when @p codecs already has a codec for either
+/// component type or key, leaving @p codecs unchanged, and `std::logic_error` for a moved-from
+/// mixer.
 void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClipName name, AudioClipResolver resolve,
                                 const AudioBus &bus = {});
 } // namespace anima
