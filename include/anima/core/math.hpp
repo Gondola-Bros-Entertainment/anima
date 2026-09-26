@@ -45,6 +45,12 @@ inline Vec3 axis_y(const Mat4 &m) { return {m[4], m[5], m[6]}; }
 inline Vec3 axis_z(const Mat4 &m) { return {m[8], m[9], m[10]}; }
 /// Column 3: the translation of @p m.
 inline Vec3 translation_of(const Mat4 &m) { return {m[12], m[13], m[14]}; }
+/// Sets the translation column of @p m to @p t, leaving its linear part unchanged.
+inline void set_translation(Mat4 &m, Vec3 t) {
+    m[12] = t.x;
+    m[13] = t.y;
+    m[14] = t.z;
+}
 /// Returns the inverse of @p matrix, computed in double precision. Throws MathError with
 /// MathErrorCode::nonfinite_matrix for a nonfinite element, MathErrorCode::singular_matrix when
 /// elimination meets a zero pivot, or MathErrorCode::inverse_overflow when a result element is not

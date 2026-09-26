@@ -568,9 +568,7 @@ Vec3 GameObject::local_position() const {
 }
 void GameObject::set_local_position(Vec3 position) {
     auto local = local_matrix();
-    local[12] = position.x;
-    local[13] = position.y;
-    local[14] = position.z;
+    set_translation(local, position);
     set_local_matrix(local);
 }
 void GameObject::set_local_transform(const Transform &transform) { set_local_matrix(matrix(transform)); }
@@ -599,9 +597,7 @@ Vec3 GameObject::position() const {
 }
 void GameObject::set_position(Vec3 position) {
     auto world = world_matrix();
-    world[12] = position.x;
-    world[13] = position.y;
-    world[14] = position.z;
+    set_translation(world, position);
     set_world_matrix(world);
 }
 void GameObject::set_transform(const Transform &transform) { set_world_matrix(matrix(transform)); }
