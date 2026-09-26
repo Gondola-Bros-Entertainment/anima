@@ -1,11 +1,7 @@
 #include "consumer/lifecycle.hpp"
-#include <iostream>
-int main() {
-    try {
-        lifecycle_test::run();
-        std::cout << "PASS inherited activation, lifecycle, scheduling and persistence\n";
-    } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
+#include <doctest/doctest.h>
+
+TEST_CASE("The shared consumer scenario for inherited activation, lifecycle, scheduling and persistence passes") {
+    // It reports a failed check by throwing std::runtime_error, which fails this test case.
+    lifecycle_test::run();
 }
