@@ -77,7 +77,7 @@ describe how applications supply content, policy and scheduling.
 - [Cameras](docs/cameras.md), [lighting](docs/lighting.md) and [rendering](docs/rendering-architecture.md)
 - [Animation](docs/animation-evaluation.md) and [asset reimport](docs/asset-reimport.md)
 - [3D physics](docs/physics.md) and [2D physics](docs/physics2d.md)
-- [Audio](docs/audio.md), [input](docs/input.md), [navigation](docs/navigation.md) and [UI](docs/ui-integration.md)
+- [Audio](docs/audio.md), [input](docs/input.md), [navigation](include/anima/navigation.hpp) and [UI](docs/ui-integration.md)
 - [Local qualification](docs/local-qualification.md) and [API reference generation](docs/documentation.md)
 
 ## Development
