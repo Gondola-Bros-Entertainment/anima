@@ -3,14 +3,14 @@ name: CodeQL
 on:
   workflow_call:
   workflow_dispatch:
-  schedule:
-    - cron: '23 6 * * 2'
 
 permissions:
   contents: read
 
+# As in CI, only a newer push to the same pull request supersedes an analysis. A called workflow sees its
+# caller's context, so the prefix keeps this group apart from the calling run's.
 concurrency:
-  group: codeql-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
