@@ -108,14 +108,16 @@ inline Vec3 point(const Mat4 &m, Vec3 v) {
             m[2] * v.x + m[6] * v.y + m[10] * v.z + m[14]};
 }
 /// Transforms normal @p n by the inverse transpose of the upper 3x3 of @p m, then normalizes it
-/// (see normalized()). Throws `std::runtime_error` when that 3x3 determinant is below `1e-12` in
-/// magnitude.
+/// (see normalized()).
+///
+/// It uses the cofactor matrix, the inverse transpose scaled by the determinant, with the
+/// determinant's sign, which keeps the direction and stays defined for a singular 3x3: a
+/// transform that collapses one axis, such as a joint scaled to zero along it, gives the normal
+/// of the flattened surface, and one that collapses every axis gives normalized()'s fallback.
 inline Vec3 normal(const Mat4 &m, Vec3 n) {
     const Vec3 a{m[0], m[1], m[2]}, b{m[4], m[5], m[6]}, c{m[8], m[9], m[10]};
-    const auto determinant = dot(a, cross(b, c));
-    if (std::abs(determinant) < 1e-12F)
-        throw std::runtime_error("Singular mesh/skin transform");
-    return normalized((cross(b, c) * n.x + cross(c, a) * n.y + cross(a, b) * n.z) * (1 / determinant));
+    const auto cofactor = cross(b, c) * n.x + cross(c, a) * n.y + cross(a, b) * n.z;
+    return normalized(dot(a, cross(b, c)) < 0 ? -cofactor : cofactor);
 }
 /// Transforms tangent @p t, a direction in XYZ with a handedness sign in W, by the upper 3x3 of
 /// @p m without normalizing it, negating W when that 3x3 has a negative determinant. A W of 0

@@ -80,10 +80,44 @@ void affine_tests() {
     reflected[0] = -1;
     auto projective = identity();
     projective[3] = .2F;
-    rejects([&] { (void)blend_affine(identity(), singular, .5F); });
+    const auto shrunk = blend_affine(identity(), singular, .5F);
+    check(shrunk[0] == .5F && shrunk[5] == 1 && shrunk[10] == 1,
+          "A collapsed transform did not blend element by element");
     rejects([&] { (void)blend_affine(identity(), reflected, .5F); });
     rejects([&] { (void)blend_affine(identity(), projective, .5F); });
     rejects([&] { (void)blend_affine(a, a, std::numeric_limits<float>::quiet_NaN()); });
+}
+// A joint scaled to zero, as a clip hides a part, stays evaluable when the pose has local transforms.
+void collapse_tests() {
+    Asset asset;
+    for (const auto *name : {"root", "arm", "hand", "tip"}) {
+        AssetNode node;
+        node.name = name;
+        node.parent = static_cast<int>(asset.nodes.size()) - 1;
+        node.rest.translation = {0, asset.nodes.empty() ? 0.F : 1.F, 0};
+        asset.nodes.push_back(node);
+    }
+    const EvaluationRig rig(asset, {{"root", 0, -1}, {"arm", 1, 0}, {"hand", 2, 1}});
+    auto local = sample_pose(asset).local;
+    local[1].scale = {0, 0, 0};
+    const auto pose = pose_from_local(asset, local);
+    const auto encoded = rig.encode(pose);
+    const auto world = rig.world(encoded);
+    for (std::size_t joint = 0; joint < rig.size(); ++joint)
+        same(world[joint], pose.world[rig.asset_node(joint)]);
+    // The tip is unmapped and hangs below the collapsed hand.
+    same(rig.render_pose(pose, encoded).world[3], pose.world[3]);
+    // A world-only pose has no local transforms to recover the hand below the collapsed arm.
+    Pose world_only;
+    world_only.world = pose.world;
+    bool needs_locals = false;
+    try {
+        (void)rig.encode(world_only);
+    } catch (const std::invalid_argument &error) {
+        needs_locals = std::string_view(error.what()) ==
+                       "A joint below a collapsed joint needs the source pose's local transforms";
+    }
+    check(needs_locals, "A world-only pose below a collapsed joint was not rejected with its reason");
 }
 void rig_tests() {
     const auto asset = fixture();
@@ -229,6 +263,7 @@ int main() {
     try {
         affine_tests();
         rig_tests();
+        collapse_tests();
         contact_tests();
         interaction_tests();
         std::cout << "PASS affine evaluation, layers, skin mapping, bounded contacts and interaction frames\n";

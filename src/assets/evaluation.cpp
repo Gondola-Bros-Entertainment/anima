@@ -21,19 +21,26 @@ double determinant(const M3 &m) {
     return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
            m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 }
-M3 linear(const Mat4 &m) {
-    // Largest summed deviation of the bottom row from (0, 0, 0, 1) that still counts as affine.
-    constexpr float affine_tolerance = 1e-5F;
-    constexpr double minimum_determinant = 1e-12;
-    for (float x : m)
-        require(std::isfinite(x), "Nonfinite affine transform");
-    require(std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1) < affine_tolerance,
-            "Evaluation needs affine transforms");
+// A linear part whose determinant is within this of 0 has collapsed at least one axis, as a joint scaled to zero
+// does; below its negative, the transform reflects.
+constexpr double collapse_determinant = 1e-12;
+M3 upper(const Mat4 &m) {
     M3 result{};
     for (unsigned r = 0; r < 3; ++r)
         for (unsigned c = 0; c < 3; ++c)
             result[r][c] = m[c * 4 + r];
-    require(determinant(result) > minimum_determinant, "Evaluation needs nonsingular, positive-determinant transforms");
+    return result;
+}
+bool collapsed(const M3 &m) { return std::abs(determinant(m)) <= collapse_determinant; }
+M3 linear(const Mat4 &m) {
+    // Largest summed deviation of the bottom row from (0, 0, 0, 1) that still counts as affine.
+    constexpr float affine_tolerance = 1e-5F;
+    for (float x : m)
+        require(std::isfinite(x), "Nonfinite affine transform");
+    require(std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1) < affine_tolerance,
+            "Evaluation needs affine transforms");
+    const auto result = upper(m);
+    require(determinant(result) >= -collapse_determinant, "Evaluation needs transforms without reflection");
     return result;
 }
 M3 inverse_transpose(const M3 &m) {
@@ -145,22 +152,29 @@ Mat4 about(Vec3 pivot, Quat q) {
 } // namespace
 Mat4 blend_affine(const Mat4 &from, const Mat4 &to, float weight) {
     weight_valid(weight);
-    (void)linear(from);
-    (void)linear(to);
+    const auto from_linear = linear(from), to_linear = linear(to);
     if (weight == 0)
         return from;
     if (weight == 1)
         return to;
-    const auto a = polar(from), b = polar(to);
-    const auto rotation = rotation_matrix(slerp(a.rotation, b.rotation, weight));
     Mat4 result = identity();
-    for (unsigned i = 0; i < 3; ++i)
-        for (unsigned j = 0; j < 3; ++j) {
-            double value = 0;
-            for (unsigned k = 0; k < 3; ++k)
-                value += rotation[k * 4 + i] * (a.stretch[k][j] * (1 - weight) + b.stretch[k][j] * weight);
-            result[j * 4 + i] = static_cast<float>(value);
-        }
+    if (collapsed(from_linear) || collapsed(to_linear)) {
+        // A collapsed transform has no rotation to extract, so the two blend element by element: blended toward a
+        // transform scaled to zero, the other shrinks in place.
+        for (unsigned i = 0; i < 3; ++i)
+            for (unsigned j = 0; j < 3; ++j)
+                result[j * 4 + i] = from[j * 4 + i] * (1 - weight) + to[j * 4 + i] * weight;
+    } else {
+        const auto a = polar(from), b = polar(to);
+        const auto rotation = rotation_matrix(slerp(a.rotation, b.rotation, weight));
+        for (unsigned i = 0; i < 3; ++i)
+            for (unsigned j = 0; j < 3; ++j) {
+                double value = 0;
+                for (unsigned k = 0; k < 3; ++k)
+                    value += rotation[k * 4 + i] * (a.stretch[k][j] * (1 - weight) + b.stretch[k][j] * weight);
+                result[j * 4 + i] = static_cast<float>(value);
+            }
+    }
     set_translation(result, translation_of(from) * (1 - weight) + translation_of(to) * weight);
     (void)linear(result);
     return result;
@@ -204,18 +218,38 @@ EvaluationPose EvaluationRig::encode(const Pose &source) const {
     std::vector<Mat4> values;
     for (const auto &joint : joints_)
         values.push_back(source.world[joint.asset_node]);
-    return from_world(values);
+    return from_world(values, &source);
 }
-EvaluationPose EvaluationRig::from_world(std::span<const Mat4> values) const {
+EvaluationPose EvaluationRig::from_world(std::span<const Mat4> values) const { return from_world(values, nullptr); }
+EvaluationPose EvaluationRig::from_world(std::span<const Mat4> values, const Pose *source) const {
     require(values.size() == size(), "Evaluation world count mismatch");
     EvaluationPose pose;
     pose.local.resize(size());
     for (auto i : order_) {
         (void)linear(values[i]);
         const auto p = joints_[i].parent;
-        pose.local[i] = p < 0 ? values[i] : inverse(values[static_cast<std::size_t>(p)]) * values[i];
+        if (p < 0)
+            pose.local[i] = values[i];
+        else if (!collapsed(upper(values[static_cast<std::size_t>(p)])))
+            pose.local[i] = inverse(values[static_cast<std::size_t>(p)]) * values[i];
+        else
+            pose.local[i] = local_below_collapsed(i, source);
     }
     return pose;
+}
+Mat4 EvaluationRig::local_below_collapsed(std::size_t joint, const Pose *source) const {
+    // A collapsed parent's world matrix cannot be inverted, so the local transform is the product of the source's
+    // local transforms along the asset hierarchy from the parent's node down to the joint's node.
+    require(source && source->local.size() == asset_parents_.size(),
+            "A joint below a collapsed joint needs the source pose's local transforms");
+    const auto parent = static_cast<int>(joints_[static_cast<std::size_t>(joints_[joint].parent)].asset_node);
+    Mat4 result = identity();
+    for (auto node = static_cast<int>(joints_[joint].asset_node); node != parent;
+         node = asset_parents_[static_cast<std::size_t>(node)]) {
+        require(node >= 0, "A joint below a collapsed joint must lie below it in the asset hierarchy");
+        result = matrix(source->local[static_cast<std::size_t>(node)]) * result;
+    }
+    return result;
 }
 std::vector<Mat4> EvaluationRig::world(const EvaluationPose &pose) const {
     require(pose.local.size() == size(), "Evaluation pose count mismatch");
@@ -268,7 +302,15 @@ Pose EvaluationRig::render_pose(const Pose &source, const EvaluationPose &evalua
             result.world[i] = values[static_cast<std::size_t>(mapping_[i])];
         else if (asset_parents_[i] >= 0) {
             const auto p = static_cast<std::size_t>(asset_parents_[i]);
-            result.world[i] = result.world[p] * inverse(source.world[p]) * source.world[i];
+            if (!collapsed(upper(source.world[p])))
+                result.world[i] = result.world[p] * inverse(source.world[p]) * source.world[i];
+            else {
+                // A collapsed parent's world matrix cannot be inverted; the node's local transform is the same
+                // relation.
+                require(source.local.size() == asset_parents_.size(),
+                        "A node below a collapsed parent needs the source pose's local transforms");
+                result.world[i] = result.world[p] * matrix(source.local[i]);
+            }
         } else
             result.world[i] = source.world[i];
     }
