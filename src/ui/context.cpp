@@ -67,6 +67,9 @@ class Files final : public Rml::FileInterface {
 class System final : public SystemInterface_SDL {
     SDL_Window *window;
     UiStats &stats;
+    // Set when this interface turned SDL text input on. SDL keeps one text input state per window, so text
+    // input that was already active belongs to the application, and only started input is stopped here.
+    bool started_text_input{};
 
   public:
     float pixel_density = 1;
@@ -85,7 +88,21 @@ class System final : public SystemInterface_SDL {
             return;
         const SDL_Rect area{int(std::floor(caret.x / pixel_density)), int(std::floor(caret.y / pixel_density)), 1,
                             std::max(1, int(std::ceil(height / pixel_density)))};
-        if (!SDL_SetTextInputArea(window, &area, 0) || !SDL_StartTextInput(window))
+        // Starting text input again would drop the properties it runs with, such as a password or number type that
+        // the application chose, so only inactive text input is started here.
+        const bool inactive = !SDL_TextInputActive(window);
+        if (!SDL_SetTextInputArea(window, &area, 0) || (inactive && !SDL_StartTextInput(window))) {
+            LogMessage(Rml::Log::LT_ERROR, std::string("SDL text input: ") + SDL_GetError());
+            return;
+        }
+        started_text_input = started_text_input || inactive;
+    }
+    // RmlUi calls this when a text control loses focus, and the context whenever nothing captures the keyboard.
+    void DeactivateKeyboard() override {
+        if (!started_text_input)
+            return;
+        started_text_input = false;
+        if (!SDL_StopTextInput(window))
             LogMessage(Rml::Log::LT_ERROR, std::string("SDL text input: ") + SDL_GetError());
     }
 };
