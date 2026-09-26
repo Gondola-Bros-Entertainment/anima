@@ -80,6 +80,17 @@ struct ResourcePreparationOptions {
     RendererFailureStage fail_after = RendererFailureStage::none;
 };
 
+/// No installed Vulkan driver can present to the window, so VulkanRenderer cannot run on this system.
+///
+/// VulkanRenderer's constructor throws it when the drivers lack a surface extension that the window system
+/// needs, when the Vulkan loader reports no compatible driver, and when no device meets the requirements that
+/// the constructor lists. Other construction failures, such as a missing validation layer, throw
+/// `std::runtime_error`.
+class RendererUnavailableError : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
 /// A failure after which the renderer accepts only shutdown.
 ///
 /// Thrown for device loss, surface loss, a frame, upload or presentation fence that does not signal within
@@ -266,10 +277,10 @@ class VulkanRenderer {
     /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that
     /// supports swapchains and can present to the window; the first draw() with a drawable window creates the
     /// swapchain. Throws `std::invalid_argument` for a RendererOptions::fail_after stage that the option says
-    /// construction rejects, before anything else, and for a null @p window; what set_scenes() throws for the
-    /// initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
-    /// other failures, including failed Vulkan calls. Completed stages are released before the exception
-    /// propagates.
+    /// construction rejects, before anything else, and for a null @p window; RendererUnavailableError when no
+    /// driver or device can present to the window; what set_scenes() throws for the initial selection;
+    /// InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for other failures,
+    /// including failed Vulkan calls. Completed stages are released before the exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
