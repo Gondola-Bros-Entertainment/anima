@@ -9,7 +9,7 @@
 
 namespace anima {
 /// Maps a stored UiPanel asset key to the document path to load. The codec passes the key exactly
-/// as stored, before UiPanel validates it; exceptions the resolver throws propagate.
+/// as stored, and only a key that UiPanel accepts; exceptions the resolver throws propagate.
 using UiDocumentResolver = std::function<std::filesystem::path(std::string_view)>;
 /// Component that owns one document for its GameObject.
 ///
@@ -63,7 +63,8 @@ void sync_ui_panels(SceneSet &scenes);
 ///
 /// The payload stores the asset key and authored visibility as a JSON object of at most 8,192
 /// bytes with exactly `asset` (a string) and `visible` (a boolean); unknown, missing or duplicate
-/// fields are rejected. The scene or prefab stores component enablement. Paths, subscriptions and
+/// fields are rejected, and a key that UiPanel rejects throws its `std::invalid_argument` before
+/// @p resolve runs. The scene or prefab stores component enablement. Paths, subscriptions and
 /// document contents are not stored: restoring loads a new document from the path @p resolve
 /// returns. Throws `std::invalid_argument` for an empty @p resolve or when @p codecs already has
 /// a UiPanel codec or this key.

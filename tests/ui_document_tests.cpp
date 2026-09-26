@@ -267,6 +267,35 @@ void panel_event_mutations(UiDocuments &host, const std::filesystem::path &file)
         check(added->document().visible(), "New panel did not participate in the next visibility snapshot");
     }
 }
+void panel_key_validation(UiDocuments &host, const std::filesystem::path &file) {
+    constexpr std::size_t maximum_asset_key_bytes = 4096; // UiPanel's documented key limit.
+    std::vector<std::string> resolved;
+    ComponentCodecs codecs;
+    add_ui_component_codec(codecs, host, [&](std::string_view key) {
+        resolved.emplace_back(key);
+        return file;
+    });
+    Scene authoring;
+    auto source = authoring.create();
+    source.add_component<UiPanel>(host, "controls", file, false);
+    const auto captured = Prefab::capture(source, codecs);
+    auto nodes = std::vector<Prefab::Node>(captured.nodes().begin(), captured.nodes().end());
+    Scene scene;
+    // A stored key that UiPanel rejects must fail with UiPanel's error before the resolver sees it.
+    for (const auto &key : {std::string{}, std::string(maximum_asset_key_bytes + 1, 'k')}) {
+        nodes[0].components[0].state = "{\"asset\":\"" + key + "\",\"visible\":false}";
+        const Prefab prefab(nodes, codecs);
+        bool rejected = false;
+        try {
+            (void)prefab.instantiate(scene);
+        } catch (const std::invalid_argument &error) {
+            rejected = std::string_view(error.what()) == "Invalid UI asset key";
+        }
+        check(rejected, "Restoring an invalid UI asset key did not throw UiPanel's error");
+        check(resolved.empty(), "UI codec resolved an asset key that UiPanel rejects");
+        check(scene.size() == 0, "Rejected UI panel restore left objects");
+    }
+}
 #endif
 void run(const std::filesystem::path &file) {
     Renderer renderer;
@@ -414,6 +443,7 @@ void run(const std::filesystem::path &file) {
         panel_selection(host, file);
         panel_reentry(host, file);
         panel_event_mutations(host, file);
+        panel_key_validation(host, file);
 #endif
         survivor = host.from_memory(markup);
         stale = survivor.element("action");

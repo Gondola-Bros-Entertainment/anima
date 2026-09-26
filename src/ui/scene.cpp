@@ -2,10 +2,18 @@
 #include "../detail/scene_driver.hpp"
 #include <anima/ui/scene.hpp>
 namespace anima {
+namespace {
+constexpr std::size_t maximum_asset_key_bytes = 4096;
+constexpr std::size_t maximum_payload_bytes = 8192;
+// The key rule of UiPanel, which restoring also applies before the resolver sees a stored key.
+void validate_asset_key(std::string_view key) {
+    if (key.empty() || key.size() > maximum_asset_key_bytes)
+        throw std::invalid_argument("Invalid UI asset key");
+}
+} // namespace
 UiPanel::UiPanel(UiDocuments &host, std::string key, const std::filesystem::path &path, bool visible)
     : asset_key_(std::move(key)), visible_(visible) {
-    if (asset_key_.empty() || asset_key_.size() > 4096)
-        throw std::invalid_argument("Invalid UI asset key");
+    validate_asset_key(asset_key_);
     document_ = host.load(path);
     if (visible_)
         document_.show();
@@ -52,11 +60,12 @@ void add_ui_component_codec(ComponentCodecs &codecs, UiDocuments &host, UiDocume
                                                         const ObjectReferences &) {
             if (lifetime.expired())
                 throw std::out_of_range("UI codec host expired");
-            const auto json = detail::parse_json(data, 8192);
+            const auto json = detail::parse_json(data, maximum_payload_bytes);
             detail::json_fields(json, {"asset", "visible"});
             if (!json.at("asset").is_string() || !json.at("visible").is_boolean())
                 throw std::invalid_argument("Invalid UI panel fields");
             const auto key = json.at("asset").get<std::string>();
+            validate_asset_key(key);
             object.add_component<UiPanel>(host, key, resolve(key), json.at("visible").get<bool>());
         });
 }
