@@ -1,77 +1,107 @@
+#include "near.hpp"
 #include <anima/assets/action.hpp>
 #include <anima/assets/action_runtime.hpp>
-#include <iostream>
+#include <doctest/doctest.h>
+
 #include <limits>
+#include <stdexcept>
+
+using namespace anima;
 namespace {
-void check(bool ok, const char *why) {
-    if (!ok)
-        throw std::runtime_error(why);
-}
-template <class F> void rejects(F f) {
-    try {
-        f();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid timeline accepted");
+constexpr double time_tolerance = 1e-12; // Timeline arithmetic is exact up to rounding.
+constexpr auto invalid_time = "Invalid action presentation/release time";
+constexpr auto invalid_phase = "Invalid/duplicate action phase or multiple held phases";
+constexpr auto invalid_weight = "Action weight requires a finite phase and 2..32 keys covering 0..1";
+constexpr auto invalid_keys = "Action weight keys must be ordered and normalized";
+
+// A wind-up, a held phase, a release and a recovery; each of the first three has a cue at its start.
+ActionTimeline shot() {
+    return ActionTimeline({{"windup", .2, false, {{"begin", 0}}},
+                           {"hold", .4, true, {{"sustain", 0}}},
+                           {"release", .3, false, {{"fire", 0}}},
+                           {"recover", .2, false, {}}});
 }
 } // namespace
-int main() {
-    try {
-        using namespace anima;
-        ActionTimeline timeline({{"windup", .2, false, {{"begin", 0}}},
-                                 {"hold", .4, true, {{"sustain", 0}}},
-                                 {"release", .3, false, {{"fire", 0}}},
-                                 {"recover", .2, false, {}}});
-        check(timeline.sample(.1).phase == 0, "Wind-up timing");
-        const auto held = timeline.sample(.7);
-        check(held.phase == 1 && held.cycle == 1 && std::abs(held.progress - .25) < 1e-12, "Held clip clock");
-        const auto released = timeline.sample(.9, .85);
-        check(released.phase == 2 && std::abs(released.progress - 1. / 6) < 1e-12, "Release retiming");
-        check(timeline.sample(.21, .1).phase == 2, "Early release must finish wind-up and skip hold");
-        check(timeline.sample(1.36, .85).complete, "Released action completion");
-        ActionTimeline held_last({{"hold", .3, true, {}}});
-        check(std::abs(held_last.sample(1., .8).elapsed - .8) < 1e-12, "Held final phase duration");
-        ActionCueCursor cursor;
-        check(cursor.advance("shot", 1, timeline, 0).size() == 1, "Initial cue missing");
-        check(cursor.advance("shot", 1, timeline, .6).size() == 1, "Hold entry cue missing");
-        check(cursor.advance("shot", 1, timeline, .9, .85).at(0).id == "fire", "Release cue missing");
-        check(cursor.advance("shot", 1, timeline, .9, .85).empty(), "Repeated frame duplicated cue");
-        // A new instance starts at 0, so its first frame reports the cues it covers wherever it lands.
-        const auto first_frame = cursor.advance("shot", 2, timeline, .016);
-        check(first_frame.size() == 1 && first_frame[0].id == "begin", "A first frame after 0 dropped the start cue");
-        check(cursor.advance("shot", 3, timeline, .9, .85).size() == 3, "A first frame dropped cues since the start");
-        // An observer that joins an instance under way seeks first, so history is not replayed.
-        cursor.seek("shot", 4, timeline, .9, .85);
-        check(cursor.advance("shot", 4, timeline, .9, .85).empty(), "Late join replayed historical cues");
-        check(cursor.advance("shot", 4, timeline, .1).empty(), "Rewind emitted cues");
-        cursor.reset();
-        cursor.seek("shot", 5, timeline, 4.);
-        check(cursor.advance("shot", 5, timeline, 4.).empty(), "Long hold emitted catch-up cues");
-        check(cursor.advance("shot", 5, timeline, 4.1, 4.05).size() == 1, "Late-held release missing");
-        rejects([&] { (void)timeline.sample(-1); });
-        rejects([&] { (void)timeline.sample(0, std::numeric_limits<double>::infinity()); });
-        rejects([&] { (void)timeline.duration(); });
-        rejects([] { (void)ActionTimeline({{"same", 1, false, {}}, {"same", 1, false, {}}}); });
-        rejects([] { (void)ActionTimeline({{"a", 1, true, {}}, {"b", 1, true, {}}}); });
-        rejects([] { (void)ActionTimeline({{"a", 1, false, {{"late", .8}, {"early", .2}}}}); });
-        ActionTimeline timed({{"one", .3, false, {}}, {"two", .7, false, {}}});
-        check(timed.duration() == 1 && timed.sample(1).complete, "Timed duration");
-        rejects([&] { (void)timed.sample(.1, .1); });
-        ActionWeight weight;
-        weight.keys = {{0., 0.F}, {.5, 1.F}, {1., 0.F}};
-        check(weight.sample(.25) == .5F && weight.sample(-1) == 0 && weight.sample(2) == 0,
-              "Action weight interpolation/clamping failed");
-        rejects([&] { (void)weight.sample(std::numeric_limits<double>::quiet_NaN()); });
-        weight.keys.clear();
-        rejects([&] { (void)weight.sample(.5); });
-        weight.keys = {{0., 0.F}, {0., 1.F}, {1., 0.F}};
-        rejects([&] { (void)weight.sample(.5); });
-        weight.keys = {{0., 0.F}, {1., std::numeric_limits<float>::infinity()}};
-        rejects([&] { (void)weight.sample(.5); });
-        std::cout << "PASS action phase, release, completion, seek and cue contracts\n";
-    } catch (const std::exception &e) {
-        std::cerr << e.what() << '\n';
-        return 1;
-    }
+
+TEST_CASE("A timeline loops its held phase and retimes the phases after release") {
+    const auto timeline = shot();
+    CHECK(timeline.sample(.1).phase == 0);
+    const auto held = timeline.sample(.7);
+    CHECK(held.phase == 1);
+    CHECK(held.cycle == 1);
+    CHECK(held.progress == Near{.25, time_tolerance});
+    const auto released = timeline.sample(.9, .85);
+    CHECK(released.phase == 2);
+    CHECK(released.progress == Near{1. / 6, time_tolerance});
+    // A release during the wind-up finishes the wind-up and skips the hold.
+    CHECK(timeline.sample(.21, .1).phase == 2);
+    CHECK(timeline.sample(1.36, .85).complete);
+    const ActionTimeline held_last({{"hold", .3, true, {}}});
+    CHECK(held_last.sample(1., .8).elapsed == Near{.8, time_tolerance});
+}
+
+TEST_CASE("A timeline without a held phase has a fixed duration") {
+    const ActionTimeline timed({{"one", .3, false, {}}, {"two", .7, false, {}}});
+    CHECK(timed.duration() == 1);
+    CHECK(timed.sample(1).complete);
+}
+
+TEST_CASE("A cue cursor reports each cue of an instance once") {
+    const auto timeline = shot();
+    ActionCueCursor cursor;
+    CHECK(cursor.advance("shot", 1, timeline, 0).size() == 1);
+    CHECK(cursor.advance("shot", 1, timeline, .6).size() == 1); // The hold's cue.
+    CHECK(cursor.advance("shot", 1, timeline, .9, .85).at(0).id == "fire");
+    CHECK(cursor.advance("shot", 1, timeline, .9, .85).empty()); // A repeated frame.
+    // A new instance starts at 0, so its first frame reports the cues it covers wherever it lands.
+    const auto first_frame = cursor.advance("shot", 2, timeline, .016);
+    REQUIRE(first_frame.size() == 1);
+    CHECK(first_frame[0].id == "begin");
+    CHECK(cursor.advance("shot", 3, timeline, .9, .85).size() == 3);
+    // An observer that joins an instance under way seeks first, so history is not replayed.
+    cursor.seek("shot", 4, timeline, .9, .85);
+    CHECK(cursor.advance("shot", 4, timeline, .9, .85).empty());
+    CHECK(cursor.advance("shot", 4, timeline, .1).empty()); // A rewind.
+    cursor.reset();
+    cursor.seek("shot", 5, timeline, 4.);
+    CHECK(cursor.advance("shot", 5, timeline, 4.).empty()); // A long hold has no catch-up cues.
+    CHECK(cursor.advance("shot", 5, timeline, 4.1, 4.05).size() == 1);
+}
+
+TEST_CASE("Invalid timelines and times are rejected") {
+    const auto timeline = shot();
+    CHECK_THROWS_WITH_AS(timeline.sample(-1), invalid_time, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(timeline.sample(0, std::numeric_limits<double>::infinity()), invalid_time,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(timeline.duration(), "Held action has no fixed duration", std::logic_error);
+    CHECK_THROWS_WITH_AS(ActionTimeline({{"same", 1, false, {}}, {"same", 1, false, {}}}), invalid_phase,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionTimeline({{"a", 1, true, {}}, {"b", 1, true, {}}}), invalid_phase,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionTimeline({{"a", 1, false, {{"late", .8}, {"early", .2}}}}),
+                         "Invalid, unordered or excessive action cues", std::invalid_argument);
+    // A release time needs a held phase to release.
+    const ActionTimeline timed({{"one", .3, false, {}}, {"two", .7, false, {}}});
+    CHECK_THROWS_WITH_AS(timed.sample(.1, .1), invalid_time, std::invalid_argument);
+}
+
+TEST_CASE("An action weight interpolates its keys and clamps outside them") {
+    ActionWeight weight;
+    weight.keys = {{0., 0.F}, {.5, 1.F}, {1., 0.F}};
+    CHECK(weight.sample(.25) == .5F);
+    CHECK(weight.sample(-1) == 0);
+    CHECK(weight.sample(2) == 0);
+}
+
+TEST_CASE("Invalid action weight phases and keys are rejected") {
+    ActionWeight weight;
+    weight.keys = {{0., 0.F}, {.5, 1.F}, {1., 0.F}};
+    CHECK_THROWS_WITH_AS(weight.sample(std::numeric_limits<double>::quiet_NaN()), invalid_weight,
+                         std::invalid_argument);
+    weight.keys.clear();
+    CHECK_THROWS_WITH_AS(weight.sample(.5), invalid_weight, std::invalid_argument);
+    weight.keys = {{0., 0.F}, {0., 1.F}, {1., 0.F}};
+    CHECK_THROWS_WITH_AS(weight.sample(.5), invalid_keys, std::invalid_argument);
+    weight.keys = {{0., 0.F}, {1., std::numeric_limits<float>::infinity()}};
+    CHECK_THROWS_WITH_AS(weight.sample(.5), invalid_keys, std::invalid_argument);
 }
