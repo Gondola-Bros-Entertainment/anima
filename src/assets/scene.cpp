@@ -5,6 +5,8 @@
 #include <bit>
 #include <charconv>
 #include <climits>
+#include <cstdio>
+#include <exception>
 #include <limits>
 #include <set>
 #include <unordered_map>
@@ -175,6 +177,14 @@ Scene::Scene() : lifetime_(std::make_shared<detail::SceneLifetime>()) {
     lifetime_->scene = this;
 }
 Scene::~Scene() {
+    // The hook, constructor or driver on the stack resumes using this scene after its callback
+    // returns, so destroying it here would let that caller write freed memory.
+    if (updating_ || constructing_) {
+        std::fputs("Scene destroyed while running component hooks, constructing a component or held by a "
+                   "scene driver; destroy it after the call returns\n",
+                   stderr);
+        std::terminate();
+    }
     invalidate();
     release();
 }

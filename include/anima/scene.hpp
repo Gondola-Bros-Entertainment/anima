@@ -110,6 +110,10 @@ class Scene {
     Scene();
     /// Invalidates every handle to the scene, then sends `on_disable()` to each component that
     /// received `on_enable()` and destroys the components. Objects cannot be created meanwhile.
+    ///
+    /// Destroying the scene while it runs component hooks or cleanup, constructs a component or is
+    /// held by a scene driver writes a diagnostic to `stderr` and terminates the program: the call in
+    /// progress would keep using the freed scene. Destroy it after that call returns.
     ~Scene();
     Scene(const Scene &) = delete;
     Scene &operator=(const Scene &) = delete;
@@ -137,7 +141,7 @@ class Scene {
     /// `std::logic_error` while the scene is running component hooks or cleanup, constructing a
     /// component, held by a scene driver or being destroyed; nested updates are therefore
     /// rejected. A hook's exception propagates after the scene unlocks, without undoing earlier
-    /// hooks. The scene must outlive the call.
+    /// hooks. Destroying the scene during the call terminates the program, as ~Scene() states.
     void update(double seconds);
     /// Runs one fixed step: reconciles lifecycle, then calls every participant's
     /// `on_fixed_update(seconds)`, under the same rules as update(). It neither advances a clock nor
