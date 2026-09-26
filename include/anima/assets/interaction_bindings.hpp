@@ -3,36 +3,65 @@
 #include <map>
 #include <set>
 
+/// @file
+/// Placement graph for coordinated interactions between independently evaluated actors.
+///
+/// Part of the `anima::assets` target. Each role is one actor. Attachments move actor world
+/// frames; they never transfer one actor's joints or skin palette to another. Failures throw
+/// `std::invalid_argument` (or anima::MathError, which derives from it) unless stated.
+
 namespace anima {
-// A role is an independently evaluated actor. These bindings move actor world
-// frames, never transfer one actor's joints or skin palette to another actor.
+/// One participant.
 struct InteractionRole {
+    /// Unique, nonempty role id.
     std::string id;
+    /// The participant's asset; not null.
     std::shared_ptr<const Asset> asset;
 };
+/// A frame on a node of a role's asset.
 struct InteractionSocket {
+    /// Node index in the role's asset.
     std::size_t node{};
+    /// Finite, affine frame relative to the node, with a positive determinant. A bind-space frame
+    /// may cancel an authored joint's stretch.
     Mat4 local = identity();
 };
+/// Places a child role by aligning its socket with a socket of its parent role.
 struct InteractionAttachment {
-    std::string child, parent;
-    InteractionSocket child_socket, parent_socket;
+    /// Role that is placed; each role has at most one parent.
+    std::string child;
+    /// Role it is placed on.
+    std::string parent;
+    /// Socket on the child's asset.
+    InteractionSocket child_socket;
+    /// Socket on the parent's asset.
+    InteractionSocket parent_socket;
 };
+/// One role's evaluated pose and world placement.
 struct InteractionFrame {
+    /// Model-space pose; only the world matrices are used.
     Pose pose;
+    /// Model-to-world placement.
     Mat4 world = identity();
 };
+/// How strongly one attachment applies.
 struct InteractionPlacement {
+    /// Blend from the child's free placement toward the attached one, in [0, 1].
     float weight{};
-    Mat4 offset = identity(); // In the parent's evaluated socket frame.
+    /// Rigid offset in the parent's evaluated socket frame.
+    Mat4 offset = identity();
 };
 
-// Root attachment sockets retain evaluated position and orientation. Skin
-// stretch/shear remains inside that actor's pose; it cannot stretch the rider.
+/// Rigid model-space frame of @p socket in @p pose: its position and rotation without scale or
+/// shear, so a stretched joint cannot stretch an attached actor. Throws `std::out_of_range` for a
+/// node outside @p pose.
 [[nodiscard]] inline Mat4 interaction_socket(const Pose &pose, const InteractionSocket &socket) {
     const auto frame = pose.world.at(socket.node) * socket.local;
     return matrix(Transform{point(frame, {}), affine_rotation(frame), {1, 1, 1}});
 }
+/// World placement of a child role: @p free_world at weight 0; at weight 1, the placement that puts
+/// the child's socket on the parent's socket times the placement offset; in between, blend_affine
+/// of the two.
 [[nodiscard]] inline Mat4 interaction_world(const InteractionFrame &parent, const InteractionSocket &parent_socket,
                                             const Pose &child, const InteractionSocket &child_socket,
                                             const Mat4 &free_world, const InteractionPlacement &placement) {
@@ -43,8 +72,12 @@ struct InteractionPlacement {
     return placement.weight == 1 ? desired : blend_affine(free_world, desired, placement.weight);
 }
 
+/// A validated role graph that places child roles on their parents.
 class InteractionBindings {
   public:
+    /// Throws unless there are 1 to 64 roles with unique nonempty ids and assets, fewer attachments
+    /// than roles, each attachment joins two different known roles, no role has two parents, the
+    /// graph is acyclic, and every socket names a node of its role's asset with a valid local frame.
     InteractionBindings(std::vector<InteractionRole> roles, std::vector<InteractionAttachment> attachments)
         : roles_(std::move(roles)), attachments_(std::move(attachments)) {
         if (roles_.empty() || roles_.size() > 64 || attachments_.size() >= roles_.size())
@@ -83,16 +116,26 @@ class InteractionBindings {
             visit(visit, i);
     }
 
+    /// Index of role @p id. Throws for an unknown id.
     [[nodiscard]] std::size_t role(std::string_view id) const {
         const auto found = names_.find(id);
         if (found == names_.end())
             throw std::invalid_argument("Unknown interaction role: " + std::string(id));
         return found->second;
     }
+    /// Roles in construction order; role indices refer to it.
     const auto &roles() const { return roles_; }
     const auto &attachments() const { return attachments_; }
+    /// Role indices with every parent before its children.
     const auto &role_order() const { return role_order_; }
 
+    /// Places each attached child on its parent, parents first, and returns the frames; poses are
+    /// unchanged.
+    ///
+    /// @p frames needs one entry per role, in role order, with one finite world matrix per node of
+    /// the role's asset and a rigid placement. @p placements needs one entry per attachment, with
+    /// a weight in [0, 1] and a rigid offset. A weight of 0 keeps the child's free placement.
+    /// Rigid means a rotation and translation within `1e-4`.
     [[nodiscard]] std::vector<InteractionFrame> sample(std::span<const InteractionFrame> frames,
                                                        std::span<const InteractionPlacement> placements) const {
         if (frames.size() != roles_.size() || placements.size() != attachments_.size())
