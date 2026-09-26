@@ -1,58 +1,71 @@
+#include "near.hpp"
 #include <anima/assets/preview.hpp>
+// This suite supplies its own main, which reads the optional manifest argument.
+#define DOCTEST_CONFIG_IMPLEMENT
+#include <doctest/doctest.h>
+
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <locale>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
 
+using namespace anima;
 namespace {
-void require(bool condition, const char *message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-void near(double a, double b, const char *message, double tolerance = 1e-5) {
-    require(std::abs(a - b) < tolerance, message);
-}
-void rejects_quaternion(anima::Quat q, anima::MathErrorCode expected) {
-    try {
-        (void)anima::unit_quaternion(q);
-    } catch (const anima::MathError &error) {
-        require(error.code() == expected, "Quaternion rejection reported the wrong code");
-        return;
-    }
-    throw std::runtime_error("Invalid quaternion was accepted");
-}
-template <class F> void rejects(F action, const std::string &expected = "") {
-    try {
-        action();
-    } catch (const std::exception &error) {
-        if (expected.empty() || std::string(error.what()).find(expected) != std::string::npos)
-            return;
-        throw;
-    }
-    throw std::runtime_error("Expected rejection: " + expected);
-}
-// Requires action to throw an Error whose message is exactly expected.
-template <class Error, class F> void rejects_as(F action, const std::string &expected) {
-    try {
-        action();
-    } catch (const Error &error) {
-        if (error.what() == expected)
-            return;
-        throw std::runtime_error("Expected \"" + expected + "\", got \"" + error.what() + "\"");
-    }
-    throw std::runtime_error("Expected rejection: " + expected);
-}
-float deviation(const anima::Pose &a, const anima::Pose &b) {
+constexpr double tolerance = 1e-5; // Absolute error allowed in poses, times and quaternion norms.
+constexpr auto preview_test = "An exported manifest previews every declared clip";
+constexpr auto valid_manifest =
+    R"({"schema_version":1,"units":"meters","asset_id":"two-joint-body","model":"body.glb",)"
+    R"("skeleton":{"id":"humanoid","joint_count":2,)"
+    R"("bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},)"
+    R"("clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"swing\uD83D\uDDE1"}]}],)"
+    R"("equipment":[]})";
+constexpr auto speed_range = "Clip reference speed must be finite and positive";
+constexpr auto invalid_blend = "Pose blend requires matching local poses and a weight in [0,1]";
+
+// The manifest that the asset_preview test names on the command line.
+std::optional<std::filesystem::path> exported_manifest;
+
+float deviation(const Pose &a, const Pose &b) {
     float d = 0;
     for (std::size_t i = 0; i < a.world.size(); ++i)
         for (unsigned k = 0; k < 16; ++k)
-            d = std::max(d, std::abs(a.world[i][k] - b.world[i][k]));
+            d = std::max(d, std::abs(a.world[i][k] - b.world.at(i)[k]));
     return d;
 }
-anima::Asset fixture() {
-    anima::Asset asset;
+std::string changed(std::string text, std::string_view from, std::string_view to) {
+    const auto at = text.find(from);
+    REQUIRE(at != std::string::npos);
+    return text.replace(at, from.size(), to);
+}
+// A manifest file in the temporary directory, rewritten by each read and removed on destruction.
+struct ManifestFile {
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() /
+        ("anima-manifest-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".json");
+    ManifestFile() = default;
+    ManifestFile(const ManifestFile &) = delete;
+    ManifestFile &operator=(const ManifestFile &) = delete;
+    ~ManifestFile() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+    Manifest read(std::string_view json) const {
+        std::ofstream(path, std::ios::binary) << json;
+        return read_manifest(path);
+    }
+};
+// A root, a hand joint carrying a socket, and an unanimated mesh node whose triangle the hand skins. The clip
+// moves the root and turns the hand half a turn about +Z.
+Asset fixture() {
+    Asset asset;
     asset.nodes.resize(4);
     asset.nodes[0].name = "root";
     asset.nodes[1].name = "hand";
@@ -63,17 +76,17 @@ anima::Asset fixture() {
     asset.nodes[3].name = "socket";
     asset.nodes[3].parent = 1;
     asset.nodes[3].rest.translation = {0, .5F, 0};
-    anima::AssetSkin skin;
+    AssetSkin skin;
     skin.joints = {0, 1};
-    skin.inverse_bind = {anima::identity(), anima::identity()};
+    skin.inverse_bind = {identity(), identity()};
     skin.inverse_bind[1][13] = -1;
     asset.skins.push_back(skin);
-    anima::SourcePrimitive primitive;
+    SourcePrimitive primitive;
     primitive.node = 2;
     primitive.skin = 0;
     primitive.mesh_name = "triangle";
-    for (auto p : {anima::Vec3{0, 2, 0}, anima::Vec3{1, 2, 0}, anima::Vec3{0, 3, 0}}) {
-        anima::SourceVertex v;
+    for (auto p : {Vec3{0, 2, 0}, Vec3{1, 2, 0}, Vec3{0, 3, 0}}) {
+        SourceVertex v;
         v.position = p;
         v.normal = {0, 0, 1};
         v.joints = {1, 0, 0, 0};
@@ -82,289 +95,387 @@ anima::Asset fixture() {
     }
     asset.primitives.push_back(primitive);
     asset.mesh_nodes = 1;
-    anima::Animation clip;
+    Animation clip;
     clip.name = "test";
     clip.duration = 1;
-    clip.channels.push_back(
-        {0, anima::ChannelPath::translation, anima::Interpolation::linear, {0, 1}, {{0, 0, 0, 0}, {2, 0, 0, 0}}});
-    clip.channels.push_back(
-        {1, anima::ChannelPath::rotation, anima::Interpolation::linear, {0, 1}, {{0, 0, 0, 1}, {0, 0, 1, 0}}});
+    clip.channels.push_back({0, ChannelPath::translation, Interpolation::linear, {0, 1}, {{0, 0, 0, 0}, {2, 0, 0, 0}}});
+    clip.channels.push_back({1, ChannelPath::rotation, Interpolation::linear, {0, 1}, {{0, 0, 0, 1}, {0, 0, 1, 0}}});
     asset.animations.push_back(clip);
     return asset;
 }
-void manifest_tests(const anima::Asset &asset) {
-    struct Temp {
-        std::filesystem::path path =
-            std::filesystem::temp_directory_path() /
-            ("anima-manifest-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".json");
-        ~Temp() {
-            std::error_code error;
-            std::filesystem::remove(path, error);
-        }
-    } temp;
-    const std::string valid = R"({"schema_version":1,"units":"meters","asset_id":"two-joint-body",
-        "model":"body.glb","skeleton":{"id":"humanoid","joint_count":2,
-        "bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
-        "clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"swing\uD83D\uDDE1"}]}],
-        "equipment":[]})";
-    const auto read = [&](const std::string &json) {
-        {
-            std::ofstream out(temp.path, std::ios::binary);
-            out << json;
-        }
-        return anima::read_manifest(temp.path);
+} // namespace
+
+TEST_CASE("A manifest keeps its body, clip policy, travel speed and events") {
+    const auto asset = fixture();
+    const ManifestFile file;
+    const auto manifest = file.read(valid_manifest);
+    REQUIRE_NOTHROW(validate_manifest(manifest, asset));
+    CHECK(manifest.joint_count == 2);
+    REQUIRE(manifest.clips.size() == 1);
+    CHECK_FALSE(manifest.clips[0].loop);
+    CHECK(manifest.clips[0].events.at(0).name == "swing\xF0\x9F\x97\xA1"); // The escaped surrogate pair.
+    CHECK_FALSE(manifest.clips[0].reference_speed); // A clip without travel metadata has no implicit speed.
+    const auto travel = file.read(changed(valid_manifest, "\"loop\":false", "\"loop\":false,\"reference_speed\":3.2"));
+    REQUIRE_NOTHROW(validate_manifest(travel, asset));
+    REQUIRE(travel.clips.at(0).reference_speed);
+    CHECK(*travel.clips[0].reference_speed == Near{3.2, tolerance});
+}
+
+TEST_CASE("Manifest numbers do not depend on the process locale") {
+    struct Comma : std::numpunct<char> {
+        char do_decimal_point() const override { return ','; }
     };
-    const auto changed = [&](const std::string &from, const std::string &to) {
-        auto json = valid;
-        json.replace(json.find(from), from.size(), to);
-        return json;
-    };
-    const auto manifest = read(valid);
-    anima::validate_manifest(manifest, asset);
-    require(manifest.joint_count == 2 && !manifest.clips[0].loop, "Manifest body count/loop policy lost");
-    require(manifest.clips[0].events[0].name == "swing\xF0\x9F\x97\xA1", "Manifest Unicode escape decoding");
-    require(!manifest.clips[0].reference_speed, "Clip without travel metadata gained an implicit travel speed");
-    const auto travel = read(changed("\"loop\":false", "\"loop\":false,\"reference_speed\":3.2"));
-    anima::validate_manifest(travel, asset);
-    near(*travel.clips[0].reference_speed, 3.2, "Authored travel speed was lost");
-    for (const auto speed : {"0", "-1"})
-        rejects(
-            [&] { (void)read(changed("\"loop\":false", std::string("\"loop\":false,\"reference_speed\":") + speed)); },
-            "finite and positive");
-    auto invalid_speed = travel;
-    invalid_speed.clips[0].reference_speed = std::numeric_limits<double>::infinity();
-    rejects([&] { anima::validate_manifest(invalid_speed, asset); }, "finite and positive");
-    {
-        struct Comma : std::numpunct<char> {
-            char do_decimal_point() const override { return ','; }
-        };
-        struct RestoreLocale {
-            std::locale previous = std::locale();
-            ~RestoreLocale() { std::locale::global(previous); }
-        } restore;
-        std::locale::global(std::locale(std::locale::classic(), new Comma));
-        near(read(valid).clips[0].events[0].time, .53, "Manifest numbers depend on process locale");
+    struct RestoreLocale {
+        std::locale previous = std::locale();
+        ~RestoreLocale() { std::locale::global(previous); }
+    } restore;
+    std::locale::global(std::locale(std::locale::classic(), new Comma));
+    const ManifestFile file;
+    CHECK(file.read(valid_manifest).clips.at(0).events.at(0).time == Near{.53, tolerance});
+}
+
+TEST_CASE("Invalid manifests are rejected with their reason") {
+    const auto asset = fixture();
+    const ManifestFile file;
+    for (const auto speed : {"0", "-1"}) {
+        CAPTURE(speed);
+        CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"loop\":false",
+                                               std::string("\"loop\":false,\"reference_speed\":") + speed)),
+                             speed_range, std::runtime_error);
     }
-    for (const auto &bad : {changed("body.glb", "../body.glb"), changed("body.glb", "C:/body.glb"),
-                            changed("body.glb", R"(body\u0000.glb)"), changed("body.glb", R"(folder\\body.glb)")})
-        rejects([&] { (void)read(bad); }, "filename beside");
-    for (const auto &bad : {changed("\"schema_version\":1", "\"schema_version\":1,\"schema_version\":1"),
-                            changed("0.53", "1e999"), changed("0.53", "01"), changed(R"(\uD83D\uDDE1)", R"(\uD83D)"),
-                            valid + "false", changed("two-joint-body", std::string("invalid-\xC0\xAF")),
-                            changed("\"equipment\":[]", "\"equipment\":[],\"nested\":" + std::string(34, '[') + "0" +
-                                                            std::string(34, ']'))})
-        rejects([&] { (void)read(bad); }, "Invalid manifest JSON");
-    rejects([&] { (void)read(changed("\"schema_version\":1", "\"schema_version\":2")); }, "schema_version");
-    rejects([&] { (void)read(changed("\"joint_count\":2", "\"joint_count\":2.5")); }, "joint count");
-    rejects([&] { anima::validate_manifest(read(changed("\"joint_count\":2", "\"joint_count\":3")), asset); },
-            "joint count");
-    rejects([&] { anima::validate_manifest(read(changed("0.53", "1.1")), asset); }, "outside clip");
-    rejects_as<std::runtime_error>(
-        [&] { anima::validate_manifest(read(changed("\"name\":\"test\"", "\"name\":\"missing\"")), asset); },
-        "Manifest clip must name exactly one animation: missing");
+    auto infinite_speed =
+        file.read(changed(valid_manifest, "\"loop\":false", "\"loop\":false,\"reference_speed\":3.2"));
+    infinite_speed.clips.at(0).reference_speed = std::numeric_limits<double>::infinity();
+    CHECK_THROWS_WITH_AS(validate_manifest(infinite_speed, asset), speed_range, std::runtime_error);
+
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", "../body.glb")),
+                         "Manifest model must be a filename beside the manifest: ../body.glb", std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", "C:/body.glb")),
+                         "Manifest model must be a filename beside the manifest: C:/body.glb", std::runtime_error);
+    // what() ends at the NUL that the escape decodes to.
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", R"(body\u0000.glb)")),
+                         "Manifest model must be a filename beside the manifest: body", std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", R"(folder\\body.glb)")),
+                         "Manifest model must be a filename beside the manifest: folder\\body.glb", std::runtime_error);
+
+    CHECK_THROWS_WITH_AS(
+        file.read(changed(valid_manifest, "\"schema_version\":1", "\"schema_version\":1,\"schema_version\":1")),
+        "Invalid manifest JSON: Duplicate JSON document field", std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "0.53", "1e999")),
+                         "Invalid manifest JSON: [json.exception.out_of_range.406] number overflow parsing '1e999'",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "0.53", "01")),
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 278: "
+                         "syntax error while parsing object - unexpected number literal; expected '}'",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, R"(\uD83D\uDDE1)", R"(\uD83D)")),
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 302: "
+                         "syntax error while parsing value - invalid string: surrogate U+D800..U+DBFF must be "
+                         "followed by U+DC00..U+DFFF; last read: '\"swing\\uD83D\"'",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(std::string(valid_manifest) + "false"),
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 333: "
+                         "syntax error while parsing value - unexpected false literal; expected end of input",
+                         std::runtime_error);
+    // The JSON library quotes the ill-formed byte as it read it.
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "two-joint-body", "invalid-\xC0\xAF")),
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 58: "
+                         "syntax error while parsing value - invalid string: ill-formed UTF-8 byte; last read: "
+                         "'\"invalid-\xC0'",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(
+        file.read(changed(valid_manifest, "\"equipment\":[]",
+                          "\"equipment\":[],\"nested\":" + std::string(34, '[') + "0" + std::string(34, ']'))),
+        "Invalid manifest JSON: JSON document exceeds nesting limit", std::runtime_error);
+
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"schema_version\":1", "\"schema_version\":2")),
+                         "Manifest requires schema_version 1 and meter units", std::runtime_error);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":2.5")),
+                         "Invalid manifest joint count", std::runtime_error);
+    CHECK_THROWS_WITH_AS(
+        validate_manifest(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":3")), asset),
+        "Character skin does not match manifest joint count", std::runtime_error);
+    CHECK_THROWS_WITH_AS(validate_manifest(file.read(changed(valid_manifest, "0.53", "1.1")), asset),
+                         "Preview event outside clip: test", std::runtime_error);
+    CHECK_THROWS_WITH_AS(
+        validate_manifest(file.read(changed(valid_manifest, "\"name\":\"test\"", "\"name\":\"missing\"")), asset),
+        "Manifest clip must name exactly one animation: missing", std::runtime_error);
     // A clip name that two animations share names neither.
     auto doubled = asset;
     doubled.animations.push_back(doubled.animations[0]);
-    auto listed = read(valid);
-    listed.clips.push_back(listed.clips[0]);
+    auto listed = file.read(valid_manifest);
+    listed.clips.push_back(listed.clips.at(0));
     listed.clips.back().name = "other";
-    rejects_as<std::runtime_error>([&] { anima::validate_manifest(listed, doubled); },
-                                   "Manifest clip must name exactly one animation: test");
+    CHECK_THROWS_WITH_AS(validate_manifest(listed, doubled), "Manifest clip must name exactly one animation: test",
+                         std::runtime_error);
 }
-void lookup_tests(const anima::Asset &asset) {
-    rejects_as<std::out_of_range>([&] { (void)anima::find_animation(asset, "missing"); }, "Missing animation: missing");
-    rejects_as<std::out_of_range>([&] { (void)anima::unique_node(asset, "missing"); }, "Missing node: missing");
+
+TEST_CASE("Lookups report a missing name as std::out_of_range and an ambiguous one as std::invalid_argument") {
+    const auto asset = fixture();
+    CHECK_THROWS_WITH_AS(find_animation(asset, "missing"), "Missing animation: missing", std::out_of_range);
+    CHECK_THROWS_WITH_AS(unique_node(asset, "missing"), "Missing node: missing", std::out_of_range);
     auto doubled = asset;
     doubled.animations.push_back(doubled.animations[0]);
     doubled.nodes[2].name = "hand";
-    rejects_as<std::invalid_argument>([&] { (void)anima::find_animation(doubled, "test"); },
-                                      "Ambiguous animation name: test");
-    rejects_as<std::invalid_argument>([&] { (void)anima::unique_node(doubled, "hand"); }, "Ambiguous node name: hand");
+    CHECK_THROWS_WITH_AS(find_animation(doubled, "test"), "Ambiguous animation name: test", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(unique_node(doubled, "hand"), "Ambiguous node name: hand", std::invalid_argument);
 }
-} // namespace
-int main(int argc, char **argv) {
-    try {
-        auto asset = fixture();
-        manifest_tests(asset);
-        lookup_tests(asset);
-        // A clip that scales a joint to zero hides the part it skins, as engines hide bones.
-        auto hide = asset.animations[0];
-        hide.channels.push_back(
-            {1, anima::ChannelPath::scale, anima::Interpolation::linear, {0, 1}, {{1, 1, 1, 0}, {0, 0, 0, 0}}});
-        const auto hidden = anima::make_mesh_snapshot(asset, anima::sample_pose(asset, &hide, 1));
-        for (const auto &vertex : hidden.vertices)
-            near(length(vertex.position - hidden.vertices.front().position), 0,
-                 "A hidden joint left its skin unfolded");
-        // A pose too short for a primitive's node is rejected before the snapshot indexes it.
-        auto short_pose = anima::sample_pose(asset);
-        short_pose.world.resize(1);
-        rejects_as<std::runtime_error>([&] { (void)anima::make_mesh_snapshot(asset, short_pose); },
-                                       "Pose does not match asset nodes");
-        const auto rest = anima::sample_pose(asset);
-        const auto half = anima::sample_pose(asset, &asset.animations[0], .5);
-        const auto end = anima::sample_pose(asset, &asset.animations[0], 1);
-        const auto blended = anima::blend_pose(asset, rest, end, .5F);
-        near(deviation(blended, half), 0, "Local-pose blending distorted joint rotation or child hierarchy");
-        near(deviation(anima::blend_pose(asset, rest, end, 0), rest), 0, "Blend start endpoint");
-        near(deviation(anima::blend_pose(asset, rest, end, 1), end), 0, "Blend end endpoint");
-        // A 180-degree endpoint has two equally short arcs. Use 90 degrees
-        // here so this verifies sign invariance of the unique shortest arc.
-        auto equivalent = half;
-        for (auto &transform : equivalent.local)
-            for (auto &value : transform.rotation)
-                value = -value;
-        near(deviation(anima::blend_pose(asset, rest, equivalent, .5F), anima::blend_pose(asset, rest, half, .5F)), 0,
-             "Blend took a long quaternion arc");
-        for (float invalid : {-1.F, 2.F, std::numeric_limits<float>::quiet_NaN()})
-            rejects([&] { (void)anima::blend_pose(asset, rest, end, invalid); }, "Pose blend");
-        auto incomplete = rest;
-        incomplete.local.pop_back();
-        rejects([&] { (void)anima::blend_pose(asset, incomplete, end, .5F); }, "matching");
-        auto matrix_asset = asset;
-        matrix_asset.nodes[2].has_matrix = true;
-        matrix_asset.nodes[2].rest_matrix = anima::identity();
-        matrix_asset.nodes[2].rest_matrix[12] = 7;
-        near(anima::blend_pose(matrix_asset, rest, end, .5F).world[2][12], 7, "Matrix-node rest transform was blended");
-        near(half.world[0][12], 1, "Parent translation sampling");
-        near(half.world[3][12], .5, "Moving socket hierarchy x");
-        near(half.world[3][13], 1, "Moving socket hierarchy y");
-        const auto scene = anima::make_mesh_snapshot(asset, half);
-        near(scene.vertices[0].position.x, 0, "Quaternion skin/inverse-bind x");
-        near(scene.vertices[0].position.y, 1, "Quaternion skin/inverse-bind y");
-        near(asset.primitives[0].vertices[0].position.y, 2, "Source vertex mutated");
-        near(asset.nodes[1].rest.translation.y, 1, "Rest transform mutated");
-        const auto separate = anima::sample_pose(asset);
-        near(deviation(rest, separate), 0, "Instances share mutable pose state");
-        const auto antipodal = anima::slerp({0, 0, 0, 1}, {0, 0, 0, -1}, .5F);
-        near(std::abs(antipodal[3]), 1, "Antipodal quaternion interpolation");
-        const auto unit = anima::slerp({0, 0, 0, 2}, {0, 0, .001F, 1}, .5F);
-        double norm = 0;
-        for (const double v : unit)
-            norm += v * v;
-        near(norm, 1, "Quaternion normalization");
-        rejects_quaternion({0, 0, 0, 0}, anima::MathErrorCode::zero_quaternion);
-        rejects_quaternion({0, 0, 0, std::numeric_limits<float>::quiet_NaN()},
-                           anima::MathErrorCode::nonfinite_quaternion);
-        auto step = asset.animations[0];
-        step.channels.resize(1);
-        step.channels[0].interpolation = anima::Interpolation::step;
-        step.channels[0].times = {0, .5, 1};
-        step.channels[0].values = {{0, 0, 0, 0}, {3, 0, 0, 0}, {5, 0, 0, 0}};
-        near(anima::sample_pose(asset, &step, .499).world[0][12], 0, "STEP changed early");
-        near(anima::sample_pose(asset, &step, .5).world[0][12], 3, "STEP boundary wrong");
-        near(anima::sample_pose(asset, &step, 10).world[0][12], 5, "Sampler did not clamp last key");
-        anima::Playback player;
-        const anima::ClipMetadata attack{"test", false, {{.53, "weapon_swing"}}};
-        player.select(asset.animations[0], attack);
-        require(player.advance(.529).empty(), "Event fired early");
-        require(player.advance(.001).size() == 1, "Event crossing missing");
-        require(player.advance(.001).empty(), "Event fired twice");
-        player.pause();
-        const auto paused = player.time();
-        require(player.advance(10).empty(), "Paused event fired");
-        near(player.time(), paused, "Pause advanced time");
-        player.resume();
-        require(player.advance(1).empty() && player.finished() && !player.playing(), "Attack did not stop at end");
-        near(player.time(), 1, "Attack end pose not held");
-        require(player.advance(10).empty(), "Finished attack fired again");
-        player.restart();
-        require(player.advance(.54).size() == 1, "Restart missed attack event");
-        player.seek(.7);
-        require(player.advance(.1).empty(), "Seek replayed crossed event");
-        player.seek(1);
-        player.resume();
-        near(player.time(), 0, "Resume ended attack did not restart");
-        // A clip that does not loop stops at its end, so any finite step is accepted.
-        anima::Playback once;
-        once.select(asset.animations[0], attack);
-        require(once.advance(1e9).size() == 1 && once.finished(), "A long step on a clip that does not loop failed");
-        anima::Playback looping;
-        looping.select(asset.animations[0], {"test", true, {}});
-        rejects_as<std::invalid_argument>([&] { (void)looping.advance(asset.animations[0].duration * 10'001); },
-                                          "Playback step exceeds 10000 loops; split large offline advances");
-        rejects([&] { (void)player.advance(-1); });
-        rejects([&] { (void)player.advance(std::numeric_limits<double>::infinity()); });
-        const anima::ClipMetadata loop{"test", true, {{.53, "loop_event"}}};
-        player.select(asset.animations[0], loop);
-        require(player.advance(2.6).size() == 3, "Multi-loop events lost");
-        near(player.time(), .6, "Loop remainder wrong");
-        player.select(asset.animations[0], {"test", true, {{0, "start"}, {1, "end"}}});
-        require(player.advance(0).empty(), "Zero step fired events");
-        require(player.advance(.2).size() == 1, "Start event missing");
-        require(player.advance(.8).size() == 2, "Loop boundary events wrong");
-        require(player.advance(.01).empty(), "Loop boundary repeated");
-        auto compatible = asset;
-        require(anima::compatible_skin(asset, compatible).size() == 2, "Variable joint-count rig rejected");
-        compatible.primitives[0].skin = -1;
-        rejects_as<std::runtime_error>([&] { (void)anima::compatible_skin(asset, compatible); },
-                                       "Equipment contains an unskinned mesh; bind it to the target rig");
-        compatible = asset;
-        compatible.skins[0].inverse_bind[1][12] = .1F;
-        rejects([&] { (void)anima::compatible_skin(asset, compatible); }, "inverse-bind");
-        compatible = asset;
-        compatible.nodes[1].parent = -1;
-        rejects([&] { (void)anima::compatible_skin(asset, compatible); }, "hierarchy");
-        compatible = asset;
-        compatible.nodes[1].rest.translation.y = 2;
-        rejects([&] { (void)anima::compatible_skin(asset, compatible); }, "rest-pose");
-        compatible = asset;
-        compatible.nodes[1].name = "another_hand";
-        rejects([&] { (void)anima::compatible_skin(asset, compatible); }, "missing");
-        auto reordered = asset;
-        std::swap(reordered.skins[0].joints[0], reordered.skins[0].joints[1]);
-        std::swap(reordered.skins[0].inverse_bind[0], reordered.skins[0].inverse_bind[1]);
-        require(anima::compatible_skin(asset, reordered).size() == 2, "Joint index order treated as identity");
-        const anima::Texture checker{2, 1, {0, 0, 0, 255, 255, 255, 255, 255}, {}};
-        const auto mips = anima::base_color_mips(checker);
-        require(mips.size() == 2 && mips[1].rgba[0] == 188 && mips[1].rgba[3] == 255,
-                "Mip RGB averaged in encoded sRGB");
-        const anima::Texture odd{3, 1, {0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255}, {}};
-        require(anima::base_color_mips(odd).back().rgba[0] == 213, "Odd mip edge dropped");
-        if (argc > 1) {
-            const std::filesystem::path path = argv[1];
-            const auto manifest = anima::read_manifest(path);
-            const auto actual = anima::load_asset(manifest.directory / manifest.model);
-            anima::validate_manifest(manifest, *actual);
-            anima::AssetPreview preview(path);
-            for (const auto &metadata : manifest.clips) {
-                const auto &clip = anima::find_animation(*actual, metadata.name);
-                preview.select(metadata.name);
-                (void)preview.advance(clip.duration * .25);
-                near(deviation(preview.pose(), anima::sample_pose(*actual, &clip, clip.duration * .25)), 0,
-                     "Preview advanced to the wrong pose");
-                const auto held_pose = preview.pose();
-                preview.toggle_play();
-                require(preview.advance(.2).empty(), "Paused fixture emitted event");
-                near(deviation(held_pose, preview.pose()), 0, "Paused fixture moved");
-                preview.bind_pose();
-                near(deviation(preview.pose(), anima::sample_pose(*actual)), 0,
-                     "Bind mode failed to restore rest hierarchy");
-                bool rejected = false;
-                try {
-                    preview.seek(-1);
-                } catch (const std::invalid_argument &) {
-                    rejected = true;
-                }
-                require(rejected && preview.is_bind(), "Invalid seek changed bind mode");
-                preview.restart();
-                (void)preview.advance(clip.duration * .25);
-                near(deviation(preview.pose(), held_pose), 0, "Preview restart changed sampled pose");
-            }
-            if (manifest.clips.empty()) {
-                preview.toggle_play();
-                preview.restart();
-                require(preview.advance(.25).empty() && preview.is_bind(), "Static manifest started playback");
-                near(deviation(preview.pose(), anima::sample_pose(*actual)), 0,
-                     "Static manifest changed rest hierarchy");
-            }
-            std::cout << "Fixture: " << actual->nodes.size() << " nodes, " << actual->skins[0].joints.size()
-                      << " joints; " << manifest.clips.size() << " declared clips; manifest preview passed\n";
-        }
-        std::cout << "PASS: hierarchy, quaternion LINEAR/STEP, independent poses, loops, pause/restart/seek, event "
-                     "crossings, body-specific equipment compatibility, linear-light mipmaps\n";
-        return 0;
-    } catch (const std::exception &error) {
-        std::cerr << "FAIL: " << error.what() << '\n';
-        return 1;
+
+TEST_CASE("A joint scaled to zero collapses the part it skins") {
+    // A clip that scales a joint to zero hides the part it skins, as engines hide bones.
+    const auto asset = fixture();
+    auto hide = asset.animations[0];
+    hide.channels.push_back({1, ChannelPath::scale, Interpolation::linear, {0, 1}, {{1, 1, 1, 0}, {0, 0, 0, 0}}});
+    const auto hidden = make_mesh_snapshot(asset, sample_pose(asset, &hide, 1));
+    REQUIRE_FALSE(hidden.vertices.empty());
+    for (const auto &vertex : hidden.vertices)
+        CHECK(length(vertex.position - hidden.vertices.front().position) == Near{0, tolerance});
+}
+
+TEST_CASE("A pose too short for a primitive's node is rejected before the snapshot indexes it") {
+    const auto asset = fixture();
+    auto short_pose = sample_pose(asset);
+    short_pose.world.resize(1);
+    CHECK_THROWS_WITH_AS(make_mesh_snapshot(asset, short_pose), "Pose does not match asset nodes", std::runtime_error);
+}
+
+TEST_CASE("Sampling moves the hierarchy and skin without changing the asset or other poses") {
+    const auto asset = fixture();
+    const auto rest = sample_pose(asset);
+    const auto half = sample_pose(asset, &asset.animations[0], .5);
+    CHECK(half.world[0][12] == Near{1, tolerance}); // The root's translation.
+    // The socket follows the hand's rotation.
+    CHECK(half.world[3][12] == Near{.5, tolerance});
+    CHECK(half.world[3][13] == Near{1, tolerance});
+    // The skin applies the joint's pose through its inverse bind.
+    const auto scene = make_mesh_snapshot(asset, half);
+    CHECK(scene.vertices.at(0).position.x == Near{0, tolerance});
+    CHECK(scene.vertices.at(0).position.y == Near{1, tolerance});
+    // The source vertices and rest transforms are unchanged.
+    CHECK(asset.primitives[0].vertices[0].position.y == Near{2, tolerance});
+    CHECK(asset.nodes[1].rest.translation.y == Near{1, tolerance});
+    CHECK(deviation(rest, sample_pose(asset)) < tolerance); // Poses share no mutable state.
+}
+
+TEST_CASE("Blending local poses keeps the hierarchy, the shorter arc and matrix nodes") {
+    const auto asset = fixture();
+    const auto rest = sample_pose(asset);
+    const auto half = sample_pose(asset, &asset.animations[0], .5);
+    const auto end = sample_pose(asset, &asset.animations[0], 1);
+    CHECK(deviation(blend_pose(asset, rest, end, .5F), half) < tolerance);
+    CHECK(deviation(blend_pose(asset, rest, end, 0), rest) < tolerance);
+    CHECK(deviation(blend_pose(asset, rest, end, 1), end) < tolerance);
+    // A 180-degree endpoint has two equally short arcs. Use 90 degrees
+    // here so this verifies sign invariance of the unique shortest arc.
+    auto equivalent = half;
+    for (auto &transform : equivalent.local)
+        for (auto &value : transform.rotation)
+            value = -value;
+    CHECK(deviation(blend_pose(asset, rest, equivalent, .5F), blend_pose(asset, rest, half, .5F)) < tolerance);
+    // A matrix node keeps its rest transform.
+    auto matrix_asset = asset;
+    matrix_asset.nodes[2].has_matrix = true;
+    matrix_asset.nodes[2].rest_matrix = identity();
+    matrix_asset.nodes[2].rest_matrix[12] = 7;
+    CHECK(blend_pose(matrix_asset, rest, end, .5F).world[2][12] == Near{7, tolerance});
+}
+
+TEST_CASE("Blends with an invalid weight or an incomplete pose are rejected") {
+    const auto asset = fixture();
+    const auto rest = sample_pose(asset);
+    const auto end = sample_pose(asset, &asset.animations[0], 1);
+    for (const float weight : {-1.F, 2.F, std::numeric_limits<float>::quiet_NaN()}) {
+        CAPTURE(weight);
+        CHECK_THROWS_WITH_AS(blend_pose(asset, rest, end, weight), invalid_blend, std::invalid_argument);
     }
+    auto incomplete = rest;
+    incomplete.local.pop_back();
+    CHECK_THROWS_WITH_AS(blend_pose(asset, incomplete, end, .5F), invalid_blend, std::invalid_argument);
+}
+
+TEST_CASE("Quaternion interpolation takes the shorter arc and normalizes its result") {
+    const auto antipodal = slerp({0, 0, 0, 1}, {0, 0, 0, -1}, .5F);
+    CHECK(std::abs(antipodal[3]) == Near{1, tolerance});
+    const auto unit = slerp({0, 0, 0, 2}, {0, 0, .001F, 1}, .5F);
+    double norm = 0;
+    for (const double v : unit)
+        norm += v * v;
+    CHECK(norm == Near{1, tolerance});
+}
+
+TEST_CASE("Quaternions that cannot be normalized are rejected with their code") {
+    // A MathError's message is its code's math_error_message, so matching the message matches the code.
+    CHECK_THROWS_WITH_AS(unit_quaternion({0, 0, 0, 0}), math_error_message(MathErrorCode::zero_quaternion), MathError);
+    CHECK_THROWS_WITH_AS(unit_quaternion({0, 0, 0, std::numeric_limits<float>::quiet_NaN()}),
+                         math_error_message(MathErrorCode::nonfinite_quaternion), MathError);
+}
+
+TEST_CASE("STEP sampling holds each key, and sampling clamps after the last key") {
+    const auto asset = fixture();
+    auto step = asset.animations[0];
+    step.channels.resize(1);
+    step.channels[0].interpolation = Interpolation::step;
+    step.channels[0].times = {0, .5, 1};
+    step.channels[0].values = {{0, 0, 0, 0}, {3, 0, 0, 0}, {5, 0, 0, 0}};
+    CHECK(sample_pose(asset, &step, .499).world[0][12] == Near{0, tolerance});
+    CHECK(sample_pose(asset, &step, .5).world[0][12] == Near{3, tolerance});
+    CHECK(sample_pose(asset, &step, 10).world[0][12] == Near{5, tolerance});
+}
+
+TEST_CASE("Playback crosses each event once through pause, restart, seek and resume") {
+    const auto asset = fixture();
+    Playback player;
+    player.select(asset.animations[0], {"test", false, {{.53, "weapon_swing"}}});
+    CHECK(player.advance(.529).empty());
+    CHECK(player.advance(.001).size() == 1);
+    CHECK(player.advance(.001).empty());
+    player.pause();
+    const auto paused = player.time();
+    CHECK(player.advance(10).empty());
+    CHECK(player.time() == Near{paused, tolerance});
+    player.resume();
+    // A clip that does not loop stops at its end and holds the end pose.
+    CHECK(player.advance(1).empty());
+    CHECK(player.finished());
+    CHECK_FALSE(player.playing());
+    CHECK(player.time() == Near{1, tolerance});
+    CHECK(player.advance(10).empty());
+    player.restart();
+    CHECK(player.advance(.54).size() == 1);
+    player.seek(.7);
+    CHECK(player.advance(.1).empty()); // A seek does not replay the event it passed.
+    player.seek(1);
+    player.resume();
+    CHECK(player.time() == Near{0, tolerance}); // Resuming a finished clip restarts it.
+}
+
+TEST_CASE("A clip that does not loop accepts any finite step, and a looping step is bounded") {
+    const auto asset = fixture();
+    const auto &clip = asset.animations[0];
+    Playback once;
+    once.select(clip, {"test", false, {{.53, "weapon_swing"}}});
+    CHECK(once.advance(1e9).size() == 1);
+    CHECK(once.finished());
+    Playback looping;
+    looping.select(clip, {"test", true, {}});
+    CHECK_THROWS_WITH_AS(looping.advance(clip.duration * 10'001),
+                         "Playback step exceeds 10000 loops; split large offline advances", std::invalid_argument);
+}
+
+TEST_CASE("Negative and nonfinite playback steps are rejected") {
+    constexpr auto invalid_step = "Playback elapsed time must be finite and nonnegative";
+    const auto asset = fixture();
+    Playback player;
+    player.select(asset.animations[0], {"test", false, {{.53, "weapon_swing"}}});
+    CHECK_THROWS_WITH_AS(player.advance(-1), invalid_step, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(player.advance(std::numeric_limits<double>::infinity()), invalid_step, std::invalid_argument);
+}
+
+TEST_CASE("Looping playback crosses events in every loop and at the loop boundary") {
+    const auto asset = fixture();
+    Playback player;
+    player.select(asset.animations[0], {"test", true, {{.53, "loop_event"}}});
+    CHECK(player.advance(2.6).size() == 3);
+    CHECK(player.time() == Near{.6, tolerance});
+    player.select(asset.animations[0], {"test", true, {{0, "start"}, {1, "end"}}});
+    CHECK(player.advance(0).empty());
+    CHECK(player.advance(.2).size() == 1);
+    CHECK(player.advance(.8).size() == 2); // The end of one loop and the start of the next.
+    CHECK(player.advance(.01).empty());
+}
+
+TEST_CASE("Equipment binds to the body's joints by name") {
+    const auto asset = fixture();
+    CHECK(compatible_skin(asset, asset).size() == 2);
+    // Joint indices may be ordered differently.
+    auto reordered = asset;
+    std::swap(reordered.skins[0].joints[0], reordered.skins[0].joints[1]);
+    std::swap(reordered.skins[0].inverse_bind[0], reordered.skins[0].inverse_bind[1]);
+    CHECK(compatible_skin(asset, reordered).size() == 2);
+}
+
+TEST_CASE("Equipment that does not match the body's rig is rejected with its reason") {
+    const auto asset = fixture();
+    auto equipment = asset;
+    equipment.primitives[0].skin = -1;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
+                         "Equipment contains an unskinned mesh; bind it to the target rig", std::runtime_error);
+    equipment = asset;
+    equipment.skins[0].inverse_bind[1][12] = .1F;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
+                         "Equipment inverse-bind mismatch at hand (max error 0.100000); refit/export for this body "
+                         "profile",
+                         std::runtime_error);
+    equipment = asset;
+    equipment.nodes[1].parent = -1;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
+                         "Equipment hierarchy mismatch at hand; export against the target body's rig",
+                         std::runtime_error);
+    equipment = asset;
+    equipment.nodes[1].rest.translation.y = 2;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
+                         "Equipment rest-pose mismatch at hand; use the target body's rest transforms",
+                         std::runtime_error);
+    equipment = asset;
+    equipment.nodes[1].name = "another_hand";
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment), "Equipment joint missing from target body: another_hand",
+                         std::runtime_error);
+}
+
+TEST_CASE("Base-color mipmaps average in linear light and keep odd edges") {
+    const Texture checker{2, 1, {0, 0, 0, 255, 255, 255, 255, 255}, {}};
+    const auto mips = base_color_mips(checker);
+    REQUIRE(mips.size() == 2);
+    CHECK(mips[1].rgba[0] == 188); // Averaged in encoded sRGB, this would be 128.
+    CHECK(mips[1].rgba[3] == 255);
+    const Texture odd{3, 1, {0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255}, {}};
+    CHECK(base_color_mips(odd).back().rgba[0] == 213);
+}
+
+TEST_CASE(preview_test) {
+    REQUIRE(exported_manifest);
+    const auto manifest = read_manifest(*exported_manifest);
+    const auto actual = load_asset(manifest.directory / manifest.model);
+    REQUIRE_NOTHROW(validate_manifest(manifest, *actual));
+    AssetPreview preview(*exported_manifest);
+    for (const auto &metadata : manifest.clips) {
+        CAPTURE(metadata.name);
+        const auto &clip = find_animation(*actual, metadata.name);
+        preview.select(metadata.name);
+        (void)preview.advance(clip.duration * .25);
+        CHECK(deviation(preview.pose(), sample_pose(*actual, &clip, clip.duration * .25)) < tolerance);
+        const auto held_pose = preview.pose();
+        preview.toggle_play();
+        CHECK(preview.advance(.2).empty()); // Paused.
+        CHECK(deviation(held_pose, preview.pose()) < tolerance);
+        preview.bind_pose();
+        CHECK(deviation(preview.pose(), sample_pose(*actual)) < tolerance);
+        CHECK_THROWS_WITH_AS(preview.seek(-1), "Invalid playback seek", std::invalid_argument);
+        CHECK(preview.is_bind()); // The rejected seek kept bind mode.
+        preview.restart();
+        (void)preview.advance(clip.duration * .25);
+        CHECK(deviation(preview.pose(), held_pose) < tolerance);
+    }
+    if (manifest.clips.empty()) {
+        preview.toggle_play();
+        preview.restart();
+        CHECK(preview.advance(.25).empty());
+        CHECK(preview.is_bind());
+        CHECK(deviation(preview.pose(), sample_pose(*actual)) < tolerance);
+    }
+    MESSAGE("Fixture: ", actual->nodes.size(), " nodes, ", actual->skins[0].joints.size(), " joints; ",
+            manifest.clips.size(), " declared clips");
+}
+
+int main(int argc, char **argv) {
+    doctest::Context context(argc, argv);
+    // asset_preview names an exported manifest: the first argument that is not a doctest option.
+    for (int i = 1; i < argc; ++i)
+        if (argv[i][0] != '-') {
+            exported_manifest = argv[i];
+            break;
+        }
+    if (!exported_manifest)
+        context.addFilter("test-case-exclude", preview_test);
+    return context.run();
 }
