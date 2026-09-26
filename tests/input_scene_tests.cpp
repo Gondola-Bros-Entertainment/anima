@@ -2,23 +2,29 @@
 #include <anima/input_scene.hpp>
 #include <anima/prefab.hpp>
 #include <anima/scene_set.hpp>
-#include <iostream>
+#include <doctest/doctest.h>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 namespace i = anima::input;
 using namespace anima;
 namespace {
-void check(bool v, const char *m) {
-    if (!v)
-        throw std::runtime_error(m);
-}
-template <class F> void rejects(F f) {
-    bool caught = false;
-    try {
-        f();
-    } catch (const std::exception &) {
-        caught = true;
-    }
-    check(caught, "Expected input scene rejection");
-}
+constexpr unsigned control_capacity = 1024; // Recorded controls per Context, documented in include/anima/input.hpp.
+constexpr auto over_capacity = "Input context exceeds 1024 active physical controls";
+constexpr auto invalid_integer = "Invalid input configuration integer";
+constexpr auto invalid_envelope = "Invalid input configuration envelope";
+constexpr auto modifier_count = "Invalid input modifier count";
+constexpr auto unknown_component = "Unknown serialized component type";
+constexpr auto duplicate_field = "Duplicate JSON document field";
+constexpr auto busy_scene = "Scene drivers require an idle live scene";
+constexpr auto busy_set = "Scene drivers cannot run during set mutation or scheduling";
 constexpr i::Event down{i::EventType::control, {i::ControlKind::key, 4, 0}, 1};
 constexpr i::Event up{i::EventType::control, {i::ControlKind::key, 4, 0}, 0};
 i::Event key_event(std::uint16_t code, std::uint32_t device, float value = 1) {
@@ -29,22 +35,55 @@ i::Map chord_map(std::uint32_t device = i::any_device) {
     binding.modifiers = {{i::ControlKind::key, 224, device}};
     return {{"chord", i::ActionType::button, {binding}}};
 }
-void chord_configuration() {
+i::Map key_map() { return {{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}}; }
+i::Map gamepad_map() { return {{"activate", i::ActionType::button, {{{i::ControlKind::gamepad_button, 0}}}}}; }
+// invalid_component_payloads(valid, field), each with the error of a decoder whose first required field is
+// @p first_required.
+std::vector<std::pair<std::string, std::string>> invalid_payloads(std::string_view valid, std::string_view field,
+                                                                  std::string_view first_required) {
+    const auto payloads = invalid_component_payloads(valid, field);
+    const std::vector<std::string> errors{"Missing JSON field: " + std::string(first_required),
+                                          "Missing JSON field: " + std::string(field),
+                                          "Unknown JSON field: unexpected",
+                                          duplicate_field,
+                                          duplicate_field,
+                                          "JSON document exceeds nesting limit"};
+    REQUIRE(payloads.size() == errors.size());
+    std::vector<std::pair<std::string, std::string>> result;
+    for (std::size_t index = 0; index < payloads.size(); ++index)
+        result.emplace_back(payloads[index], errors[index]);
+    return result;
+}
+} // namespace
+
+TEST_CASE("Chord configuration round-trips, and only version 2 documents load") {
     const auto map = chord_map(7);
     const auto document = i::serialize_map(map);
     const auto restored = i::deserialize_map(document);
-    check(restored[0].bindings[0].control == map[0].bindings[0].control &&
-              restored[0].bindings[0].modifiers == map[0].bindings[0].modifiers &&
-              i::serialize_map(restored) == document,
-          "Chord configuration lost selectors or modifiers on round-trip");
-    check(i::deserialize_map(R"({"version":2,"actions":[]})").empty(), "Version 2 empty input map was rejected");
-    for (const auto version : {"1", "3", "2.0", "-1", "true"}) {
-        const auto invalid = std::string("{\"version\":") + version + ",\"actions\":[]}";
-        rejects([&] { (void)i::deserialize_map(invalid); });
+    // The round trip keeps the device selectors and modifiers.
+    CHECK(restored[0].bindings[0].control == map[0].bindings[0].control);
+    CHECK(restored[0].bindings[0].modifiers == map[0].bindings[0].modifiers);
+    CHECK(i::serialize_map(restored) == document);
+    CHECK(i::deserialize_map(R"({"version":2,"actions":[]})").empty());
+    const std::array<std::pair<std::string_view, const char *>, 5> versions{{
+        {"1", invalid_envelope},
+        {"3", invalid_integer},
+        {"2.0", invalid_integer},
+        {"-1", invalid_integer},
+        {"true", invalid_integer},
+    }};
+    for (const auto &version : versions) {
+        CAPTURE(version.first);
+        const auto invalid = "{\"version\":" + std::string(version.first) + ",\"actions\":[]}";
+        CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), version.second, std::invalid_argument);
     }
-    for (const auto &invalid : invalid_component_payloads(document, "version"))
-        rejects([&] { (void)i::deserialize_map(invalid); });
+    for (const auto &invalid : invalid_payloads(document, "version", "version")) {
+        CAPTURE(invalid.first);
+        CHECK_THROWS_WITH_AS(i::deserialize_map(invalid.first), invalid.second.c_str(), std::invalid_argument);
+    }
+}
 
+TEST_CASE("Serialized modifiers must be a list of up to four valid, distinct and compatible controls") {
     const std::string prefix =
         R"({"version":2,"actions":[{"name":"chord","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"channel":0,"scale":1,"deadzone":0)";
     const std::string suffix = "}]}]}";
@@ -52,24 +91,37 @@ void chord_configuration() {
     const auto with_modifiers = [&](std::string_view value) {
         return prefix + ",\"modifiers\":" + std::string(value) + suffix;
     };
-    check(i::deserialize_map(with_modifiers("[" + modifier + "]"))[0].bindings[0].modifiers.size() == 1,
-          "Explicit current chord schema was rejected");
-    rejects([&] { (void)i::deserialize_map(prefix + suffix); });
-    rejects([&] { (void)i::deserialize_map(with_modifiers("null")); });
-    rejects([&] { (void)i::deserialize_map(with_modifiers("{}")); });
-    rejects([&] { (void)i::deserialize_map(with_modifiers("[" + modifier + "," + modifier + "]")); });
-    rejects([&] {
-        (void)i::deserialize_map(
-            with_modifiers("[" + modifier + "," + modifier + "," + modifier + "," + modifier + "," + modifier + "]"));
-    });
-    for (const auto &invalid : invalid_component_payloads(modifier, "kind"))
-        rejects([&] { (void)i::deserialize_map(with_modifiers("[" + invalid + "]")); });
-    for (const auto invalid : {R"({"kind":3,"code":0,"device":7})", R"({"kind":0,"code":224,"device":8})",
-                               R"({"kind":0,"code":4,"device":7})", R"({"kind":0,"code":512,"device":7})",
-                               R"({"kind":0,"code":224,"device":4294967296})"})
-        rejects([&] { (void)i::deserialize_map(with_modifiers("[" + std::string(invalid) + "]")); });
-    rejects([&] { (void)i::deserialize_map(std::string(1024 * 1024, ' ') + document); });
+    CHECK(i::deserialize_map(with_modifiers("[" + modifier + "]"))[0].bindings[0].modifiers.size() == 1u);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(prefix + suffix), "Missing JSON field: modifiers", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("null")), modifier_count, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("{}")), modifier_count, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("[" + modifier + "," + modifier + "]")),
+                         "Repeated input chord control", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("[" + modifier + "," + modifier + "," + modifier + "," +
+                                                           modifier + "," + modifier + "]")),
+                         modifier_count, std::invalid_argument);
+    for (const auto &invalid : invalid_payloads(modifier, "kind", "kind")) {
+        CAPTURE(invalid.first);
+        CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("[" + invalid.first + "]")), invalid.second.c_str(),
+                             std::invalid_argument);
+    }
+    const std::array<std::pair<std::string_view, const char *>, 5> modifiers{{
+        {R"({"kind":3,"code":0,"device":7})", "Input chord modifiers must be digital"},
+        {R"({"kind":0,"code":224,"device":8})", "Input chord device selectors conflict"},
+        {R"({"kind":0,"code":4,"device":7})", "Repeated input chord control"},
+        {R"({"kind":0,"code":512,"device":7})", invalid_integer},
+        {R"({"kind":0,"code":224,"device":4294967296})", invalid_integer},
+    }};
+    for (const auto &invalid : modifiers) {
+        CAPTURE(invalid.first);
+        CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("[" + std::string(invalid.first) + "]")), invalid.second,
+                             std::invalid_argument);
+    }
+}
 
+TEST_CASE("Configuration beyond 1 MiB is rejected in both directions") {
+    CHECK_THROWS_WITH_AS(i::deserialize_map(std::string(1024 * 1024, ' ') + i::serialize_map(chord_map(7))),
+                         "JSON document exceeds byte limit", std::invalid_argument);
     // A valid in-memory map can exceed the wire bound once all modifiers are encoded.
     i::Binding wide{{i::ControlKind::gamepad_axis, 15, UINT32_MAX - 1}, i::Channel::x, 16, .999999F};
     wide.modifiers = {{i::ControlKind::gamepad_button, 60, UINT32_MAX - 1},
@@ -79,20 +131,21 @@ void chord_configuration() {
     i::Map large;
     for (unsigned action = 0; action < 128; ++action)
         large.push_back({"action" + std::to_string(action), i::ActionType::axis, std::vector<i::Binding>(32, wide)});
-    i::validate(large);
-    rejects([&] { (void)i::serialize_map(large); });
+    CHECK_NOTHROW(i::validate(large));
+    CHECK_THROWS_WITH_AS(i::serialize_map(large), "Input configuration exceeds byte limit", std::invalid_argument);
 }
-void chord_persistence() {
+
+TEST_CASE("Persisted chords keep their authored devices but restore no runtime state") {
     Scene source;
     auto object = source.create("authored chord");
     auto input = object.add_component<i::ActionInput>(chord_map(7));
     input->context().process(key_event(4, 7));
     input->context().process(key_event(224, 7));
-    check(input->context().state("chord").pressed, "Source chord did not activate");
+    CHECK(input->context().state("chord").pressed);
     ComponentCodecs source_codecs;
     i::add_component_codec(source_codecs);
     const auto prefab = Prefab::capture(object, source_codecs);
-    check(prefab.nodes()[0].components[0].type == "anima.action-input.v2", "Action input codec did not use version 2");
+    CHECK(prefab.nodes()[0].components[0].type == "anima.action-input.v2");
     input->context().set_focused(false);
     input->context().set_enabled(false);
     const auto scene_document = serialize_scene(source, {}, source_codecs);
@@ -100,76 +153,88 @@ void chord_persistence() {
     ComponentCodecs destination_codecs;
     i::add_component_codec(destination_codecs);
     Scene destination;
-    rejects([&] { (void)prefab.instantiate(destination, identity(), {}); });
-    check(destination.size() == 0, "Missing destination input codec leaked an object");
+    CHECK_THROWS_WITH_AS(prefab.instantiate(destination, identity(), {}), unknown_component, std::invalid_argument);
+    CHECK(destination.size() == 0u); // The missing destination codec leaked no object.
     auto instance = Prefab::deserialize(prefab.serialize({}), {}, destination_codecs)
                         .instantiate(destination, identity(), destination_codecs);
     auto loaded = load_scene(scene_document, {}, destination_codecs);
-    for (auto component : {instance.get_component<i::ActionInput>(), loaded->components<i::ActionInput>().front()}) {
-        auto &context = component->context();
-        check(context.enabled() && context.focused() && !context.state("chord").active &&
-                  !context.state("chord").pressed && context.actions()[0].bindings[0].modifiers[0].device == 7,
-              "Chord persistence restored runtime state or lost authored device selection");
+    // The prefab instance, then the loaded scene's component: each restores the configuration, including the
+    // authored device selection, into an enabled and focused context without recorded input.
+    std::array restored{instance.get_component<i::ActionInput>(), loaded->components<i::ActionInput>().front()};
+    for (std::size_t index = 0; index < restored.size(); ++index) {
+        CAPTURE(index);
+        auto &context = restored[index]->context();
+        CHECK(context.enabled());
+        CHECK(context.focused());
+        CHECK_FALSE(context.state("chord").active);
+        CHECK_FALSE(context.state("chord").pressed);
+        CHECK(context.actions()[0].bindings[0].modifiers[0].device == 7u);
         context.process(key_event(4, 8));
         context.process(key_event(224, 8));
         context.process(key_event(4, 7));
-        check(!context.state("chord").active, "Restored chord accepted a foreign modifier");
+        CHECK_FALSE(context.state("chord").active); // Keyboard 8's modifier does not complete keyboard 7's chord.
         context.process(key_event(224, 7));
-        check(context.state("chord").pressed, "Restored chord failed to accept fresh matching events");
+        CHECK(context.state("chord").pressed);
     }
+}
+
+TEST_CASE("Input components of an old type or with a malformed payload are rejected without leaking objects") {
+    Scene source;
+    auto object = source.create();
+    object.add_component<i::ActionInput>(chord_map(7));
+    ComponentCodecs codecs;
+    i::add_component_codec(codecs);
+    const auto prefab = Prefab::capture(object, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     nodes[0].components[0].type = "anima.action-input.v1";
-    rejects([&] { (void)Prefab(nodes, destination_codecs); });
+    CHECK_THROWS_WITH_AS(Prefab(nodes, codecs), unknown_component, std::invalid_argument);
     nodes[0] = prefab.nodes()[0];
     nodes.push_back(nodes[0]);
     nodes[1].parent = 0;
     nodes[1].key = {};
-    const auto before = destination.size();
-    for (const auto &payload : invalid_component_payloads(nodes[0].components[0].state, "version")) {
-        nodes[1].components[0].state = payload;
-        rejects([&] { (void)Prefab(nodes, destination_codecs).instantiate(destination); });
-        check(destination.size() == before, "Late malformed chord component leaked staged objects");
+    Scene destination;
+    for (const auto &invalid : invalid_payloads(nodes[0].components[0].state, "version", "version")) {
+        CAPTURE(invalid.first);
+        nodes[1].components[0].state = invalid.first;
+        CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(destination), invalid.second.c_str(),
+                             std::invalid_argument);
+        CHECK(destination.size() == 0u); // The late malformed component leaked no staged object.
     }
 }
-void chord_staging() {
+
+TEST_CASE("A later scene's capacity failure publishes no chord state in any scene") {
     SceneSet scenes;
     auto first = scenes.create("first"), second = scenes.create("second");
     auto input = first->create().add_component<i::ActionInput>(chord_map());
     auto other = second->create().add_component<i::ActionInput>(chord_map());
     input->context().process(key_event(4, 5));
-    for (unsigned device = 0; device < 1024; ++device)
+    for (unsigned device = 0; device < control_capacity; ++device)
         other->context().process(key_event(4, device));
     i::begin_frame(scenes);
-    rejects([&] { i::dispatch(scenes, key_event(224, 5)); });
-    for (auto component : {input, other})
-        check(!component->context().state("chord").active && !component->context().state("chord").pressed,
-              "Later modifier capacity failure partially published scene-set chord state");
+    CHECK_THROWS_WITH_AS(i::dispatch(scenes, key_event(224, 5)), over_capacity, std::length_error);
+    CHECK_FALSE(input->context().state("chord").active);
+    CHECK_FALSE(input->context().state("chord").pressed);
+    CHECK_FALSE(other->context().state("chord").active);
+    CHECK_FALSE(other->context().state("chord").pressed);
     other->context().process(key_event(4, 0, 0));
     i::dispatch(scenes, key_event(4, 5));
-    check(!input->context().state("chord").active && !other->context().state("chord").active,
-          "Rejected scene-set modifier remained in observed physical state");
+    // The rejected modifier was recorded in neither scene.
+    CHECK_FALSE(input->context().state("chord").active);
+    CHECK_FALSE(other->context().state("chord").active);
     i::dispatch(scenes, key_event(224, 5));
-    check(input->context().state("chord").pressed && other->context().state("chord").pressed,
-          "Fresh modifier failed after releasing observed capacity");
+    // Once a recorded control is released, the fresh modifier fits.
+    CHECK(input->context().state("chord").pressed);
+    CHECK(other->context().state("chord").pressed);
 }
-template <class F> bool rejects_driver(F f) noexcept {
-    try {
-        f();
-    } catch (const std::logic_error &) {
-        return true;
-    } catch (...) {
-    }
-    return false;
-}
-bool rejects_set_drivers(SceneSet &scenes) noexcept {
-    bool rejected = rejects_driver([&] { i::begin_frame(scenes); });
-    rejected &= rejects_driver([&] { i::dispatch(scenes, up); });
-    return rejected;
-}
+
+namespace {
+// The input driver calls made from inside the scenes, and what the set drivers must report in the current phase.
 struct BoundaryChecks {
-    bool rejected = true;
     unsigned calls{};
+    const char *set_error = busy_scene;
 };
+// Calls every input driver from component construction and scheduling, where each must be rejected. The hooks
+// are noexcept, so they use only CHECK assertions, which report a failure without throwing.
 struct DriverProbe {
     Scene &scene;
     SceneSet &scenes;
@@ -180,9 +245,11 @@ struct DriverProbe {
     }
     void attempt() noexcept {
         ++checks.calls;
-        checks.rejected &= rejects_driver([&] { i::begin_frame(scene); });
-        checks.rejected &= rejects_driver([&] { i::dispatch(scene, up); });
-        checks.rejected &= rejects_set_drivers(scenes);
+        CAPTURE(checks.calls);
+        CHECK_THROWS_WITH_AS(i::begin_frame(scene), busy_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(i::dispatch(scene, up), busy_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(i::begin_frame(scenes), checks.set_error, std::logic_error);
+        CHECK_THROWS_WITH_AS(i::dispatch(scenes, up), checks.set_error, std::logic_error);
     }
     void on_enable() noexcept { attempt(); }
     void on_disable() noexcept { attempt(); }
@@ -190,200 +257,237 @@ struct DriverProbe {
     void on_fixed_update(double) { attempt(); }
     void on_late_update(double) { attempt(); }
 };
-void run_scene_set() {
-    const i::Map map{{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}};
+} // namespace
+
+TEST_CASE("A scene set delivers input across its scenes and reconciles each component's activation") {
     SceneSet scenes;
     auto first = scenes.create("first"), second = scenes.create("second");
     auto object = first->create(), parent = second->create(), child = second->create();
     child.set_parent(parent);
-    auto input = object.add_component<i::ActionInput>(map);
-    auto other = child.add_component<i::ActionInput>(map);
+    auto input = object.add_component<i::ActionInput>(key_map());
+    auto other = child.add_component<i::ActionInput>(key_map());
     i::begin_frame(scenes);
     i::dispatch(scenes, down);
-    check(input->context().state("activate").pressed && other->context().state("activate").pressed,
-          "Scene set did not deliver input across scenes");
+    CHECK(input->context().state("activate").pressed);
+    CHECK(other->context().state("activate").pressed);
     i::begin_frame(scenes);
-    for (auto component : {input, other}) {
-        const auto state = component->context().state("activate");
-        check(state.active && !state.pressed && !state.released && !state.canceled,
-              "Scene set frame reset lost held state or retained edges");
+    // A new frame keeps held state and clears the edges, in every scene.
+    const std::array components{input, other};
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        CAPTURE(index);
+        const auto state = components[index]->context().state("activate");
+        CHECK(state.active);
+        CHECK_FALSE(state.pressed);
+        CHECK_FALSE(state.released);
+        CHECK_FALSE(state.canceled);
     }
     i::dispatch(scenes, up);
     i::dispatch(scenes, down);
-    check(input->context().state("activate").released && input->context().state("activate").pressed &&
-              other->context().state("activate").released && other->context().state("activate").pressed,
-          "Scene set did not latch ordered events across a frame");
+    // Both events of the frame stay latched, in every scene.
+    CHECK(input->context().state("activate").released);
+    CHECK(input->context().state("activate").pressed);
+    CHECK(other->context().state("activate").released);
+    CHECK(other->context().state("activate").pressed);
     parent.set_active(false);
     i::begin_frame(scenes);
-    check(input->context().state("activate").active && other.enabled() && other->context().state("activate").canceled &&
-              !other->context().state("activate").active,
-          "Scene set did not reconcile inherited activation independently");
+    // The inactive parent cancels only its own component, which stays enabled.
+    CHECK(input->context().state("activate").active);
+    CHECK(other.enabled());
+    CHECK(other->context().state("activate").canceled);
+    CHECK_FALSE(other->context().state("activate").active);
     i::dispatch(scenes, down);
     parent.set_active(true);
     i::begin_frame(scenes);
-    check(!other->context().state("activate").active && !other->context().state("activate").pressed,
-          "Scene set replayed input held while inactive");
+    CHECK_FALSE(other->context().state("activate").active); // Input held while inactive is not replayed.
+    CHECK_FALSE(other->context().state("activate").pressed);
     i::dispatch(scenes, down);
     i::dispatch(scenes, {i::EventType::focus, {}, 0});
-    check(input->context().state("activate").canceled && other->context().state("activate").canceled,
-          "Scene set failed to cancel input on focus loss");
+    CHECK(input->context().state("activate").canceled); // Losing focus cancels every scene's input.
+    CHECK(other->context().state("activate").canceled);
     i::dispatch(scenes, {i::EventType::focus, {}, 1});
     i::begin_frame(scenes);
-    check(!input->context().state("activate").active && !other->context().state("activate").active,
-          "Scene set replayed held input on focus gain");
+    CHECK_FALSE(input->context().state("activate").active); // Regaining focus replays none.
+    CHECK_FALSE(other->context().state("activate").active);
+}
 
-    // Failure in the second scene must preserve physical state and edges in the first.
-    input->context().rebind("activate", {{{i::ControlKind::gamepad_button, 0}}});
-    other->context().rebind("activate", {{{i::ControlKind::gamepad_button, 0}}});
-    for (unsigned device = 0; device < 1024; ++device)
+TEST_CASE("A scene set event rejected in one scene changes no scene") {
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto input = first->create().add_component<i::ActionInput>(gamepad_map());
+    auto other = second->create().add_component<i::ActionInput>(gamepad_map());
+    for (unsigned device = 0; device < control_capacity; ++device)
         other->context().process({i::EventType::control, {i::ControlKind::gamepad_button, 0, device}, 1});
     i::begin_frame(scenes);
-    rejects([&] { i::dispatch(scenes, {i::EventType::control, {i::ControlKind::gamepad_button, 0, 1024}, 1}); });
-    check(!input->context().state("activate").active && !input->context().state("activate").pressed &&
-              other->context().state("activate").active && !other->context().state("activate").pressed,
-          "Failed event partially updated the scene set");
+    const i::Event beyond{i::EventType::control, {i::ControlKind::gamepad_button, 0, control_capacity}, 1};
+    CHECK_THROWS_WITH_AS(i::dispatch(scenes, beyond), over_capacity, std::length_error);
+    // Failure in the second scene must preserve physical state and edges in the first.
+    CHECK_FALSE(input->context().state("activate").active);
+    CHECK_FALSE(input->context().state("activate").pressed);
+    CHECK(other->context().state("activate").active);
+    CHECK_FALSE(other->context().state("activate").pressed);
     input->context().process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 0}, 1});
     i::begin_frame(scenes);
     input.set_enabled(false);
-    rejects([&] { i::dispatch(scenes, {i::EventType::control, {i::ControlKind::gamepad_button, 0, 1024}, 1}); });
-    check(input->context().enabled() && input->context().state("activate").active &&
-              !input->context().state("activate").canceled,
-          "Rejected later event partially published earlier enablement");
-    input.set_enabled(true);
-    input->context().rebind("activate", {{{i::ControlKind::key, 4}}});
-    other->context().rebind("activate", {{{i::ControlKind::key, 4}}});
-    i::dispatch(scenes, down);
+    CHECK_THROWS_WITH_AS(i::dispatch(scenes, beyond), over_capacity, std::length_error);
+    // Nor does it publish the first component's disablement.
+    CHECK(input->context().enabled());
+    CHECK(input->context().state("activate").active);
+    CHECK_FALSE(input->context().state("activate").canceled);
+}
 
+TEST_CASE("Replacing, unloading and clearing scenes detaches their input without disturbing the rest") {
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto input = first->create().add_component<i::ActionInput>(key_map());
+    auto other = second->create().add_component<i::ActionInput>(key_map());
+    i::dispatch(scenes, down);
     ComponentCodecs codecs;
     i::add_component_codec(codecs);
     const auto document = serialize_scene(second.get(), {}, codecs);
     const auto old = second;
     second = scenes.replace(second, document, {}, codecs);
-    check(!old && !other, "Scene replacement retained old input handles");
+    CHECK_FALSE(old); // Replacement invalidates the old scene and its input handles.
+    CHECK_FALSE(other);
     other = second->components<i::ActionInput>().front();
     i::begin_frame(scenes);
-    check(input->context().state("activate").active && !other->context().state("activate").active,
-          "Scene replacement replayed held input or changed another scene");
+    CHECK(input->context().state("activate").active);       // The other scene keeps its held input.
+    CHECK_FALSE(other->context().state("activate").active); // The replacement replays none.
     i::dispatch(scenes, down);
-    check(other->context().state("activate").pressed, "Replacement scene missed fresh input");
+    CHECK(other->context().state("activate").pressed);
     scenes.unload(second);
-    check(!other, "Unloading retained an input attachment");
+    CHECK_FALSE(other);
     i::dispatch(scenes, up);
-    check(input->context().state("activate").released, "Unload interrupted remaining scene input");
+    CHECK(input->context().state("activate").released); // Unloading did not interrupt the remaining scene.
     scenes.clear();
     i::begin_frame(scenes);
     i::dispatch(scenes, down);
-    rejects([&] { i::dispatch(scenes, {i::EventType::control, {i::ControlKind::key, 4, 0}, 2}); });
+    CHECK_THROWS_WITH_AS(i::dispatch(scenes, {i::EventType::control, {i::ControlKind::key, 4, 0}, 2}),
+                         "Invalid input control value", std::invalid_argument);
 }
-void run_driver_boundaries() {
+
+TEST_CASE("Input drivers are rejected during component construction, scheduling, set loading and retirement") {
     BoundaryChecks checks;
     SceneSet scenes;
     auto first = scenes.create("first");
     auto object = first->create();
-    auto input =
-        object.add_component<i::ActionInput>(i::Map{{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}});
+    auto input = object.add_component<i::ActionInput>(key_map());
     i::dispatch(scenes, down);
+    checks.set_error = busy_scene; // Construction outside set scheduling leaves the set idle.
     object.add_component<DriverProbe>(first.get(), scenes, checks);
+    checks.set_error = busy_set;
     scenes.update(.01);
     scenes.fixed_update(.01);
+    checks.set_error = busy_scene; // So does updating one scene directly.
     first->update(.01);
-    check(checks.calls == 7 && checks.rejected, "Input driver entered component construction or scheduling");
-    check(input->context().state("activate").active && input->context().state("activate").pressed,
-          "Rejected nested input drivers changed state");
+    CHECK(checks.calls == 7u);
+    // The rejected drivers changed no state.
+    CHECK(input->context().state("activate").active);
+    CHECK(input->context().state("activate").pressed);
 
     struct DuringLoad {};
     Scene source;
     source.create().add_component<DuringLoad>();
     ComponentCodecs codecs;
-    bool load_rejected = false;
+    unsigned loads = 0;
     codecs.add<DuringLoad>(
         "test.input-boundary.v1", [](const DuringLoad &, const ObjectReferences &) { return "{}"; },
         [&](GameObject target, std::string_view, const ObjectReferences &) {
-            load_rejected = rejects_set_drivers(scenes);
+            ++loads;
+            CHECK_THROWS_WITH_AS(i::begin_frame(scenes), busy_set, std::logic_error);
+            CHECK_THROWS_WITH_AS(i::dispatch(scenes, up), busy_set, std::logic_error);
             target.add_component<DuringLoad>();
         });
     (void)scenes.load("loaded", serialize_scene(source, {}, codecs), {}, codecs);
-    check(load_rejected && input->context().state("activate").active && input->context().state("activate").pressed,
-          "Input driver entered set loading or changed state");
+    CHECK(loads == 1u);
+    CHECK(input->context().state("activate").active);
+    CHECK(input->context().state("activate").pressed);
+    checks.set_error = busy_set;
     scenes.clear();
-    check(checks.calls == 8 && checks.rejected, "Input driver entered set retirement");
+    CHECK(checks.calls == 8u); // Retirement disabled the probe.
     i::begin_frame(scenes);
     i::dispatch(scenes, up);
 }
-void run() {
-    i::Map map{{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}};
-    check(i::serialize_map(i::deserialize_map(i::serialize_map(map))) == i::serialize_map(map),
-          "Map did not round-trip");
-    rejects([] { (void)i::deserialize_map(R"({"version":1,"actions":[]})"); });
-    rejects([] { (void)i::deserialize_map(R"({"version":2,"actions":[],"unknown":0})"); });
-    rejects([] {
-        (void)i::deserialize_map(
-            R"({"version":2,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":4294967296,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})");
-    });
+
+TEST_CASE("Maps round-trip, and other versions, unknown fields and out-of-range devices are rejected") {
+    const auto map = key_map();
+    CHECK(i::serialize_map(i::deserialize_map(i::serialize_map(map))) == i::serialize_map(map));
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":1,"actions":[]})"), invalid_envelope, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":2,"actions":[],"unknown":0})"), "Unknown JSON field: unknown",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        i::deserialize_map(
+            R"({"version":2,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":4294967296,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+        invalid_integer, std::invalid_argument);
+}
+
+TEST_CASE("Scene input follows enablement and activation, and prefab copies restore only configuration") {
     Scene scene;
     auto object = scene.create();
-    auto input = object.add_component<i::ActionInput>(map);
+    auto input = object.add_component<i::ActionInput>(key_map());
     i::begin_frame(scene);
     i::dispatch(scene, down);
-    check(input->context().state("activate").pressed, "Scene input event was not delivered");
+    CHECK(input->context().state("activate").pressed);
     ComponentCodecs codecs;
     i::add_component_codec(codecs);
     auto prefab = Prefab::capture(object, codecs);
     auto copy = Prefab::deserialize(prefab.serialize({}), {}, codecs).instantiate(scene);
     auto copy_input = copy.get_component<i::ActionInput>();
-    check(!copy_input->context().state("activate").active, "Prefab restored live physical state");
+    CHECK_FALSE(copy_input->context().state("activate").active); // The copy restores no physical state.
     copy_input->context().rebind("activate", {{{i::ControlKind::key, 5}}});
-    check(input->context().actions()[0].bindings[0].control.code == 4, "Prefab binding state aliased source");
+    CHECK(input->context().actions()[0].bindings[0].control.code == 4); // Nor does it share bindings.
     input.set_enabled(false);
     i::begin_frame(scene);
-    check(input->context().state("activate").canceled, "Disabled component retained held input");
+    CHECK(input->context().state("activate").canceled); // Disabling the component cancels held input.
     i::dispatch(scene, down);
     input.set_enabled(true);
     i::begin_frame(scene);
-    check(!input->context().state("activate").active, "Re-enabled component replayed input");
+    CHECK_FALSE(input->context().state("activate").active); // Enabling it again replays nothing.
     auto parent = scene.create();
     object.set_parent(parent);
     i::dispatch(scene, down);
     parent.set_active(false);
     i::begin_frame(scene);
-    check(input.enabled() && input->context().state("activate").canceled, "Inactive hierarchy retained held input");
+    // An inactive parent cancels held input, though the component stays enabled.
+    CHECK(input.enabled());
+    CHECK(input->context().state("activate").canceled);
     i::dispatch(scene, down);
     parent.set_active(true);
     i::begin_frame(scene);
-    check(!input->context().state("activate").active, "Activation replayed input held while inactive");
-    // A later component's capacity failure must not deliver the event to an earlier one.
-    input->context().rebind("activate", {{{i::ControlKind::gamepad_button, 0}}});
-    copy_input->context().rebind("activate", {{{i::ControlKind::gamepad_button, 0}}});
-    for (unsigned device = 0; device < 1024; ++device)
-        copy_input->context().process({i::EventType::control, {i::ControlKind::gamepad_button, 0, device}, 1});
-    rejects([&] { i::dispatch(scene, {i::EventType::control, {i::ControlKind::gamepad_button, 0, 1024}, 1}); });
-    check(!input->context().state("activate").active, "Failed event partially updated the scene");
+    CHECK_FALSE(input->context().state("activate").active); // Activation replays nothing held while inactive.
+    object.destroy();
+    copy.destroy();
+    CHECK_FALSE(input); // Teardown invalidates the component handles.
+    CHECK_FALSE(copy_input);
+}
+
+TEST_CASE("A scene event rejected by a later component reaches no earlier one") {
+    Scene scene;
+    auto input = scene.create().add_component<i::ActionInput>(gamepad_map());
+    auto full = scene.create().add_component<i::ActionInput>(gamepad_map());
+    for (unsigned device = 0; device < control_capacity; ++device)
+        full->context().process({i::EventType::control, {i::ControlKind::gamepad_button, 0, device}, 1});
+    CHECK_THROWS_WITH_AS(
+        i::dispatch(scene, {i::EventType::control, {i::ControlKind::gamepad_button, 0, control_capacity}, 1}),
+        over_capacity, std::length_error);
+    CHECK_FALSE(input->context().state("activate").active);
+}
+
+TEST_CASE("A malformed input payload fails its prefab without leaking objects") {
+    Scene scene;
+    auto object = scene.create();
+    object.add_component<i::ActionInput>(key_map());
+    ComponentCodecs codecs;
+    i::add_component_codec(codecs);
+    const auto prefab = Prefab::capture(object, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     nodes.push_back(nodes[0]);
     nodes.back().key = {};
     nodes[1].parent = 0;
     const auto before = scene.size();
-    for (const auto &payload : invalid_component_payloads(nodes[0].components[0].state, "version")) {
-        nodes[1].components[0].state = payload;
-        rejects([&] { (void)Prefab(nodes, codecs).instantiate(scene); });
-        check(scene.size() == before, "Malformed input prefab leaked an object");
-    }
-    object.destroy();
-    copy.destroy();
-    check(!input && !copy_input, "Input component teardown retained handles");
-    run_scene_set();
-    run_driver_boundaries();
-}
-} // namespace
-int main() {
-    try {
-        run();
-        chord_configuration();
-        chord_persistence();
-        chord_staging();
-        std::cout << "PASS input scene enablement, configuration, prefab and rollback\n";
-    } catch (const std::exception &e) {
-        std::cerr << e.what() << '\n';
-        return 1;
+    for (const auto &invalid : invalid_payloads(nodes[0].components[0].state, "version", "version")) {
+        CAPTURE(invalid.first);
+        nodes[1].components[0].state = invalid.first;
+        CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), invalid.second.c_str(), std::invalid_argument);
+        CHECK(scene.size() == before);
     }
 }
