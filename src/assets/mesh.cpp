@@ -1,4 +1,5 @@
 #include "alpha_coverage.hpp"
+#include "surface_validation.hpp"
 #include <algorithm>
 #include <anima/scene.hpp>
 #include <limits>
@@ -26,8 +27,17 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             vertices_per_resource ? vertices_per_resource : std::numeric_limits<std::size_t>::max();
         // Bound individual uploads while preserving geometry and placement.
         // Limits are supplied by the consumer; the immutable source is preserved.
-        Asset chunk;
-        chunk.nodes = source.nodes;
+        // Every piece keeps each node and the import metadata that compile() records.
+        Asset piece;
+        piece.nodes = source.nodes;
+        piece.mesh_nodes = source.mesh_nodes;
+        piece.notices = source.notices;
+        // Fail as compile() would, in its order. Compiling the nodes alone checks the hierarchy and transforms;
+        // every material and texture is checked next, used or not, before any is indexed or shrunk; and each
+        // piece's compile() then checks its primitives whole, in source order.
+        auto nodes_only = Mesh::compile(piece);
+        detail::validate_surfaces(source.materials, source.textures);
+        std::vector<SourcePrimitive> pending;
         const auto oversized = [&](const Texture &texture) {
             return texture_edge && std::max(texture.width, texture.height) > texture_edge;
         };
@@ -54,11 +64,10 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
         };
         std::size_t vertices = 0;
         const auto flush = [&] {
-            if (chunk.primitives.empty())
+            if (pending.empty())
                 return;
-            Asset batch;
-            batch.nodes = chunk.nodes;
-            batch.primitives = std::move(chunk.primitives);
+            auto batch = piece;
+            batch.primitives = std::move(pending);
             std::map<int, int> materials;
             std::map<TextureUse, int> textures;
             const auto texture = [&](int &id, std::optional<float> cutoff = std::nullopt) {
@@ -73,7 +82,8 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
                 id = it->second;
             };
             for (auto &primitive : batch.primitives) {
-                if (primitive.material < 0)
+                // An index past the source's materials is also past the piece's, which compile() rejects.
+                if (primitive.material < 0 || std::size_t(primitive.material) >= source.materials.size())
                     continue;
                 auto [it, inserted] = materials.emplace(primitive.material, static_cast<int>(batch.materials.size()));
                 if (inserted) {
@@ -88,13 +98,12 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
                 primitive.material = it->second;
             }
             result.push_back(Mesh::compile(batch));
-            chunk.primitives.clear();
+            pending.clear();
             vertices = 0;
         };
         for (const auto &primitive : source.primitives) {
             // Material changes split only under a vertex limit; without one the geometry stays in one Mesh.
-            if (vertices_per_resource && !chunk.primitives.empty() &&
-                chunk.primitives.back().material != primitive.material)
+            if (vertices_per_resource && !pending.empty() && pending.back().material != primitive.material)
                 flush();
             for (std::size_t first = 0; first < primitive.vertices.size();) {
                 if (vertices > vertex_limit - 3)
@@ -107,18 +116,15 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
                 part.material = primitive.material;
                 part.vertices.assign(primitive.vertices.begin() + static_cast<std::ptrdiff_t>(first),
                                      primitive.vertices.begin() + static_cast<std::ptrdiff_t>(first + count));
-                chunk.primitives.push_back(std::move(part));
+                pending.push_back(std::move(part));
                 vertices += count;
                 first += count;
             }
         }
         flush();
         // A source without primitives still compiles, as compile() does, into one Mesh of its nodes.
-        if (result.empty()) {
-            Asset nodes;
-            nodes.nodes = source.nodes;
-            result.push_back(Mesh::compile(nodes));
-        }
+        if (result.empty())
+            result.push_back(std::move(nodes_only));
     }
     return result;
 }
