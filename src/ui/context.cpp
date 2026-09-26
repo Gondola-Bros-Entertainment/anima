@@ -302,7 +302,12 @@ struct UiContext::Impl {
     Rml::ObserverPtr<Rml::Element> pointer_owner;
     Impl(SDL_Window *w, VulkanRenderer &r, std::string n)
         : window(w), renderer(r), name(std::move(n)), system(w, stats) {}
-    ~Impl() { shutdown(); }
+    ~Impl() {
+        // Destroying the host first shuts it down, or terminates when this runs inside one of its callbacks,
+        // before RmlUi is shut down beneath the dispatch.
+        documents.reset();
+        shutdown();
+    }
     void running() const {
         if (stopped)
             throw std::logic_error("UI context is shut down");

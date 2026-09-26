@@ -3,6 +3,7 @@
 #include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <algorithm>
 #include <anima/ui/document.hpp>
+#include <cstdio>
 #include <exception>
 #include <stdexcept>
 #include <utility>
@@ -260,7 +261,18 @@ void UiDocument::close() {
 UiDocuments::UiDocuments(Rml::Context &context) : state_(std::make_shared<detail::UiDocumentsState>()) {
     state_->context = &context;
 }
-UiDocuments::~UiDocuments() { shutdown(); }
+UiDocuments::~UiDocuments() {
+    // shutdown() refuses to run inside this host's callbacks because the dispatch beneath them resumes when
+    // they return; for a UiContext's host, on a native context that the UiContext would already have shut
+    // down. A destructor cannot refuse, so it terminates, as ~Scene does.
+    if (state_->dispatch_depth) {
+        std::fputs("UI document host destroyed inside one of its event callbacks, directly or through its "
+                   "UiContext; destroy it after the callback returns\n",
+                   stderr);
+        std::terminate();
+    }
+    shutdown();
+}
 UiDocument UiDocuments::own(Rml::ElementDocument *document) {
     if (!document)
         throw std::runtime_error("Unable to load UI document");
