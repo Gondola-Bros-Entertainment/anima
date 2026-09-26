@@ -1,3 +1,4 @@
+#include "limits.hpp"
 #include <algorithm>
 #include <anima/physics2d.hpp>
 #include <array>
@@ -27,15 +28,23 @@ void duration(double seconds) {
 }
 b2Vec2 b(Vec2 v) { return {v.x, v.y}; }
 Vec2 a(b2Vec2 v) { return {v.x, v.y}; }
+void validate_position(Vec2 v) {
+    for (const float component : {v.x, v.y})
+        require(std::isfinite(component) && std::abs(component) <= detail::maximum_position,
+                "2D physics position outside supported range");
+}
 b2Transform transform(Pose p) {
-    vector(p.position);
+    validate_position(p.position);
     scalar(p.angle);
-    return {b(p.position), b2MakeRot(p.angle)};
+    // b2MakeRot approximates cosine and sine to within about 1.6e-3 radians. Exact values keep the angle a
+    // caller set, which fixed-rotation checks compare against.
+    return {b(p.position), b2Rot{std::cos(p.angle), std::sin(p.angle)}};
 }
 void validate(const Collider &c) {
     require(c.shape >= Shape::box && c.shape <= Shape::capsule, "Unknown 2D collider shape");
     for (float v : {c.half_extent.x, c.half_extent.y, c.radius, c.half_height})
-        require(std::isfinite(v) && v >= .01F && v <= 10000, "2D collider dimensions outside [0.01, 10000]");
+        require(std::isfinite(v) && v >= detail::minimum_collider_dimension && v <= detail::maximum_collider_dimension,
+                "2D collider dimensions outside [0.01, 10000]");
 }
 b2ShapeProxy proxy(const Collider &c, Pose p) {
     validate(c);

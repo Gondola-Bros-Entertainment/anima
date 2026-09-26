@@ -223,10 +223,42 @@ void run() {
         check(world.size() == 0, "Capacity/removal leaked body");
     }
 }
+// A fixed-rotation kinematic body keeps exactly the angle it was given, so moving it without
+// turning is accepted.
+void run_fixed_rotation_angle() {
+    constexpr float angle = .3F;
+    constexpr float angle_tolerance = 1e-6F;
+    World world;
+    auto s = box({1, 2}, {.5F, .5F}, Motion::kinematic);
+    s.fixed_rotation = true;
+    s.pose.angle = angle;
+    auto body = world.create(s);
+    check(std::abs(body.pose().angle - angle) < angle_tolerance, "Stored angle differs from the requested angle");
+    body.move_kinematic({{2, 2}, angle}, 1. / 60);
+}
+// Box2D asserts that every bounding box stays within 100,000 meters of the origin. The largest collider,
+// placed at the furthest accepted origin, must stay inside that limit; any further origin is rejected.
+void run_world_limit() {
+    constexpr float maximum_position = 79'999;  // The documented 2D position bound.
+    constexpr float maximum_dimension = 10'000; // The documented 2D collider dimension bound.
+    constexpr float beyond_world_limit = 2e5F;
+    World world;
+    auto largest = box({maximum_position, -maximum_position}, {1, 1}, Motion::dynamic);
+    largest.collider.shape = Shape::capsule;
+    largest.collider.radius = maximum_dimension;
+    largest.collider.half_height = maximum_dimension;
+    (void)world.create(largest);
+    world.step(1. / 60);
+    rejects([&] { (void)world.create(box({beyond_world_limit, 0}, {.5F, .5F})); });
+    rejects([&] { (void)world.create(box({maximum_position + 1, 0}, {.5F, .5F})); });
+    check(world.size() == 1, "Out-of-range body was created");
+}
 } // namespace
 int main() {
     try {
         run();
+        run_fixed_rotation_angle();
+        run_world_limit();
         std::cout << "PASS 2D physics lifetime, queries, sensors, sleeping and motion\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
