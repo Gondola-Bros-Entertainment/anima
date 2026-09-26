@@ -13,11 +13,10 @@
 /// Part of the `anima::assets` target. Animation ownership (handling), item identity and geometry
 /// (visuals) are independent records. Frames are column-major matrices; distances are in meters.
 /// Documents are UTF-8 JSON of at most 4 MiB and 64 nesting levels; duplicate and unknown fields
-/// are rejected. Invalid documents and arguments throw `std::invalid_argument` unless stated.
-/// Model load failures and node or clip names that match nothing or several things throw
-/// `std::runtime_error`. JSON syntax errors and values of the wrong JSON type throw the private
-/// JSON parser's exceptions, which derive only from `std::exception`. Item eligibility and
-/// gameplay rules belong to the caller.
+/// are rejected. Invalid documents and arguments, including JSON syntax errors and values of the
+/// wrong JSON type, throw `std::invalid_argument` unless stated. Model load failures and node or
+/// clip names that match nothing or several things throw `std::runtime_error`. Item eligibility
+/// and gameplay rules belong to the caller.
 
 namespace anima {
 /// A support contact: while active, a motion chain moves a secondary body socket onto a prop

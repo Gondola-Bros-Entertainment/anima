@@ -110,7 +110,7 @@ void add_camera_component_codecs(ComponentCodecs &codecs) {
             const auto number = [&](const char *field) {
                 if (!j.at(field).is_number())
                     throw std::invalid_argument("Invalid camera number");
-                return j.at(field).get<float>();
+                return detail::json_float(j.at(field));
             };
             s.vertical_fov_degrees = number("vertical_fov_degrees");
             s.orthographic_height = number("orthographic_height");

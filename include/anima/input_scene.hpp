@@ -40,10 +40,8 @@ class ActionInput {
 std::string serialize_map(const Map &map);
 /// Decodes a version 2 configuration document of at most 1 MiB; see serialize_map().
 ///
-/// Throws `std::invalid_argument` for another version, unknown, missing or duplicate fields, wrong
-/// types, out-of-range values or a map that validate(const Map &) rejects. Malformed JSON syntax
-/// throws the private JSON parser's exception instead, a `std::exception` that is not
-/// `std::invalid_argument`.
+/// Throws `std::invalid_argument` for malformed JSON, another version, unknown, missing or
+/// duplicate fields, wrong types, out-of-range values or a map that validate(const Map &) rejects.
 Map deserialize_map(std::string_view data);
 /// Registers the `anima.action-input.v2` component codec, whose payload is the serialize_map()
 /// document of the component's actions. The scene or prefab stores component enablement; each

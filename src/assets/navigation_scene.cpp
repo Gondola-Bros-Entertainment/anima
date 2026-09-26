@@ -81,10 +81,10 @@ void add_component_codec(ComponentCodecs &codecs) {
             for (const auto &p : j.at("route")) {
                 if (!p.is_array() || p.size() != 3 || !p[0].is_number() || !p[1].is_number() || !p[2].is_number())
                     throw std::invalid_argument("Invalid navigation waypoint");
-                route.push_back({p[0].get<float>(), p[1].get<float>(), p[2].get<float>()});
+                route.push_back({detail::json_float(p[0]), detail::json_float(p[1]), detail::json_float(p[2])});
             }
-            object.add_component<Agent>(std::move(route), j.at("speed").get<float>(),
-                                        j.at("arrival_distance").get<float>(), j.at("next").get<std::size_t>());
+            object.add_component<Agent>(std::move(route), detail::json_float(j.at("speed")),
+                                        detail::json_float(j.at("arrival_distance")), j.at("next").get<std::size_t>());
         });
 }
 } // namespace anima::navigation

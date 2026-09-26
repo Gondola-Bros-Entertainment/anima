@@ -1,3 +1,4 @@
+#include "../detail/json.hpp"
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_persistence.hpp"
 #include <anima/scene_set.hpp>
@@ -101,7 +102,7 @@ std::string SceneSet::serialize(const MeshName &name, const ComponentCodecs &cod
 }
 void SceneSet::restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs) {
     const Mutation mutation(*this);
-    auto staged = detail::load_scene_set(document, resolve, codecs);
+    auto staged = detail::json_step([&] { return detail::load_scene_set(document, resolve, codecs); });
     // Publication cannot allocate. The staged owner now retires the old set;
     // cleanup callbacks observe the complete committed replacement.
     scenes_.swap(staged->scenes_);

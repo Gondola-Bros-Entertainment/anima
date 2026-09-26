@@ -9,10 +9,9 @@
 /// animation.
 ///
 /// Part of the `anima::assets` target. Catalogs are UTF-8 JSON of at most 4 MiB and 64 nesting
-/// levels; duplicate and unknown fields are rejected. Failures throw `std::invalid_argument` unless
-/// stated. JSON syntax errors and values of the wrong JSON type throw the private JSON parser's
-/// exceptions, which derive only from `std::exception`. Slots are caller data: there is no slot or
-/// eligibility policy.
+/// levels; duplicate and unknown fields are rejected. Failures, including JSON syntax errors and
+/// values of the wrong JSON type, throw `std::invalid_argument` unless stated. Slots are caller
+/// data: there is no slot or eligibility policy.
 
 namespace anima {
 /// A fitted model bound to a body's skeleton; it shares the body's bind and never owns animation.

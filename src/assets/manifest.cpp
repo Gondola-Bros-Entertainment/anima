@@ -33,8 +33,7 @@ void filename(const std::string &value) {
         value == "..")
         throw std::runtime_error("Manifest model must be a filename beside the manifest: " + value);
 }
-} // namespace
-Manifest read_manifest(const std::filesystem::path &path) {
+Manifest load_manifest(const std::filesystem::path &path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         throw std::runtime_error("Cannot open manifest: " + path.string());
@@ -112,6 +111,11 @@ Manifest read_manifest(const std::filesystem::path &path) {
         result.equipment.push_back(std::move(value));
     }
     return result;
+}
+} // namespace
+Manifest read_manifest(const std::filesystem::path &path) {
+    // Missing or mistyped fields surface as the JSON library's exceptions; report them as invalid content.
+    return detail::json_step<std::runtime_error>([&] { return load_manifest(path); });
 }
 void validate_manifest(const Manifest &manifest, const Asset &asset) {
     if (asset.skins.size() != 1 || asset.skins[0].joints.size() != manifest.joint_count)

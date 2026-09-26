@@ -23,7 +23,7 @@ void validate_key(std::string_view key) {
 }
 float scalar(const Json &value) {
     require(value.is_number(), "Prefab variant scalar must be a number");
-    const auto result = value.get<float>();
+    const auto result = detail::json_float(value);
     require(std::isfinite(result), "Prefab variant scalar must be finite");
     return result;
 }
@@ -229,12 +229,14 @@ std::string PrefabVariant::serialize(const MeshName &name) const {
     }
     const Json value{
         {"version", document_version}, {"kind", document_kind}, {"base", base_key_}, {"overrides", overrides}};
-    auto document = value.dump(2);
+    auto document = detail::json_step([&] { return value.dump(2); });
     require(document.size() <= maximum_document_bytes, "Prefab variant document exceeds the byte limit");
     return document;
 }
 
-PrefabVariant PrefabVariant::deserialize(std::string_view document, const MeshResolver &resolve) {
+namespace {
+using Override = PrefabVariant::Override;
+PrefabVariant decode_variant(std::string_view document, const MeshResolver &resolve) {
     const auto parsed = detail::parse_json(document, maximum_document_bytes);
     detail::json_fields(parsed, {"version", "kind", "base", "overrides"});
     require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
@@ -277,5 +279,9 @@ PrefabVariant PrefabVariant::deserialize(std::string_view document, const MeshRe
         overrides.push_back(std::move(result));
     }
     return PrefabVariant(std::move(base), std::move(overrides));
+}
+} // namespace
+PrefabVariant PrefabVariant::deserialize(std::string_view document, const MeshResolver &resolve) {
+    return detail::json_step([&] { return decode_variant(document, resolve); });
 }
 } // namespace anima

@@ -82,7 +82,7 @@ struct ActionSetCatalog::Impl {
     std::map<std::string, std::map<std::string, std::vector<ActionVariant>, std::less<>>, std::less<>> sets_;
 };
 ActionSetCatalog::ActionSetCatalog(std::string_view document, const ActionRuntime &actions)
-    : impl_(std::make_shared<Impl>(presentation_data::parse(document), actions)) {}
+    : impl_(detail::json_step([&] { return std::make_shared<Impl>(presentation_data::parse(document), actions); })) {}
 const std::string &ActionSetCatalog::resolve(std::string_view set, std::string_view slot,
                                              const Capabilities &capabilities) const {
     return impl_->resolve(set, slot, capabilities);

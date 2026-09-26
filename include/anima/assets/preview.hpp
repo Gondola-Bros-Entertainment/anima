@@ -48,9 +48,8 @@ struct Manifest {
 /// equipment entry has a unique `id`, a `slot` and optional `model`, `mesh`, `skeleton`, `socket`
 /// and `included`. Duplicate fields are rejected and unknown fields ignored.
 ///
-/// Throws `std::runtime_error` for an unreadable file or invalid content. Missing fields, and
-/// string, boolean, array or object fields of the wrong JSON type, throw the private JSON
-/// parser's exceptions, which derive only from `std::exception`.
+/// Throws `std::runtime_error` for an unreadable file or invalid content, including missing fields
+/// and fields of the wrong JSON type.
 [[nodiscard]] Manifest read_manifest(const std::filesystem::path &path);
 /// Checks @p asset against @p manifest: one skin of Manifest::joint_count joints, as many clips as
 /// the manifest, each manifest clip naming exactly one of them, events inside their clips and

@@ -14,7 +14,7 @@ unsigned integer(const Json &v, std::uint64_t maximum) {
 float number(const Json &v) {
     if (!v.is_number())
         throw std::invalid_argument("Invalid input configuration number");
-    return v.get<float>();
+    return detail::json_float(v);
 }
 Control control_value(const Json &value) {
     return {static_cast<ControlKind>(integer(value.at("kind"), static_cast<unsigned>(ControlKind::gamepad_axis))),
@@ -43,12 +43,13 @@ std::string serialize_map(const Map &map) {
         actions.push_back(
             {{"name", a.name}, {"type", static_cast<int>(a.type)}, {"threshold", a.threshold}, {"bindings", bindings}});
     }
-    auto document = Json{{"version", document_version}, {"actions", actions}}.dump();
+    auto document = detail::json_step([&] { return Json{{"version", document_version}, {"actions", actions}}.dump(); });
     if (document.size() > limits::document_bytes)
         throw std::invalid_argument("Input configuration exceeds byte limit");
     return document;
 }
-Map deserialize_map(std::string_view data) {
+namespace {
+Map decode_map(std::string_view data) {
     const auto j = detail::parse_json(data, limits::document_bytes);
     detail::json_fields(j, {"version", "actions"});
     if (integer(j.at("version"), document_version) != document_version || !j.at("actions").is_array() ||
@@ -84,6 +85,10 @@ Map deserialize_map(std::string_view data) {
     }
     validate(map);
     return map;
+}
+} // namespace
+Map deserialize_map(std::string_view data) {
+    return detail::json_step([&] { return decode_map(data); });
 }
 void add_component_codec(ComponentCodecs &codecs) {
     codecs.add<ActionInput>(

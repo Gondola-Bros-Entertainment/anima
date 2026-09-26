@@ -174,7 +174,8 @@ struct InteractionRuntime::Impl {
     std::vector<Contact> contacts_;
 };
 InteractionRuntime::InteractionRuntime(Actors actors, std::string_view document)
-    : impl_(std::make_shared<Impl>(std::move(actors), presentation_data::parse(document))) {}
+    : impl_(detail::json_step(
+          [&] { return std::make_shared<Impl>(std::move(actors), presentation_data::parse(document)); })) {}
 const ActionTimeline &InteractionRuntime::timeline() const { return impl_->timeline(); }
 const InteractionBindings &InteractionRuntime::bindings() const { return impl_->bindings(); }
 const std::string &InteractionRuntime::id() const { return impl_->id(); }

@@ -30,8 +30,8 @@ struct MotionRuntime::Impl {
             c.start = rig_.joint(joints.at(0).get<std::string>());
             c.middle = rig_.joint(joints.at(1).get<std::string>());
             c.end = rig_.joint(joints.at(2).get<std::string>());
-            c.minimum_angle = value.at("minimum_angle").get<float>();
-            c.maximum_angle = value.at("maximum_angle").get<float>();
+            c.minimum_angle = detail::json_float(value.at("minimum_angle"));
+            c.maximum_angle = detail::json_float(value.at("maximum_angle"));
             const auto rest = anima::sample_pose(*asset_);
             const auto encoded = rig_.encode(rest);
             const auto world = rig_.world(encoded);
@@ -280,7 +280,8 @@ struct MotionRuntime::Impl {
 MotionRuntime::MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract) {
     if (!asset)
         throw std::invalid_argument("Motion runtime requires an asset");
-    impl_ = std::make_shared<Impl>(std::move(asset), manifest, presentation_data::parse(contract));
+    impl_ = detail::json_step(
+        [&] { return std::make_shared<Impl>(std::move(asset), manifest, presentation_data::parse(contract)); });
 }
 std::shared_ptr<const MotionRuntime> MotionRuntime::load(std::shared_ptr<const Asset> asset, const Manifest &manifest) {
     if (manifest.motion_contract.empty())

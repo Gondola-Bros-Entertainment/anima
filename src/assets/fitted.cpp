@@ -41,7 +41,7 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
     if (!state_->body)
         throw std::invalid_argument("Fitted library requires a body");
     const auto catalog = parse(document);
-    {
+    anima::detail::json_step([&] {
         anima::detail::json_fields(catalog, {"version", "items"});
         if (catalog.at("version") != 1 || !catalog.at("items").is_array() || catalog.at("items").size() > 65536)
             throw std::invalid_argument("Invalid garment catalog");
@@ -67,7 +67,7 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
                 definitions_.emplace(id, FittedDefinition{id, std::string(slot), path});
             }
         }
-    }
+    });
 }
 const FittedDefinition &FittedLibrary::definition(std::string_view id) const {
     return presentation_data::lookup(definitions_, id);

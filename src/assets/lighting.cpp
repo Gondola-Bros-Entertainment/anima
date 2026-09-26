@@ -51,7 +51,7 @@ template <class Scenes> Environment resolve(Scenes &scenes) {
 float number(const Json &j) {
     if (!j.is_number())
         throw std::invalid_argument("Lighting field requires a number");
-    const auto value = j.get<float>();
+    const auto value = detail::json_float(j);
     if (!std::isfinite(value))
         throw std::invalid_argument("Lighting number must be finite");
     return value;

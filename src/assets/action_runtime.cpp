@@ -253,9 +253,11 @@ struct ActionRuntime::Impl {
 };
 ActionRuntime::ActionRuntime(std::shared_ptr<const Asset> asset, std::shared_ptr<const MotionRuntime> motion,
                              std::string_view document)
-    : impl_(std::make_shared<Impl>(std::move(asset), std::move(motion), presentation_data::parse(document))) {}
+    : impl_(detail::json_step([&] {
+          return std::make_shared<Impl>(std::move(asset), std::move(motion), presentation_data::parse(document));
+      })) {}
 ActionWeight ActionRuntime::weight(std::string_view document) {
-    return Impl::weight(presentation_data::parse(document));
+    return detail::json_step([&] { return Impl::weight(presentation_data::parse(document)); });
 }
 const ActionDefinition &ActionRuntime::definition(std::string_view id) const { return impl_->definition(id); }
 void ActionRuntime::validate_timing(std::string_view id, std::string_view handling, std::optional<double> windup,

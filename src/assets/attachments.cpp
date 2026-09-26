@@ -1,7 +1,8 @@
 #include "presentation_data.hpp"
 #include <anima/assets/attachments.hpp>
 namespace anima {
-AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory) {
+namespace {
+AttachmentCatalog decode_catalog(std::string_view document, const std::filesystem::path &directory) {
     using namespace presentation_data;
     const auto json = presentation_data::parse(document);
     anima::detail::json_fields(
@@ -150,7 +151,7 @@ AttachmentCatalog decode_attachment_catalog(std::string_view document, const std
     return result;
 }
 std::map<std::string, AttachmentSocket, std::less<>>
-decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
+decode_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
     using namespace presentation_data;
     const auto adapter = presentation_data::parse(document);
     anima::detail::json_fields(adapter, {"skeleton", "bind_signature", "rest_joints", "sockets"});
@@ -173,6 +174,14 @@ decode_attachment_sockets(std::string_view document, const anima::Manifest &mani
         result.emplace(name, AttachmentSocket{anima::unique_node(body, bone), matrix(value.at("local"), false)});
     }
     return result;
+}
+} // namespace
+AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory) {
+    return detail::json_step([&] { return decode_catalog(document, directory); });
+}
+std::map<std::string, AttachmentSocket, std::less<>>
+decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
+    return detail::json_step([&] { return decode_sockets(document, manifest, body); });
 }
 AttachmentLibrary::AttachmentLibrary(AttachmentCatalog definition) : catalog(std::move(definition)) {}
 const AttachmentDefinition &AttachmentLibrary::item(std::string_view id) const {
