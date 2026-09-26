@@ -25,15 +25,10 @@ assert each rejection with `CHECK_THROWS_WITH_AS` or `REQUIRE_THROWS_WITH_AS`
 against its exact exception type and message. New runtime capabilities should
 have an independent consumer in `tests/consumer`.
 
-The presets enable neither physics nor UI. To build and test every module:
+The `full` preset builds and tests every module:
 
 ```sh
-cmake -S . -B build/full -G Ninja -DCMAKE_BUILD_TYPE=Debug -DANIMA_BUILD_TESTS=ON \
-  -DANIMA_WARNINGS_AS_ERRORS=ON -DANIMA_BUILD_PHYSICS=ON -DANIMA_BUILD_PHYSICS2D=ON \
-  -DANIMA_BUILD_UI_DOCUMENTS=ON -DANIMA_BUILD_UI=ON -DANIMA_BUILD_INPUT_SDL=ON \
-  -DANIMA_BUILD_AUDIO_OUTPUT=ON
-cmake --build build/full
-ctest --test-dir build/full --output-on-failure
+cmake --workflow --preset full
 ```
 
 For an offline build, set `FETCHCONTENT_FULLY_DISCONNECTED=ON` and point
