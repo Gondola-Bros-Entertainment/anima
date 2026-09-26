@@ -667,7 +667,7 @@ struct VulkanRenderer::Impl {
         const auto selected = surface_format();
         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
             throw std::runtime_error("Surface cannot be a color attachment");
-        const bool capture = !options.capture.empty() && !stats.captured;
+        const bool capture = !options.capture.empty(); // A pending request; writing or failing it clears the path.
         if (capture && (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
                         (selected.format != VK_FORMAT_B8G8R8A8_SRGB && selected.format != VK_FORMAT_R8G8B8A8_SRGB &&
                          selected.format != VK_FORMAT_B8G8R8A8_UNORM && selected.format != VK_FORMAT_R8G8B8A8_UNORM))) {
@@ -1289,6 +1289,8 @@ struct VulkanRenderer::Impl {
         check(vkMapMemory(device, capture_memory, 0, VK_WHOLE_SIZE, 0, &capture_mapping), "Map readback memory");
     }
     void save_capture() {
+        // Consume the request first, so a file that cannot be written is reported by one draw, not every draw.
+        const auto path = std::exchange(options.capture, {});
         check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait for capture");
         if (!capture_coherent) {
             VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
@@ -1296,11 +1298,11 @@ struct VulkanRenderer::Impl {
             range.size = VK_WHOLE_SIZE;
             check(vkInvalidateMappedMemoryRanges(device, 1, &range), "Invalidate readback memory");
         }
-        if (!options.capture.parent_path().empty())
-            std::filesystem::create_directories(options.capture.parent_path());
-        std::ofstream output(options.capture, std::ios::binary);
+        if (!path.parent_path().empty())
+            std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path, std::ios::binary);
         if (!output)
-            throw std::runtime_error("Cannot open capture output: " + options.capture.string());
+            throw std::runtime_error("Cannot open capture output: " + path.string());
         output << "P6\n" << extent.width << ' ' << extent.height << "\n255\n";
         const auto *bytes = static_cast<const unsigned char *>(capture_mapping);
         const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
@@ -1504,7 +1506,7 @@ struct VulkanRenderer::Impl {
 #endif
         if (timing_queries)
             vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, 3);
-        const bool capture = capture_buffer && !stats.captured;
+        const bool capture = capture_buffer && !options.capture.empty();
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         barrier.dstAccessMask = capture ? VK_ACCESS_TRANSFER_READ_BIT : 0;
@@ -1577,12 +1579,13 @@ struct VulkanRenderer::Impl {
             resize = true;
         if (result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR)
             check(result, "Present frame");
+        // Count the frame before writing its capture, since a failed write still leaves it presented.
+        const bool presented = result != VK_ERROR_OUT_OF_DATE_KHR;
+        if (presented)
+            ++stats.presented_frames;
         if (capture)
             save_capture();
-        if (result == VK_ERROR_OUT_OF_DATE_KHR)
-            return false;
-        ++stats.presented_frames;
-        return true;
+        return presented;
     }
     void destroy_swapchain() noexcept {
         if (ui_pipeline)
