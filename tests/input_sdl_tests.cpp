@@ -7,6 +7,44 @@ void check(bool v, const char *m) {
     if (!v)
         throw std::runtime_error(m);
 }
+// The highest code of each documented ControlKind range converts. One past it, as an unusual device can
+// report, is dropped rather than thrown, so the application's event pump keeps running.
+void run_code_ranges() {
+    constexpr int highest_key = 511;
+    constexpr Uint8 highest_mouse_button = 32;
+    constexpr Uint8 highest_gamepad_button = 63;
+    constexpr Uint8 highest_gamepad_axis = 15;
+    constexpr SDL_JoystickID gamepad = 7;
+    const auto converts = [](const SDL_Event &event) { return i::from_sdl(event, 8).has_value(); };
+    SDL_Event key{};
+    key.type = SDL_EVENT_KEY_DOWN;
+    key.key.windowID = 8;
+    key.key.scancode = static_cast<SDL_Scancode>(highest_key);
+    check(converts(key), "Highest supported scancode was dropped");
+    key.key.scancode = static_cast<SDL_Scancode>(highest_key + 1);
+    check(!converts(key), "Scancode above the supported range was converted");
+    SDL_Event mouse{};
+    mouse.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    mouse.button.windowID = 8;
+    mouse.button.button = highest_mouse_button;
+    check(converts(mouse), "Highest supported mouse button was dropped");
+    mouse.button.button = highest_mouse_button + 1;
+    check(!converts(mouse), "Mouse button above the supported range was converted");
+    SDL_Event pad{};
+    pad.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    pad.gbutton.which = gamepad;
+    pad.gbutton.button = highest_gamepad_button;
+    check(converts(pad), "Highest supported gamepad button was dropped");
+    pad.gbutton.button = highest_gamepad_button + 1;
+    check(!converts(pad), "Gamepad button above the supported range was converted");
+    SDL_Event axis{};
+    axis.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+    axis.gaxis.which = gamepad;
+    axis.gaxis.axis = highest_gamepad_axis;
+    check(converts(axis), "Highest supported gamepad axis was dropped");
+    axis.gaxis.axis = highest_gamepad_axis + 1;
+    check(!converts(axis), "Gamepad axis above the supported range was converted");
+}
 void run_chord() {
     i::Binding save{{i::ControlKind::key, SDL_SCANCODE_S}};
     save.modifiers = {{i::ControlKind::key, SDL_SCANCODE_LCTRL}};
@@ -133,17 +171,7 @@ void run() {
     e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     e.button.which = SDL_TOUCH_MOUSEID;
     check(!i::from_sdl(e, 8), "Touch-emulated mouse was treated as an ordinary device");
-    e = {};
-    e.type = SDL_EVENT_KEY_DOWN;
-    e.key.windowID = 8;
-    e.key.scancode = SDL_SCANCODE_COUNT;
-    bool invalid_code = false;
-    try {
-        (void)i::from_sdl(e, 8);
-    } catch (const std::invalid_argument &) {
-        invalid_code = true;
-    }
-    check(invalid_code, "SDL scancode count sentinel was accepted as a key");
+    run_code_ranges();
     e = {};
     e.type = SDL_EVENT_TEXT_INPUT;
     check(!i::from_sdl(e, 8), "Text was treated as an action input");

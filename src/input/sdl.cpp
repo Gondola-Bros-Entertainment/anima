@@ -20,13 +20,12 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
     switch (e.type) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
-        if (e.key.windowID == window && !e.key.repeat && e.key.scancode > SDL_SCANCODE_UNKNOWN) {
-            if (static_cast<unsigned>(e.key.scancode) > limits::key_code)
-                throw std::invalid_argument("SDL scancode outside supported range");
+        // Checking the range before narrowing keeps a large scancode from wrapping into it.
+        if (e.key.windowID == window && !e.key.repeat && e.key.scancode > SDL_SCANCODE_UNKNOWN &&
+            static_cast<unsigned>(e.key.scancode) <= limits::key_code)
             result = Event{EventType::control,
                            {ControlKind::key, static_cast<std::uint16_t>(e.key.scancode), e.key.which},
                            e.type == SDL_EVENT_KEY_DOWN ? 1.F : 0.F};
-        }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -66,6 +65,10 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
     default:
         break;
     }
+    // An unusual device can report a code beyond its kind's range. Dropping the event, like an unknown key,
+    // keeps one device from making the application's event pump throw.
+    if (result && result->type == EventType::control && !limits::in_range(result->source))
+        return std::nullopt;
     if (result)
         validate(*result);
     return result;

@@ -1,4 +1,5 @@
 #pragma once
+#include <anima/input.hpp>
 #include <cstddef>
 
 namespace anima::input::limits {
@@ -14,4 +15,13 @@ inline constexpr unsigned gamepad_button_code = 63;
 inline constexpr unsigned gamepad_axis_code = 15;
 inline constexpr float minimum_threshold = .001F;
 inline constexpr float maximum_binding_scale = 16;
+
+// Whether @p control's code is inside the range of its kind, which must be valid. Mouse buttons start at 1.
+[[nodiscard]] inline bool in_range(Control control) noexcept {
+    const unsigned limit = control.kind == ControlKind::key              ? key_code
+                           : control.kind == ControlKind::mouse_button   ? mouse_button_code
+                           : control.kind == ControlKind::gamepad_button ? gamepad_button_code
+                                                                         : gamepad_axis_code;
+    return control.code <= limit && (control.kind != ControlKind::mouse_button || control.code != 0);
+}
 } // namespace anima::input::limits

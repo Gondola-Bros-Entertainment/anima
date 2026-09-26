@@ -14,11 +14,7 @@ void kind(ControlKind value) {
 }
 void control(Control c) {
     kind(c.kind);
-    const unsigned limit = c.kind == ControlKind::key              ? limits::key_code
-                           : c.kind == ControlKind::mouse_button   ? limits::mouse_button_code
-                           : c.kind == ControlKind::gamepad_button ? limits::gamepad_button_code
-                                                                   : limits::gamepad_axis_code;
-    if (c.code > limit || (c.kind == ControlKind::mouse_button && !c.code))
+    if (!limits::in_range(c))
         throw std::invalid_argument("Input control code outside supported range");
 }
 ControlKind device_class(ControlKind value) {
