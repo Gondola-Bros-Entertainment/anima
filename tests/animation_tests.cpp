@@ -187,6 +187,14 @@ int main(int argc, char **argv) {
         auto asset = fixture();
         manifest_tests(asset);
         lookup_tests(asset);
+        // A clip that scales a joint to zero hides the part it skins, as engines hide bones.
+        auto hide = asset.animations[0];
+        hide.channels.push_back(
+            {1, anima::ChannelPath::scale, anima::Interpolation::linear, {0, 1}, {{1, 1, 1, 0}, {0, 0, 0, 0}}});
+        const auto hidden = anima::make_mesh_snapshot(asset, anima::sample_pose(asset, &hide, 1));
+        for (const auto &vertex : hidden.vertices)
+            near(length(vertex.position - hidden.vertices.front().position), 0,
+                 "A hidden joint left its skin unfolded");
         // A pose too short for a primitive's node is rejected before the snapshot indexes it.
         auto short_pose = anima::sample_pose(asset);
         short_pose.world.resize(1);

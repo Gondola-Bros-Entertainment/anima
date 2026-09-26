@@ -1,4 +1,5 @@
 #include <anima/core/fixed_step.hpp>
+#include <anima/core/math.hpp>
 #include <doctest/doctest.h>
 
 #include <chrono>
@@ -52,4 +53,26 @@ TEST_CASE("Invalid clock inputs are rejected") {
     // A step so long that max_steps + 1 of them would overflow the nanosecond accumulator.
     CHECK_THROWS_WITH_AS((anima::FixedStepClock{std::chrono::nanoseconds::max(), 2}), invalid_clock,
                          std::invalid_argument);
+}
+
+TEST_CASE("Normals keep their direction through mirroring and stay defined when an axis collapses") {
+    using anima::identity;
+    using anima::normal;
+    auto scaled = identity();
+    scaled[0] = 2;
+    scaled[5] = 3;
+    scaled[10] = 4;
+    CHECK(normal(scaled, {0, 0, 1}).z == doctest::Approx(1));
+    auto mirrored = identity();
+    mirrored[0] = -1;
+    CHECK(normal(mirrored, {1, 0, 0}).x == doctest::Approx(-1));
+    // A joint scaled to zero along z flattens the surface into the xy plane, whose normal is z.
+    auto flattened = identity();
+    flattened[10] = 0;
+    CHECK(normal(flattened, {0, 0, 1}).z == doctest::Approx(1));
+    // With every axis collapsed no direction remains, and normalized() falls back to +Y.
+    const auto collapsed = normal(anima::Mat4{}, {0, 0, 1});
+    CHECK(collapsed.x == 0);
+    CHECK(collapsed.y == 1);
+    CHECK(collapsed.z == 0);
 }

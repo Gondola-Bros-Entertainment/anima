@@ -7,10 +7,11 @@
 /// Affine pose evaluation over an explicit joint hierarchy: masked override and additive layers,
 /// and two-bone contact solving.
 ///
-/// Part of the `anima::assets` target. Evaluation transforms must be finite affine matrices with a
-/// determinant above `1e-12`, so singular transforms and reflections are rejected; scale and shear
-/// are kept. Failures throw `std::invalid_argument` or anima::MathError, which derives from it,
-/// unless stated.
+/// Part of the `anima::assets` target. Evaluation transforms must be finite affine matrices whose
+/// determinant is not below `-1e-12`, so reflections are rejected. Scale and shear are kept, and
+/// so is a collapsed transform, whose determinant is within `1e-12` of 0, such as a joint scaled to
+/// zero. Failures throw `std::invalid_argument` or anima::MathError, which derives from it, unless
+/// stated.
 
 namespace anima {
 /// One joint of an EvaluationRig.
@@ -36,10 +37,12 @@ enum class LayerMode {
 /// Blends two affine transforms by @p weight in [0, 1].
 ///
 /// The rotations of their polar decompositions interpolate along the shortest arc, and their
-/// symmetric stretch (scale and shear) and translation linearly. A weight of 0 or 1 returns that
-/// input exactly.
+/// symmetric stretch (scale and shear) and translation linearly. A collapsed input has no rotation
+/// to extract, so then the two interpolate element by element: blended toward a transform scaled
+/// to zero, the other shrinks in place. A weight of 0 or 1 returns that input exactly.
 [[nodiscard]] Mat4 blend_affine(const Mat4 &from, const Mat4 &to, float weight);
-/// Rotation of the polar decomposition of @p transform, as a unit quaternion.
+/// Rotation of the polar decomposition of @p transform, as a unit quaternion. Throws for a
+/// collapsed transform, which has no rotation.
 [[nodiscard]] Quat affine_rotation(const Mat4 &transform);
 
 /// Joint hierarchy for evaluation, mapped onto an asset's nodes.
@@ -61,12 +64,20 @@ class EvaluationRig {
     /// Whether joint @p child is joint @p ancestor or below it. Throws for an invalid index.
     [[nodiscard]] bool descendant(std::size_t child, std::size_t ancestor) const;
     /// Joint-local pose of the mapped joints of @p source, computed from its world matrices, so
-    /// world-only poses are accepted. Throws unless @p source has one world matrix per asset node.
+    /// world-only poses are accepted.
+    ///
+    /// A collapsed evaluation parent's world matrix cannot be inverted, so a joint below one takes
+    /// its local transform from the local transforms of @p source along the asset hierarchy
+    /// instead. That needs @p source to have local transforms and the joint to lie below its
+    /// evaluation parent in the asset hierarchy. Throws unless @p source has one world matrix per
+    /// asset node.
     [[nodiscard]] EvaluationPose encode(const Pose &source) const;
     /// Model-space matrix of each joint of @p pose. Throws unless @p pose has one valid local
     /// matrix per joint.
     [[nodiscard]] std::vector<Mat4> world(const EvaluationPose &pose) const;
-    /// Joint-local pose from @p world, one valid model-space matrix per joint.
+    /// Joint-local pose from @p world, one valid model-space matrix per joint. Throws for a joint
+    /// whose evaluation parent is collapsed; encode() recovers such joints from a pose's local
+    /// transforms.
     [[nodiscard]] EvaluationPose from_world(std::span<const Mat4> world) const;
     /// Per-joint weights: @p weight, in [0, 1], for joint @p root and its descendants, 0 elsewhere.
     [[nodiscard]] std::vector<float> subtree_mask(std::size_t root, float weight = 1) const;
@@ -75,20 +86,22 @@ class EvaluationRig {
     ///
     /// An override blends each local matrix with blend_affine. An additive layer computes
     /// `base * blend_affine(identity(), inverse(reference) * contribution, weight)` and needs
-    /// @p reference, which an override must not have. Every pose and @p weights need one entry per
-    /// joint.
+    /// @p reference, which an override must not have, and whose joints the inverse needs to be
+    /// uncollapsed. Every pose and @p weights need one entry per joint.
     [[nodiscard]] EvaluationPose layer(const EvaluationPose &base, const EvaluationPose &contribution,
                                        std::span<const float> weights, LayerMode mode = LayerMode::override_pose,
                                        const EvaluationPose *reference = nullptr) const;
     /// World-only Pose of the asset for MeshRenderer::set_pose: mapped nodes take their
     /// @p evaluated matrices, and unmapped nodes keep their @p source transform relative to their
-    /// parent.
+    /// parent, taken from the local transform of @p source when that parent is collapsed.
     ///
     /// The result has no local transforms, so blend_pose rejects it. Throws unless @p source has one
-    /// world matrix per asset node.
+    /// world matrix per asset node, and local transforms where a parent is collapsed.
     [[nodiscard]] Pose render_pose(const Pose &source, const EvaluationPose &evaluated) const;
 
   private:
+    EvaluationPose from_world(std::span<const Mat4> world, const Pose *source) const;
+    Mat4 local_below_collapsed(std::size_t joint, const Pose *source) const;
     std::vector<EvaluationJoint> joints_;
     std::vector<std::size_t> order_, asset_order_;
     std::vector<int> asset_parents_, mapping_;
