@@ -535,6 +535,7 @@ inline void run() {
                   cues.advance("signal", 1, timeline, .9, .8).empty(),
               "Release cue duplicated or disappeared");
         ActionCueCursor late;
+        late.seek("signal", 1, timeline, .9, .8);
         check(late.advance("signal", 1, timeline, .9, .8).empty(), "Late consumer replayed old cues");
         auto missing = attachments;
         missing.roles.erase("beacon");

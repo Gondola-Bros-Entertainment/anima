@@ -37,11 +37,18 @@ int main() {
         check(cursor.advance("shot", 1, timeline, .6).size() == 1, "Hold entry cue missing");
         check(cursor.advance("shot", 1, timeline, .9, .85).at(0).id == "fire", "Release cue missing");
         check(cursor.advance("shot", 1, timeline, .9, .85).empty(), "Repeated frame duplicated cue");
-        check(cursor.advance("shot", 2, timeline, .9, .85).empty(), "Late join replayed historical cues");
-        check(cursor.advance("shot", 2, timeline, .1).empty(), "Rewind emitted cues");
+        // A new instance starts at 0, so its first frame reports the cues it covers wherever it lands.
+        const auto first_frame = cursor.advance("shot", 2, timeline, .016);
+        check(first_frame.size() == 1 && first_frame[0].id == "begin", "A first frame after 0 dropped the start cue");
+        check(cursor.advance("shot", 3, timeline, .9, .85).size() == 3, "A first frame dropped cues since the start");
+        // An observer that joins an instance under way seeks first, so history is not replayed.
+        cursor.seek("shot", 4, timeline, .9, .85);
+        check(cursor.advance("shot", 4, timeline, .9, .85).empty(), "Late join replayed historical cues");
+        check(cursor.advance("shot", 4, timeline, .1).empty(), "Rewind emitted cues");
         cursor.reset();
-        check(cursor.advance("shot", 3, timeline, 4.).empty(), "Long hold emitted catch-up cues");
-        check(cursor.advance("shot", 3, timeline, 4.1, 4.05).size() == 1, "Late-held release missing");
+        cursor.seek("shot", 5, timeline, 4.);
+        check(cursor.advance("shot", 5, timeline, 4.).empty(), "Long hold emitted catch-up cues");
+        check(cursor.advance("shot", 5, timeline, 4.1, 4.05).size() == 1, "Late-held release missing");
         rejects([&] { (void)timeline.sample(-1); });
         rejects([&] { (void)timeline.sample(0, std::numeric_limits<double>::infinity()); });
         rejects([&] { (void)timeline.duration(); });
