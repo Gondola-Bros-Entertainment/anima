@@ -57,6 +57,7 @@ void update_agents(SceneSet &scenes, double seconds);
 /// a restored agent's desired velocity starts at zero. It is a JSON object of at most 16 MiB with exactly the fields
 /// `route` (an array of three-number arrays), `next` (an integer), `speed` and `arrival_distance`, validated as
 /// Agent validates them. Text that is not JSON, unknown, missing or duplicate fields and invalid values throw
-/// `std::invalid_argument`.
+/// `std::invalid_argument`, and capture throws it for a payload over 16 MiB, which a route of a few hundred thousand
+/// waypoints can reach.
 void add_component_codec(ComponentCodecs &codecs);
 } // namespace anima::navigation
