@@ -1,14 +1,35 @@
 #include "consumer/prefab_variant.hpp"
-#include <iostream>
-#include <limits>
+#include <doctest/doctest.h>
 
-namespace {
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+
 using namespace anima;
-using prefab_variant_test::check;
-using prefab_variant_test::rejects;
+namespace {
+constexpr auto marker_component = R"({"type":"test.marker.v1","state":"ok","enabled":true})";
+constexpr auto empty_renderer =
+    R"({"mesh":null,"pose":null,"visible":true,"material_factors":[],"primitive_visible":[]})";
+constexpr auto missing_version = "Missing JSON field: version";
+constexpr auto unsupported_version = "Unsupported prefab variant document version";
+constexpr auto duplicate_field = "Duplicate JSON document field";
+constexpr auto invalid_key = "Invalid prefab variant resource or component key";
+constexpr auto duplicate_object = "Null or duplicate prefab variant object key";
+constexpr auto invalid_object_key = "Invalid object key";
+constexpr auto component_count = "Invalid prefab variant component count";
+constexpr auto duplicate_component = "Duplicate prefab variant component override";
+constexpr auto conflicting_removal = "Duplicate or conflicting prefab variant component removal";
+constexpr auto renderer_state = "Empty prefab variant renderer has state";
+constexpr auto pose_mismatch = "Prefab variant pose does not match the mesh";
+constexpr auto nonfinite_transform = "Non-finite instance transform";
+constexpr auto not_string = "[json.exception.type_error.302] type must be string, but is number";
+constexpr auto not_boolean = "[json.exception.type_error.302] type must be boolean, but is number";
+
 std::string substitute(std::string value, std::string_view from, std::string_view to) {
     const auto at = value.find(from);
-    check(at != std::string::npos, "Prefab variant malformed fixture field missing");
+    REQUIRE(at != std::string::npos);
     value.replace(at, from.size(), to);
     return value;
 }
@@ -19,80 +40,106 @@ std::string change() {
 std::string envelope(const std::string &overrides) {
     return "{\"version\":1,\"kind\":\"anima.prefab-variant\",\"base\":\"base\",\"overrides\":[" + overrides + "]}";
 }
-void malformed_documents() {
+PrefabVariant decode(const std::string &document) { return PrefabVariant::deserialize(document, {}); }
+} // namespace
+
+TEST_CASE("Variants resolve typed overrides over their base, keep references per instance and roll back failures") {
+    prefab_variant_test::run();
+}
+
+TEST_CASE("A canonical variant document decodes its override, a component, an empty renderer and a wide key") {
     const auto valid = envelope(change());
-    const auto decoded = PrefabVariant::deserialize(valid, {});
-    check(decoded.base_key() == "base" && decoded.overrides().size() == 1 &&
-              decoded.overrides()[0].key == ObjectKey{41} && decoded.overrides()[0].name == "override",
-          "Variant reader rejected the canonical typed override envelope");
-    const auto invalid = [&](const std::string &document) {
-        rejects([&] { (void)PrefabVariant::deserialize(document, {}); });
-    };
-    for (const auto &document : {
-             std::string("{}"),
-             substitute(valid, "\"version\":1", "\"version\":2"),
-             substitute(valid, "\"version\":1", "\"version\":1.0"),
-             substitute(valid, "\"version\":1,", ""),
-             substitute(valid, "anima.prefab-variant", "anima.prefab"),
-             substitute(valid, "{", "{\"unexpected\":null,"),
-             substitute(valid, "{", "{\"version\":1,"),
-             substitute(valid, "{", "{\"ver\\u0073ion\":1,"),
-             substitute(valid, "\"base\":\"base\"", "\"base\":\"\""),
-             substitute(valid, "\"base\":\"base\"", "\"base\":null"),
-             substitute(valid, "\"base\":\"base\",", ""),
-             substitute(valid, "\"base\":\"base\"", "\"base\":\"" + std::string(4097, 'x') + "\""),
-             envelope(change() + "," + change()),
-             substitute(valid, "\"key\":\"41\"", "\"key\":\"0\""),
-             substitute(valid, "\"key\":\"41\"", "\"key\":\"041\""),
-             substitute(valid, "\"key\":\"41\"", "\"key\":\"-1\""),
-             substitute(valid, "\"key\":\"41\"", "\"key\":41"),
-             substitute(valid, "\"key\":\"41\"", "\"key\":\"18446744073709551616\""),
-             substitute(valid, "\"key\":\"41\",", ""),
-             substitute(valid, "\"key\":\"41\"", "\"key\":\"41\",\"k\\u0065y\":\"42\""),
-             substitute(valid, "\"name\":\"override\"", "\"name\":null"),
-             substitute(valid, "\"name\":\"override\"", "\"name\":42"),
-             substitute(valid, "\"name\":\"override\",", ""),
-             substitute(valid, "\"local\":null", "\"local\":[]"),
-             substitute(valid, "\"local\":null", "\"local\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1e1000]"),
-             substitute(valid, "\"active\":null", "\"active\":1"),
-             substitute(valid, "\"renderer\":null", "\"renderer\":{}"),
-             substitute(valid, "\"renderer\":null,", ""),
-             substitute(valid, "\"renderer\":null", "\"renderer\":null,\"parent\":null"),
-             substitute(valid, "\"set_components\":[]", "\"set_components\":null"),
-             substitute(valid, "\"set_components\":[]", "\"set_components\":[{}]"),
-             substitute(valid, "\"remove_components\":[]", "\"remove_components\":[\"\"]"),
-             substitute(valid, "\"remove_components\":[]", "\"remove_components\":[\"type\",\"type\"]"),
-             substitute(valid, "\"remove_components\":[]", "\"remove_components\":[true]"),
-             substitute(valid, ",\"remove_components\":[]", ""),
-         })
-        invalid(document);
-    const std::string component = "{\"type\":\"test.marker.v1\",\"state\":\"ok\",\"enabled\":true}";
-    const auto with_component = substitute(valid, "\"set_components\":[]", "\"set_components\":[" + component + "]");
-    (void)PrefabVariant::deserialize(with_component, {}); // Codecs are required only when resolving the base.
-    invalid(substitute(with_component, "\"state\":\"ok\",", ""));
-    invalid(substitute(with_component, "\"state\":\"ok\"", "\"state\":42"));
-    invalid(substitute(with_component, "\"enabled\":true", "\"enabled\":1"));
-    invalid(substitute(with_component, "\"enabled\":true", "\"enabled\":true,\"extra\":null"));
-    invalid(substitute(valid, "\"set_components\":[]", "\"set_components\":[" + component + "," + component + "]"));
-    invalid(substitute(with_component, "\"remove_components\":[]", "\"remove_components\":[\"test.marker.v1\"]"));
-    const std::string empty_renderer =
-        "{\"mesh\":null,\"pose\":null,\"visible\":true,\"material_factors\":[],\"primitive_visible\":[]}";
-    const auto with_renderer = substitute(valid, "\"renderer\":null", "\"renderer\":" + empty_renderer);
-    (void)PrefabVariant::deserialize(with_renderer, {});
-    invalid(substitute(with_renderer, "\"visible\":true", "\"visible\":false"));
-    invalid(substitute(with_renderer, "\"pose\":null", "\"pose\":[]"));
-    invalid(substitute(with_renderer, "\"pose\":null,", ""));
-    invalid(substitute(with_renderer, "\"primitive_visible\":[]", "\"primitive_visible\":[false]"));
-    invalid(substitute(with_renderer, "\"material_factors\":[]", "\"material_factors\":[[1,1,1]]"));
-    invalid(substitute(with_renderer, "\"mesh\":null", "\"mesh\":null,\"unknown\":0"));
-    const auto maximum = std::to_string(std::numeric_limits<std::uint64_t>::max());
-    check(PrefabVariant::deserialize(substitute(valid, "\"key\":\"41\"", "\"key\":\"" + maximum + "\""), {})
-                  .overrides()[0]
-                  .key.value == std::numeric_limits<std::uint64_t>::max(),
-          "Variant document truncated a maximum-width authored key");
-    invalid(
-        substitute(valid, "\"name\":\"override\"", "\"name\":" + std::string(32, '[') + "0" + std::string(32, ']')));
-    invalid(std::string(16 * 1024 * 1024, ' ') + valid);
+    const auto decoded = decode(valid);
+    CHECK(decoded.base_key() == "base");
+    REQUIRE(decoded.overrides().size() == 1);
+    CHECK(decoded.overrides()[0].key.value == 41);
+    CHECK(decoded.overrides()[0].name == "override");
+    // Codecs are required only when resolving the base, and meshes only when a renderer names one.
+    CHECK_NOTHROW(decode(
+        substitute(valid, "\"set_components\":[]", std::string("\"set_components\":[") + marker_component + "]")));
+    CHECK_NOTHROW(decode(substitute(valid, "\"renderer\":null", std::string("\"renderer\":") + empty_renderer)));
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    const auto widest = decode(substitute(valid, "\"key\":\"41\"", "\"key\":\"" + std::to_string(maximum) + "\""));
+    REQUIRE(widest.overrides().size() == 1);
+    CHECK(widest.overrides()[0].key.value == maximum);
+}
+
+TEST_CASE("Malformed variant documents are rejected with their reason") {
+    const auto valid = envelope(change());
+    CHECK_THROWS_WITH_AS(decode("{}"), missing_version, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1", "\"version\":2")), unsupported_version,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1", "\"version\":1.0")), unsupported_version,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1,", "")), missing_version, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "anima.prefab-variant", "anima.prefab")),
+                         "Invalid prefab variant document kind", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"unexpected\":null,")), "Unknown JSON field: unexpected",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"version\":1,")), duplicate_field, std::invalid_argument);
+    // A key that decodes to one already present is a duplicate.
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"ver\\u0073ion\":1,")), duplicate_field,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"base\":\"base\"", "\"base\":\"\"")), invalid_key,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"base\":\"base\"", "\"base\":null")),
+                         "[json.exception.type_error.302] type must be string, but is null", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"base\":\"base\",", "")), "Missing JSON field: base",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"base\":\"base\"", "\"base\":\"" + std::string(4097, 'x') + "\"")),
+                         invalid_key, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(envelope(change() + "," + change())), duplicate_object, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\"", "\"key\":\"0\"")), duplicate_object,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\"", "\"key\":\"041\"")), invalid_object_key,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\"", "\"key\":\"-1\"")), invalid_object_key,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\"", "\"key\":41")), not_string, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\"", "\"key\":\"18446744073709551616\"")),
+                         invalid_object_key, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\",", "")), "Missing JSON field: key",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"key\":\"41\"", "\"key\":\"41\",\"k\\u0065y\":\"42\"")),
+                         duplicate_field, std::invalid_argument);
+    // Without its name, the override changes nothing.
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\"", "\"name\":null")),
+                         "Empty prefab variant override", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\"", "\"name\":42")), not_string,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\",", "")), "Missing JSON field: name",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"local\":null", "\"local\":[]")),
+                         "Prefab variant matrix requires 16 scalars", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(valid, "\"local\":null", "\"local\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1e1000]")),
+        "[json.exception.out_of_range.406] number overflow parsing '1e1000'", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"active\":null", "\"active\":1")), not_boolean,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null", "\"renderer\":{}")), "Missing JSON field: mesh",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null,", "")), "Missing JSON field: renderer",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null", "\"renderer\":null,\"parent\":null")),
+                         "Unknown JSON field: parent", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"set_components\":[]", "\"set_components\":null")), component_count,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"set_components\":[]", "\"set_components\":[{}]")),
+                         "Missing JSON field: type", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"remove_components\":[]", "\"remove_components\":[\"\"]")),
+                         invalid_key, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(valid, "\"remove_components\":[]", "\"remove_components\":[\"type\",\"type\"]")),
+        conflicting_removal, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"remove_components\":[]", "\"remove_components\":[true]")),
+                         "[json.exception.type_error.302] type must be string, but is boolean", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, ",\"remove_components\":[]", "")),
+                         "Missing JSON field: remove_components", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\"",
+                                           "\"name\":" + std::string(32, '[') + "0" + std::string(32, ']'))),
+                         "JSON document exceeds nesting limit", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(std::string(16 * 1024 * 1024, ' ') + valid), "JSON document exceeds byte limit",
+                         std::invalid_argument);
     std::string too_many;
     too_many.reserve(3 * 65537);
     for (std::size_t i = 0; i < 65537; ++i) {
@@ -100,76 +147,104 @@ void malformed_documents() {
             too_many += ',';
         too_many += "{}";
     }
-    invalid(envelope(too_many));
+    CHECK_THROWS_WITH_AS(decode(envelope(too_many)), "Invalid prefab variant override count", std::invalid_argument);
 }
-void programmatic_validation() {
+
+TEST_CASE("Malformed component overrides are rejected with their reason") {
+    const auto valid = envelope(change());
+    const auto with_component =
+        substitute(valid, "\"set_components\":[]", std::string("\"set_components\":[") + marker_component + "]");
+    CHECK_THROWS_WITH_AS(decode(substitute(with_component, "\"state\":\"ok\",", "")), "Missing JSON field: state",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_component, "\"state\":\"ok\"", "\"state\":42")), not_string,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_component, "\"enabled\":true", "\"enabled\":1")), not_boolean,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_component, "\"enabled\":true", "\"enabled\":true,\"extra\":null")),
+                         "Unknown JSON field: extra", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(valid, "\"set_components\":[]",
+                          std::string("\"set_components\":[") + marker_component + "," + marker_component + "]")),
+        duplicate_component, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(with_component, "\"remove_components\":[]", "\"remove_components\":[\"test.marker.v1\"]")),
+        conflicting_removal, std::invalid_argument);
+}
+
+TEST_CASE("Malformed renderer overrides are rejected with their reason") {
+    const auto with_renderer =
+        substitute(envelope(change()), "\"renderer\":null", std::string("\"renderer\":") + empty_renderer);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"visible\":true", "\"visible\":false")), renderer_state,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"pose\":null", "\"pose\":[]")), pose_mismatch,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"pose\":null,", "")), "Missing JSON field: pose",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"primitive_visible\":[]", "\"primitive_visible\":[false]")),
+                         renderer_state, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"material_factors\":[]", "\"material_factors\":[[1,1,1]]")),
+                         renderer_state, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"mesh\":null", "\"mesh\":null,\"unknown\":0")),
+                         "Unknown JSON field: unknown", std::invalid_argument);
+}
+
+TEST_CASE("Invalid programmatic variants are rejected with their reason") {
     PrefabVariant::Override value;
     value.key = {41};
     value.name = "valid";
-    rejects([&] { (void)PrefabVariant("", {value}); });
-    rejects([&] { (void)PrefabVariant(std::string(4097, 'b'), {value}); });
-    rejects([&] { (void)PrefabVariant("base", {value, value}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("", {value}), invalid_key, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(PrefabVariant(std::string(4097, 'b'), {value}), invalid_key, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {value, value}), duplicate_object, std::invalid_argument);
     auto bad = value;
     bad.key = {};
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), duplicate_object, std::invalid_argument);
     bad = value;
     bad.name.reset();
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), "Empty prefab variant override", std::invalid_argument);
     bad = value;
     bad.local = identity();
     (*bad.local)[12] = std::numeric_limits<float>::quiet_NaN();
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), nonfinite_transform, std::invalid_argument);
     bad = value;
     bad.set_components = {{"type", "a", true}, {"type", "b", false}};
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), duplicate_component, std::invalid_argument);
     bad.set_components.resize(1);
     bad.remove_components = {"type"};
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), conflicting_removal, std::invalid_argument);
     bad = value;
     bad.set_components = {{"", "state", true}};
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), invalid_key, std::invalid_argument);
     bad.set_components[0].type.assign(4097, 't');
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), invalid_key, std::invalid_argument);
     bad = value;
     bad.set_components.resize(1025);
     for (std::size_t i = 0; i < bad.set_components.size(); ++i)
         bad.set_components[i].type = "type-" + std::to_string(i);
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), component_count, std::invalid_argument);
     bad = value;
     bad.remove_components.resize(1025);
     for (std::size_t i = 0; i < bad.remove_components.size(); ++i)
         bad.remove_components[i] = "type-" + std::to_string(i);
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), component_count, std::invalid_argument);
     bad = value;
     bad.renderer.emplace();
     bad.renderer->visible = false;
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), renderer_state, std::invalid_argument);
     bad.renderer->mesh = prefab_variant_test::mesh();
     bad.renderer->pose.emplace();
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), pose_mismatch, std::invalid_argument);
     bad.renderer->pose = bad.renderer->mesh->rest_pose();
     bad.renderer->pose->world[0][12] = std::numeric_limits<float>::quiet_NaN();
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), nonfinite_transform, std::invalid_argument);
     bad.renderer->pose->world[0] = identity();
     bad.renderer->pose->world[0][15] = 2;
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), "Instance transform must be affine", std::invalid_argument);
     bad.renderer->pose.reset();
     bad.renderer->material_factors = {{1, 1, 1}, {1, 1, 1}};
-    rejects([&] { (void)PrefabVariant("base", {bad}); });
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}), "Prefab variant material factors do not match the mesh",
+                         std::invalid_argument);
     bad = value;
     bad.set_components = {{"type", std::string(16 * 1024 * 1024, 's'), true}};
-    rejects([&] { (void)PrefabVariant("base", {bad}).serialize({}); });
-}
-} // namespace
-int main() {
-    try {
-        prefab_variant_test::run();
-        malformed_documents();
-        programmatic_validation();
-        std::cout
-            << "PASS typed prefab variants, inheritance, resources, references, destination bindings and rollback\n";
-    } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {bad}).serialize({}), "Prefab variant document exceeds the byte limit",
+                         std::invalid_argument);
 }
