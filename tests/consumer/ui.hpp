@@ -1,10 +1,12 @@
 #pragma once
+#include "gpu_checks.hpp"
 #include "reference.hpp"
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/ui/context.hpp>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -26,28 +28,105 @@ inline void test_attribute_conversion() {
         }
     }
 }
+// The removed Python check's comparisons of the UI captures, in the document's density-independent pixels, which
+// @p scale converts to framebuffer pixels: exact rectangular clipping, a translated element, white at alpha
+// 128/255 blended in linear light over the clear color and over a mesh, the external PNG's texels, rendered
+// glyphs, the edited text, and stable pixels across scene replacement.
+inline void check_images(const gpu_check::Captures &images, float scale) {
+    const auto at = [&](const std::string &name, double x, double y) {
+        return gpu_check::pixel(images[name], std::size_t(x * scale), std::size_t(y * scale));
+    };
+    const auto linear = [](int byte) {
+        const auto s = byte / 255.;
+        return s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4);
+    };
+    const auto srgb = [](double value) {
+        return int(std::nearbyint(255 * (value <= .0031308 ? 12.92 * value : 1.055 * std::pow(value, 1 / 2.4) - .055)));
+    };
+    constexpr int darkest_background = 80, alpha_tolerance = 3, texel_tolerance = 8;
+    const auto background = at("empty-ui", 0, 0);
+    images.require(std::max({background[0], background[1], background[2]}) < darkest_background,
+                   "The UI background is " + gpu_check::text(background), {"empty-ui"});
+    // The 160x80 red child is clipped to its 100x50 parent, exactly.
+    const auto &empty = images["empty-ui"];
+    const auto left = std::size_t(350 * scale), width = std::size_t(100 * scale);
+    for (auto y = std::size_t(40 * scale); y < std::size_t(90 * scale); ++y)
+        for (auto x = left; x < left + width; ++x)
+            images.require(gpu_check::pixel(empty, x, y) == gpu_check::Rgb{255, 0, 0},
+                           "The clipped red element is not solid red at " + std::to_string(x) + ", " +
+                               std::to_string(y),
+                           {"empty-ui"});
+    for (const auto &[x, y] :
+         {std::pair{349, 60}, std::pair{450, 60}, std::pair{380, 39}, std::pair{380, 90}, std::pair{480, 100}})
+        images.require(at("empty-ui", x, y) == background,
+                       "Clipping leaked at " + std::to_string(x) + ", " + std::to_string(y), {"empty-ui"});
+    images.require(at("empty-ui", 390, 250) == gpu_check::Rgb{0, 255, 0} && at("empty-ui", 360, 240) == background,
+                   "The translated green element is not where its transform puts it", {"empty-ui"});
+    constexpr double alpha = 128 / 255.;
+    std::array<int, 3> over_clear{};
+    for (const auto &[image, under] : {std::pair{std::string("empty-ui"), background},
+                                       std::pair{std::string("mesh-ui"), at("mesh-no-ui", 400, 160)}}) {
+        const auto actual = at(image, 400, 160);
+        gpu_check::Rgb expected{};
+        for (std::size_t c = 0; c < 3; ++c)
+            expected[c] = srgb(alpha + linear(under[c]) * (1 - alpha));
+        if (image == "empty-ui")
+            over_clear = expected;
+        images.require(gpu_check::difference(actual, expected) <= alpha_tolerance,
+                       "White at alpha 128/255 over " + gpu_check::text(under) + " in " + image + " is " +
+                           gpu_check::text(actual) + " instead of " + gpu_check::text(expected),
+                       {image, "mesh-no-ui"});
+    }
+    images.require(at("mesh-ui", 400, 160) != at("empty-ui", 400, 160),
+                   "The mesh does not show through the translucent element", {"mesh-ui", "empty-ui"});
+    for (const auto &[x, y, expected] :
+         {std::tuple{496, 246, gpu_check::Rgb{255, 0, 0}}, std::tuple{528, 246, gpu_check::Rgb{0, 255, 0}},
+          std::tuple{496, 278, gpu_check::Rgb{0, 0, 255}}, std::tuple{528, 278, over_clear}})
+        images.require(gpu_check::difference(at("empty-ui", x, y), expected) <= texel_tolerance,
+                       "The PNG texel at " + std::to_string(x) + ", " + std::to_string(y) + " is " +
+                           gpu_check::text(at("empty-ui", x, y)) + " instead of " + gpu_check::text(expected),
+                       {"empty-ui"});
+    // The font atlas draws actual glyphs, and the UTF-8 edit changes the input field.
+    constexpr int bright_glyph = 200, edited_change = 30;
+    constexpr double least_glyphs = 80, least_edits = 30;
+    const auto &edited = images["edited"];
+    std::size_t glyphs = 0, edits = 0;
+    for (auto y = std::size_t(30 * scale); y < std::size_t(55 * scale); ++y)
+        for (auto x = std::size_t(28 * scale); x < std::size_t(200 * scale); ++x) {
+            const auto c = gpu_check::pixel(empty, x, y);
+            if (std::min({c[0], c[1], c[2]}) > bright_glyph)
+                ++glyphs;
+        }
+    for (auto y = std::size_t(70 * scale); y < std::size_t(97 * scale); ++y)
+        for (auto x = std::size_t(33 * scale); x < std::size_t(145 * scale); ++x)
+            if (gpu_check::difference(gpu_check::pixel(empty, x, y), gpu_check::pixel(edited, x, y)) > edited_change)
+                ++edits;
+    images.require(double(glyphs) > least_glyphs * scale * scale && double(edits) > least_edits * scale * scale,
+                   std::to_string(glyphs) + " glyph pixels and " + std::to_string(edits) + " edited pixels",
+                   {"empty-ui", "edited"});
+    images.require_same("mesh-ui", "mesh-ui-repeat", "UI and scene replacement changed stable pixels");
+    images.require(!gpu_check::same(images["dropdown"], images["edited"]), "The dropdown produced no visible change",
+                   {"dropdown", "edited"});
+    images.require(!gpu_check::same_size(images["resized-ui"], empty), "The resized UI kept its capture size",
+                   {"resized-ui", "empty-ui"});
+    images.require_clear("after-ui-shutdown", "The UI kept drawing after its shutdown");
+}
 inline int run(int argc, char **argv) {
     require(argc >= 4, "Usage: consumer --ui OUTPUT ASSETS [--no-present-fences]");
     const std::filesystem::path output = argv[2], assets = argv[3];
-    std::filesystem::create_directories(output);
-    require(SDL_Init(SDL_INIT_VIDEO), "SDL initialization failed");
-    struct Quit {
-        ~Quit() { SDL_Quit(); }
-    } quit;
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima external UI consumer", 640, 480,
-                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY),
-        SDL_DestroyWindow};
-    require(bool(window), "UI window creation failed");
+    gpu_check::Video video;
+    const auto window =
+        gpu_check::window("Anima external UI consumer", 640, 480, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     const float logical_scale = SDL_GetWindowDisplayScale(window.get()) / SDL_GetWindowPixelDensity(window.get());
     require(SDL_SetWindowSize(window.get(), int(640 * logical_scale), int(480 * logical_scale)),
             "UI initial sizing failed");
     anima::RendererOptions options;
     options.validation = true;
     options.disable_present_fences = argc > 4 && std::string_view(argv[4]) == "--no-present-fences";
-    options.capture = output / "empty-ui.ppm";
     anima::VulkanRenderer renderer(window.get(), options);
     renderer.set_view(anima::identity());
+    renderer.request_capture(); // The first frame shows the document over the clear color.
+    gpu_check::Captures images(output);
     const auto window_id = SDL_GetWindowID(window.get());
     const auto started = std::chrono::steady_clock::now();
     unsigned frames = 0, captures = 1;
@@ -74,7 +153,7 @@ inline int run(int argc, char **argv) {
     document.show();
     bool forward_window_events = true;
     const auto pump = [&] {
-        require(std::chrono::steady_clock::now() - started < std::chrono::seconds(25), "UI watchdog expired");
+        require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "UI watchdog expired");
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
             require(event.type != SDL_EVENT_QUIT && event.type != SDL_EVENT_WINDOW_CLOSE_REQUESTED,
@@ -97,11 +176,13 @@ inline int run(int argc, char **argv) {
         }
     };
     const auto capture = [&](const char *name) {
-        renderer.request_capture(output / (std::string(name) + ".ppm"));
+        renderer.request_capture();
         frame();
+        images.add(name, gpu_check::take(renderer));
         ++captures;
     };
     frame();
+    images.add("empty-ui", gpu_check::take(renderer));
     std::uint64_t event_sequence = SDL_GetTicksNS();
     const auto dispatch = [&](SDL_Event event) {
         // Events pass through SDL's real queue and the public bridge, then RmlUi's
@@ -401,9 +482,10 @@ inline int run(int argc, char **argv) {
     primitive.vertex_count = 3;
     mesh->primitives.push_back(primitive);
     renderer.set_scenes({reference_test::scene(*mesh)});
-    renderer.request_capture(output / "mesh-no-ui.ppm");
+    renderer.request_capture();
     while (!renderer.draw())
         SDL_Delay(5);
+    images.add("mesh-no-ui", gpu_check::take(renderer));
     ++frames;
     ++captures;
     capture("mesh-ui");
@@ -456,9 +538,10 @@ inline int run(int argc, char **argv) {
     require(!SDL_TextInputActive(window.get()), "UI shutdown left text input active");
     require(!capture_held || mouse_captured(), "UI shutdown released the application's mouse capture");
     (void)SDL_CaptureMouse(false);
-    renderer.request_capture(output / "after-ui-shutdown.ppm");
+    renderer.request_capture();
     while (!renderer.draw())
         SDL_Delay(5);
+    images.add("after-ui-shutdown", gpu_check::take(renderer));
     ++frames;
     ++captures;
     // RmlUi globals, font atlases and GPU sources can be recreated repeatedly.
@@ -503,22 +586,31 @@ inline int run(int argc, char **argv) {
         constexpr unsigned unloadable_images = 2;  // A missing file and a file that is not PNG or JPEG.
         constexpr unsigned warnings_per_image = 2; // The reason, then RmlUi's own report of the texture.
         constexpr unsigned checked_frames = 2;
-        std::ofstream(output / "unsupported.tga", std::ios::binary) << "not a PNG or JPEG image";
-        anima::UiContext images(window.get(), renderer);
+        // The unreadable file lives only as long as this check.
+        struct Fixture {
+            std::filesystem::path directory;
+            ~Fixture() {
+                std::error_code ignored;
+                std::filesystem::remove_all(directory, ignored);
+            }
+        } fixture{output / "unloadable-images"};
+        std::filesystem::create_directories(fixture.directory);
+        std::ofstream(fixture.directory / "unsupported.tga", std::ios::binary) << "not a PNG or JPEG image";
+        anima::UiContext unloadable_context(window.get(), renderer);
         // RmlUi resolves decorator images against their style sheet, which an inline style lacks.
-        auto unloadable = images.documents().from_memory(
+        auto unloadable = unloadable_context.documents().from_memory(
             "<rml><head><style>#decorated { display: block; width: 32px; height: 32px; "
             "decorator: image(unsupported.tga); }</style></head><body>"
             "<img src='missing.png' style='width:32px;height:32px;'/><div id='decorated'></div></body></rml>",
-            (output / "unloadable-images.rml").string());
+            (fixture.directory / "unloadable-images.rml").string());
         unloadable.show();
         for (unsigned frame_index = 0; frame_index < checked_frames; ++frame_index) {
             bool presented = false;
             try {
-                images.update();
-                while (!(presented = images.render())) {
+                unloadable_context.update();
+                while (!(presented = unloadable_context.render())) {
                     SDL_Delay(5);
-                    images.update();
+                    unloadable_context.update();
                 }
             } catch (const anima::UiUnsupportedFeature &error) {
                 std::cerr << "Frame " << frame_index << " threw: " << error.what() << '\n';
@@ -526,7 +618,8 @@ inline int run(int argc, char **argv) {
             require(presented, "An image that could not be loaded stopped UI rendering");
             ++frames;
         }
-        require(images.stats().log_warnings == unloadable_images * warnings_per_image && !images.stats().log_errors,
+        require(unloadable_context.stats().log_warnings == unloadable_images * warnings_per_image &&
+                    !unloadable_context.stats().log_errors,
                 "An image that could not be loaded was not reported as a warning");
     }
     { // A corrected document can render after unsupported contexts are destroyed.
@@ -601,6 +694,11 @@ inline int run(int argc, char **argv) {
         shut_down_rejected = std::string_view(error.what()) == "Renderer is shut down";
     }
     require(shut_down_rejected, "A UI context was created over a shut-down renderer");
+    constexpr unsigned expected_captures = 9, expected_rejected_features = 2;
+    require(captures == expected_captures && images.size() == captures &&
+                rejected_features == expected_rejected_features,
+            "The UI check took unexpected captures or rejected unexpected features");
+    check_images(images, SDL_GetWindowDisplayScale(window.get()));
     std::cout << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"clicks\":" << clicks
               << ",\"utf8_edit\":true,\"select_keyboard\":true,\"scroll\":true,"
                  "\"hidden_focus_released\":true,\"world_input_passthrough\":true,\"resize_hit_test\":true,"
