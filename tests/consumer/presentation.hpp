@@ -73,6 +73,8 @@ struct Workspace {
         std::filesystem::remove_all(directory, error);
     }
 };
+// A node that no fixture clip animates; the motion resource authors it as a matrix.
+constexpr unsigned matrix_node = 2;
 struct Fixture {
     std::filesystem::path directory;
     std::vector<std::string> names;
@@ -100,14 +102,25 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
     }
     for (unsigned i = 1; i < count; ++i)
         world[i] = world[static_cast<std::size_t>(parents[i])] + local[i];
-    std::ostringstream nodes;
+    // The motion resource authors one unanimated node as a matrix, which must transfer as its TRS placement.
+    std::ostringstream nodes, motion_nodes;
     nodes.imbue(std::locale::classic());
+    motion_nodes.imbue(std::locale::classic());
     nodes << '[';
+    motion_nodes << '[';
     for (unsigned i = 0; i < count; ++i) {
-        if (i)
+        if (i) {
             nodes << ',';
+            motion_nodes << ',';
+        }
         nodes << "{\"name\":\"" << result.names[i] << "\",\"translation\":[" << local[i].x << ',' << local[i].y << ','
               << local[i].z << ']';
+        motion_nodes << "{\"name\":\"" << result.names[i] << '"';
+        if (i == matrix_node)
+            motion_nodes << ",\"matrix\":[1,0,0,0,0,1,0,0,0,0,1,0," << local[i].x << ',' << local[i].y << ','
+                         << local[i].z << ",1]";
+        else
+            motion_nodes << ",\"translation\":[" << local[i].x << ',' << local[i].y << ',' << local[i].z << ']';
         std::string children;
         for (unsigned j = 1; j < count; ++j)
             if (parents[j] == static_cast<int>(i)) {
@@ -115,11 +128,14 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
                     children += ',';
                 children += std::to_string(j);
             }
-        if (!children.empty())
+        if (!children.empty()) {
             nodes << ",\"children\":[" << children << ']';
+            motion_nodes << ",\"children\":[" << children << ']';
+        }
         nodes << '}';
+        motion_nodes << '}';
     }
-    const auto root_nodes = nodes.str() + ']';
+    const auto root_nodes = motion_nodes.str() + ']';
     const auto model_nodes = nodes.str() + ",{\"name\":\"surface\",\"mesh\":0,\"skin\":0}]";
     std::vector<char> mesh;
     for (float n : {-.2F, 0.F, 0.F, .2F, 0.F, 0.F, 0.F, .4F, 0.F})
@@ -260,6 +276,11 @@ inline void run() {
               "Independent anatomy/body binding failed");
         auto motion = actor.actor.motion;
         const auto baseline = motion->sample("drift", .5);
+        const auto rest = actor.actor.asset->nodes[matrix_node].rest.translation;
+        const auto transferred = baseline.local[matrix_node].translation;
+        check(std::abs(transferred.x - rest.x) < 1e-5F && std::abs(transferred.y - rest.y) < 1e-5F &&
+                  std::abs(transferred.z - rest.z) < 1e-5F,
+              "A matrix-authored motion node lost its placement in transfer");
         check(std::abs(baseline.world[0][12] - .1F) < 1e-6F, "Independent motion did not drive the actor");
         const auto fit_item = [&](std::string_view id, std::string_view model) {
             return std::string(R"({"id":")") + std::string(id) +
