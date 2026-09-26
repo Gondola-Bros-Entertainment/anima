@@ -17,6 +17,8 @@ namespace {
 constexpr std::size_t maximum_frame_vertices = 2'000'000;
 constexpr int maximum_texture_dimension = 8192; // Matches the shared stb decoder's dimension bound.
 constexpr std::streamoff maximum_encoded_texture_bytes = 64 * 1024 * 1024;
+// Largest framebuffer pointer coordinate magnitude that still rounds into RmlUi's int coordinates.
+constexpr double maximum_pointer_coordinate = std::numeric_limits<int>::max() - 1.0;
 // RML controls that edit a value with keys, and the input types that only activate.
 constexpr std::string_view textarea_tag = "textarea";
 constexpr std::string_view select_tag = "select";
@@ -392,25 +394,36 @@ struct UiContext::Impl {
         system.DeactivateKeyboard();
         (void)SDL_CaptureMouse(false);
     }
+    // Framebuffer pixels for SDL window coordinates, checked and rounded from the same scaled value.
+    Rml::Vector2i framebuffer_position(float x, float y) const {
+        const double scaled_x = double(x) * system.pixel_density, scaled_y = double(y) * system.pixel_density;
+        if (!std::isfinite(scaled_x) || !std::isfinite(scaled_y) || std::abs(scaled_x) > maximum_pointer_coordinate ||
+            std::abs(scaled_y) > maximum_pointer_coordinate)
+            throw std::invalid_argument("Invalid UI pointer coordinates");
+        return {int(std::lround(scaled_x)), int(std::lround(scaled_y))};
+    }
     UiInputResult event(const SDL_Event &event) {
         running();
         const auto *target = SDL_GetWindowFromEvent(&event);
         if (target && target != window)
             return input_state();
+        // Every pointer payload is checked before anything below changes state, whatever the focus or held
+        // presses, so a rejected event changes nothing.
+        Rml::Vector2i position;
+        if (event.type == SDL_EVENT_MOUSE_MOTION)
+            position = framebuffer_position(event.motion.x, event.motion.y);
+        else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP)
+            position = framebuffer_position(event.button.x, event.button.y);
+        else if (event.type == SDL_EVENT_MOUSE_WHEEL &&
+                 (!std::isfinite(event.wheel.x) || !std::isfinite(event.wheel.y)))
+            throw std::invalid_argument("Invalid UI wheel delta");
         synchronize_focus();
         const auto before = input_state();
         const bool owned_pointer = !buttons.empty();
         bool world_pointer = !world_buttons.empty();
         bool propagate = true, pointer_event = false, keyboard_event = false, lost = false;
         const auto mods = modifiers(SDL_GetModState());
-        const auto move = [&](float x, float y) {
-            if (!std::isfinite(x) || !std::isfinite(y) ||
-                std::abs(double(x) * system.pixel_density) > std::numeric_limits<int>::max() - 1.0 ||
-                std::abs(double(y) * system.pixel_density) > std::numeric_limits<int>::max() - 1.0)
-                throw std::invalid_argument("Invalid UI pointer coordinates");
-            return context->ProcessMouseMove(int(std::lround(x * system.pixel_density)),
-                                             int(std::lround(y * system.pixel_density)), mods);
-        };
+        const auto move = [&] { return context->ProcessMouseMove(position.x, position.y, mods); };
         switch (event.type) {
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             focus_lost();
@@ -435,7 +448,7 @@ struct UiContext::Impl {
                 if (world_pointer)
                     (void)context->ProcessMouseLeave();
                 else
-                    propagate = move(event.motion.x, event.motion.y);
+                    propagate = move();
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -459,11 +472,11 @@ struct UiContext::Impl {
                         (void)context->ProcessMouseLeave();
                         (void)context->ProcessMouseButtonUp(button, mods);
                         if (world_buttons.empty())
-                            (void)move(event.button.x, event.button.y);
+                            (void)move();
                     }
                     break;
                 }
-                (void)move(event.button.x, event.button.y);
+                (void)move();
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                     auto *hover = context->GetHoverElement();
                     // Text controls replace anonymous children while editing. Own
