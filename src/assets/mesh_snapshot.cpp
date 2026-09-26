@@ -291,9 +291,6 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
             value.texture = texture_index(texture, TextureEncoding::srgb);
             value.metallic_roughness_texture = texture_index(pbr.metallic_roughness_texture, TextureEncoding::linear);
         }
-        require(std::isfinite(value.metallic) && value.metallic >= 0 && value.metallic <= 1 &&
-                    std::isfinite(value.roughness) && value.roughness >= 0 && value.roughness <= 1,
-                "Metallic and roughness factors must be finite in [0,1]");
         validate_material(value, asset->textures);
         asset->materials.push_back(std::move(value));
     }

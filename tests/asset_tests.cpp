@@ -9,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 void require(bool condition, const char *message) {
@@ -327,8 +328,7 @@ int main(int argc, char **argv) {
             }
             require(rejected, "Unsupported animation needs an explicit diagnostic");
         }
-        for (const auto *kind :
-             {"bad-index", "bad-view", "sparse", "extension", "alpha", "truncated", "bad-metallic", "bad-roughness"}) {
+        for (const auto *kind : {"bad-index", "bad-view", "sparse", "extension", "alpha", "truncated"}) {
             bool rejected = false;
             try {
                 (void)anima::load_glb(fixture(temp, kind));
@@ -336,6 +336,16 @@ int main(int argc, char **argv) {
                 rejected = true;
             }
             require(rejected, "Invalid or unsupported GLB accepted");
+        }
+        // validate_material owns the factor ranges.
+        for (const auto *kind : {"bad-metallic", "bad-roughness"}) {
+            bool rejected = false;
+            try {
+                (void)anima::load_glb(fixture(temp, kind));
+            } catch (const std::invalid_argument &error) {
+                rejected = std::string_view(error.what()) == "Invalid material factors";
+            }
+            require(rejected, "An out-of-range material factor was not rejected by validate_material");
         }
         const auto projection = anima::perspective(1.5F, 0.1F, 100.F);
         near((-0.1F * projection[10] + projection[14]) / 0.1F, 0, "Vulkan near plane incorrect");

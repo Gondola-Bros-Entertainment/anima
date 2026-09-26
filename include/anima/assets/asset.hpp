@@ -279,10 +279,10 @@ struct Pose {
 /// sparse accessors, compressed geometry, texture transforms, `BLEND` materials, maps on
 /// different UV sets, morph targets and GPU instancing are rejected.
 ///
-/// Throws `std::runtime_error` for unsupported or malformed content, including metallic or
-/// roughness factors outside [0, 1]; `std::invalid_argument` for other material values that
-/// validate_material rejects; and anima::MathError, a `std::invalid_argument`, for a rotation that
-/// cannot be normalized.
+/// Throws `std::runtime_error` for unsupported or malformed content; `std::invalid_argument` for
+/// material values that validate_material rejects, including metallic or roughness factors outside
+/// [0, 1]; and anima::MathError, a `std::invalid_argument`, for a rotation that cannot be
+/// normalized.
 [[nodiscard]] std::shared_ptr<const Asset> load_asset(std::span<const std::byte> bytes);
 /// Imports a GLB holding only nodes and clips, for motion bound to a separate model through
 /// MotionRuntime. As load_asset(std::span<const std::byte>), except that the file needs at least

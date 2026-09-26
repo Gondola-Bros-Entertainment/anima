@@ -137,6 +137,16 @@ TEST_CASE("Supplied tangents are ignored when normals are generated") {
     }
 }
 
+TEST_CASE("A metallic factor outside [0, 1] is rejected by material validation") {
+    // load_asset checks every material with validate_material, which owns the factor ranges.
+    const auto bytes = glb(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+      "materials":[{"pbrMetallicRoughness":{"metallicFactor":1.5}}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],)" +
+                               triangle_json(position_bytes + vec4_bytes) + "}",
+                           triangle({}));
+    CHECK_THROWS_WITH_AS(load_asset(bytes), "Invalid material factors", std::invalid_argument);
+}
+
 TEST_CASE("A clip whose samplers hold one key imports as a pose of zero duration") {
     const auto asset =
         load_motion_asset(single_key_motion(R"([{"sampler":0,"target":{"node":0,"path":"translation"}}])"));
