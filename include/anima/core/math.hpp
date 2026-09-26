@@ -31,8 +31,9 @@ inline Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a
 inline float length(Vec3 v) { return std::sqrt(dot(v, v)); }
 /// Returns @p v scaled to unit length, or `{0, 1, 0}` when its length is NaN or at most `1e-12`.
 inline Vec3 normalized(Vec3 v) {
+    constexpr float minimum_length = 1e-12F;
     const auto n = length(v);
-    return n > 1e-12F ? v * (1 / n) : Vec3{0, 1, 0};
+    return n > minimum_length ? v * (1 / n) : Vec3{0, 1, 0};
 }
 /// 4x4 matrix stored column-major for column vectors: row `r` of column `c` is element `c * 4 + r`.
 using Mat4 = std::array<float, 16>;

@@ -2,6 +2,7 @@
 #include <anima/assets/interaction.hpp>
 #include <iostream>
 #include <limits>
+#include <numbers>
 
 namespace {
 using namespace anima;
@@ -154,7 +155,7 @@ void contact_tests() {
     c.target = {1, 1, 0};
     c.maximum_angle = 1.0F;
     check(!solve_contact(rig, initial, c).reachable, "Joint limit was ignored");
-    c.maximum_angle = 3.14159265358979323846F;
+    c.maximum_angle = std::numbers::pi_v<float>;
     c.weight = 0;
     const auto none = rig.world(solve_contact(rig, initial, c).pose);
     for (std::size_t i = 0; i < rig.size(); ++i)

@@ -1,3 +1,4 @@
+#include "mesh_limits.hpp"
 #include "presentation_data.hpp"
 #include <anima/assets/motion_runtime.hpp>
 namespace anima {
@@ -214,7 +215,7 @@ struct MotionRuntime::Impl {
             if (parent_name(*resource_, from) != parent_name(*asset_, to))
                 throw std::invalid_argument("Motion resource hierarchy differs from body bind");
             for (std::size_t j = 0; j < 16; ++j)
-                if (std::abs(source_rest.world[i][j] - rest_.world[target][j]) > 1e-5F)
+                if (std::abs(source_rest.world[i][j] - rest_.world[target][j]) > mesh_limits::rest_pose_tolerance)
                     throw std::invalid_argument("Motion resource bind differs from body model");
             binding_.emplace_back(i, target);
         }

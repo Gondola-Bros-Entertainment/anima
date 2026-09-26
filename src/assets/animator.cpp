@@ -1,3 +1,4 @@
+#include "mesh_limits.hpp"
 #include <anima/animation.hpp>
 
 namespace anima {
@@ -10,7 +11,8 @@ bool Mesh::accepts_animation_source(const Asset &source) const {
     const auto rest = sample_pose(source);
     for (std::size_t i = 0; i < rest.world.size(); ++i)
         for (std::size_t k = 0; k < 16; ++k)
-            if (!std::isfinite(rest.world[i][k]) || std::abs(rest.world[i][k] - rest_.world[i][k]) > 1e-5F)
+            if (!std::isfinite(rest.world[i][k]) ||
+                std::abs(rest.world[i][k] - rest_.world[i][k]) > mesh_limits::rest_pose_tolerance)
                 return false;
     return true;
 }

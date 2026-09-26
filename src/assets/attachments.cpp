@@ -1,3 +1,4 @@
+#include "mesh_limits.hpp"
 #include "presentation_data.hpp"
 #include <anima/assets/attachments.hpp>
 namespace anima {
@@ -162,7 +163,7 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
         const auto expected = matrix(value, false);
         const auto &actual = rest.world.at(anima::unique_node(body, name));
         for (std::size_t i = 0; i < actual.size(); ++i)
-            if (std::abs(actual[i] - expected[i]) > 1e-5F)
+            if (std::abs(actual[i] - expected[i]) > anima::mesh_limits::rest_pose_tolerance)
                 throw std::invalid_argument("Body attachment rest frame changed: " + name);
     }
     std::map<std::string, AttachmentSocket, std::less<>> result;
