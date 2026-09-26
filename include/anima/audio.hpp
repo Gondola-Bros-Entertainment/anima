@@ -80,7 +80,8 @@ class Audio {
     Sound sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus = {});
     [[nodiscard]] bool owns(const Sound &sound) const noexcept;
     void volume(float gain);
-    void listener(Vec3 position, Vec3 forward = {0, 0, 1}, Vec3 up = {0, 1, 0});
+    // Right-handed: the default forward (-Z) with +Y up places +X on the listener's right, as for cameras.
+    void listener(Vec3 position, Vec3 forward = view_forward, Vec3 up = world_up);
     unsigned sample_rate() const;
     // Overwrites interleaved stereo samples, hard-limited to [-1, 1]. Linear
     // resampling, looping and fades advance by rendered samples, not wall time.

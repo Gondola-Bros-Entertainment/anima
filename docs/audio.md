@@ -58,7 +58,8 @@ Mono panning uses equal-power left/right gains, with a -3 dB center. Nonspatial
 stereo keeps its original channels at center and reduces the opposite channel
 when panned. Spatial voices downmix to mono, pan relative to the listener's right
 vector, and attenuate linearly between their minimum and maximum distances. The
-default listener faces +Z with +Y up; reversing it reverses left/right. There is
+default listener faces -Z with +Y up, like a camera, so +X is on its right;
+facing +Z reverses left/right. There is
 no distance attenuation inside the minimum radius and silence beyond the maximum.
 Positions and orientations update at the next rendered block. Listener orientation
 rejects zero or parallel forward/up vectors.
@@ -110,6 +111,10 @@ dummy test produces no physical sound and does not establish hardware latency.
 `AudioSource` that owns one mixer voice. These components need no SDL, Vulkan,
 physics backend, device or game assets. Clip selection and playback decisions
 remain application data. The copied independent consumer exercises this API.
+
+The listener faces its object's local -Z with local +Y up, the way a `Camera` on
+that object looks. To listen from a model that faces +Z, attach the listener to a
+child rotated 180 degrees about Y.
 
 ```cpp
 anima::Audio audio;

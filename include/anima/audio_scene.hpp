@@ -3,7 +3,7 @@
 #include <anima/scene.hpp>
 
 namespace anima {
-/// The enabled listener uses its object's world position, +Z forward and +Y up.
+/// The enabled listener uses its object's world position, local -Z forward and +Y up, like a Camera.
 struct AudioListener {};
 
 struct AudioSourceSettings {

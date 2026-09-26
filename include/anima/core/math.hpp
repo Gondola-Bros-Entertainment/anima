@@ -12,7 +12,11 @@ struct Vec3 {
 };
 inline Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 inline Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline Vec3 operator-(Vec3 v) { return {-v.x, -v.y, -v.z}; }
 inline Vec3 operator*(Vec3 a, float b) { return {a.x * b, a.y * b, a.z * b}; }
+// Engine basis: right-handed with +Y up. Cameras and audio listeners face local -Z.
+inline constexpr Vec3 world_up{0, 1, 0};
+inline constexpr Vec3 view_forward{0, 0, -1};
 inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 inline float length(Vec3 v) { return std::sqrt(dot(v, v)); }
@@ -22,6 +26,11 @@ inline Vec3 normalized(Vec3 v) {
 }
 using Mat4 = std::array<float, 16>; // Column-major, column vectors, glTF convention.
 inline Mat4 identity() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
+// Columns 0 to 2 hold the transformed (scaled) X, Y and Z axes; column 3 holds the translation.
+inline Vec3 axis_x(const Mat4 &m) { return {m[0], m[1], m[2]}; }
+inline Vec3 axis_y(const Mat4 &m) { return {m[4], m[5], m[6]}; }
+inline Vec3 axis_z(const Mat4 &m) { return {m[8], m[9], m[10]}; }
+inline Vec3 translation_of(const Mat4 &m) { return {m[12], m[13], m[14]}; }
 inline Mat4 inverse(const Mat4 &matrix) {
     double rows[4][8]{};
     for (unsigned r = 0; r < 4; ++r)

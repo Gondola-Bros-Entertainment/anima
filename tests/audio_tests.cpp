@@ -162,7 +162,13 @@ void buses_fades_and_space() {
     audio.render(output);
     near(output[1], 0, "Source beyond radius remained audible");
     sound.position({1, 0, 0});
+    audio.listener({});
+    audio.render(output);
+    near(output[1], 1, "The default listener did not face -Z");
     audio.listener({}, {0, 0, -1});
+    audio.render(output);
+    near(output[1], 1, "A listener facing -Z did not hear +X on its right");
+    audio.listener({}, {0, 0, 1});
     audio.render(output);
     near(output[0], 1, "Listener orientation did not reverse panning");
     child = {};
