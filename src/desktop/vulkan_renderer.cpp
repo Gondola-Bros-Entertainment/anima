@@ -1823,6 +1823,7 @@ RenderStats VulkanRenderer::shutdown() {
 }
 FrameProfile VulkanRenderer::frame_profile() const noexcept { return impl_->profile; }
 #ifdef ANIMA_UI
+std::uint64_t VulkanRenderer::presented_frames() const noexcept { return impl_->stats.presented_frames; }
 bool VulkanRenderer::srgb_presentation() {
     impl_->running();
     try {

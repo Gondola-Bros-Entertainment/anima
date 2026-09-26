@@ -83,12 +83,14 @@ inline int run(int argc, char **argv) {
                 (void)ui.process_event(event);
         }
     };
+    std::uint64_t ui_frames = 0; // Frames that this context's render() calls presented.
     const auto frame = [&] {
         for (;;) {
             pump();
             ui.update();
             if (ui.render()) {
                 ++frames;
+                ++ui_frames;
                 break;
             }
             SDL_Delay(5);
@@ -445,6 +447,7 @@ inline int run(int argc, char **argv) {
     subscription.disconnect();
     const auto ui_stats = ui.stats();
     require(!ui_stats.log_errors && !ui_stats.log_warnings, "RmlUi emitted diagnostics");
+    require(ui_stats.rendered_frames == ui_frames, "UI frame count differs from the frames its renders presented");
     const bool capture_held = SDL_CaptureMouse(true) && mouse_captured();
     if (!capture_held)
         skip_capture("UI shutdown keeps the application's mouse capture");

@@ -48,7 +48,8 @@ struct UiInputResult {
 struct UiStats {
     /// Completed UiContext::update calls.
     std::uint64_t updates{};
-    /// UiContext::render calls that presented a frame.
+    /// Frames that the renderer presented during UiContext::render calls, as
+    /// RenderStats::presented_frames counts them.
     std::uint64_t rendered_frames{};
     /// Warnings RmlUi logged, including those for images that could not be loaded.
     std::uint32_t log_warnings{};

@@ -338,6 +338,8 @@ class VulkanRenderer {
     // Whether the surface offers the sRGB format that UI blending needs; UiContext checks it at construction.
     [[nodiscard]] bool srgb_presentation();
     [[nodiscard]] bool draw_ui(const detail::UiFrame &frame);
+    // RenderStats::presented_frames so far, from which UiContext counts the frames each render presents.
+    [[nodiscard]] std::uint64_t presented_frames() const noexcept;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
