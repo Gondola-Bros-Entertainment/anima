@@ -1,11 +1,11 @@
 #pragma once
+#include "gpu_checks.hpp"
 #include "reference.hpp"
 #include "resources.hpp"
 #include <anima/lighting.hpp>
 #include <anima/scene_set.hpp>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <numbers>
 #include <sstream>
@@ -89,27 +89,9 @@ inline std::shared_ptr<const anima::Asset> curved_fixture() {
     return asset;
 }
 constexpr std::size_t rgb_channels = 3;
-// An 8-bit RGB image that VulkanRenderer::request_capture wrote as a binary PPM, top row first.
-struct CapturedImage {
-    std::uint32_t width{}, height{};
-    std::vector<std::uint8_t> rgb;
-};
-inline CapturedImage read_capture(const std::filesystem::path &path) {
-    constexpr unsigned channel_max = 255;
-    std::ifstream input(path, std::ios::binary);
-    std::string magic;
-    unsigned maximum = 0;
-    CapturedImage image;
-    input >> magic >> image.width >> image.height >> maximum;
-    input.get(); // The single whitespace byte that ends the header.
-    resource_test::require(input && magic == "P6" && maximum == channel_max, "Capture is not an 8-bit binary PPM");
-    image.rgb.resize(std::size_t(image.width) * image.height * rgb_channels);
-    input.read(reinterpret_cast<char *>(image.rgb.data()), static_cast<std::streamsize>(image.rgb.size()));
-    resource_test::require(bool(input), "Capture ended before its pixels");
-    return image;
-}
 // Mean of each channel over the pixels within @p radius of the pixel that contains @p at.
-inline std::array<double, rgb_channels> window_mean(const CapturedImage &image, std::array<float, 2> at, int radius) {
+inline std::array<double, rgb_channels> window_mean(const gpu_check::Image &image, std::array<float, 2> at,
+                                                    int radius) {
     const auto column = static_cast<long>(std::floor(at[0])), row = static_cast<long>(std::floor(at[1]));
     resource_test::require(column - radius >= 0 && row - radius >= 0 && column + radius < long(image.width) &&
                                row + radius < long(image.height),
@@ -173,7 +155,7 @@ inline std::shared_ptr<const anima::Asset> box_fixture(anima::Vec3 half, bool gr
 // shadows alike. The sun, the camera and the shadow region lie in the plane x = 0 that relates them, and each
 // cube stands on its own ground tile, the mirrored cube's tile being the other tile mirrored.
 template <class Capture>
-void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesystem::path &output, Capture &&capture) {
+void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, const gpu_check::Captures &images) {
     using anima::operator*;
     constexpr float half = .5F, offset = 1.5F, turn = .5235988F; // 30 degrees about +Y.
     constexpr anima::Vec3 tile_half{offset, 0, 3};               // Covers a cube and its shadow.
@@ -221,7 +203,7 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesyst
     renderer.set_environment(lighting);
     renderer.set_scenes({scene});
     capture("mirrored-shading");
-    const auto image = read_capture(output / "mirrored-shading.ppm");
+    const auto &image = images["mirrored-shading"];
     struct Sample {
         const char *name;
         anima::Vec3 original, mirrored;
@@ -264,19 +246,19 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesyst
     report << "reflected pixels beyond " << symmetry_tolerance << " levels: " << mismatch * 100 << "%";
     std::cout << "MIRRORED SHADING " << report.str() << '\n';
     // Without light and shadow to compare, matching samples would prove nothing.
-    resource_test::require(originals[0][0] > originals[2][0] + lit_margin &&
-                               originals[3][0] > originals[2][0] + lit_margin,
-                           "The original cube's front face or its ground is not sunlit, or its shadow is missing");
-    if (!matched || mismatch > mismatch_limit)
-        throw std::runtime_error("Mirrored draws shade differently: " + report.str());
+    images.require(originals[0][0] > originals[2][0] + lit_margin && originals[3][0] > originals[2][0] + lit_margin,
+                   "The original cube's front face or its ground is not sunlit, or its shadow is missing",
+                   {"mirrored-shading"});
+    images.require(matched && mismatch <= mismatch_limit, "Mirrored draws shade differently: " + report.str(),
+                   {"mirrored-shading"});
 
     // The CPU reference draws the scene's snapshot through identity matrices, so the mirrored cube and tile shade
     // as they do directly only when the snapshot keeps each triangle's winding against its normals.
     renderer.set_scenes({reference_test::scene(scene->snapshot())});
     capture("mirrored-reference");
-    const auto reference = read_capture(output / "mirrored-reference.ppm");
-    resource_test::require(reference.width == image.width && reference.height == image.height,
-                           "The reference capture's size differs from the direct capture's");
+    const auto &reference = images["mirrored-reference"];
+    images.require(gpu_check::same_size(reference, image), "The reference capture's size differs from the direct one's",
+                   {"mirrored-shading", "mirrored-reference"});
     std::ostringstream reference_report;
     bool reference_matched = true;
     for (const auto &sample : samples)
@@ -292,24 +274,19 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesyst
             }
             reference_report << "; ";
         }
-    std::size_t differing = 0;
-    for (std::size_t i = 0; i < image.rgb.size(); i += rgb_channels)
-        for (std::size_t c = 0; c < rgb_channels; ++c)
-            if (std::abs(int(image.rgb[i + c]) - int(reference.rgb[i + c])) > symmetry_tolerance) {
-                ++differing;
-                break;
-            }
-    const auto differing_fraction = double(differing) / (double(image.width) * image.height);
-    reference_report << "pixels beyond " << symmetry_tolerance << " levels: " << differing_fraction * 100 << "%";
+    const auto agreement = gpu_check::parity(reference, image);
+    reference_report << "mean difference " << agreement.mean << ", pixels beyond 16 levels: " << agreement.large * 100
+                     << "%";
     std::cout << "MIRRORED REFERENCE direct/reference " << reference_report.str() << '\n';
-    if (!reference_matched || differing_fraction > mismatch_limit)
-        throw std::runtime_error("The CPU reference shades mirrored draws differently: " + reference_report.str());
+    images.require(reference_matched, "The CPU reference shades mirrored draws differently: " + reference_report.str(),
+                   {"mirrored-shading", "mirrored-reference"});
+    images.require_parity("mirrored-reference", "mirrored-shading");
 }
 // A box scaled to zero along Z shades as the square it collapses to, like an ordinary square facing +Z at the
 // mirror position. The sun and the camera lie in the plane x = 0 between them and nothing casts shadows, so only
 // their normals can differ. An upward square in view shows that a +Y normal would shade them differently.
 template <class Capture>
-void check_collapsed_shading(anima::VulkanRenderer &renderer, const std::filesystem::path &output, Capture &&capture) {
+void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture, const gpu_check::Captures &images) {
     using anima::operator*;
     constexpr float half = .5F, offset = 1.2F;
     constexpr float quarter_turn = 1.5707964F; // Turns +Y to +Z about +X.
@@ -338,7 +315,7 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, const std::filesys
     renderer.set_environment(lighting);
     renderer.set_scenes({scene});
     capture("collapsed-shading");
-    const auto image = read_capture(output / "collapsed-shading.ppm");
+    const auto &image = images["collapsed-shading"];
     const auto sample = [&](anima::Vec3 world) {
         return window_mean(image, project(view, world, image.width, image.height), window_radius);
     };
@@ -358,26 +335,166 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, const std::filesys
     }
     std::cout << "COLLAPSED SHADING " << report.str() << '\n';
     // If +Y and +Z normals shaded alike here, a match would prove nothing.
-    if (!distinct)
-        throw std::runtime_error("The upward and the ordinary square shade alike: " + report.str());
-    if (!matched)
-        throw std::runtime_error("A collapsed draw shades unlike its flattened surface: " + report.str());
+    images.require(distinct, "The upward and the ordinary square shade alike: " + report.str(), {"collapsed-shading"});
+    images.require(matched, "A collapsed draw shades unlike its flattened surface: " + report.str(),
+                   {"collapsed-shading"});
+}
+// The pixel of ground point (x, y, z) seen from @p eye looking at the origin, through a 45-degree vertical field of
+// view and a 4:3 aspect, the environment views' projection. Rounds half to even, as the removed Python check did.
+inline gpu_check::Rgb ground_pixel(const gpu_check::Image &image, double x, double z,
+                                   std::array<double, 3> eye = {0, 6, 10}, double y = 0) {
+    const double cotangent = 1 + std::numbers::sqrt2; // 1 / tan(22.5 degrees)
+    constexpr double aspect = 4. / 3;
+    const auto length = std::sqrt(eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2]);
+    const std::array backward{eye[0] / length, eye[1] / length, eye[2] / length};
+    const auto horizontal = std::hypot(eye[0], eye[2]);
+    const std::array right{eye[2] / horizontal, 0., -eye[0] / horizontal};
+    const std::array up{backward[1] * right[2], backward[2] * right[0] - backward[0] * right[2],
+                        -backward[1] * right[0]};
+    const auto x_view = right[0] * x + right[2] * z;
+    const auto y_view = up[0] * x + up[1] * y + up[2] * z;
+    const auto depth = length - backward[0] * x - backward[1] * y - backward[2] * z;
+    const auto px = std::nearbyint((1 + cotangent * x_view / (depth * aspect)) * image.width / 2);
+    const auto py = std::nearbyint((1 - cotangent * y_view / depth) * image.height / 2);
+    return gpu_check::pixel(image, std::size_t(px), std::size_t(py));
+}
+inline int sum(const gpu_check::Rgb &c) { return c[0] + c[1] + c[2]; }
+// The coarse 12-sided cylinder's smooth normals face the light at these probes while the polygon beside them faces
+// away. Ray casting each shadow texel's light ray through the polygon proves that ordinary self-occlusion there
+// stays under the configured residual bias, so extending that nearly edge-on plane must not invent a shadow: the
+// shadowed image may differ from the unshadowed one by 2 levels, rendering and quantization error.
+inline void check_curved_receiver(const gpu_check::Captures &images) {
+    constexpr int least_direct_light = 16, largest_error = 2;
+    constexpr double cylinder_radius = .3, view_width = 1.2, view_height = .9, side_width = .15;
+    constexpr double shadow_extent = 50, shadow_depth = 70, shadow_texels = 2048;
+    constexpr double constant_bias = .00035, slope_bias = .001;
+    images.require_same("curved-shadowed", "curved-reference-shadowed", "The curved receiver's backends differ");
+    const auto &unshadowed = images["curved-unshadowed"];
+    const auto &shadowed = images["curved-shadowed"];
+    images.require(gpu_check::same_size(unshadowed, shadowed), "The curved captures differ in size",
+                   {"curved-unshadowed", "curved-shadowed"});
+    using Point = std::array<double, 2>; // X and Z.
+    const auto dot = [](const Point &a, const Point &b) { return a[0] * b[0] + a[1] * b[1]; };
+    std::array<Point, 12> vertices{};
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+        vertices[i] = {cylinder_radius * std::sin(double(i) * std::numbers::pi / 6),
+                       cylinder_radius * std::cos(double(i) * std::numbers::pi / 6)};
+    const Point light{-4 / std::sqrt(17.), 1 / std::sqrt(17.)};
+    const Point right{light[1], -light[0]};
+    const auto geometric_light = dot({std::sin(std::numbers::pi / 12), std::cos(std::numbers::pi / 12)}, light);
+    images.require(geometric_light < 0, "The curved fixture no longer reaches the geometric light terminator", {});
+    for (const double fraction : {.04, .06, .08}) {
+        // Probe actual pixel centers, not the ideal projected coordinates.
+        const auto px = std::nearbyint((side_width * fraction / view_width + .5) * unshadowed.width - .5);
+        const auto x = ((px + .5) / unshadowed.width - .5) * view_width;
+        const auto t = x / side_width;
+        const Point radial{x, vertices[0][1] * (1 - t) + vertices[1][1] * t};
+        const auto length = std::hypot(radial[0], radial[1]);
+        const auto shaded_light = dot({radial[0] / length, radial[1] / length}, light);
+        images.require(shaded_light > 0, "A curved probe is not directly lit", {});
+        const auto bias = shadow_depth * (constant_bias + slope_bias * (1 - shaded_light));
+        const auto first_texel = std::floor((dot(radial, right) / shadow_extent + .5) * shadow_texels - .5);
+        double advance = 0;
+        for (const double tap : {-1., 0., 1., 2.}) {
+            const auto projected = ((first_texel + tap + .5) / shadow_texels - .5) * shadow_extent;
+            for (std::size_t i = 0; i < vertices.size(); ++i) {
+                const auto &a = vertices[i], &b = vertices[(i + 1) % vertices.size()];
+                const auto ra = dot(a, right), rb = dot(b, right);
+                if (std::min(ra, rb) <= projected && projected <= std::max(ra, rb)) {
+                    const auto u = (projected - ra) / (rb - ra);
+                    const Point hit{a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u};
+                    advance = std::max(advance, dot(hit, light) - dot(radial, light));
+                }
+            }
+        }
+        images.require(advance < bias,
+                       "A curved probe is occluded by " + std::to_string(advance) + " m, beyond the bias " +
+                           std::to_string(bias),
+                       {});
+        for (const double y : {-.2, 0., .2}) {
+            const auto py = std::nearbyint((.5 - y / view_height) * unshadowed.height - .5);
+            const auto a = gpu_check::pixel(unshadowed, std::size_t(px), std::size_t(py));
+            const auto b = gpu_check::pixel(shadowed, std::size_t(px), std::size_t(py));
+            images.require(std::min({a[0], a[1], a[2]}) > least_direct_light,
+                           "A curved probe lacks measurable direct light: " + gpu_check::text(a),
+                           {"curved-unshadowed"});
+            images.require(gpu_check::difference(a, b) <= largest_error,
+                           "The curved receiver invented a self-shadow at " + std::to_string(px) + ", " +
+                               std::to_string(py) + ": " + gpu_check::text(a) + " unshadowed, " + gpu_check::text(b) +
+                               " shadowed",
+                           {"curved-unshadowed", "curved-shadowed"});
+        }
+    }
+}
+// The removed Python check's comparisons of the captures that run() takes, with its thresholds.
+inline void check_images(const gpu_check::Captures &images) {
+    for (const auto *name : {"baseline", "restored", "rejected", "inactive"})
+        images.require_same("shadowed", std::string("scene-light-") + name,
+                            "Scene light selection changed accepted pixels");
+    constexpr double least_change = .005;
+    for (const auto &[first, second] :
+         {std::pair{"baseline", "rotated"}, std::pair{"rotated", "tinted"}, std::pair{"tinted", "settings"}})
+        images.require_changed(std::string("scene-light-") + first, std::string("scene-light-") + second, least_change,
+                               "A scene light update had no visible effect");
+    for (const auto *other :
+         {"shadowed-unculled", "invalid-preserved", "reference-shadowed", "restored-shadow", "camera-restored"})
+        images.require_same("shadowed", other, "The environment image changed");
+    for (const auto *other : {"detail-reference-shadowed", "detail-invalid-preserved", "detail-snapped"})
+        images.require_same("detail-shadowed", other, "The detail shadow image changed");
+    for (const auto *other : {"detail-away", "detail-disabled"})
+        images.require_same("shadowed", other, "The detail region damaged world coverage");
+    images.require_same("sky", "sky-shadows-disabled", "An empty shadow pass changed the sky");
+    check_curved_receiver(images);
+    // An unobstructed plane facing the light must not shadow itself, even at a light cosine of about 0.044.
+    constexpr int largest_slope_error = 2;
+    for (const auto *fixture_name : {"slope", "steep-slope"}) {
+        const std::string prefix = fixture_name;
+        images.require_same(prefix + "-shadowed", prefix + "-reference-shadowed", "The receiver's backends differ");
+        for (const double x : {-3., -1.5, 0., 1.5, 3.})
+            for (const double z : {-3., -1.5, 0., 1.5, 3.}) {
+                constexpr double slope = .35;
+                const auto a = ground_pixel(images[prefix + "-unshadowed"], x, z, {0, 6, 10}, slope * x);
+                const auto b = ground_pixel(images[prefix + "-shadowed"], x, z, {0, 6, 10}, slope * x);
+                images.require(gpu_check::difference(a, b) <= largest_slope_error,
+                               prefix + " shadows itself at " + std::to_string(x) + ", " + std::to_string(z) + ": " +
+                                   gpu_check::text(a) + " unshadowed, " + gpu_check::text(b) + " shadowed",
+                               {prefix + "-unshadowed", prefix + "-shadowed"});
+            }
+    }
+    for (const auto *name : {"multi-scene-shadowed", "multi-scene-unculled", "multi-scene-rejected"})
+        images.require_same(name, "shadowed", "Multi-scene shadows or selection changed the image");
+    images.require_same("multi-scene-unloaded", "caster-hidden", "An unloaded caster kept rendering");
+    // The 2x2 alpha mask has opaque diagonal quadrants and clear off-diagonal ones: the opaque ones darken the
+    // ground below them by more than 90 levels summed over the channels, and the clear ones by at most 6, or 12
+    // with the camera moved. The translated detail fixture keeps the same geometry relative to its camera, and
+    // detail-boundary also samples the 0.16 m blend strip at x = -0.7.
+    constexpr int least_shadow = 90, largest_clear_change = 6, largest_moved_clear_change = 12;
+    const auto shadow = [&](const std::string &name, int loss, bool opaque, int clear_limit, double x, double z) {
+        images.require(opaque ? loss > least_shadow : std::abs(loss) <= clear_limit,
+                       name + " darkens the ground at " + std::to_string(x) + ", " + std::to_string(z) + " by " +
+                           std::to_string(loss) + (opaque ? " under an opaque texel" : " under a clear texel"),
+                       {"unshadowed", name});
+    };
+    for (const auto &[x, z, opaque] : {std::tuple{-.7, -.7, true}, std::tuple{.7, -.7, false},
+                                       std::tuple{-.7, .7, false}, std::tuple{.7, .7, true}}) {
+        const auto a = ground_pixel(images["unshadowed"], x, z);
+        shadow("shadowed", sum(a) - sum(ground_pixel(images["shadowed"], x, z)), opaque, largest_clear_change, x, z);
+        images.require(ground_pixel(images["caster-hidden"], x, z) == a, "An invisible caster kept its shadow",
+                       {"unshadowed", "caster-hidden"});
+        for (const auto *name : {"detail-shadowed", "detail-only", "detail-outside-world", "detail-boundary"})
+            shadow(name, sum(a) - sum(ground_pixel(images[name], x, z)), opaque, largest_clear_change, x, z);
+        shadow("camera-left", sum(a) - sum(ground_pixel(images["camera-left"], x, z, {-4, 6, 10})), opaque,
+               largest_moved_clear_change, x, z);
+    }
 }
 inline int run(int argc, char **argv) {
     using resource_test::require;
     using anima::operator*;
     require(argc == 3, "Usage: consumer --environment OUTPUT");
     const std::filesystem::path output = argv[2];
-    std::filesystem::create_directories(output);
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    require(SDL_Init(SDL_INIT_VIDEO), "Environment SDL initialization failed");
-    struct Quit {
-        ~Quit() { SDL_Quit(); }
-    } quit;
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima environment verification", 800, 600, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE),
-        SDL_DestroyWindow};
-    require(bool(window), "Environment window failed");
+    gpu_check::Video video;
+    const auto window = gpu_check::window("Anima environment verification", 800, 600, SDL_WINDOW_RESIZABLE);
     anima::RendererOptions options;
     options.validation = true;
     options.profile = true;
@@ -400,11 +517,13 @@ inline int run(int argc, char **argv) {
     environment.shadow.depth = 30;
     environment.shadow.resolution = 1024;
     const auto start = std::chrono::steady_clock::now();
+    gpu_check::Captures images(output);
+    // Draws a frame, and reads it back as @p name unless the name is empty.
     auto capture = [&](const std::string &name) {
         if (!name.empty())
-            renderer.request_capture(output / (name + ".ppm"));
+            renderer.request_capture();
         for (;;) {
-            require(std::chrono::steady_clock::now() - start < std::chrono::seconds(60), "Environment watchdog");
+            require(std::chrono::steady_clock::now() - start < gpu_check::watchdog, "Environment watchdog");
             SDL_Event event{};
             while (SDL_PollEvent(&event)) {
                 require(event.type != SDL_EVENT_QUIT && event.type != SDL_EVENT_WINDOW_CLOSE_REQUESTED,
@@ -416,6 +535,8 @@ inline int run(int argc, char **argv) {
                 break;
             SDL_Delay(5);
         }
+        if (!name.empty())
+            images.add(name, gpu_check::take(renderer));
     };
     renderer.set_environment(environment);
     capture("unshadowed");
@@ -511,12 +632,12 @@ inline int run(int argc, char **argv) {
     scene->set_primitive_visible(id, 1, true);
     environment.shadow.resolution = 512;
     renderer.set_environment(environment);
-    capture("resized-shadow");
+    capture("");
     environment.shadow.resolution = 1024;
     renderer.set_environment(environment);
     capture("restored-shadow");
     renderer.set_view(anima::perspective(4.F / 3, .05F, 2) * anima::look_at({0, 1, 1}, {0, 0, 0}));
-    capture("offscreen-caster");
+    capture("");
     require(renderer.resource_stats().culled_draws >= 1 && renderer.resource_stats().shadow_draw_calls == 2,
             "Main camera incorrectly removed an offscreen shadow caster");
     renderer.set_view(view);
@@ -558,7 +679,7 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
     capture("detail-only");
     renderer.set_view(anima::perspective(4.F / 3, .05F, 2) * anima::look_at({0, 1, 1}, {0, 0, 0}));
-    capture("detail-offscreen-caster");
+    capture("");
     require(renderer.resource_stats().culled_draws >= 1 && renderer.resource_stats().shadow_draw_calls == 2,
             "Main camera removed a detail-region caster");
     auto translated = anima::identity();
@@ -658,12 +779,13 @@ inline int run(int argc, char **argv) {
     environment.shadow.enabled = false;
     renderer.set_environment(environment);
     capture("sky-shadows-disabled");
-    check_mirrored_shading(renderer, output, capture);
-    check_collapsed_shading(renderer, output, capture);
+    check_mirrored_shading(renderer, capture, images);
+    check_collapsed_shading(renderer, capture, images);
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Environment GPU validation failed");
-    std::cout << "PASS environment: shadow casters, detail-pass visibility, invalid-setting rejection, lighting "
-                 "replacement, mirrored and collapsed shading and retirement\n";
+    check_images(images);
+    std::cout << "PASS environment: scene lights, masked shadows, planar and curved receivers, detail regions, "
+                 "reference parity, sky, mirrored and collapsed shading and rollback, with clean validation\n";
     return 0;
 }
 } // namespace environment_test
