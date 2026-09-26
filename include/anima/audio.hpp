@@ -167,6 +167,9 @@ class Audio {
     /// Whether @p sound holds a voice created by this mixer, including after either was moved.
     /// False for an empty Sound or a moved-from mixer.
     [[nodiscard]] bool owns(const Sound &sound) const noexcept;
+    /// Whether this mixer can route to @p bus: the master output (an empty handle) or a bus it
+    /// created. False for every bus of a moved-from mixer.
+    [[nodiscard]] bool owns(const AudioBus &bus) const noexcept;
     /// Sets the master gain, in [0, 16].
     void volume(float gain);
     /// Places the listener that spatial voices pan and attenuate against.

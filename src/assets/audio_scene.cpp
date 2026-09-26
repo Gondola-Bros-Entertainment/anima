@@ -111,6 +111,9 @@ void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClip
     if (!name || !resolve)
         throw std::invalid_argument("Audio codecs require clip naming and resolution callbacks");
     auto mixer = std::make_shared<Audio>(detail::AudioSceneAccess::retain(audio));
+    // Every restore creates its voice on this bus, so a foreign one would make each of them throw.
+    if (!audio.owns(bus))
+        throw std::invalid_argument("Audio codecs require a bus of the same mixer");
     // Keep registration atomic if either type/key is already registered.
     auto pending = codecs;
     using Json = nlohmann::json;

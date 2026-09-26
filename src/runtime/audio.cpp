@@ -141,7 +141,7 @@ void Audio::listener(Vec3 position, Vec3 forward, Vec3 up) {
 }
 AudioBus Audio::bus(const AudioBus &parent) {
     (void)state();
-    if (parent.state_ && (parent.state_->audio != state_ || parent.state_->depth >= maximum_bus_depth))
+    if (!owns(parent) || (parent.state_ && parent.state_->depth >= maximum_bus_depth))
         throw std::invalid_argument("Foreign audio bus or bus depth exceeded");
     AudioBus result;
     result.state_ = std::make_shared<detail::AudioBusState>();
@@ -163,7 +163,7 @@ void AudioBus::muted(bool value) {
 }
 Sound Audio::sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus) {
     auto &s = state();
-    if (!clip || (bus.state_ && bus.state_->audio != state_))
+    if (!clip || !owns(bus))
         throw std::invalid_argument("Missing audio clip or foreign bus");
     std::erase_if(s.voices, [](const auto &voice) { return voice.expired(); });
     if (s.voices.size() >= s.limit)
@@ -177,6 +177,7 @@ Sound Audio::sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus) {
     return result;
 }
 bool Audio::owns(const Sound &sound) const noexcept { return state_ && sound.state_ && sound.state_->audio == state_; }
+bool Audio::owns(const AudioBus &bus) const noexcept { return state_ && (!bus.state_ || bus.state_->audio == state_); }
 void Sound::play() {
     auto &s = state();
     if (s.frame >= double(s.clip->samples().size() / s.clip->channels()))
