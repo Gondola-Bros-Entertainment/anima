@@ -12,7 +12,9 @@
 /// radians. Lengths are meters, which Box2D's tolerances assume, and times are seconds.
 ///
 /// Inputs are validated before they reach the backend. Vector components and angles must be
-/// finite and within 1,000,000 of zero; this is a validation bound, not a precision guarantee.
+/// finite and within 1,000,000 of zero, and each coordinate of a Pose position within 79,999:
+/// Box2D keeps every bounding box within 100,000 meters of the origin, and a collider reaches up
+/// to 20,000 meters from its body. These are validation bounds, not precision guarantees.
 /// Invalid arguments throw `std::invalid_argument` unless a member states otherwise. Box2D caps
 /// linear speed at 400 meters per second and rotation at pi/4 radians per step.
 ///
@@ -34,6 +36,7 @@ struct Vec2 {
 };
 /// Rigid placement in the XY plane. Poses carry no scale.
 struct Pose {
+    /// Position in meters; each coordinate within 79,999 of zero.
     Vec2 position{};
     /// Counterclockwise rotation in radians.
     float angle{};

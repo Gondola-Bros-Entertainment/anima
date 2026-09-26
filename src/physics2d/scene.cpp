@@ -1,5 +1,6 @@
 #include "../detail/json.hpp"
 #include "../detail/scene_driver.hpp"
+#include "limits.hpp"
 #include <anima/physics2d_scene.hpp>
 
 #include <numbers>
@@ -12,7 +13,7 @@ Pose planar_pose(GameObject object, Motion motion) {
     const auto m = object.world_matrix();
     const auto position = translation_of(m);
     for (float value : {position.x, position.y})
-        if (!std::isfinite(value) || std::abs(value) > 1e6F)
+        if (!std::isfinite(value) || std::abs(value) > detail::maximum_position)
             throw std::invalid_argument("2D physics position outside supported range");
     const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 1e-4F; };
     const auto x = axis_x(m), y = axis_y(m), z = axis_z(m);
