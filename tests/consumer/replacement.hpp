@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -60,6 +61,33 @@ inline std::shared_ptr<anima::Scene> scene(const anima::Asset &asset) {
     auto result = std::make_shared<anima::Scene>();
     (void)result->add(anima::Mesh::compile(asset));
     return result;
+}
+// Construction rejects a failure stage that neither it nor draw() can fire, before it needs a window or GPU. The
+// texture stages fire only in an initial selection's upload, so they need RendererOptions::scenes.
+inline void reject_unfireable_injection() {
+    constexpr std::string_view unknown_stage = "Unknown initialization failure stage";
+    constexpr std::string_view no_window = "Renderer requires an SDL window";
+    using enum anima::RendererFailureStage;
+    const auto beyond_enumeration = static_cast<anima::RendererFailureStage>(anima::renderer_failure_names.size());
+    const auto construct = [](anima::RendererFailureStage stage, bool selection) {
+        anima::RendererOptions options;
+        options.fail_after = stage;
+        if (selection)
+            options.scenes = {std::make_shared<anima::Scene>()};
+        try {
+            anima::VulkanRenderer renderer(nullptr, options);
+        } catch (const std::invalid_argument &error) {
+            return std::string(error.what());
+        }
+        throw std::runtime_error("Renderer construction accepted a null window");
+    };
+    for (const auto stage : {vertex, index, texture, texture_upload, descriptors, palette, ready, upload_timeout,
+                             device_lost, beyond_enumeration})
+        if (const auto error = construct(stage, false); error != unknown_stage)
+            throw std::runtime_error("Unfireable failure stage was not rejected: " + error);
+    for (const auto stage : {texture, texture_upload})
+        if (const auto error = construct(stage, true); error != no_window)
+            throw std::runtime_error("A texture stage with an initial selection was rejected: " + error);
 }
 // A swapchain that fails after its predecessor was released leaves nothing to present, so the renderer
 // becomes fatal instead of rebuilding it on every draw.

@@ -53,10 +53,11 @@ inline RendererFailureStage parse_renderer_failure_stage(std::string_view name) 
 /// A failure injected at a RendererFailureStage. Classify it by stage(), not by its message.
 class InjectedRendererFailure : public std::runtime_error {
   public:
-    /// @p initial selects the initialization() result and the message wording.
+    /// @p initial selects the initialization() result and the message: `Injected initialization failure after`
+    /// or `Injected resource preparation failure after`, then the stage's spelling.
     InjectedRendererFailure(RendererFailureStage stage, bool initial)
         : std::runtime_error(std::string(initial ? "Injected initialization failure after "
-                                                 : "Injected scene replacement failure after ") +
+                                                 : "Injected resource preparation failure after ") +
                              std::string(renderer_failure_name(stage))),
           stage_(stage), initial_(initial) {}
     /// The stage that fired.

@@ -263,6 +263,7 @@ int main(int argc, char **argv) {
             return ui_test::run(argc, argv);
 #endif
 #ifdef CONSUMER_DESKTOP
+        replacement_test::reject_unfireable_injection();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--foliage")
