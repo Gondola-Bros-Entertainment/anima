@@ -1,55 +1,52 @@
 #include "component_payloads.hpp"
+#include "near.hpp"
 #include <anima/lighting.hpp>
 #include <anima/scene_set.hpp>
-#include <iostream>
+#include <doctest/doctest.h>
+
+#include <cstddef>
+#include <iterator>
 #include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace anima;
 namespace {
-void check(bool value, const char *message) {
-    if (!value)
-        throw std::runtime_error(message);
+constexpr float tolerance = 2e-5F; // Light directions and radiance, settings and shadow depths.
+constexpr auto busy_scene = "Scene drivers require an idle live scene";
+constexpr auto no_environment = "Lighting selection requires one active environment";
+constexpr auto dead_light = "Selected light must be a live object in the scene selection";
+constexpr auto inactive_light = "Selected light must have an active DirectionalLightComponent";
+constexpr auto collapsed_axes = "Directional light world axes must be nonzero";
+constexpr auto skewed_axes = "Directional light world axes must be orthogonal and right-handed";
+constexpr auto invalid_radiance = "Directional light radiance must be finite nonnegative linear RGB";
+constexpr auto invalid_exposure = "Invalid environment exposure or fog density";
+constexpr auto duplicate_codec = "Duplicate component codec";
+constexpr auto outside_graph = "Object reference is stale or outside the captured graph";
+constexpr auto needs_number = "Lighting field requires a number";
+constexpr auto needs_boolean = "Lighting field requires a boolean";
+constexpr auto needs_vector = "Lighting vector requires three numbers";
+constexpr auto float_range = "JSON number outside the float range";
+constexpr auto integer_resolution = "Shadow resolution requires a positive integer";
+constexpr auto resolution_range = "Shadow resolution exceeds its range";
+bool near(float a, float b) { return a == Near{b, tolerance}; }
+bool near(Vec3 a, Vec3 b) { return near(a.x, b.x) && near(a.y, b.y) && near(a.z, b.z); }
+bool same(const DirectionalShadow &a, const DirectionalShadow &b) {
+    return a.enabled == b.enabled && a.resolution == b.resolution && near(a.center, b.center) &&
+           near(a.extent, b.extent) && near(a.depth, b.depth) && near(a.constant_bias, b.constant_bias) &&
+           near(a.slope_bias, b.slope_bias);
 }
-void near(float a, float b) { check(std::abs(a - b) < 2e-5F, "Lighting numeric mismatch"); }
-void equal(Vec3 a, Vec3 b) {
-    near(a.x, b.x);
-    near(a.y, b.y);
-    near(a.z, b.z);
-}
-void equal(const DirectionalShadow &a, const DirectionalShadow &b) {
-    check(a.enabled == b.enabled && a.resolution == b.resolution, "Shadow state changed");
-    equal(a.center, b.center);
-    near(a.extent, b.extent);
-    near(a.depth, b.depth);
-    near(a.constant_bias, b.constant_bias);
-    near(a.slope_bias, b.slope_bias);
-}
-void equal(const Environment &a, const Environment &b) {
-    equal(a.sun.direction, b.sun.direction);
-    equal(a.fill.direction, b.fill.direction);
-    equal(a.sun.radiance, b.sun.radiance);
-    equal(a.fill.radiance, b.fill.radiance);
-    equal(a.ambient_sky, b.ambient_sky);
-    equal(a.ambient_ground, b.ambient_ground);
-    equal(a.ambient_specular, b.ambient_specular);
-    equal(a.sky_zenith, b.sky_zenith);
-    equal(a.sky_horizon, b.sky_horizon);
-    equal(a.sky_ground, b.sky_ground);
-    equal(a.fog_color, b.fog_color);
-    near(a.fog_density, b.fog_density);
-    near(a.exposure, b.exposure);
-    check(a.sky == b.sky && a.tone_mapping == b.tone_mapping, "Environment state changed");
-    equal(a.shadow, b.shadow);
-    equal(a.detail_shadow, b.detail_shadow);
-}
-template <class F> void rejects(F f) {
-    bool caught = false;
-    try {
-        f();
-    } catch (const std::exception &) {
-        caught = true;
-    }
-    check(caught, "Expected lighting rejection");
+bool same(const Environment &a, const Environment &b) {
+    return near(a.sun.direction, b.sun.direction) && near(a.fill.direction, b.fill.direction) &&
+           near(a.sun.radiance, b.sun.radiance) && near(a.fill.radiance, b.fill.radiance) &&
+           near(a.ambient_sky, b.ambient_sky) && near(a.ambient_ground, b.ambient_ground) &&
+           near(a.ambient_specular, b.ambient_specular) && near(a.sky_zenith, b.sky_zenith) &&
+           near(a.sky_horizon, b.sky_horizon) && near(a.sky_ground, b.sky_ground) && near(a.fog_color, b.fog_color) &&
+           near(a.fog_density, b.fog_density) && near(a.exposure, b.exposure) && a.sky == b.sky &&
+           a.tone_mapping == b.tone_mapping && same(a.shadow, b.shadow) && same(a.detail_shadow, b.detail_shadow);
 }
 GameObject light(Scene &scene, Vec3 radiance = {1, 2, 3}) {
     auto object = scene.create("light");
@@ -62,39 +59,135 @@ auto environment(Scene &scene, GameObject sun, GameObject fill) {
     component->fill = fill;
     return component;
 }
-void transforms_and_configuration() {
+// @p value with its first @p from replaced by @p to.
+std::string replace(std::string value, std::string_view from, std::string_view to) {
+    const auto position = value.find(from);
+    REQUIRE(position != std::string::npos);
+    value.replace(position, from.size(), to);
+    return value;
+}
+// A component payload and the message its decoding throws.
+struct Payload {
+    std::string state, error;
+};
+// invalid_component_payloads(valid, field) with their errors, in its order: an empty object, which lacks @p first,
+// the codec's first field, then @p field renamed, an unknown field, @p field duplicated, @p field duplicated through
+// an escape and nesting past the limit. A payload over the 64 KiB limit follows.
+std::vector<Payload> invalid_payloads(const std::string &valid, const std::string &field, const std::string &first) {
+    const auto states = invalid_component_payloads(valid, field);
+    const std::string errors[]{"Missing JSON field: " + first,   "Missing JSON field: " + field,
+                               "Unknown JSON field: unexpected", "Duplicate JSON document field",
+                               "Duplicate JSON document field",  "JSON document exceeds nesting limit"};
+    REQUIRE(states.size() == std::size(errors));
+    std::vector<Payload> result;
+    for (std::size_t i = 0; i < states.size(); ++i)
+        result.push_back({states[i], errors[i]});
+    result.push_back({std::string(64 * 1024 + 1, ' '), "JSON document exceeds byte limit"});
+    return result;
+}
+struct Reentry {
+    SceneSet *scenes;
+    Scene *scene;
+    unsigned *calls;
+    void on_update(double) {
+        CHECK_THROWS_WITH_AS(lighting_environment(*scene), busy_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(lighting_environment(*scenes),
+                             "Scene drivers cannot run during set mutation or scheduling", std::logic_error);
+        ++*calls;
+    }
+};
+struct Construction {
+    Construction(Scene &scene) { CHECK_THROWS_WITH_AS(lighting_environment(scene), busy_scene, std::logic_error); }
+};
+// Settings with every field changed from its default.
+EnvironmentSettings changed_settings() {
+    EnvironmentSettings settings;
+    settings.ambient_sky = {.2F, .3F, .4F};
+    settings.ambient_ground = {.4F, .3F, .2F};
+    settings.ambient_specular = {.5F, .6F, .7F};
+    settings.sky = true;
+    settings.sky_zenith = {.7F, .8F, .9F};
+    settings.sky_horizon = {.9F, .8F, .7F};
+    settings.sky_ground = {.6F, .5F, .4F};
+    settings.fog_color = {.3F, .2F, .1F};
+    settings.fog_density = .05F;
+    settings.exposure = 1.5F;
+    settings.tone_mapping = true;
+    settings.shadow = {true, {1, 2, 3}, 20, 80, 1024, .002F, .003F};
+    settings.detail_shadow = {true, {4, 5, 6}, 4, 40, 2048, .004F, .005F};
+    return settings;
+}
+// A rig whose environment selects its two child lights, with the lighting codecs registered.
+struct Rig {
+    ComponentCodecs codecs;
+    Scene scene;
+    GameObject root = scene.create("rig");
+    ComponentRef<SceneEnvironment> selected = root.add_component<SceneEnvironment>();
+    GameObject sun = light(scene), fill = light(scene, {.25F, .5F, .75F});
+    EnvironmentSettings settings = changed_settings();
+    Rig() {
+        add_lighting_component_codecs(codecs);
+        sun.set_parent(root, ReparentMode::keep_local);
+        fill.set_parent(root, ReparentMode::keep_local);
+        sun.set_transform({.rotation = {0, 1, 0, 0}, .scale = {3, 4, 5}});
+        selected->sun = sun;
+        selected->fill = fill;
+        selected->configure(settings);
+    }
+};
+} // namespace
+
+TEST_CASE("A light shines along its world -Z axis, whatever its translation and positive scale") {
     Scene scene;
     auto sun = light(scene), fill = light(scene, {});
-    auto selected = environment(scene, sun, fill);
-    auto result = lighting_environment(scene);
-    equal(result.sun.direction, {0, 0, 1});
-    equal(result.sun.radiance, {1, 2, 3});
-    equal(result.fill.radiance, {});
+    (void)environment(scene, sun, fill);
+    const auto result = lighting_environment(scene);
+    CHECK(near(result.sun.direction, {0, 0, 1}));
+    CHECK(near(result.sun.radiance, {1, 2, 3}));
+    CHECK(near(result.fill.radiance, {}));
     auto parent = scene.create();
     parent.set_transform({.translation = {8, 5, 3}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     sun.set_parent(parent, ReparentMode::keep_local);
     sun.set_local_position({300, 200, 100});
-    equal(lighting_environment(scene).sun.direction, {0, 0, -1});
+    CHECK(near(lighting_environment(scene).sun.direction, {0, 0, -1}));
     sun.clear_parent();
     sun.set_transform({.rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     const auto accepted = lighting_environment(scene);
     sun.set_transform({.rotation = {0, 1, 0, 0}});
-    equal(accepted, lighting_environment(scene));
-    for (float scale : {0.F, -1.F, 1e-5F}) {
-        sun.set_transform({.scale = {1, scale, 1}});
-        rejects([&] { (void)lighting_environment(scene); });
-    }
+    CHECK(same(accepted, lighting_environment(scene)));
+}
+
+TEST_CASE("Collapsed, mirrored and sheared light axes are rejected") {
+    Scene scene;
+    auto sun = light(scene);
+    (void)environment(scene, sun, light(scene, {}));
+    sun.set_transform({.scale = {1, 0, 1}});
+    CHECK_THROWS_WITH_AS(lighting_environment(scene), collapsed_axes, std::invalid_argument);
+    sun.set_transform({.scale = {1, -1, 1}});
+    CHECK_THROWS_WITH_AS(lighting_environment(scene), skewed_axes, std::invalid_argument);
+    sun.set_transform({.scale = {1, 1e-5F, 1}}); // Shorter than the 1e-4 minimum axis.
+    CHECK_THROWS_WITH_AS(lighting_environment(scene), collapsed_axes, std::invalid_argument);
     auto shear = identity();
     shear[4] = .3F;
     sun.set_world_matrix(shear);
-    rejects([&] { (void)lighting_environment(scene); });
-    sun.set_world_matrix(identity());
-    auto component = sun.get_component<DirectionalLightComponent>();
+    CHECK_THROWS_WITH_AS(lighting_environment(scene), skewed_axes, std::invalid_argument);
+}
+
+TEST_CASE("Invalid radiance is rejected and keeps the previous value") {
+    Scene scene;
+    auto component = light(scene).get_component<DirectionalLightComponent>();
     for (float invalid : {-1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
         for (auto value : {Vec3{invalid, 1, 1}, Vec3{1, invalid, 1}, Vec3{1, 1, invalid}}) {
-            rejects([&] { component->set_radiance(value); });
-            equal(component->radiance(), {1, 2, 3});
+            INFO("radiance (", value.x, ", ", value.y, ", ", value.z, ")");
+            CHECK_THROWS_WITH_AS(component->set_radiance(value), invalid_radiance, std::invalid_argument);
+            CHECK(near(component->radiance(), {1, 2, 3}));
         }
+}
+
+TEST_CASE("Invalid environment settings are rejected and keep the accepted environment") {
+    Scene scene;
+    auto sun = light(scene);
+    auto selected = environment(scene, sun, light(scene, {}));
     auto settings = selected->settings();
     settings.sky = true;
     settings.tone_mapping = true;
@@ -103,8 +196,9 @@ void transforms_and_configuration() {
     settings.shadow.extent = 8;
     selected->configure(settings);
     const auto configured = lighting_environment(scene);
-    near(point(directional_shadow_matrix(configured), {0, 0, 0}).z, .5F);
+    CHECK(point(directional_shadow_matrix(configured), {0, 0, 0}).z == Near{.5F, tolerance});
     for (unsigned field = 0; field < 9; ++field) {
+        CAPTURE(field);
         auto bad = settings;
         if (field == 0)
             bad.exposure = 0;
@@ -124,85 +218,78 @@ void transforms_and_configuration() {
             bad.detail_shadow.center.z = std::numeric_limits<float>::quiet_NaN();
         if (field == 8)
             bad.shadow.slope_bias = -1;
-        rejects([&] { selected->configure(bad); });
-        equal(configured, lighting_environment(scene));
+        // Fields 0 and 1 break the exposure or fog, 2 and 3 a color, and the rest a shadow region.
+        const auto error = field < 2   ? invalid_exposure
+                           : field < 4 ? "Environment colours must be finite nonnegative linear RGB"
+                                       : "Invalid directional shadow region";
+        CHECK_THROWS_WITH_AS(selected->configure(bad), error, std::invalid_argument);
+        CHECK(same(configured, lighting_environment(scene)));
     }
     settings.detail_shadow.extent = std::numeric_limits<float>::denorm_min();
     selected->configure(settings); // Scalar-valid but cannot form a float projection.
-    rejects([&] { (void)lighting_environment(scene); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scene), "Shadow texel size exceeds finite range", std::invalid_argument);
 }
-void selection_and_lifetime() {
+
+TEST_CASE("Lighting resolution requires one active environment with live lights that have active components") {
     SceneSet scenes;
     auto a = scenes.create("a"), b = scenes.create("b");
     auto sun = light(a.get()), fill = light(b.get());
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), no_environment, std::invalid_argument);
     auto selected = environment(b.get(), sun, fill);
     const auto accepted = lighting_environment(scenes);
     scenes.set_active(a);
-    equal(accepted, lighting_environment(scenes));
+    CHECK(same(accepted, lighting_environment(scenes)));
     scenes.set_active(b);
-    equal(accepted, lighting_environment(scenes));
-    rejects([&] { (void)lighting_environment(b.get()); });
+    CHECK(same(accepted, lighting_environment(scenes)));
+    // The sun is foreign to b on its own.
+    CHECK_THROWS_WITH_AS(lighting_environment(b.get()), dead_light, std::invalid_argument);
     auto extra = environment(a.get(), sun, fill);
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), "Lighting selection has multiple active environments",
+                         std::invalid_argument);
     extra.set_enabled(false);
-    equal(accepted, lighting_environment(scenes));
+    CHECK(same(accepted, lighting_environment(scenes)));
     selected.set_enabled(false);
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), no_environment, std::invalid_argument);
     selected.set_enabled(true);
     selected.object().set_active(false);
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), no_environment, std::invalid_argument);
     selected.object().set_active(true);
     auto group = a->create();
     sun.set_parent(group);
     group.set_active(false);
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), inactive_light, std::invalid_argument);
     group.set_active(true);
     sun.get_component<DirectionalLightComponent>().set_enabled(false);
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), inactive_light, std::invalid_argument);
     sun.remove_component<DirectionalLightComponent>();
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), inactive_light, std::invalid_argument);
     sun.add_component<DirectionalLightComponent>(Vec3{1, 2, 3});
-    equal(accepted, lighting_environment(scenes));
+    CHECK(same(accepted, lighting_environment(scenes)));
     selected->fill = sun; // One authored light may deliberately fill both slots.
-    equal(accepted, lighting_environment(scenes));
+    CHECK(same(accepted, lighting_environment(scenes)));
     selected->fill = fill;
     selected->sun = {};
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
     Scene foreign;
     selected->sun = light(foreign);
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
     selected->sun = a->create("not a light");
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), inactive_light, std::invalid_argument);
     selected->sun = sun;
     fill.destroy();
     (void)light(b.get());
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
     selected->fill = sun;
     scenes.unload(a);
     a = scenes.create("a");
     (void)light(a.get());
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
     scenes.clear();
-    check(!selected, "Environment retained its unloaded scene");
-    rejects([&] { (void)lighting_environment(scenes); });
+    CHECK_FALSE(selected.valid());
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), no_environment, std::invalid_argument);
 }
-struct Reentry {
-    SceneSet *scenes;
-    Scene *scene;
-    unsigned *calls;
-    void on_update(double) {
-        rejects([&] { (void)lighting_environment(*scene); });
-        rejects([&] { (void)lighting_environment(*scenes); });
-        ++*calls;
-    }
-};
-struct Construction {
-    Construction(Scene &scene) {
-        rejects([&] { (void)lighting_environment(scene); });
-    }
-};
-void boundaries() {
+
+TEST_CASE("Lighting does not resolve from component hooks or construction") {
     SceneSet scenes;
     auto scene = scenes.create("level");
     auto sun = light(scene.get());
@@ -211,131 +298,122 @@ void boundaries() {
     sun.add_component<Reentry>(&scenes, &scene.get(), &calls);
     sun.add_component<Construction>(scene.get());
     scenes.update(0);
-    check(calls == 1, "Lighting test callback did not run");
-    (void)lighting_environment(scenes);
+    CHECK(calls == 1);
+    CHECK_NOTHROW(lighting_environment(scenes));
 }
-std::string replace(std::string value, std::string_view from, std::string_view to) {
-    const auto position = value.find(from);
-    check(position != std::string::npos, "Test payload field not found");
-    value.replace(position, from.size(), to);
-    return value;
-}
-void persistence() {
-    ComponentCodecs codecs;
-    add_lighting_component_codecs(codecs);
-    Scene scene;
-    auto root = scene.create("rig");
-    auto selected = root.add_component<SceneEnvironment>();
-    auto sun = light(scene), fill = light(scene, {.25F, .5F, .75F});
-    sun.set_parent(root, ReparentMode::keep_local);
-    fill.set_parent(root, ReparentMode::keep_local);
-    sun.set_transform({.rotation = {0, 1, 0, 0}, .scale = {3, 4, 5}});
-    selected->sun = sun;
-    selected->fill = fill;
-    EnvironmentSettings settings;
-    settings.ambient_sky = {.2F, .3F, .4F};
-    settings.ambient_ground = {.4F, .3F, .2F};
-    settings.ambient_specular = {.5F, .6F, .7F};
-    settings.sky = true;
-    settings.sky_zenith = {.7F, .8F, .9F};
-    settings.sky_horizon = {.9F, .8F, .7F};
-    settings.sky_ground = {.6F, .5F, .4F};
-    settings.fog_color = {.3F, .2F, .1F};
-    settings.fog_density = .05F;
-    settings.exposure = 1.5F;
-    settings.tone_mapping = true;
-    settings.shadow = {true, {1, 2, 3}, 20, 80, 1024, .002F, .003F};
-    settings.detail_shadow = {true, {4, 5, 6}, 4, 40, 2048, .004F, .005F};
-    selected->configure(settings);
+
+TEST_CASE_FIXTURE(Rig, "Lighting links remap per prefab instance, and settings and activation persist") {
     const auto prefab = Prefab::deserialize(Prefab::capture(root, codecs).serialize({}), {}, codecs);
     auto first = prefab.instantiate(scene), second = prefab.instantiate(scene);
-    check(first.get_component<SceneEnvironment>()->sun.id() == first.children()[0].id() &&
-              first.get_component<SceneEnvironment>()->fill.id() == first.children()[1].id() &&
-              second.get_component<SceneEnvironment>()->sun.id() == second.children()[0].id(),
-          "Prefab lighting links did not remap");
+    CHECK(first.get_component<SceneEnvironment>()->sun.id() == first.children()[0].id());
+    CHECK(first.get_component<SceneEnvironment>()->fill.id() == first.children()[1].id());
+    CHECK(second.get_component<SceneEnvironment>()->sun.id() == second.children()[0].id());
     first.set_active(false);
     second.get_component<SceneEnvironment>().set_enabled(false);
     const auto accepted = lighting_environment(scene);
-    auto restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
-    equal(accepted, lighting_environment(*restored));
-    check(!restored->find(first.key()).active_self() &&
-              !restored->find(second.key()).get_component<SceneEnvironment>().enabled(),
-          "Lighting activation state lost");
-    rejects([&] { add_lighting_component_codecs(codecs); });
-    equal(accepted, lighting_environment(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs)));
-    selected->sun = second.children()[0];
-    rejects([&] { (void)Prefab::capture(root, codecs); });
+    const auto restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
+    CHECK(same(accepted, lighting_environment(*restored)));
+    CHECK_FALSE(restored->find(first.key()).active_self());
+    CHECK_FALSE(restored->find(second.key()).get_component<SceneEnvironment>().enabled());
+    CHECK_THROWS_WITH_AS(add_lighting_component_codecs(codecs), duplicate_codec, std::invalid_argument);
+    // The failed registration left the codecs as they were.
+    CHECK(same(accepted, lighting_environment(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs))));
+}
+
+TEST_CASE_FIXTURE(Rig, "Capturing a light outside the prefab is rejected, and a null link stays null") {
+    selected->sun = light(scene);
+    CHECK_THROWS_WITH_AS(Prefab::capture(root, codecs), outside_graph, std::invalid_argument);
     selected->sun = {};
-    auto unconfigured = Prefab::capture(root, codecs).instantiate(scene);
-    check(!unconfigured.get_component<SceneEnvironment>()->sun.valid(), "Null light selection rebound");
-    unconfigured.destroy();
-    selected->sun = sun;
+    const auto unlinked = Prefab::capture(root, codecs).instantiate(scene);
+    CHECK_FALSE(unlinked.get_component<SceneEnvironment>()->sun.valid());
+}
+
+TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking staged objects") {
+    const auto accepted = lighting_environment(scene);
+    const auto prefab = Prefab::capture(root, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     for (unsigned node : {0U, 1U}) {
+        CAPTURE(node);
         auto &data = nodes[node].components[0].state;
         const auto valid = data;
-        auto invalids = invalid_component_payloads(valid, node == 0 ? "sun" : "radiance");
-        invalids.push_back(std::string(64 * 1024 + 1, ' '));
+        std::vector<Payload> payloads;
         if (node == 0) {
-            for (const auto bad : {"0", "\"01\"", "\"99999\""})
-                invalids.push_back(
-                    replace(valid, "\"sun\":\"" + sun.key().string() + "\"", "\"sun\":" + std::string(bad)));
-            for (const auto bad : {"-1", "0", "1.5", "1.0", "true", "4294967296", "18446744073709551616"})
-                invalids.push_back(replace(valid, "\"resolution\":2048", "\"resolution\":" + std::string(bad)));
-            for (const auto bad : {"true", "\"1\"", "-1", "1e100"})
-                invalids.push_back(replace(valid, "\"exposure\":1.5", "\"exposure\":" + std::string(bad)));
-            invalids.push_back(replace(valid, "\"sky\":true", "\"sky\":1"));
-            invalids.push_back(replace(valid, "\"enabled\":true", "\"enabled\":\"true\""));
-            invalids.push_back(replace(valid, "\"center\":[4.0,5.0,6.0]", "\"center\":[4,5]"));
-            invalids.push_back(replace(valid, "\"slope_bias\":", "\"slope_bias\":0,\"slope_bias\":"));
-            invalids.push_back(replace(valid, "\"fog_density\":", "\"unexpected\":"));
+            payloads = invalid_payloads(valid, "sun", "sun");
+            const auto link = "\"sun\":\"" + sun.key().string() + "\"";
+            for (const auto &[bad, error] : {std::pair{"0", "Lighting selection requires an object key string"},
+                                             std::pair{"\"01\"", "Invalid object key"},
+                                             std::pair{"\"99999\"", "Object reference target is missing or expired"}})
+                payloads.push_back({replace(valid, link, "\"sun\":" + std::string(bad)), error});
+            // Only the detail region has a resolution of 2048.
+            for (const auto &[bad, error] :
+                 {std::pair{"-1", integer_resolution}, std::pair{"0", resolution_range},
+                  std::pair{"1.5", integer_resolution}, std::pair{"1.0", integer_resolution},
+                  std::pair{"true", integer_resolution}, std::pair{"4294967296", resolution_range},
+                  std::pair{"18446744073709551616", integer_resolution}})
+                payloads.push_back(
+                    {replace(valid, "\"resolution\":2048", "\"resolution\":" + std::string(bad)), error});
+            for (const auto &[bad, error] : {std::pair{"true", needs_number}, std::pair{"\"1\"", needs_number},
+                                             std::pair{"-1", invalid_exposure}, std::pair{"1e100", float_range}})
+                payloads.push_back({replace(valid, "\"exposure\":1.5", "\"exposure\":" + std::string(bad)), error});
+            payloads.push_back({replace(valid, "\"sky\":true", "\"sky\":1"), needs_boolean});
+            payloads.push_back({replace(valid, "\"enabled\":true", "\"enabled\":\"true\""), needs_boolean});
+            payloads.push_back({replace(valid, "\"center\":[4.0,5.0,6.0]", "\"center\":[4,5]"), needs_vector});
+            payloads.push_back({replace(valid, "\"slope_bias\":", "\"slope_bias\":0,\"slope_bias\":"),
+                                "Duplicate JSON document field"});
+            payloads.push_back(
+                {replace(valid, "\"fog_density\":", "\"unexpected\":"), "Missing JSON field: fog_density"});
         } else {
-            for (const auto bad : {"null", "1", "[1,2]", "[1,2,3,4]", "[-1,2,3]", "[true,2,3]", "[1e100,2,3]"})
-                invalids.push_back("{\"radiance\":" + std::string(bad) + "}");
+            payloads = invalid_payloads(valid, "radiance", "radiance");
+            for (const auto &[bad, error] :
+                 {std::pair{"null", needs_vector}, std::pair{"1", needs_vector}, std::pair{"[1,2]", needs_vector},
+                  std::pair{"[1,2,3,4]", needs_vector}, std::pair{"[-1,2,3]", invalid_radiance},
+                  std::pair{"[true,2,3]", needs_number}, std::pair{"[1e100,2,3]", float_range}})
+                payloads.push_back({"{\"radiance\":" + std::string(bad) + "}", error});
         }
-        for (const auto &invalid : invalids) {
-            data = invalid;
+        for (std::size_t index = 0; index < payloads.size(); ++index) {
+            CAPTURE(index);
+            data = payloads[index].state;
             const auto size = scene.size();
-            rejects([&] { (void)Prefab(nodes, codecs).instantiate(scene); });
-            check(scene.size() == size, "Invalid lighting payload leaked staged objects");
-            equal(accepted, lighting_environment(scene));
+            CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), payloads[index].error.c_str(),
+                                 std::invalid_argument);
+            CHECK(scene.size() == size);
+            CHECK(same(accepted, lighting_environment(scene)));
         }
         data = valid;
     }
+}
+
+TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes first, and a stale link fails to save") {
+    const auto prefab = Prefab::capture(root, codecs);
+    auto first = prefab.instantiate(scene), second = prefab.instantiate(scene);
+    first.get_component<SceneEnvironment>().set_enabled(false);
+    second.get_component<SceneEnvironment>().set_enabled(false);
+    const auto accepted = lighting_environment(scene);
     // Cross-root references use the complete document's object map.
     selected->sun = second.children()[0];
     selected->fill = first.children()[1];
-    first.set_active(true);
-    first.get_component<SceneEnvironment>().set_enabled(false);
-    restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
-    equal(accepted, lighting_environment(*restored));
+    auto restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
+    CHECK(same(accepted, lighting_environment(*restored)));
     // This later root decodes after the lights it references.
     auto later = environment(scene, sun, fill);
     later->configure(settings);
     selected.set_enabled(false);
     restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
-    equal(accepted, lighting_environment(*restored));
+    CHECK(same(accepted, lighting_environment(*restored)));
     later.object().destroy();
     selected.set_enabled(true);
     first.children()[1].destroy();
-    rejects([&] { (void)serialize_scene(scene, {}, codecs); });
+    CHECK_THROWS_WITH_AS(serialize_scene(scene, {}, codecs), outside_graph, std::invalid_argument);
+}
+
+TEST_CASE("A failed codec registration publishes neither codec") {
     ComponentCodecs conflict;
     conflict.add<SceneEnvironment>(
         "anima.scene-environment.v1", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
         [](GameObject o, std::string_view, const ObjectReferences &) { o.add_component<SceneEnvironment>(); });
-    rejects([&] { add_lighting_component_codecs(conflict); });
-    rejects([&] { (void)Prefab::capture(sun, conflict); });
-}
-} // namespace
-int main() {
-    try {
-        transforms_and_configuration();
-        selection_and_lifetime();
-        boundaries();
-        persistence();
-        std::cout << "PASS scene directional lighting, environment selection, persistence and lifetime\n";
-    } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
+    CHECK_THROWS_WITH_AS(add_lighting_component_codecs(conflict), duplicate_codec, std::invalid_argument);
+    Scene scene;
+    const auto sun = light(scene);
+    // The light codec, registered before the conflict, was not published either.
+    CHECK_THROWS_WITH_AS(Prefab::capture(sun, conflict), "Component has no persistence codec", std::invalid_argument);
 }
