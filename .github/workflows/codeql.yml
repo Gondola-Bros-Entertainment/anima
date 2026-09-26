@@ -14,18 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  analyze:
-    name: Analyze / ${{ matrix.language }}
+  actions:
+    name: Analyze / actions
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
       actions: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [actions, c-cpp]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,15 +29,96 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          languages: ${{ matrix.language }}
-          # Use repository source without building downloaded dependencies.
-          # Compiler, runtime and sanitizer checks run separately in CI.
+          languages: actions
           build-mode: none
-          config: |
-            paths-ignore:
-              - third_party/**
-              - build/**
       - name: Analyze
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:actions
+
+  # C++ is analyzed from a traced build. Without one, CodeQL infers each file's compiler flags and include paths,
+  # which GitHub documents as less accurate for code with many external dependencies. The fetched dependencies
+  # build before tracing starts, so only Anima's own sources are extracted; results in their headers and in
+  # vendored third_party code are filtered out before upload, because paths-ignore does not apply to C++ headers.
+  # Every event runs the same analysis, so pull requests are compared with a baseline of the same configuration.
+  c-cpp:
+    name: Analyze / c-cpp
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+      CMAKE_GENERATOR: Ninja
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build ccache libfreetype6-dev libvulkan-dev glslc \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+            libasound2-dev
+      - name: Locate compiler cache
+        run: echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
+      - name: Restore compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-v1-codeql-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-codeql-${{ runner.os }}-${{ runner.arch }}-
+      - name: Configure every module
+        run: >-
+          cmake -S . -B build/codeql -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DANIMA_BUILD_TESTS=OFF -DANIMA_BUILD_DESKTOP=ON -DANIMA_BUILD_ASSETS=ON -DANIMA_BUILD_UI=ON
+          -DANIMA_BUILD_UI_DOCUMENTS=ON -DANIMA_BUILD_PHYSICS=ON -DANIMA_BUILD_PHYSICS2D=ON
+          -DANIMA_BUILD_INPUT_SDL=ON -DANIMA_BUILD_AUDIO_OUTPUT=ON -DANIMA_FETCH_SDL=ON
+          "-DANIMA_INPUT_SDL_INCLUDE_DIR=$PWD/build/codeql/_deps/sdl3-src/include"
+          -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF -DSDL_WAYLAND=OFF
+      - name: Build fetched dependencies before tracing
+        run: >-
+          cmake --build build/codeql --target _deps/jolt-build/all _deps/box2d-build/all _deps/rmlui-build/all
+          _deps/sdl3-build/all
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: c-cpp
+          build-mode: manual
+      - name: Build Anima under tracing
+        # A compiler cache hit would skip the compiler, so its source would never be extracted.
+        env:
+          CCACHE_DISABLE: '1'
+        run: cmake --build build/codeql
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:c-cpp
+          upload: never
+          output: ${{ runner.temp }}/codeql-sarif
+      - name: Drop results in fetched and vendored code
+        run: |
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/codeql-sarif/*.sarif)
+          if (( ${#files[@]} == 0 )); then
+            echo "CodeQL wrote no SARIF file" >&2
+            exit 1
+          fi
+          for sarif in "${files[@]}"; do
+            jq '.runs[].results |= map(select((.locations[0].physicalLocation.artifactLocation.uri // "")
+                                              | test("^(build|third_party)/") | not))' \
+              "$sarif" > "$sarif.filtered"
+            mv "$sarif.filtered" "$sarif"
+            jq -r '"\(input_filename): \([.runs[].results[]] | length) results"' "$sarif"
+          done
+      - name: Upload results
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-sarif
+          category: /language:c-cpp
