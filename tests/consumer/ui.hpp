@@ -414,6 +414,14 @@ inline int run(int argc, char **argv) {
     require(stats.presented_frames == frames && stats.capture_count == captures && !stats.validation_errors &&
                 !stats.validation_warnings,
             "UI renderer counters or validation failed");
+    // Construction checks the renderer's surface format, so a shut-down renderer is rejected there.
+    bool shut_down_rejected = false;
+    try {
+        anima::UiContext late(window.get(), renderer);
+    } catch (const std::logic_error &error) {
+        shut_down_rejected = std::string_view(error.what()) == "Renderer is shut down";
+    }
+    require(shut_down_rejected, "A UI context was created over a shut-down renderer");
     std::cout << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"clicks\":" << clicks
               << ",\"utf8_edit\":true,\"select_keyboard\":true,\"scroll\":true,"
                  "\"hidden_focus_released\":true,\"world_input_passthrough\":true,\"resize_hit_test\":true,"

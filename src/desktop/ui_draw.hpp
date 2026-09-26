@@ -5,6 +5,9 @@
 #include <memory>
 #include <vector>
 namespace anima::detail {
+// UI blending in linear light needs a presentation format that decodes sRGB for blending and encodes on write.
+inline constexpr char srgb_presentation_required[] =
+    "UI requires an sRGB presentation format for linear alpha compositing";
 struct UiVertex {
     float x{}, y{};
     std::array<std::uint8_t, 4> color{};

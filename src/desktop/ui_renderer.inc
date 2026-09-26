@@ -175,9 +175,18 @@ void upload_ui_texture(const UiTexturePtr &source) {
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     ui_images.emplace(source, std::move(candidate));
 }
+// UI blending in linear light needs a format that decodes the destination and encodes the result. Encoding
+// in the shader, as the display pass does for UNORM formats, would blend translucent UI in encoded values.
+static bool srgb_format(VkFormat format) {
+    return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB;
+}
+// Whether the swapchain that recreate() would create now can present UI; UiContext asks at construction.
+bool srgb_presentation() const { return srgb_format(surface_format().format); }
 void prepare_ui(const detail::UiFrame &frame) {
-    if (format != VK_FORMAT_B8G8R8A8_SRGB && format != VK_FORMAT_R8G8B8A8_SRGB)
-        throw std::runtime_error("UI requires an sRGB presentation format for linear alpha compositing");
+    // Each swapchain recreation chooses its format again, so a surface that stops offering an sRGB format
+    // after UiContext construction is still rejected here rather than blended wrongly.
+    if (!srgb_format(format))
+        throw std::runtime_error(detail::srgb_presentation_required);
     if (frame.vertices.empty())
         return;
     if (!ui_pipeline)

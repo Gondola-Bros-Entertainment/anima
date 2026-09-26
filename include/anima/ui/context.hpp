@@ -84,9 +84,14 @@ class UiUnsupportedFeature : public std::runtime_error {
 class UiContext {
   public:
     /// Initializes RmlUi and creates the RmlUi context @p name for @p window, which @p renderer
-    /// must present to. Throws `std::invalid_argument` for a null window or empty name,
-    /// `std::logic_error` while another UiContext is live and `std::runtime_error` when RmlUi or
-    /// SDL fails; a failed construction releases what it initialized.
+    /// must present to. Blending in linear light needs an sRGB presentation format, so the
+    /// surface of @p renderer must offer one; this is checked before RmlUi is initialized.
+    ///
+    /// Throws `std::invalid_argument` for a null window or empty name, `std::logic_error` while
+    /// another UiContext is live or after @p renderer shuts down, RendererFatalError when
+    /// @p renderer has already failed or cannot query its surface, and `std::runtime_error` when
+    /// the surface offers no sRGB format or when RmlUi or SDL fails; a failed construction releases
+    /// what it initialized.
     UiContext(SDL_Window *window, VulkanRenderer &renderer, std::string name = "anima");
     ~UiContext();
     UiContext(const UiContext &) = delete;
@@ -139,9 +144,10 @@ class UiContext {
     /// Returns false without presenting when the renderer cannot present, as VulkanRenderer::draw
     /// does, or when the UI layout does not yet match the swapchain size; the next update() and
     /// render() retry. Before acquiring a swapchain image, it throws UiUnsupportedFeature when a
-    /// document needs an unsupported render feature. Throws `std::runtime_error` when the
-    /// swapchain format is not sRGB, `std::invalid_argument` when a UI texture exceeds the
-    /// device's image size limit, and otherwise fails as VulkanRenderer::draw does.
+    /// document needs an unsupported render feature. Throws `std::runtime_error` if the surface
+    /// stops offering an sRGB format after construction, `std::invalid_argument` when a UI
+    /// texture exceeds the device's image size limit, and otherwise fails as VulkanRenderer::draw
+    /// does.
     [[nodiscard]] bool render();
     [[nodiscard]] UiStats stats() const;
     /// Shuts down the document host, then RmlUi: every document, checked handle and borrowed
