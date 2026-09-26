@@ -227,6 +227,12 @@ class Captures {
     explicit Captures(std::filesystem::path failures) : failures_(std::move(failures)) {}
     /// Keeps @p image as @p name, replacing an earlier image of that name.
     void add(const std::string &name, Image image) { images_.insert_or_assign(name, std::move(image)); }
+    /// Releases images that no later comparison needs.
+    void discard(std::initializer_list<std::string_view> names) {
+        for (const auto name : names)
+            if (const auto found = images_.find(name); found != images_.end())
+                images_.erase(found);
+    }
     [[nodiscard]] const Image &operator[](const std::string &name) const {
         const auto found = images_.find(name);
         if (found == images_.end())
