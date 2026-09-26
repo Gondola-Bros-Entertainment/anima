@@ -9,32 +9,65 @@
 #include <string_view>
 #include <vector>
 
+/// @file
+/// Presentation clocks for actions: named timed and held phases with cues.
+///
+/// Part of the `anima::assets` target. The caller supplies authoritative elapsed and release
+/// times in seconds; a timeline never decides whether an action is allowed or applies gameplay
+/// effects. Failures throw `std::invalid_argument` unless stated.
+
 namespace anima {
-// A presentation clock. The caller supplies authoritative elapsed/release time;
-// this does not decide whether a skill is legal or apply gameplay effects.
+/// A named point within a phase.
 struct ActionCue {
+    /// Nonempty and unique within its phase.
     std::string id;
+    /// Position in the phase, in [0, 1].
     double phase{};
 };
+/// One phase of an ActionTimeline.
 struct ActionPhase {
+    /// Nonempty and unique within the timeline.
     std::string id;
-    double duration{}; // Seconds for a timed phase, loop period for a held phase.
+    /// Seconds, in (0, 3600]: the length of a timed phase or the loop period of a held phase.
+    double duration{};
+    /// Loops until release instead of ending after #duration.
     bool held{};
+    /// Cues in nondecreasing ActionCue::phase order.
     std::vector<ActionCue> cues;
 };
+/// Where an ActionTimeline is at one moment.
 struct ActionTime {
+    /// Index of the current phase; the last phase once #complete.
     std::size_t phase{};
-    double progress{}, elapsed{}, start{};
+    /// Position in the phase, in [0, 1): within the current loop for a held phase. 1 once
+    /// #complete.
+    double progress{};
+    /// Seconds since the phase started; the last phase's full length once #complete.
+    double elapsed{};
+    /// Timeline time at which the phase started.
+    double start{};
+    /// Completed loops of a held phase; 0 otherwise.
     std::uint64_t cycle{};
+    /// Whether every phase has ended.
     bool complete{};
 };
+/// A cue at its timeline time.
 struct TimedActionCue {
+    /// Index of the cue's phase.
     std::size_t phase{};
     std::string id;
+    /// Seconds from the start of the timeline.
     double time{};
 };
+/// Timed and held phases, sampled from caller-supplied elapsed and release times.
+///
+/// A timed phase lasts its duration. The held phase loops until the release time, or indefinitely
+/// while unreleased; a release before it starts skips it. Sampling depends only on its arguments,
+/// so seeking needs no history.
 class ActionTimeline {
   public:
+    /// Throws unless there are 1 to 64 phases with valid, unique ids and durations, at most one
+    /// held phase, and at most 1024 cues in total, each valid and ordered within its phase.
     explicit ActionTimeline(std::vector<ActionPhase> phases) : phases_(std::move(phases)) {
         if (phases_.empty() || phases_.size() > 64)
             throw std::invalid_argument("Action needs 1..64 phases");
@@ -58,7 +91,10 @@ class ActionTimeline {
         held_ = held;
     }
     const std::vector<ActionPhase> &phases() const { return phases_; }
+    /// Whether a phase is held.
     bool held() const { return held_; }
+    /// Total seconds of a timeline without a held phase. Throws `std::logic_error` when a phase is
+    /// held.
     double duration() const {
         if (held_)
             throw std::logic_error("Held action has no fixed duration");
@@ -67,6 +103,9 @@ class ActionTimeline {
             value += phase.duration;
         return value;
     }
+    /// Position at @p elapsed seconds, with the held phase released at @p released_at. Throws for
+    /// a negative or nonfinite time, a release time on a timeline without a held phase, or more
+    /// than `1e12` loops of the held phase.
     ActionTime sample(double elapsed, std::optional<double> released_at = {}) const {
         validate_time(elapsed, released_at);
         double start = 0, last_start = 0;
@@ -91,6 +130,11 @@ class ActionTimeline {
         }
         return {phases_.size() - 1, 1, start - last_start, last_start, 0, true};
     }
+    /// Every cue at its timeline time, in timeline order, for release time @p released_at.
+    ///
+    /// Held-phase cues occur once, in the first loop, and only before release; while unreleased,
+    /// cues after the held phase are omitted. Continuous effects use explicit start and stop cues.
+    /// Throws for a release time that sample() rejects.
     std::vector<TimedActionCue> cues(std::optional<double> released_at = {}) const {
         validate_time(0, released_at);
         std::vector<TimedActionCue> result;
@@ -121,10 +165,17 @@ class ActionTimeline {
     std::vector<ActionPhase> phases_;
     bool held_{};
 };
-// One cursor per actor/action instance. New late observers and rewinds seek
-// silently; repeated frames cannot re-emit a cue. Cancellation resets the cursor.
+/// Reports each cue of one action instance once, when its time is reached.
+///
+/// Use one cursor per observer of an action instance. A new instance, a first observation after
+/// time 0, or a rewind seeks silently instead of replaying earlier cues, and repeated frames never
+/// report a cue twice. Call reset() on cancellation.
 class ActionCueCursor {
   public:
+    /// Returns the cues of @p timeline reached since the previous call for the same @p action and
+    /// @p instance, in timeline order; a new instance observed at exactly 0 reports its cues at 0.
+    /// Throws for an empty @p action, a zero @p instance, or times that ActionTimeline::sample
+    /// rejects.
     std::vector<TimedActionCue> advance(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline,
                                         double elapsed, std::optional<double> released_at = {}) {
         (void)timeline.sample(elapsed, released_at);
@@ -149,6 +200,7 @@ class ActionCueCursor {
         }
         return result;
     }
+    /// Forgets the current instance, so the next advance() starts fresh.
     void reset() { *this = {}; }
 
   private:
