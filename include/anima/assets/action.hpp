@@ -167,23 +167,40 @@ class ActionTimeline {
 };
 /// Reports each cue of one action instance once, when its time is reached.
 ///
-/// Use one cursor per observer of an action instance. A new instance, a first observation after
-/// time 0, or a rewind seeks silently instead of replaying earlier cues, and repeated frames never
-/// report a cue twice. Call reset() on cancellation.
+/// Use one cursor per observer of an action instance. A new instance starts at time 0, so its first
+/// advance() reports every cue it has reached, even when that first frame lands after 0. An
+/// observer that joins an instance already under way calls seek() first, and a rewind seeks
+/// silently instead of replaying earlier cues. Repeated frames never report a cue twice. Call
+/// reset() on cancellation.
 class ActionCueCursor {
   public:
     /// Returns the cues of @p timeline reached since the previous call for the same @p action and
-    /// @p instance, in timeline order; a new instance observed at exactly 0 reports its cues at 0.
+    /// @p instance, in timeline order; for a new instance, every cue from time 0 through @p elapsed.
     /// Throws for an empty @p action, a zero @p instance, or times that ActionTimeline::sample
     /// rejects.
     std::vector<TimedActionCue> advance(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline,
                                         double elapsed, std::optional<double> released_at = {}) {
+        return move(action, instance, timeline, elapsed, released_at, true);
+    }
+    /// Moves to @p elapsed without reporting cues, as for an observer that joins @p instance after it
+    /// started; later advance() calls report only cues after @p elapsed. Throws as advance() does.
+    void seek(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline, double elapsed,
+              std::optional<double> released_at = {}) {
+        (void)move(action, instance, timeline, elapsed, released_at, false);
+    }
+    /// Forgets the current instance, so the next advance() starts fresh.
+    void reset() { *this = {}; }
+
+  private:
+    std::vector<TimedActionCue> move(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline,
+                                     double elapsed, std::optional<double> released_at, bool report) {
         (void)timeline.sample(elapsed, released_at);
         if (action.empty() || !instance)
             throw std::invalid_argument("Action cue cursor needs an instance identity");
-        const bool fresh = action_ != action || instance_ != instance || elapsed < elapsed_;
+        const bool fresh = action_ != action || instance_ != instance;
+        const bool rewound = !fresh && elapsed < elapsed_;
         const auto previous = elapsed_;
-        if (fresh) {
+        if (fresh || rewound) {
             emitted_.clear();
             action_ = action;
             instance_ = instance;
@@ -191,19 +208,14 @@ class ActionCueCursor {
         elapsed_ = elapsed;
         std::vector<TimedActionCue> result;
         for (auto cue : timeline.cues(released_at)) {
-            const auto key = std::make_pair(cue.phase, cue.id);
             if (cue.time > elapsed)
                 continue;
-            const bool first = emitted_.insert(key).second;
-            if (first && ((fresh && elapsed == 0 && cue.time == 0) || (!fresh && cue.time > previous)))
+            const bool first = emitted_.insert({cue.phase, cue.id}).second;
+            if (first && report && !rewound && (fresh || cue.time > previous))
                 result.push_back(std::move(cue));
         }
         return result;
     }
-    /// Forgets the current instance, so the next advance() starts fresh.
-    void reset() { *this = {}; }
-
-  private:
     std::string action_;
     std::uint64_t instance_{};
     double elapsed_{};
