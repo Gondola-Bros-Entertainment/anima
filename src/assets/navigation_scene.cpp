@@ -62,11 +62,16 @@ void add_component_codec(ComponentCodecs &codecs) {
             Json points = Json::array();
             for (const auto p : agent.follower().route())
                 points.push_back(Json::array({p.x, p.y, p.z}));
-            return Json{{"route", points},
-                        {"next", agent.follower().next()},
-                        {"speed", agent.speed()},
-                        {"arrival_distance", agent.arrival_distance()}}
-                .dump();
+            auto payload = Json{{"route", points},
+                                {"next", agent.follower().next()},
+                                {"speed", agent.speed()},
+                                {"arrival_distance", agent.arrival_distance()}}
+                               .dump();
+            // The decoder rejects larger payloads, so a route that fits the follower could otherwise be
+            // captured but never restored.
+            if (payload.size() > maximum_component_bytes)
+                throw std::invalid_argument("Navigation agent payload exceeds 16 MiB");
+            return payload;
         },
         [](GameObject object, std::string_view data, const ObjectReferences &) {
             const auto j = detail::parse_json(data, maximum_component_bytes);

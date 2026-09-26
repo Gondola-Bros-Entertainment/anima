@@ -134,6 +134,27 @@ void scene_set_driver() {
                                std::numeric_limits<double>::quiet_NaN()})
         rejects([&] { n::update_agents(empty, seconds); });
 }
+// The decoder rejects payloads over 16 MiB, so capture must too, or a long route is saved but can never be
+// restored. A coordinate such as 0.1 prints with 17 significant digits, so 300,000 waypoints exceed it.
+void oversized_route() {
+    constexpr std::size_t waypoints = 300'000;
+    constexpr float spacing = .1F;
+    std::vector<Vec3> route(waypoints);
+    for (std::size_t i = 0; i < waypoints; ++i)
+        route[i] = {static_cast<float>(i) * spacing, spacing, spacing};
+    Scene scene;
+    auto object = scene.create();
+    object.add_component<n::Agent>(std::move(route));
+    ComponentCodecs codecs;
+    n::add_component_codec(codecs);
+    bool rejected = false;
+    try {
+        (void)codecs.capture(object, {});
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    check(rejected, "A route too large to restore was captured");
+}
 void run() {
     Scene scene;
     auto parent = scene.create();
@@ -210,6 +231,7 @@ int main() {
     try {
         run();
         scene_set_driver();
+        oversized_route();
         std::cout << "PASS navigation scene/set intent, phase boundaries, enablement, prefab and rollback\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
