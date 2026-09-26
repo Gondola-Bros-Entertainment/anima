@@ -2,17 +2,23 @@
 #include <stdexcept>
 #include <string_view>
 
+/// @file
+/// Error codes for math operations without a finite result. Part of the `anima::core` target.
+
 namespace anima {
+/// Reason a math operation failed.
 enum class MathErrorCode {
-    nonfinite_matrix,
-    singular_matrix,
-    inverse_overflow,
-    invalid_frustum,
-    nonfinite_projection,
-    singular_projection,
-    nonfinite_quaternion,
-    zero_quaternion
+    nonfinite_matrix,     ///< A matrix to invert has a nonfinite element.
+    singular_matrix,      ///< Inverting a matrix met a zero pivot.
+    inverse_overflow,     ///< An inverse has an element that is not a finite `float`.
+    invalid_frustum,      ///< Perspective arguments break `aspect > 0` and `0 < near_plane < far_plane`.
+    nonfinite_projection, ///< A view-projection matrix has a nonfinite element.
+    singular_projection,  ///< Solving a view-projection matrix met a zero pivot.
+    nonfinite_quaternion, ///< A quaternion to normalize has a nonfinite component.
+    zero_quaternion       ///< A quaternion to normalize has a squared length below `1e-20`.
 };
+/// Fixed English description of @p code, or `"Invalid math operation"` for a value outside the
+/// enumeration.
 constexpr const char *math_error_message(MathErrorCode code) noexcept {
     switch (code) {
     case MathErrorCode::nonfinite_matrix:
@@ -34,6 +40,7 @@ constexpr const char *math_error_message(MathErrorCode code) noexcept {
     }
     return "Invalid math operation";
 }
+/// Enumerator name of @p code, or `"unknown_math_error"` for a value outside the enumeration.
 constexpr std::string_view math_error_name(MathErrorCode code) noexcept {
     switch (code) {
     case MathErrorCode::nonfinite_matrix:
@@ -55,9 +62,11 @@ constexpr std::string_view math_error_name(MathErrorCode code) noexcept {
     }
     return "unknown_math_error";
 }
+/// `std::invalid_argument` that carries a MathErrorCode; `what()` returns math_error_message().
 class MathError : public std::invalid_argument {
   public:
     explicit MathError(MathErrorCode code) : std::invalid_argument(math_error_message(code)), code_(code) {}
+    /// Reason for the failure.
     MathErrorCode code() const noexcept { return code_; }
 
   private:

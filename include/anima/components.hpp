@@ -4,6 +4,10 @@
 #include <functional>
 #include <utility>
 
+/// @file
+/// Component handles and explicit component persistence. Part of the `anima::assets` target;
+/// scene.hpp includes this header.
+
 namespace anima {
 namespace detail {
 enum class ComponentPhase { frame, fixed, late };
@@ -95,23 +99,33 @@ struct ComponentRecord {
 };
 } // namespace detail
 
-// Checked identity of one component attachment, invalidated by removal/re-add.
-// A method call pins its value through the full expression, including self-removal.
+/// Checked, non-owning identity of one component attachment.
+///
+/// Removing the component, or destroying its object or scene, invalidates the handle for good,
+/// even if a new `T` is attached later. Every access except valid() and `operator bool` then throws
+/// `std::out_of_range`.
 template <class T> class ComponentRef {
   public:
     ComponentRef() = default;
+    /// Whether the attachment still exists.
     [[nodiscard]] bool valid() const noexcept {
         const auto record = record_.lock();
         return record && record->attached && record->object.valid();
     }
     explicit operator bool() const noexcept { return valid(); }
+    /// Object the component is attached to.
     [[nodiscard]] GameObject object() const { return lock()->object; }
+    /// Authored enabled flag; for a MeshRenderer, its visibility.
     [[nodiscard]] bool enabled() const { return lock()->enabled; }
-    // Effective participation, including inherited object activation.
+    /// Whether the component participates: enabled, on an object active in the hierarchy.
     [[nodiscard]] bool active() const {
         const auto record = lock();
         return record->enabled && record->object.active_in_hierarchy();
     }
+    /// Sets the authored enabled flag. Disabling stops the component's hooks at once, and
+    /// `on_disable()` or `on_enable()` follows at the next lifecycle reconciliation when active()
+    /// changed. For a MeshRenderer this sets its visibility; disabling an ObjectTransform throws
+    /// `std::logic_error`.
     void set_enabled(bool enabled) {
         auto record = lock();
         if constexpr (std::same_as<T, ObjectTransform>) {
@@ -123,9 +137,11 @@ template <class T> class ComponentRef {
             record->enabled = enabled;
         }
     }
-    // Borrowed access; do not retain a reference across scene/component mutation.
+    /// Borrowed reference to the value; do not keep it across scene or component changes.
     T &get() const { return *static_cast<T *>(lock()->value->address()); }
+    /// Same as get().
     T &operator*() const { return get(); }
+    /// Keeps the component value alive until the end of the full expression.
     class Access {
       public:
         explicit Access(std::shared_ptr<detail::ComponentRecord> record) : record_(std::move(record)) {}
@@ -134,6 +150,8 @@ template <class T> class ComponentRef {
       private:
         std::shared_ptr<detail::ComponentRecord> record_;
     };
+    /// Member access that pins the value through the full expression, so a member function may
+    /// remove its own component or destroy its object.
     Access operator->() const { return Access(lock()); }
 
   private:
@@ -209,23 +227,42 @@ template <class T> std::vector<ComponentRef<T>> Scene::components() {
     return result;
 }
 
+/// Persisted state of one component.
 struct ComponentData {
-    std::string type, state; // Stable versioned key and application-defined UTF-8 payload.
+    /// Key of the codec that wrote the payload; see ComponentCodecs::add.
+    std::string type;
+    /// Opaque UTF-8 payload defined by the codec.
+    std::string state;
+    /// The component's authored enabled flag.
     bool enabled = true;
 };
-// Immutable checked mapping for one capture/load operation. Values are weak
-// GameObject handles. Prefab loading maps authored keys to fresh instance objects.
+/// Immutable mapping between ObjectKey values and live objects for one persistence operation.
+///
+/// Codecs translate every object link through it rather than storing Scene::Id values, names,
+/// pointers or raw keys, so that links remap when loaded. It holds weak, checked handles and never
+/// refreshes. Scene, prefab and scene-set operations build the correctly scoped mapping; build one
+/// directly only for explicit ComponentCodecs::capture and ComponentCodecs::restore calls, using an
+/// empty mapping for components without links.
 class ObjectReferences {
   public:
+    /// One document key and the object it maps to.
     struct Entry {
         ObjectKey key;
         GameObject object;
     };
+    /// Empty mapping, which rejects every link except null.
     ObjectReferences() = default;
+    /// Maps each of @p objects to its own GameObject::key. Throws `std::out_of_range` for an invalid
+    /// object and `std::invalid_argument` for a repeated object or key.
     explicit ObjectReferences(std::span<const GameObject> objects);
+    /// Maps each entry's key to its object. Throws `std::invalid_argument` for a null key, an invalid
+    /// object, or a repeated key or object.
     explicit ObjectReferences(std::span<const Entry> entries);
-    // A default GameObject/zero key maps to null. Stale or out-of-scope links reject.
+    /// Key of @p object, or null for a default handle. Throws `std::invalid_argument` for a stale
+    /// object or one outside the mapping; clear links to destroyed objects before capturing.
     [[nodiscard]] ObjectKey key(GameObject object) const;
+    /// Object mapped to @p key, or a default handle for null. Throws `std::invalid_argument` when
+    /// the key is not mapped or its object no longer exists.
     [[nodiscard]] GameObject resolve(ObjectKey key) const;
 
   private:
@@ -233,12 +270,25 @@ class ObjectReferences {
     std::map<ObjectKey, GameObject> objects_;
     std::map<Scene::Id, ObjectKey> keys_;
 };
-// Explicit persistence adapters; no reflection or global type registration.
-// Encoders are read-only. Decoders may attach components only to their supplied object.
-// Copies retain callback bindings to destination services, not new service instances.
-// Scenes borrow codecs during persistence; Prefab retains a configured copy.
+/// Registry of persistence adapters for component types, with no reflection or global
+/// registration.
+///
+/// Documents store ObjectTransform and MeshRenderer state natively; every other component needs a
+/// codec, or capture fails rather than silently dropping it. Encoders must only read, and decoders
+/// may attach components only to the object they receive; other components may not be decoded yet,
+/// so look linked objects' components up after loading. A copy keeps the callbacks' bindings to
+/// services such as a physics world or mixer rather than creating new services. Scene operations
+/// borrow a registry for one call; a Prefab keeps its own copy.
 class ComponentCodecs {
   public:
+    /// Registers a codec for component type `T` under @p key, a stable name such as
+    /// `anima.camera.v1` of 1 to 4,096 bytes that documents store as ComponentData::type.
+    ///
+    /// @p encode is called as `encode(const T &, const ObjectReferences &)` and returns the payload.
+    /// @p decode is called as `decode(GameObject, std::string_view payload, const ObjectReferences &)`
+    /// and must attach a `T` to that object; the registry then applies ComponentData::enabled.
+    /// Throws `std::invalid_argument` for an invalid key or when `T` or @p key is already
+    /// registered. `T` cannot be ObjectTransform or MeshRenderer.
     template <class T, class Encode, class Decode> void add(std::string key, Encode encode, Decode decode) {
         static_assert(!std::same_as<T, ObjectTransform> && !std::same_as<T, MeshRenderer>,
                       "Native transform/renderer data has a dedicated scene representation");
@@ -264,8 +314,15 @@ class ComponentCodecs {
                     }};
         codecs_.emplace(typeid(T), std::move(codec));
     }
+    /// Encodes every component of @p object except ObjectTransform and MeshRenderer, sorted by type
+    /// key. Throws `std::invalid_argument` when a component has no codec.
     [[nodiscard]] std::vector<ComponentData> capture(GameObject object, const ObjectReferences &references) const;
+    /// Checks that @p data names only registered types, each at most once, without decoding. Throws
+    /// `std::invalid_argument` otherwise.
     void validate(std::span<const ComponentData> data) const;
+    /// Validates @p data, then decodes each entry in order onto @p object. Throws
+    /// `std::invalid_argument` when a decoder does not attach its type. Components decoded before a
+    /// failure stay attached; scene and prefab operations roll back by destroying their objects.
     void restore(GameObject object, std::span<const ComponentData> data, const ObjectReferences &references) const;
 
   private:
