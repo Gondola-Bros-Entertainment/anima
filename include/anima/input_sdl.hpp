@@ -25,9 +25,9 @@ namespace anima::input {
 /// Gamepad removal or remapping and keyboard removal disconnect that device, and removing a mouse
 /// disconnects device 0, releasing every mouse button.
 ///
-/// Other events, including text and IME, mouse motion and wheel, touch, raw joystick, sensor and
-/// device additions, return nothing; the application opens gamepads itself. Throws
-/// `std::invalid_argument` when @p window is 0 or a converted code is outside its ControlKind
-/// range.
+/// A key, button or axis code outside its ControlKind range, which an unusual device can report,
+/// returns nothing instead of failing the event pump. Other events, including text and IME, mouse
+/// motion and wheel, touch, raw joystick, sensor and device additions, also return nothing; the
+/// application opens gamepads itself. Throws `std::invalid_argument` when @p window is 0.
 std::optional<Event> from_sdl(const SDL_Event &event, std::uint32_t window);
 } // namespace anima::input
