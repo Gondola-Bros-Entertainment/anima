@@ -11,7 +11,6 @@ void require(bool value, const char *message) {
 void weight_valid(float weight) {
     require(std::isfinite(weight) && weight >= 0 && weight <= 1, "Layer/contact weight must be in [0,1]");
 }
-Vec3 position(const Mat4 &m) { return {m[12], m[13], m[14]}; }
 using M3 = std::array<std::array<double, 3>, 3>;
 double determinant(const M3 &m) {
     return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
@@ -287,7 +286,7 @@ ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose
     for (auto v : {c.target.x, c.target.y, c.target.z, c.pole.x, c.pole.y, c.pole.z})
         require(std::isfinite(v), "Nonfinite contact target/pole");
     auto w = rig.world(pose);
-    const auto start = position(w[c.start]), middle = position(w[c.middle]), end = position(w[c.end]);
+    const auto start = translation_of(w[c.start]), middle = translation_of(w[c.middle]), end = translation_of(w[c.end]);
     const float a = length(middle - start), b = length(end - middle), requested = length(c.target - start);
     require(a > 1e-6F && b > 1e-6F, "Degenerate contact limb");
     const auto distance_for = [&](float angle) {
@@ -314,20 +313,21 @@ ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose
     };
     if (c.weight > 0) {
         rotate(c.start, start, rotation_between(middle - start, new_middle - start));
-        rotate(c.middle, position(w[c.middle]),
-               rotation_between(position(w[c.end]) - position(w[c.middle]), new_end - position(w[c.middle])));
+        rotate(c.middle, translation_of(w[c.middle]),
+               rotation_between(translation_of(w[c.end]) - translation_of(w[c.middle]),
+                                new_end - translation_of(w[c.middle])));
         if (c.end_rotation) {
             const auto desired = rotation_matrix(unit_quaternion(*c.end_rotation));
             const auto current = rotation_matrix(polar(w[c.end]).rotation);
             const auto delta = desired * inverse(current);
-            rotate(c.end, position(w[c.end]), quaternion(linear(delta)));
+            rotate(c.end, translation_of(w[c.end]), quaternion(linear(delta)));
         }
     }
     auto result = rig.from_world(w);
     if (c.weight < 1)
         result = rig.layer(pose, result, rig.subtree_mask(c.start, c.weight));
     const auto final = rig.world(result);
-    return {std::move(result), length(position(final[c.end]) - c.target), a, b,
+    return {std::move(result), length(translation_of(final[c.end]) - c.target), a, b,
             requested >= minimum - 1e-5F && requested <= maximum + 1e-5F};
 }
 } // namespace anima

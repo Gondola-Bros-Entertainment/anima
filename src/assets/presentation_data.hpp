@@ -38,8 +38,7 @@ inline anima::Mat4 matrix(const Json &value, bool rigid) {
         throw std::invalid_argument("Presentation transform must be finite and affine");
     (void)anima::inverse(result);
     if (rigid) {
-        const anima::Vec3 x{result[0], result[1], result[2]}, y{result[4], result[5], result[6]},
-            z{result[8], result[9], result[10]};
+        const auto x = anima::axis_x(result), y = anima::axis_y(result), z = anima::axis_z(result);
         if (std::abs(anima::length(x) - 1) > 1e-4F || std::abs(anima::length(y) - 1) > 1e-4F ||
             std::abs(anima::length(z) - 1) > 1e-4F || std::abs(anima::dot(x, y)) > 1e-4F ||
             std::abs(anima::dot(x, z)) > 1e-4F || std::abs(anima::dot(y, z)) > 1e-4F ||

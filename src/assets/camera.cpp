@@ -29,7 +29,7 @@ Mat4 camera_matrix(GameObject object, const CameraSettings &s, float aspect) {
         throw std::invalid_argument("Camera aspect must be finite and positive");
     const auto world = object.world_matrix();
     const auto axes = detail::scene_orientation(world, "Camera");
-    const Vec3 eye{world[12], world[13], world[14]};
+    const Vec3 eye = translation_of(world);
     const auto &x = axes[0], &y = axes[1], &z = axes[2];
     const Mat4 view{x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1};
     const double near = s.near_plane, far = s.far_plane;

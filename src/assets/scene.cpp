@@ -554,7 +554,7 @@ Mat4 GameObject::world_matrix() const { return scene().slot(id_).world; }
 Mat4 GameObject::local_matrix() const { return scene().slot(id_).local; }
 Vec3 GameObject::local_position() const {
     const auto local = local_matrix();
-    return {local[12], local[13], local[14]};
+    return translation_of(local);
 }
 void GameObject::set_local_position(Vec3 position) {
     auto local = local_matrix();
@@ -585,7 +585,7 @@ void GameObject::set_parent(GameObject parent, ReparentMode mode) {
 void GameObject::clear_parent(ReparentMode mode) { scene().reparent(id_, {}, mode); }
 Vec3 GameObject::position() const {
     const auto world = world_matrix();
-    return {world[12], world[13], world[14]};
+    return translation_of(world);
 }
 void GameObject::set_position(Vec3 position) {
     auto world = world_matrix();
