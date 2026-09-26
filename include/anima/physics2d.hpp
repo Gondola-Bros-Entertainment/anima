@@ -84,9 +84,10 @@ struct BodySettings {
     float restitution{};
     /// Collision layer in [0, 15]; see World::set_layer_collision.
     std::uint8_t layer{};
-    /// A sensor detects bodies of every motion type, including other sensors, and reports
-    /// overlaps as contact events; it never collides. Overlap is tested once per step, so a fast
-    /// body can pass through a sensor unreported.
+    /// A sensor reports overlaps as contact events and never collides. An overlap with any body,
+    /// another sensor included, is reported when at least one of the two bodies is kinematic or
+    /// dynamic; two stationary bodies never report one, as in the 3D module. Overlap is tested once
+    /// per step, so a fast body can pass through a sensor unreported.
     bool sensor{};
     /// Makes a dynamic body a Box2D bullet. Every dynamic body has continuous collision against
     /// stationary bodies; bullets also have it against kinematic and non-bullet dynamic bodies,

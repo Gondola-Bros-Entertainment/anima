@@ -102,7 +102,9 @@ struct BodySettings {
     float restitution = 0;
     /// Collision layer in [0, 15]; see World::set_layer_collision.
     std::uint8_t layer = 0;
-    /// Sensors report contact events but never resolve penetration.
+    /// Sensors report contact events but never resolve penetration. An overlap with any body,
+    /// another sensor included, is reported when at least one of the two bodies is kinematic or
+    /// dynamic; two stationary bodies never report one, as in the 2D module.
     bool sensor = false;
     /// Uses continuous collision detection (linear cast) instead of discrete steps.
     bool continuous = false;

@@ -1,6 +1,7 @@
 #include <anima/physics.hpp>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -403,6 +404,29 @@ TEST_CASE("Body lifetime, contacts and argument validation") {
     }
     REQUIRE_MESSAGE(!stale.valid(), "World teardown retained body");
     stale.remove();
+}
+
+TEST_CASE("A sensor pair is reported only when either body can move") {
+    World world(weightless(8));
+    auto zone_settings = box({}, {1, 1, 1});
+    zone_settings.sensor = true;
+    const auto zone = world.create(zone_settings);
+    const auto wall = world.create(box({}, {1, 1, 1}));
+    auto probe_settings = box({}, {.2F, .2F, .2F}, Motion::dynamic);
+    probe_settings.sensor = true;
+    const auto probe = world.create(probe_settings);
+    world.step(tick);
+    const auto events = world.take_events();
+    const auto reported = [&](const Body &a, const Body &b) {
+        return std::ranges::any_of(events, [&](const ContactEvent &e) {
+            return e.sensor && e.phase == ContactPhase::begin &&
+                   ((e.first == a && e.second == b) || (e.first == b && e.second == a));
+        });
+    };
+    CHECK_MESSAGE(reported(probe, zone), "A dynamic sensor did not detect a stationary sensor");
+    CHECK_MESSAGE(reported(probe, wall), "A dynamic sensor did not detect a stationary body");
+    CHECK_MESSAGE(!reported(zone, wall), "Two stationary bodies reported a sensor overlap");
+    CHECK(events.size() == 2u);
 }
 
 TEST_CASE("Mesh decks support rays, sweeps and overlaps from above and below") {

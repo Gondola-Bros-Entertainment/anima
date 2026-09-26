@@ -141,8 +141,16 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
             overlaps.resize(static_cast<std::size_t>(b2Shape_GetSensorCapacity(entry.shape)));
             const int count =
                 b2Shape_GetSensorOverlaps(entry.shape, overlaps.data(), static_cast<int>(overlaps.size()));
-            for (int i = 0; i < count; ++i)
-                apply(entry.shape, overlaps[static_cast<std::size_t>(i)], true, true);
+            for (int i = 0; i < count; ++i) {
+                const auto other = overlaps[static_cast<std::size_t>(i)];
+                // Box2D reports every overlap, but the 3D module pairs two bodies only when one of them can
+                // move, so two stationary bodies never report a sensor overlap in either module.
+                const auto found = entries.find(identity(other));
+                if (entry.motion == Motion::stationary && found != entries.end() &&
+                    found->second.motion == Motion::stationary)
+                    continue;
+                apply(entry.shape, other, true, true);
+            }
         }
         for (const auto &[pair, is_sensor] : touching)
             if (!current.contains(pair))
