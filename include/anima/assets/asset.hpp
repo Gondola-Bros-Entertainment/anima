@@ -313,10 +313,10 @@ struct Pose {
 /// an invalid weight or a pose without one local transform per node, and otherwise as sample_pose
 /// does.
 [[nodiscard]] Pose blend_pose(const Asset &asset, const Pose &from, const Pose &to, float weight);
-/// The one clip of @p asset named @p name, borrowed from @p asset. Throws `std::runtime_error`
-/// when no clip or several clips have that name.
+/// The one clip of @p asset named @p name, borrowed from @p asset. Throws `std::out_of_range`
+/// when no clip has that name and `std::invalid_argument` when several do.
 [[nodiscard]] const Animation &find_animation(const Asset &asset, std::string_view name);
-/// Index of the one node of @p asset named @p name. Throws `std::runtime_error` when no node or
-/// several nodes have that name.
+/// Index of the one node of @p asset named @p name. Throws `std::out_of_range` when no node has
+/// that name and `std::invalid_argument` when several do.
 [[nodiscard]] std::size_t unique_node(const Asset &asset, const std::string &name);
 } // namespace anima

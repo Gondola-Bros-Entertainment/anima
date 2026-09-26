@@ -87,8 +87,9 @@ class Animator {
     /// Selects @p clip with no events and plays it; see select().
     void play(std::string_view clip, bool loop = true);
     /// Selects the source clip that @p clip names, publishes its first pose and plays when @p play
-    /// is true, leaving the bind pose. Throws `std::runtime_error` for a missing or ambiguous clip
-    /// name, and as Playback::select does; the state is unchanged on failure.
+    /// is true, leaving the bind pose. Throws `std::out_of_range` when no source clip has that name,
+    /// `std::invalid_argument` when several do, and as Playback::select does; the state is
+    /// unchanged on failure.
     void select(const ClipMetadata &clip, bool play = true);
     /// Publishes the rest pose and pauses; update() then does nothing until a clip is selected,
     /// resumed, restarted or sought.

@@ -55,12 +55,22 @@ inline anima::Mat4 matrix(const Json &value, bool rigid) {
 template <class T> inline const auto &lookup(const T &values, std::string_view id) {
     const auto found = values.find(id);
     if (found == values.end())
-        throw std::invalid_argument("Missing presentation reference: " + std::string(id));
+        throw std::out_of_range("Missing presentation reference: " + std::string(id));
     return found->second;
 }
 template <class T> inline void insert(T &values, typename T::mapped_type entry) {
     const auto id = entry.id;
     if (!values.emplace(id, std::move(entry)).second)
         throw std::invalid_argument("Duplicate presentation identity: " + id);
+}
+// Runs a step that decodes a presentation document. Lookups report a missing name as std::out_of_range; while
+// decoding, that means the document names something that does not exist, so it becomes Error, as json_step
+// turns JSON errors into Error.
+template <class Error = std::invalid_argument, class Step> decltype(auto) decode_step(Step &&step) {
+    try {
+        return anima::detail::json_step<Error>(std::forward<Step>(step));
+    } catch (const std::out_of_range &error) {
+        throw Error(error.what());
+    }
 }
 } // namespace anima::presentation_data

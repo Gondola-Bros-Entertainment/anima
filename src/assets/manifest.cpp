@@ -1,5 +1,6 @@
 #include "mesh_limits.hpp"
 #include "presentation_data.hpp"
+#include <algorithm>
 #include <anima/assets/preview.hpp>
 #include <fstream>
 #include <set>
@@ -125,7 +126,10 @@ void validate_manifest(const Manifest &manifest, const Asset &asset) {
     for (const auto &metadata : manifest.clips) {
         if (metadata.reference_speed && (!std::isfinite(*metadata.reference_speed) || *metadata.reference_speed <= 0))
             throw std::runtime_error("Clip reference speed must be finite and positive");
-        const auto &animation = find_animation(asset, metadata.name);
+        const auto named = [&](const Animation &clip) { return clip.name == metadata.name; };
+        if (std::ranges::count_if(asset.animations, named) != 1)
+            throw std::runtime_error("Manifest clip must name exactly one animation: " + metadata.name);
+        const auto &animation = *std::ranges::find_if(asset.animations, named);
         for (const auto &event : metadata.events)
             if (event.time > animation.duration)
                 throw std::runtime_error("Preview event outside clip: " + metadata.name);

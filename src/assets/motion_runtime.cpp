@@ -46,22 +46,32 @@ struct MotionRuntime::Impl {
     }
     const anima::EvaluationRig &rig() const { return rig_; }
     bool has_mask(std::string_view name) const { return masks_.contains(name); }
-    std::size_t contact_end_node(std::string_view chain) const {
-        return rig_.asset_node(chains_.at(std::string(chain)).end);
+    const std::vector<float> &mask_named(std::string_view name) const {
+        const auto found = masks_.find(name);
+        if (found == masks_.end())
+            throw std::out_of_range("Unknown motion mask: " + std::string(name));
+        return found->second;
     }
+    const anima::TwoBoneContact &chain_named(std::string_view name) const {
+        const auto found = chains_.find(name);
+        if (found == chains_.end())
+            throw std::out_of_range("Unknown motion chain: " + std::string(name));
+        return found->second;
+    }
+    std::size_t contact_end_node(std::string_view chain) const { return rig_.asset_node(chain_named(chain).end); }
     bool contact_affects_node(std::string_view chain, std::size_t node) const {
-        return rig_.descendant(rig_.joint(asset_->nodes.at(node).name), chains_.at(std::string(chain)).start);
+        return rig_.descendant(rig_.joint(asset_->nodes.at(node).name), chain_named(chain).start);
     }
     bool contacts_overlap(std::string_view first, std::string_view second) const {
-        const auto &a = chains_.at(std::string(first));
-        const auto &b = chains_.at(std::string(second));
+        const auto &a = chain_named(first);
+        const auto &b = chain_named(second);
         return rig_.descendant(a.start, b.start) || rig_.descendant(b.start, a.start);
     }
     const anima::Animation &clip(std::string_view name) const { return anima::find_animation(*resource_, name); }
     const anima::ClipMetadata &metadata(std::string_view name) const {
         const auto found = metadata_.find(name);
         if (found == metadata_.end())
-            throw std::invalid_argument("Unknown base motion/action: " + std::string(name));
+            throw std::out_of_range("Unknown base motion/action: " + std::string(name));
         return found->second;
     }
     const auto &clips() const { return metadata_; }
@@ -69,7 +79,7 @@ struct MotionRuntime::Impl {
     const std::string &layer_mask(std::string_view name) const {
         const auto found = layers_.find(name);
         if (found == layers_.end())
-            throw std::invalid_argument("Unknown handling layer: " + std::string(name));
+            throw std::out_of_range("Unknown handling layer: " + std::string(name));
         return found->second;
     }
     anima::Pose sample(std::string_view name, double time) const {
@@ -87,13 +97,13 @@ struct MotionRuntime::Impl {
             return base;
         const auto phase = std::clamp(time / clip(motion).duration, 0., 1.);
         const auto layer = sample(carry, phase * clip(carry).duration);
-        return rig_.render_pose(base, rig_.layer(rig_.encode(base), rig_.encode(layer), masks_.at(layer_mask(carry))));
+        return rig_.render_pose(base, rig_.layer(rig_.encode(base), rig_.encode(layer), mask_named(layer_mask(carry))));
     }
     void validate_carries(std::span<const std::string_view> carries) const {
         std::vector<float> occupied(rig_.size());
         for (const auto carry : carries)
             if (!carry.empty()) {
-                const auto &weights = masks_.at(layer_mask(carry));
+                const auto &weights = mask_named(layer_mask(carry));
                 for (std::size_t i = 0; i < weights.size(); ++i) {
                     if (occupied[i] > 0 && weights[i] > 0)
                         throw std::invalid_argument("Held carry layers have overlapping joint ownership");
@@ -113,7 +123,7 @@ struct MotionRuntime::Impl {
         for (const auto carry : carries)
             if (!carry.empty())
                 evaluated = rig_.layer(evaluated, rig_.encode(sample(carry, phase * clip(carry).duration)),
-                                       masks_.at(layer_mask(carry)));
+                                       mask_named(layer_mask(carry)));
         return rig_.render_pose(base, evaluated);
     }
     anima::Pose blend(const anima::Pose &from, const anima::Pose &to, float weight) const {
@@ -133,7 +143,7 @@ struct MotionRuntime::Impl {
         for (const auto &layer : controls.layers) {
             if (is_layer(layer.clip) && layer.mask != layer_mask(layer.clip))
                 throw std::invalid_argument("Layer control exceeds the resource's declared ownership");
-            auto weights = masks_.at(layer.mask);
+            auto weights = mask_named(layer.mask);
             for (auto &weight : weights)
                 weight *= layer.weight;
             const auto contribution = rig_.encode(sample(layer.clip, layer.time));
@@ -151,7 +161,7 @@ struct MotionRuntime::Impl {
         }
         MotionEvaluation result;
         for (const auto &request : controls.contacts) {
-            auto contact = chains_.at(request.chain);
+            auto contact = chain_named(request.chain);
             contact.target = request.target;
             contact.pole = request.pole;
             contact.weight = request.weight;
@@ -289,7 +299,7 @@ struct MotionRuntime::Impl {
 MotionRuntime::MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract) {
     if (!asset)
         throw std::invalid_argument("Motion runtime requires an asset");
-    impl_ = detail::json_step(
+    impl_ = presentation_data::decode_step(
         [&] { return std::make_shared<Impl>(std::move(asset), manifest, presentation_data::parse(contract)); });
 }
 std::shared_ptr<const MotionRuntime> MotionRuntime::load(std::shared_ptr<const Asset> asset, const Manifest &manifest) {

@@ -298,7 +298,7 @@ int main(int argc, char **argv) {
         bool missing_clip = false, missing_timeline = false;
         try {
             preview.select("Walk");
-        } catch (const std::runtime_error &) {
+        } catch (const std::out_of_range &) {
             missing_clip = true;
         }
         try {

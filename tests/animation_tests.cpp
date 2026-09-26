@@ -33,6 +33,17 @@ template <class F> void rejects(F action, const std::string &expected = "") {
     }
     throw std::runtime_error("Expected rejection: " + expected);
 }
+// Requires action to throw an Error whose message is exactly expected.
+template <class Error, class F> void rejects_as(F action, const std::string &expected) {
+    try {
+        action();
+    } catch (const Error &error) {
+        if (error.what() == expected)
+            return;
+        throw std::runtime_error("Expected \"" + expected + "\", got \"" + error.what() + "\"");
+    }
+    throw std::runtime_error("Expected rejection: " + expected);
+}
 float deviation(const anima::Pose &a, const anima::Pose &b) {
     float d = 0;
     for (std::size_t i = 0; i < a.world.size(); ++i)
@@ -148,14 +159,34 @@ void manifest_tests(const anima::Asset &asset) {
     rejects([&] { anima::validate_manifest(read(changed("\"joint_count\":2", "\"joint_count\":3")), asset); },
             "joint count");
     rejects([&] { anima::validate_manifest(read(changed("0.53", "1.1")), asset); }, "outside clip");
-    rejects([&] { anima::validate_manifest(read(changed("\"name\":\"test\"", "\"name\":\"missing\"")), asset); },
-            "Missing animation");
+    rejects_as<std::runtime_error>(
+        [&] { anima::validate_manifest(read(changed("\"name\":\"test\"", "\"name\":\"missing\"")), asset); },
+        "Manifest clip must name exactly one animation: missing");
+    // A clip name that two animations share names neither.
+    auto doubled = asset;
+    doubled.animations.push_back(doubled.animations[0]);
+    auto listed = read(valid);
+    listed.clips.push_back(listed.clips[0]);
+    listed.clips.back().name = "other";
+    rejects_as<std::runtime_error>([&] { anima::validate_manifest(listed, doubled); },
+                                   "Manifest clip must name exactly one animation: test");
+}
+void lookup_tests(const anima::Asset &asset) {
+    rejects_as<std::out_of_range>([&] { (void)anima::find_animation(asset, "missing"); }, "Missing animation: missing");
+    rejects_as<std::out_of_range>([&] { (void)anima::unique_node(asset, "missing"); }, "Missing node: missing");
+    auto doubled = asset;
+    doubled.animations.push_back(doubled.animations[0]);
+    doubled.nodes[2].name = "hand";
+    rejects_as<std::invalid_argument>([&] { (void)anima::find_animation(doubled, "test"); },
+                                      "Ambiguous animation name: test");
+    rejects_as<std::invalid_argument>([&] { (void)anima::unique_node(doubled, "hand"); }, "Ambiguous node name: hand");
 }
 } // namespace
 int main(int argc, char **argv) {
     try {
         auto asset = fixture();
         manifest_tests(asset);
+        lookup_tests(asset);
         const auto rest = anima::sample_pose(asset);
         const auto half = anima::sample_pose(asset, &asset.animations[0], .5);
         const auto end = anima::sample_pose(asset, &asset.animations[0], 1);

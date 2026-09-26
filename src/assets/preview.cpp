@@ -160,7 +160,7 @@ void AssetPreview::select(const std::string &clip, bool play) {
     const auto found = std::find_if(manifest_.clips.begin(), manifest_.clips.end(),
                                     [&](const auto &value) { return value.name == clip; });
     if (found == manifest_.clips.end())
-        throw std::runtime_error("Clip has no manifest playback policy: " + clip);
+        throw std::out_of_range("Clip has no manifest playback policy: " + clip);
     animator_->select(*found, play);
     bind_ = false;
 }

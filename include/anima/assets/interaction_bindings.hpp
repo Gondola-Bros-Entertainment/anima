@@ -8,7 +8,8 @@
 ///
 /// Part of the `anima::assets` target. Each role is one actor. Attachments move actor world
 /// frames; they never transfer one actor's joints or skin palette to another. Failures throw
-/// `std::invalid_argument` (or anima::MathError, which derives from it) unless stated.
+/// `std::invalid_argument` (or anima::MathError, which derives from it) unless stated; a role id
+/// argument that the bindings lack throws `std::out_of_range`.
 
 namespace anima {
 /// One participant.
@@ -116,11 +117,11 @@ class InteractionBindings {
             visit(visit, i);
     }
 
-    /// Index of role @p id. Throws for an unknown id.
+    /// Index of role @p id. Throws `std::out_of_range` for an unknown id.
     [[nodiscard]] std::size_t role(std::string_view id) const {
         const auto found = names_.find(id);
         if (found == names_.end())
-            throw std::invalid_argument("Unknown interaction role: " + std::string(id));
+            throw std::out_of_range("Unknown interaction role: " + std::string(id));
         return found->second;
     }
     /// Roles in construction order; role indices refer to it.

@@ -178,11 +178,11 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
 }
 } // namespace
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory) {
-    return detail::json_step([&] { return decode_catalog(document, directory); });
+    return presentation_data::decode_step([&] { return decode_catalog(document, directory); });
 }
 std::map<std::string, AttachmentSocket, std::less<>>
 decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
-    return detail::json_step([&] { return decode_sockets(document, manifest, body); });
+    return presentation_data::decode_step([&] { return decode_sockets(document, manifest, body); });
 }
 AttachmentLibrary::AttachmentLibrary(AttachmentCatalog definition) : catalog(std::move(definition)) {}
 const AttachmentDefinition &AttachmentLibrary::item(std::string_view id) const {
@@ -224,15 +224,22 @@ std::vector<std::shared_ptr<const anima::Mesh>> AttachmentLibrary::resident_asse
 void AttachmentLibrary::validate(const anima::Asset &source, const AttachmentVisual &visual) {
     if (!source.animations.empty() && visual.animation_tracks.empty())
         throw std::invalid_argument("Animated equipment needs declared semantic tracks");
-    if (!visual.primary_node.empty())
-        (void)anima::unique_node(source, visual.primary_node);
-    for (const auto &[marker, node] : visual.marker_nodes) {
-        (void)marker;
-        (void)anima::unique_node(source, node);
-    }
-    for (const auto &[track, clip] : visual.animation_tracks) {
-        (void)track;
-        (void)anima::find_animation(source, clip);
+    // A model that lacks a node or clip its visual names, or has several, fails to load.
+    try {
+        if (!visual.primary_node.empty())
+            (void)anima::unique_node(source, visual.primary_node);
+        for (const auto &[marker, node] : visual.marker_nodes) {
+            (void)marker;
+            (void)anima::unique_node(source, node);
+        }
+        for (const auto &[track, clip] : visual.animation_tracks) {
+            (void)track;
+            (void)anima::find_animation(source, clip);
+        }
+    } catch (const std::out_of_range &error) {
+        throw std::runtime_error(error.what());
+    } catch (const std::invalid_argument &error) {
+        throw std::runtime_error(error.what());
     }
 }
 AttachmentBinding bind_attachment(const AttachmentSocket &socket, const AttachmentVisual &visual) {

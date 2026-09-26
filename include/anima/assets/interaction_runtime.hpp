@@ -62,7 +62,6 @@ class InteractionRuntime {
     ///
     /// There are 1 to 64 actors. A contact needs an attachment from its child to its parent, a
     /// chain used once per child, and a chain that does not move the child's attachment socket.
-    /// Unknown contact chains or child roles throw `std::out_of_range`.
     InteractionRuntime(Actors actors, std::string_view document);
     const ActionTimeline &timeline() const;
     /// Role graph built from the attachments.
