@@ -158,7 +158,8 @@ enablement and static/kinematic object poses, steps
 the world, then writes dynamic body poses back to objects. Enable changes take
 effect at this synchronization boundary. Teleport dynamic bodies through their
 checked body handle. Disabled bodies retain state but leave collision/query
-participation. Reenabled dynamic bodies resume their saved physics pose.
+participation and reject impulses. Reenabled dynamic bodies resume their saved
+physics pose.
 Every selected 3D component must belong to the supplied world, including inactive
 ones. Call the driver once per world per tick; do not also call `world.step`.
 Standalone bodies may share the world. The driver never calls component hooks;

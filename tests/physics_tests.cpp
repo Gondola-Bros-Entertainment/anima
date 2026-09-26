@@ -1,6 +1,8 @@
 #include <anima/physics.hpp>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
+#include <string>
 using namespace anima;
 using namespace anima::physics;
 namespace {
@@ -16,6 +18,15 @@ template <class F> void rejects(F f) {
         rejected = true;
     }
     check(rejected, "Expected rejection");
+}
+template <class F> void rejects_argument(F f, const char *fragment) {
+    bool rejected = false;
+    try {
+        f();
+    } catch (const std::invalid_argument &error) {
+        rejected = std::string(error.what()).find(fragment) != std::string::npos;
+    }
+    check(rejected, "Expected an invalid_argument naming the rejected condition");
 }
 BodySettings box(Vec3 position, Vec3 extent, Motion motion = Motion::stationary) {
     BodySettings s;
@@ -465,6 +476,26 @@ void run() {
         auto body = world.create({});
         rejects([&] { (void)world.create({}); });
         body.remove();
+    }
+    {
+        // Disabled bodies are outside Jolt's broadphase; an impulse must not reactivate them.
+        World world;
+        auto floor = world.create(box({0, -.5F, 0}, {5, .5F, 5}));
+        auto crate = world.create(box({0, .4F, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+        auto parked = world.create(box({3, .4F, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+        world.step(1. / 60);
+        crate.set_enabled(false);
+        parked.set_enabled(false);
+        rejects_argument([&] { crate.add_impulse({0, 0, 0}); }, "enabled");
+        rejects_argument([&] { parked.add_impulse({0, 1, 0}); }, "enabled");
+        parked.remove();
+        for (int i = 0; i < 3; ++i)
+            world.step(1. / 60);
+        const auto hit = world.raycast({0, 10, 0}, {0, -12, 0});
+        check(!crate.enabled() && hit && hit->body == floor, "Rejected impulse reactivated a disabled body");
+        crate.set_enabled(true);
+        crate.add_impulse({0, 2, 0});
+        check(crate.velocity().y > 0, "Reenabled body did not accept an impulse");
     }
 }
 } // namespace
