@@ -122,6 +122,9 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.os == 'macos-15' && '3' || '4' }}
       CCACHE_MAXSIZE: ${{ matrix.os == 'windows-2022' && matrix.profile != 'headless' && '1G' || '500M' }}
       CCACHE_COMPILERCHECK: content
+      # The consumer suite rebuilds dependencies from the same sources in another build directory. Debug
+      # information would otherwise add that directory to every hash, so the two builds could share nothing.
+      CCACHE_NOHASHDIR: '1'
       HOMEBREW_NO_AUTO_UPDATE: '1'
       HOMEBREW_NO_INSTALL_CLEANUP: '1'
     steps:
