@@ -1,4 +1,5 @@
 #pragma once
+#include "gpu_checks.hpp"
 #include "reference.hpp"
 #include <SDL3/SDL.h>
 #include <anima/assets/mesh_preparation.hpp>
@@ -123,15 +124,9 @@ inline int run(int argc, char **argv) {
     anima::pose_mesh_snapshot(*asset, pose_a, reference[0], 0, left);
     anima::pose_mesh_snapshot(*asset, pose_b, reference[1], 0, right);
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    require(SDL_Init(SDL_INIT_VIDEO), "SDL resource consumer initialization failed");
-    struct Quit {
-        ~Quit() { SDL_Quit(); }
-    } quit;
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima shared GPU resources", 960, 720,
-                         SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE),
-        SDL_DestroyWindow};
-    require(bool(window), "Resource consumer window failed");
+    gpu_check::Video video;
+    const auto window =
+        gpu_check::window("Anima shared GPU resources", 960, 720, SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     anima::RendererOptions settings;
     settings.validation = true;
     settings.profile = true;
@@ -141,12 +136,10 @@ inline int run(int argc, char **argv) {
     int width{}, height{};
     SDL_GetWindowSizeInPixels(window.get(), &width, &height);
     renderer.set_view(camera.matrix(float(width) / height));
-    std::filesystem::create_directories(output);
     const auto started = std::chrono::steady_clock::now();
     auto frame = [&] {
         for (;;) {
-            require(std::chrono::steady_clock::now() - started < std::chrono::seconds(90),
-                    "Resource consumer watchdog");
+            require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Resource consumer watchdog");
             SDL_Event event{};
             while (SDL_PollEvent(&event)) {
                 require(event.type != SDL_EVENT_QUIT && event.type != SDL_EVENT_WINDOW_CLOSE_REQUESTED,
@@ -159,9 +152,14 @@ inline int run(int argc, char **argv) {
             SDL_Delay(5);
         }
     };
+    // Images are compared as soon as both sides exist and released once no later comparison needs them. GPU
+    // skinning must match the CPU-posed reference within gpu_check::Captures::require_parity's tolerance, and
+    // every rollback must leave the accepted image exactly as it was.
+    gpu_check::Captures images(output);
     auto capture = [&](const std::string &name) {
-        renderer.request_capture(output / (name + ".ppm"));
+        renderer.request_capture();
         frame();
+        images.add(name, gpu_check::take(renderer));
     };
     renderer.set_scenes({reference_test::scene(reference)});
     capture("reference");
@@ -173,6 +171,8 @@ inline int run(int argc, char **argv) {
     require(prepared_uploads == reference.size() + 1 && renderer.resource_stats().cached_assets == reference.size() + 1,
             "Resource preparation duplicated a shared upload");
     capture("preloaded-reference");
+    images.require_same("preloaded-reference", "reference", "Preparation changed the selected scene");
+    images.discard({"preloaded-reference"});
     {
         const std::array invalid{anima::Mesh::compile(*asset), std::shared_ptr<const anima::Mesh>{}};
         rejects<std::invalid_argument>([&] { renderer.prepare_meshes(invalid); });
@@ -205,6 +205,10 @@ inline int run(int argc, char **argv) {
         std::cout << "PASS resource fatal classification " << fatal << '\n';
         return 0;
     }
+    constexpr double least_change = .001;
+    images.require_foreground("gpu", "The GPU-skinned instances are not visible");
+    images.require_parity("reference", "gpu");
+    images.discard({"reference"});
     const auto visible = source->instance(a).primitive_visible;
     for (std::size_t i = 0; i < visible.size(); ++i) {
         source->set_primitive_visible(a, i, false);
@@ -217,6 +221,10 @@ inline int run(int argc, char **argv) {
     source->set_visible(a, false);
     capture("gpu-hidden-instance");
     require(renderer.resource_stats().instances == 1, "Hidden instance still uploaded a pose");
+    images.require_parity("reference-hidden", "gpu-hidden");
+    images.require_same("gpu-hidden-instance", "gpu-hidden", "Hiding the instance differs from hiding its primitives");
+    images.require_changed("gpu", "gpu-hidden", least_change, "Hiding the primitives had no visible effect");
+    images.discard({"reference-hidden", "gpu-hidden", "gpu-hidden-instance"});
     source->set_visible(a, true);
     for (std::size_t i = 0; i < visible.size(); ++i) {
         source->set_primitive_visible(a, i, visible[i]);
@@ -235,6 +243,8 @@ inline int run(int argc, char **argv) {
                 "Join/leave duplicated or reuploaded a shared mesh");
     }
     capture("after-churn");
+    images.require_same("after-churn", "gpu", "Instances joining and leaving changed the accepted image");
+    images.discard({"after-churn"});
     for (const auto *name : {"vertex", "index", "texture", "texture-upload", "descriptors", "ready"}) {
         const auto stage = anima::parse_renderer_failure_stage(name);
         {
@@ -242,13 +252,18 @@ inline int run(int argc, char **argv) {
             const anima::MeshPreparation candidate_preparation(candidate.front());
             injected(stage, [&] { renderer.prepare_mesh(candidate_preparation, {stage}); });
         }
-        capture(std::string("preload-rollback-") + name);
+        const auto preload = std::string("preload-rollback-") + name;
+        capture(preload);
+        images.require_same(preload, "gpu", "A failed preparation changed the accepted image");
         {
             auto candidate = std::make_shared<anima::Scene>();
             (void)candidate->add(anima::Mesh::compile(*asset));
             injected(stage, [&] { renderer.set_scenes({candidate}, {stage}); });
         }
-        capture(std::string("rollback-") + name);
+        const auto rollback = std::string("rollback-") + name;
+        capture(rollback);
+        images.require_same(rollback, "gpu", "A failed selection changed the accepted image");
+        images.discard({preload, rollback});
     }
     {
         auto candidate = std::make_shared<anima::Scene>();
@@ -257,6 +272,8 @@ inline int run(int argc, char **argv) {
         injected(anima::RendererFailureStage::palette,
                  [&] { renderer.set_scenes({candidate}, {anima::RendererFailureStage::palette}); });
         capture("rollback-palette");
+        images.require_same("rollback-palette", "gpu", "A failed palette upload changed the accepted image");
+        images.discard({"rollback-palette"});
     }
     source->set_pose(a, pose_at(.6), left);
     auto colored = *asset;
@@ -266,8 +283,12 @@ inline int run(int argc, char **argv) {
     capture("gpu-updated");
     renderer.set_scenes({reference_test::scene(reference)});
     capture("reference-updated");
+    images.require_parity("reference-updated", "gpu-updated");
     renderer.set_scenes({source});
     capture("gpu-restored-scene");
+    images.require_same("gpu-restored-scene", "gpu-updated", "Selecting the scene again changed its image");
+    images.require_changed("gpu", "gpu-updated", least_change, "The pose and material update had no visible effect");
+    images.discard({"reference-updated", "gpu-updated", "gpu-restored-scene"});
     const auto restored = renderer.resource_stats();
     require(restored.cached_assets == 1, "Unused failed candidate resources were retained");
     {
@@ -345,6 +366,8 @@ inline int run(int argc, char **argv) {
     }
     renderer.set_scenes({});
     capture("empty");
+    images.require_clear("empty", "An empty selection drew geometry");
+    images.discard({"empty"});
     renderer.set_scenes({source});
     frame();
     const auto resources = renderer.resource_stats();
@@ -360,6 +383,8 @@ inline int run(int argc, char **argv) {
         capture("gpu-clip-" + suffix);
         renderer.set_scenes({reference_test::scene(reference)});
         capture("reference-clip-" + suffix);
+        images.require_parity("reference-clip-" + suffix, "gpu-clip-" + suffix);
+        images.discard({"reference-clip-" + suffix, "gpu-clip-" + suffix});
         renderer.set_scenes({source});
         frame();
     }
@@ -368,6 +393,9 @@ inline int run(int argc, char **argv) {
     capture("gpu-resized");
     renderer.set_scenes({reference_test::scene(reference)});
     capture("reference-resized");
+    images.require_parity("reference-resized", "gpu-resized");
+    images.require(!gpu_check::same_size(images["gpu-resized"], images["gpu"]),
+                   "The resized window kept its capture size", {"gpu-resized", "gpu"});
     renderer.set_scenes({source});
     frame();
     const auto stats = renderer.shutdown();
