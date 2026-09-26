@@ -365,6 +365,19 @@ void run(const std::filesystem::path &file) {
             root.add_component<UiPanel>(host, "controls", file, true);
             auto source = Prefab::capture(root, codecs);
             auto copy = Prefab::deserialize(source.serialize({}), {}, codecs).instantiate(scene);
+            {
+                // A lone continuation byte is never valid UTF-8, so the codec cannot encode this key.
+                auto unencodable = scene.create();
+                unencodable.add_component<UiPanel>(host, "\xff", file, true);
+                bool rejected = false;
+                try {
+                    (void)Prefab::capture(unencodable, codecs);
+                } catch (const std::invalid_argument &) {
+                    rejected = true;
+                }
+                check(rejected, "A UI asset key that is not UTF-8 escaped as a JSON library exception");
+                unencodable.destroy();
+            }
             check(&root.get_component<UiPanel>()->document().native() !=
                       &copy.get_component<UiPanel>()->document().native(),
                   "Prefab UI documents shared ownership");

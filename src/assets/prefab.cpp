@@ -52,7 +52,7 @@ void require(bool accepted, const char *reason) {
 }
 float scalar(const Json &value) {
     require(value.is_number(), "Scene scalar must be a number");
-    const auto result = value.get<float>();
+    const auto result = detail::json_float(value);
     require(std::isfinite(result), "Scene scalar must be finite");
     return result;
 }
@@ -179,7 +179,7 @@ std::string encode(std::span<const Prefab::Node> nodes, std::string_view kind, c
     Json value{{"version", document_version}, {"kind", kind}, {"objects", encode_nodes(nodes, name, resources)}};
     if (kind == scene_kind)
         value["next_key"] = ObjectKey{next_key}.string();
-    auto document = value.dump(2);
+    auto document = detail::json_step([&] { return value.dump(2); });
     require(document.size() <= maximum_document_bytes, "Scene document exceeds the byte limit");
     return document;
 }
@@ -384,7 +384,7 @@ GameObject Prefab::instantiate(GameObject parent, const Mat4 &placement, const C
 }
 std::string Prefab::serialize(const MeshName &name) const { return encode(nodes_, prefab_kind, name); }
 Prefab Prefab::deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs) {
-    return Prefab(decode(document, prefab_kind, resolve).nodes, std::move(codecs));
+    return Prefab(detail::json_step([&] { return decode(document, prefab_kind, resolve); }).nodes, std::move(codecs));
 }
 std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs) {
     const auto nodes = capture_nodes(scene.roots(), codecs);
@@ -393,7 +393,7 @@ std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentC
 }
 std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver &resolve,
                                   const ComponentCodecs &codecs) {
-    const auto decoded = decode(document, scene_kind, resolve);
+    const auto decoded = detail::json_step([&] { return decode(document, scene_kind, resolve); });
     const auto &nodes = decoded.nodes;
     for (const auto &node : nodes)
         codecs.validate(node.components);
@@ -448,7 +448,7 @@ std::string serialize_scene_set(SceneSet &scenes, const MeshName &name, const Co
                      {"active", std::move(active)},
                      {"scenes", std::move(documents)},
                      {"references", std::move(table)}};
-    auto document = value.dump(2);
+    auto document = detail::json_step([&] { return value.dump(2); });
     require(document.size() <= maximum_document_bytes, "Scene set document exceeds the byte limit");
     return document;
 }

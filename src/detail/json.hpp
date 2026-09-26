@@ -1,12 +1,15 @@
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace anima::detail {
@@ -77,9 +80,35 @@ inline nlohmann::json parse_json(std::string_view source, std::size_t maximum_by
         int depth = 0;
         std::vector<std::set<std::string>> keys;
     } validation(maximum_depth);
-    // On syntax errors the normal parser below preserves its exception type and
-    // diagnostic. It can only reach the prefix already checked by the SAX pass.
+    // On syntax errors the normal parser below reports the diagnostic. It can only reach the prefix
+    // already checked by the SAX pass.
     (void)Json::sax_parse(source, &validation);
-    return Json::parse(source);
+    try {
+        return Json::parse(source);
+    } catch (const Json::parse_error &error) {
+        throw std::invalid_argument(error.what());
+    }
+}
+
+// Reads a JSON number as a float. A value outside the finite float range throws instead of narrowing,
+// which would be undefined behavior.
+inline float json_float(const nlohmann::json &value) {
+    if (!value.is_number())
+        throw std::invalid_argument("JSON value must be a number");
+    const auto number = value.get<double>();
+    if (!(std::abs(number) <= std::numeric_limits<float>::max()))
+        throw std::invalid_argument("JSON number outside the float range");
+    return static_cast<float>(number);
+}
+
+// Runs one document encode or decode step. The JSON library's own failures (a mistyped value, a missing
+// key, or text that is not UTF-8 on output) are rethrown as Error, the type the caller's contract uses
+// for a rejected document; nlohmann is private, so callers could not otherwise name them.
+template <class Error = std::invalid_argument, class Step> decltype(auto) json_step(Step &&step) {
+    try {
+        return std::forward<Step>(step)();
+    } catch (const nlohmann::json::exception &error) {
+        throw Error(error.what());
+    }
 }
 } // namespace anima::detail

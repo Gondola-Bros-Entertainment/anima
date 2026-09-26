@@ -12,13 +12,12 @@
 /// and two meshes cannot share a key, and MeshResolver runs once per distinct key. File access
 /// belongs to the caller.
 ///
-/// Readers throw `std::invalid_argument` for invalid content, but malformed JSON and some values of
-/// the wrong JSON type throw the JSON parser's own exceptions, derived from `std::exception`, and
-/// so does writing a string that is not valid UTF-8. Instantiation and loading create every native
-/// object before any component decoder runs, and a failure destroys every object they created;
-/// side effects of application callbacks are not undone, and keys allocated by a failed
-/// instantiation are not reused. Instantiated and loaded components receive their first
-/// `on_enable()` at the next lifecycle reconciliation.
+/// Readers throw `std::invalid_argument` for invalid content, including malformed JSON and values
+/// of the wrong JSON type, and writers throw it for a string that is not valid UTF-8.
+/// Instantiation and loading create every native object before any component decoder runs, and a
+/// failure destroys every object they created; side effects of application callbacks are not
+/// undone, and keys allocated by a failed instantiation are not reused. Instantiated and loaded
+/// components receive their first `on_enable()` at the next lifecycle reconciliation.
 
 namespace anima {
 /// Returns the application's stable key for a mesh when writing a document.

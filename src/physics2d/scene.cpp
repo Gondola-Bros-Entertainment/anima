@@ -27,7 +27,7 @@ Json vec(Vec2 v) { return Json::array({v.x, v.y}); }
 Vec2 vec(const Json &j) {
     if (!j.is_array() || j.size() != 2 || !j[0].is_number() || !j[1].is_number())
         throw std::invalid_argument("2D physics vector requires two numbers");
-    return {j[0].get<float>(), j[1].get<float>()};
+    return {anima::detail::json_float(j[0]), anima::detail::json_float(j[1])};
 }
 } // namespace
 RigidBody::RigidBody(GameObject object, World &world, BodySettings settings) : settings_(std::move(settings)) {
@@ -117,7 +117,7 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
             const auto number = [&](const char *key) {
                 if (!j.at(key).is_number())
                     throw std::invalid_argument("Invalid 2D physics scalar");
-                return j.at(key).get<float>();
+                return anima::detail::json_float(j.at(key));
             };
             const auto boolean = [&](const char *key) {
                 if (!j.at(key).is_boolean())

@@ -147,7 +147,7 @@ void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClip
             const auto number = [&](const char *field) {
                 if (!j.at(field).is_number())
                     throw std::invalid_argument("Invalid audio source number");
-                return j.at(field).get<float>();
+                return detail::json_float(j.at(field));
             };
             const auto flag = [&](const char *field) {
                 if (!j.at(field).is_boolean())

@@ -88,9 +88,9 @@ struct CameraView {
 /// `"orthographic"`), `vertical_fov_degrees`, `orthographic_height`, `near_plane` and `far_plane`
 /// (numbers). A view payload has exactly `camera`: the target's key from the operation's
 /// ObjectReferences as a decimal string, `"0"` for null. Decoding throws `std::invalid_argument` for
-/// payloads over 64 KiB or nested deeper than 16, duplicate, missing or unknown fields, and invalid
-/// settings; malformed JSON throws the JSON parser's own exception. A view whose target lacks an
-/// active Camera still loads; view_matrix rejects it. Registration throws `std::invalid_argument`
-/// when either type or key is already registered.
+/// malformed JSON, payloads over 64 KiB or nested deeper than 16, duplicate, missing or unknown
+/// fields, and invalid settings. A view whose target lacks an active Camera still loads;
+/// view_matrix rejects it. Registration throws `std::invalid_argument` when either type or key is
+/// already registered.
 void add_camera_component_codecs(ComponentCodecs &codecs);
 } // namespace anima

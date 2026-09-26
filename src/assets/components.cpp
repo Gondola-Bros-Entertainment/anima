@@ -1,3 +1,4 @@
+#include "../detail/json.hpp"
 #include <anima/components.hpp>
 #include <set>
 
@@ -135,7 +136,7 @@ std::vector<ComponentData> ComponentCodecs::capture(GameObject object, const Obj
         const auto found = codecs_.find(type);
         if (found == codecs_.end())
             throw std::invalid_argument("Component has no persistence codec");
-        auto data = found->second.encode(object, references);
+        auto data = detail::json_step([&] { return found->second.encode(object, references); });
         data.type = found->second.key;
         result.push_back(std::move(data));
     }
@@ -159,7 +160,7 @@ void ComponentCodecs::restore(GameObject object, std::span<const ComponentData> 
     for (const auto &component : data) {
         const auto codec = std::find_if(codecs_.begin(), codecs_.end(),
                                         [&](const auto &entry) { return entry.second.key == component.type; });
-        codec->second.decode(object, component, references);
+        detail::json_step([&] { codec->second.decode(object, component, references); });
     }
 }
 } // namespace anima

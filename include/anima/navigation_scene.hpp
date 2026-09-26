@@ -56,8 +56,7 @@ void update_agents(SceneSet &scenes, double seconds);
 /// The payload stores the route, cursor, speed and arrival distance; component enablement is stored separately, and
 /// a restored agent's desired velocity starts at zero. It is a JSON object of at most 16 MiB with exactly the fields
 /// `route` (an array of three-number arrays), `next` (an integer), `speed` and `arrival_distance`, validated as
-/// Agent validates them. Unknown, missing or duplicate fields and invalid values throw `std::invalid_argument`; text
-/// that is not JSON throws the JSON parser's own exception, which derives from `std::exception` but not
+/// Agent validates them. Text that is not JSON, unknown, missing or duplicate fields and invalid values throw
 /// `std::invalid_argument`.
 void add_component_codec(ComponentCodecs &codecs);
 } // namespace anima::navigation

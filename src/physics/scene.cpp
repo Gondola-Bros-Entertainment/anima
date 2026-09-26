@@ -48,7 +48,7 @@ Vec3 vec(const Json &j) {
     for (unsigned i = 0; i < 3; ++i) {
         if (!j[i].is_number())
             throw std::invalid_argument("Physics vector must be numeric");
-        *values[i] = j[i].get<float>();
+        *values[i] = anima::detail::json_float(j[i]);
     }
     return v;
 }
@@ -60,7 +60,7 @@ int integer(const Json &j, const char *key, unsigned maximum) {
 float number(const Json &j, const char *key) {
     if (!j.at(key).is_number())
         throw std::invalid_argument("Invalid physics scalar");
-    return j.at(key).get<float>();
+    return anima::detail::json_float(j.at(key));
 }
 Json collider_data(const Collider &c) {
     Json vertices = Json::array();
@@ -201,7 +201,7 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
                 for (unsigned i = 0; i < 4; ++i) {
                     if (!rotation[i].is_number())
                         throw std::invalid_argument("Compound rotation must be numeric");
-                    part.pose.rotation[i] = rotation[i].get<float>();
+                    part.pose.rotation[i] = anima::detail::json_float(rotation[i]);
                 }
                 part.collider = collider(child, true);
                 c.children.push_back(std::move(part));

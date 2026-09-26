@@ -18,10 +18,10 @@
 /// supply rig recipes, clip choice and gameplay rules.
 ///
 /// Contracts are UTF-8 JSON of at most 4 MiB and 64 nesting levels. Duplicate fields are rejected;
-/// unknown fields are ignored. Invalid contracts and arguments throw `std::invalid_argument`
-/// unless stated; motion GLB failures and node or clip names that match nothing or several things
-/// throw `std::runtime_error`. JSON syntax errors, missing fields and values of the wrong JSON type
-/// throw the private JSON parser's exceptions, which derive only from `std::exception`.
+/// unknown fields are ignored. Invalid contracts and arguments, including JSON syntax errors,
+/// missing fields and values of the wrong JSON type, throw `std::invalid_argument` unless stated;
+/// motion GLB failures and node or clip names that match nothing or several things throw
+/// `std::runtime_error`.
 
 namespace anima {
 /// One layer for MotionRuntime::evaluate.

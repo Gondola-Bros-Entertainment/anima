@@ -8,9 +8,9 @@
 /// weights over an ActionTimeline.
 ///
 /// Part of the `anima::assets` target. Documents are UTF-8 JSON of at most 4 MiB and 64 nesting
-/// levels; duplicate and unknown fields are rejected. Invalid documents and arguments throw
-/// `std::invalid_argument` unless stated. JSON syntax errors and values of the wrong JSON type
-/// throw the private JSON parser's exceptions, which derive only from `std::exception`.
+/// levels; duplicate and unknown fields are rejected. Invalid documents and arguments, including
+/// JSON syntax errors and values of the wrong JSON type, throw `std::invalid_argument` unless
+/// stated.
 
 namespace anima {
 /// One evaluation of an action instance, on the caller's authoritative clock.

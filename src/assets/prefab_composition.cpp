@@ -25,7 +25,7 @@ Mat4 matrix_value(const Json &value) {
     Mat4 result;
     for (std::size_t i = 0; i < result.size(); ++i) {
         require(value[i].is_number(), "Prefab composition scalar must be a number");
-        result[i] = value[i].get<float>();
+        result[i] = detail::json_float(value[i]);
         require(std::isfinite(result[i]), "Prefab composition scalar must be finite");
     }
     return result;
@@ -150,12 +150,15 @@ std::string PrefabComposition::serialize() const {
             {{"key", part.key}, {"prefab", part.prefab}, {"parent", parent}, {"placement", part.placement}});
     }
     const Json value{{"version", document_version}, {"kind", document_kind}, {"parts", parts}};
-    auto document = value.dump(2);
+    auto document = detail::json_step([&] { return value.dump(2); });
     require(document.size() <= maximum_document_bytes, "Prefab composition document exceeds the byte limit");
     return document;
 }
 
-PrefabComposition PrefabComposition::deserialize(std::string_view document) {
+namespace {
+using Part = PrefabComposition::Part;
+using Mount = PrefabComposition::Mount;
+PrefabComposition decode_composition(std::string_view document) {
     const auto parsed = detail::parse_json(document, maximum_document_bytes);
     detail::json_fields(parsed, {"version", "kind", "parts"});
     require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
@@ -182,5 +185,9 @@ PrefabComposition PrefabComposition::deserialize(std::string_view document) {
         parts.push_back(std::move(part));
     }
     return PrefabComposition(std::move(parts));
+}
+} // namespace
+PrefabComposition PrefabComposition::deserialize(std::string_view document) {
+    return detail::json_step([&] { return decode_composition(document); });
 }
 } // namespace anima
