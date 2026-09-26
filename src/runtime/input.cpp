@@ -52,7 +52,7 @@ void action(const Action &a) {
         !std::isfinite(a.threshold) || a.threshold < limits::minimum_threshold || a.threshold > 1)
         throw std::invalid_argument("Invalid input action name/type/bindings/threshold");
     for (unsigned char c : a.name)
-        if (c < 33 || c > 126)
+        if (c < '!' || c > '~')
             throw std::invalid_argument("Input action names must be printable ASCII without spaces");
     for (const auto &b : a.bindings) {
         control(b.control);

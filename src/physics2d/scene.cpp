@@ -136,7 +136,7 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
             s.density = number("density");
             s.friction = number("friction");
             s.restitution = number("restitution");
-            s.layer = static_cast<std::uint8_t>(integer("layer", 15));
+            s.layer = static_cast<std::uint8_t>(integer("layer", detail::collision_layer_count - 1));
             s.sensor = boolean("sensor");
             s.continuous = boolean("continuous");
             s.fixed_rotation = boolean("fixed_rotation");

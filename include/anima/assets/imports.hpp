@@ -120,8 +120,9 @@ class AssetImports {
     /// input another importer tracks has changed since it was accepted (refresh() first). Failures
     /// from ImportSource::read and the importer propagate. Nothing is registered on failure.
     template <class T, class Importer> AssetRef<T> add(std::string key, Importer importer) {
+        constexpr std::size_t maximum_key_bytes = 4096;
         Mutation mutation(importing_);
-        if (key.empty() || key.size() > 4096 || entries_.contains(key))
+        if (key.empty() || key.size() > maximum_key_bytes || entries_.contains(key))
             throw std::invalid_argument("Invalid or duplicate asset key");
         auto entry = std::make_unique<Entry<T>>(std::move(importer));
         ImportSource::Files files;

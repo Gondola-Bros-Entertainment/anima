@@ -137,7 +137,9 @@ struct MotionRuntime::Impl {
     MotionEvaluation evaluate(const anima::Pose &source, const MotionControls &controls) const {
         if (controls.empty())
             return {source, {}}; // Preserve the exact default path.
-        if (controls.layers.size() > 8 || controls.offsets.size() > 32 || controls.contacts.size() > 8)
+        constexpr std::size_t maximum_layers = 8, maximum_offsets = 32, maximum_contacts = 8;
+        if (controls.layers.size() > maximum_layers || controls.offsets.size() > maximum_offsets ||
+            controls.contacts.size() > maximum_contacts)
             throw std::invalid_argument("Motion controls exceed per-actor budget");
         auto evaluated = rig_.encode(source);
         for (const auto &layer : controls.layers) {

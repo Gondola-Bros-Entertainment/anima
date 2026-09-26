@@ -43,7 +43,8 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
         result = Event{EventType::control,
                        {ControlKind::gamepad_axis, e.gaxis.axis, e.gaxis.which},
-                       float(e.gaxis.value) / (e.gaxis.value < 0 ? 32768.F : 32767.F)};
+                       float(e.gaxis.value) /
+                           (e.gaxis.value < 0 ? -float(SDL_JOYSTICK_AXIS_MIN) : float(SDL_JOYSTICK_AXIS_MAX))};
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
     case SDL_EVENT_WINDOW_FOCUS_LOST:

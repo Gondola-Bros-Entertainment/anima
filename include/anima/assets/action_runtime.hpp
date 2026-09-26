@@ -29,14 +29,16 @@ struct ActionRequest {
 };
 /// Piecewise-linear weight curve over phase progress.
 struct ActionWeight {
-    /// (phase, weight) keys: 2 to 32, phases strictly increasing from exactly 0 to exactly 1, and
-    /// weights finite in [0, 1]. The default is a constant 1.
+    /// Largest number of #keys.
+    static constexpr std::size_t maximum_keys = 32;
+    /// (phase, weight) keys: 2 to #maximum_keys, phases strictly increasing from exactly 0 to exactly
+    /// 1, and weights finite in [0, 1]. The default is a constant 1.
     std::vector<std::pair<double, float>> keys{{0., 1.F}, {1., 1.F}};
     /// Weight at @p phase; finite phases outside [0, 1] clamp to the end keys. Validates #keys on
     /// every call, so curves built directly rather than decoded are checked too. Throws for a
     /// nonfinite @p phase or invalid keys.
     float sample(double phase) const {
-        if (!std::isfinite(phase) || keys.size() < 2 || keys.size() > 32 || keys.front().first != 0 ||
+        if (!std::isfinite(phase) || keys.size() < 2 || keys.size() > maximum_keys || keys.front().first != 0 ||
             keys.back().first != 1)
             throw std::invalid_argument("Action weight requires a finite phase and 2..32 keys covering 0..1");
         double previous = -1;

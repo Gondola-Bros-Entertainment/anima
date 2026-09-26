@@ -25,6 +25,8 @@ constexpr std::size_t maximum_image_pixels = 16 * 1024 * 1024;
 constexpr std::size_t maximum_nodes = 4096, maximum_materials = 4096;
 constexpr std::size_t maximum_accessor_elements = 2'000'000, maximum_expanded_vertices = 2'000'000;
 constexpr unsigned maximum_hierarchy_depth = 256;
+// A skinned vertex whose joint weights sum to this or less is unweighted.
+constexpr float minimum_skin_weight_sum = 1e-6F;
 
 void require(bool condition, const char *message) {
     if (!condition)
@@ -410,7 +412,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                                     "Invalid skin weight/joint index");
                             sum += w[k];
                         }
-                        require(sum > 1e-6F, "Skinned vertex has no weight");
+                        require(sum > minimum_skin_weight_sum, "Skinned vertex has no weight");
                         for (unsigned k = 0; k < 4; ++k)
                             vertex.weights[k] = w[k] / sum;
                     }

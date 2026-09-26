@@ -76,12 +76,14 @@ struct InteractionPlacement {
 /// A validated role graph that places child roles on their parents.
 class InteractionBindings {
   public:
-    /// Throws unless there are 1 to 64 roles with unique nonempty ids and assets, fewer attachments
+    /// Largest number of roles.
+    static constexpr std::size_t maximum_roles = 64;
+    /// Throws unless there are 1 to #maximum_roles roles with unique nonempty ids and assets, fewer attachments
     /// than roles, each attachment joins two different known roles, no role has two parents, the
     /// graph is acyclic, and every socket names a node of its role's asset with a valid local frame.
     InteractionBindings(std::vector<InteractionRole> roles, std::vector<InteractionAttachment> attachments)
         : roles_(std::move(roles)), attachments_(std::move(attachments)) {
-        if (roles_.empty() || roles_.size() > 64 || attachments_.size() >= roles_.size())
+        if (roles_.empty() || roles_.size() > maximum_roles || attachments_.size() >= roles_.size())
             throw std::invalid_argument("Invalid interaction role or attachment count");
         for (std::size_t i = 0; i < roles_.size(); ++i) {
             const auto &role = roles_[i];
@@ -169,13 +171,16 @@ class InteractionBindings {
     }
 
   private:
+    // A placement or socket offset is rigid when every element is within this of the rigid matrix rebuilt from
+    // its translation and rotation.
+    static constexpr float rigid_tolerance = 1e-4F;
     static void rigid(const Mat4 &value) {
         if (!std::all_of(value.begin(), value.end(), [](float x) { return std::isfinite(x); }))
             throw std::invalid_argument("Non-finite interaction placement");
         const auto rotation = affine_rotation(value);
         const auto expected = matrix(Transform{point(value, {}), rotation, {1, 1, 1}});
         for (std::size_t i = 0; i < value.size(); ++i)
-            if (std::abs(value[i] - expected[i]) > 1e-4F)
+            if (std::abs(value[i] - expected[i]) > rigid_tolerance)
                 throw std::invalid_argument("Interaction actor placement and socket offsets must be rigid");
     }
     void validate_socket(std::size_t owner, const InteractionSocket &socket) const {

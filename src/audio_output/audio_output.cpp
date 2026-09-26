@@ -5,6 +5,10 @@
 
 namespace anima {
 namespace {
+constexpr double minimum_queue_seconds = .005, maximum_queue_seconds = .25;
+// The mixer renders interleaved stereo, queued in blocks of this many samples.
+constexpr int output_channels = 2;
+constexpr std::size_t block_samples = 1024;
 void check(bool ok, const char *operation) {
     if (!ok)
         throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
@@ -24,7 +28,7 @@ struct AudioOutput::State {
     }
 };
 AudioOutput::AudioOutput(Audio &audio, double seconds) : state_(std::make_unique<State>(audio)) {
-    if (!std::isfinite(seconds) || seconds < .005 || seconds > .25)
+    if (!std::isfinite(seconds) || seconds < minimum_queue_seconds || seconds > maximum_queue_seconds)
         throw std::invalid_argument("Audio queue duration must be between 5 and 250 milliseconds");
     auto &s = *state_;
     const auto rate = s.mixer.sample_rate();
@@ -33,7 +37,7 @@ AudioOutput::AudioOutput(Audio &audio, double seconds) : state_(std::make_unique
     s.initialized = true;
     SDL_AudioSpec format{};
     format.format = SDL_AUDIO_F32;
-    format.channels = 2;
+    format.channels = output_channels;
     format.freq = static_cast<int>(rate);
     s.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &format, nullptr, nullptr);
     check(s.stream != nullptr, "Open SDL audio output");
@@ -57,12 +61,12 @@ void AudioOutput::pump() {
     auto &s = state();
     const auto queued = SDL_GetAudioStreamQueued(s.stream);
     check(queued >= 0, "Read SDL audio queue");
-    const auto queued_frames = static_cast<std::size_t>(queued) / (2 * sizeof(float));
+    const auto queued_frames = static_cast<std::size_t>(queued) / (output_channels * sizeof(float));
     auto remaining = s.target_frames > queued_frames ? s.target_frames - queued_frames : 0;
-    std::array<float, 1024> samples{};
+    std::array<float, block_samples> samples{};
     while (remaining) {
-        const auto frames = std::min(remaining, samples.size() / 2);
-        const auto block = std::span<float>(samples).first(frames * 2);
+        const auto frames = std::min(remaining, samples.size() / output_channels);
+        const auto block = std::span<float>(samples).first(frames * output_channels);
         s.mixer.render(block);
         check(SDL_PutAudioStreamData(s.stream, block.data(), static_cast<int>(block.size_bytes())),
               "Queue mixed audio");

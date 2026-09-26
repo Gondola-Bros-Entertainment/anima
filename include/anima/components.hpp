@@ -292,7 +292,8 @@ class ComponentCodecs {
     template <class T, class Encode, class Decode> void add(std::string key, Encode encode, Decode decode) {
         static_assert(!std::same_as<T, ObjectTransform> && !std::same_as<T, MeshRenderer>,
                       "Native transform/renderer data has a dedicated scene representation");
-        if (key.empty() || key.size() > 4096)
+        constexpr std::size_t maximum_key_bytes = 4096;
+        if (key.empty() || key.size() > maximum_key_bytes)
             throw std::invalid_argument("Invalid component codec key");
         for (const auto &[type, codec] : codecs_)
             if (type == typeid(T) || codec.key == key)

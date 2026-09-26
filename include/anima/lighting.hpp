@@ -1,6 +1,7 @@
 #pragma once
 #include <anima/environment.hpp>
 #include <anima/prefab.hpp>
+#include <numbers>
 
 /// @file
 /// Scene components that select the directional lights and environment settings of anima::VulkanRenderer,
@@ -24,7 +25,8 @@ class SceneSet;
 class DirectionalLightComponent {
   public:
     /// Throws `std::invalid_argument` for an invalid @p radiance; see set_radiance().
-    explicit DirectionalLightComponent(Vec3 radiance = {1.570796327F, 1.570796327F, 1.570796327F});
+    explicit DirectionalLightComponent(Vec3 radiance = {std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2,
+                                                        std::numbers::pi_v<float> / 2});
     /// Linear RGB radiance, as DirectionalLight::radiance.
     [[nodiscard]] Vec3 radiance() const { return radiance_; }
     /// Sets finite, nonnegative linear RGB radiance, or throws `std::invalid_argument` and keeps the previous

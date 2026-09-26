@@ -1,7 +1,9 @@
 #include "../detail/audio.hpp"
 #include <anima/audio.hpp>
 #include <bit>
+#include <climits>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace anima {
@@ -15,6 +17,23 @@ constexpr double maximum_fade_seconds = 24 * 60 * 60;
 constexpr std::uint32_t riff_id = 0x46464952, wave_id = 0x45564157;
 constexpr std::uint32_t format_id = 0x20746d66, data_id = 0x61746164;
 constexpr unsigned pcm_encoding = 1, float_encoding = 3;
+// A RIFF file is one chunk: an 8-byte header (identifier, then the size of what follows), the WAVE form type and
+// the WAVE chunks, each with the same header.
+constexpr std::size_t chunk_header_bytes = 8, chunk_size_offset = 4, form_type_bytes = 4;
+constexpr std::size_t riff_header_bytes = chunk_header_bytes + form_type_bytes;
+// Little-endian fields of the WAVE format chunk, and its size up to the last of them.
+namespace format_chunk {
+struct Field {
+    std::size_t offset;
+    unsigned bytes;
+};
+constexpr Field tag{0, 2}, channels{2, 2}, sample_rate{4, 4}, byte_rate{8, 4}, block_align{12, 2},
+    bits_per_sample{14, 2};
+constexpr std::size_t bytes = bits_per_sample.offset + bits_per_sample.bytes;
+} // namespace format_chunk
+constexpr unsigned pcm16_bits = 16, float32_bits = 32;
+// A PCM16 sample divided by this lies in [-1, 1).
+constexpr float pcm16_full_scale = -float(std::numeric_limits<std::int16_t>::min());
 void validate_sample_rate(unsigned value) {
     if (value < minimum_sample_rate || value > maximum_sample_rate)
         throw std::invalid_argument("Audio sample rate must be between 8000 and 192000 Hz");
@@ -24,8 +43,11 @@ std::uint32_t word(std::span<const std::byte> bytes, std::size_t at, unsigned wi
         throw std::invalid_argument("Truncated WAVE field");
     std::uint32_t value{};
     for (unsigned i = 0; i < width; ++i)
-        value |= std::uint32_t(std::to_integer<unsigned char>(bytes[at + i])) << (8 * i);
+        value |= std::uint32_t(std::to_integer<unsigned char>(bytes[at + i])) << (CHAR_BIT * i);
     return value;
+}
+std::uint32_t word(std::span<const std::byte> bytes, format_chunk::Field field) {
+    return word(bytes, field.offset, field.bytes);
 }
 } // namespace
 AudioClip::AudioClip(std::vector<float> samples, unsigned channels, unsigned rate)
@@ -41,14 +63,15 @@ std::shared_ptr<const AudioClip> AudioClip::pcm(std::vector<float> samples, unsi
     return std::shared_ptr<const AudioClip>(new AudioClip(std::move(samples), channels, rate));
 }
 std::shared_ptr<const AudioClip> AudioClip::wav(std::span<const std::byte> bytes) {
-    if (bytes.size() < 12 || bytes.size() > maximum_wav_bytes || word(bytes, 0) != riff_id ||
-        word(bytes, 8) != wave_id || word(bytes, 4) != bytes.size() - 8)
+    if (bytes.size() < riff_header_bytes || bytes.size() > maximum_wav_bytes || word(bytes, 0) != riff_id ||
+        word(bytes, chunk_header_bytes) != wave_id ||
+        word(bytes, chunk_size_offset) != bytes.size() - chunk_header_bytes)
         throw std::invalid_argument("Invalid or unsupported RIFF/WAVE container");
     std::span<const std::byte> format, data;
     bool have_format = false, have_data = false;
-    for (std::size_t at = 12; at < bytes.size();) {
-        const auto kind = word(bytes, at), size = word(bytes, at + 4);
-        at += 8;
+    for (std::size_t at = riff_header_bytes; at < bytes.size();) {
+        const auto kind = word(bytes, at), size = word(bytes, at + chunk_size_offset);
+        at += chunk_header_bytes;
         if (size > bytes.size() - at || (size % 2 && size == bytes.size() - at))
             throw std::invalid_argument("Truncated WAVE chunk or padding");
         if (kind == format_id) {
@@ -64,24 +87,26 @@ std::shared_ptr<const AudioClip> AudioClip::wav(std::span<const std::byte> bytes
         }
         at += size + size % 2;
     }
-    if (!have_format || !have_data || format.size() < 16)
+    if (!have_format || !have_data || format.size() < format_chunk::bytes)
         throw std::invalid_argument("Missing WAVE format or data");
-    const auto encoding = word(format, 0, 2), channels = word(format, 2, 2), rate = word(format, 4);
-    const auto bits = word(format, 14, 2);
+    const auto encoding = word(format, format_chunk::tag), channels = word(format, format_chunk::channels),
+               rate = word(format, format_chunk::sample_rate);
+    const auto bits = word(format, format_chunk::bits_per_sample);
     validate_sample_rate(rate);
-    if ((encoding != pcm_encoding || bits != 16) && (encoding != float_encoding || bits != 32))
+    if ((encoding != pcm_encoding || bits != pcm16_bits) && (encoding != float_encoding || bits != float32_bits))
         throw std::invalid_argument("Only PCM16 and float32 WAVE are supported");
-    const auto width = bits / 8;
-    if ((channels != 1 && channels != 2) || word(format, 12, 2) != channels * width ||
-        word(format, 8) != rate * channels * width || data.empty() || data.size() % (channels * width) ||
-        data.size() / width > maximum_samples)
+    const auto width = bits / CHAR_BIT;
+    if ((channels != 1 && channels != 2) || word(format, format_chunk::block_align) != channels * width ||
+        word(format, format_chunk::byte_rate) != rate * channels * width || data.empty() ||
+        data.size() % (channels * width) || data.size() / width > maximum_samples)
         throw std::invalid_argument("Invalid WAVE layout or decoded sample count");
     std::vector<float> samples;
     samples.reserve(data.size() / width);
     for (std::size_t at = 0; at < data.size(); at += width) {
         const auto raw = word(data, at, width);
-        samples.push_back(encoding == float_encoding ? std::bit_cast<float>(raw)
-                                                     : float(raw < 32768 ? int(raw) : int(raw) - 65536) / 32768.F);
+        samples.push_back(encoding == float_encoding
+                              ? std::bit_cast<float>(raw)
+                              : std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(raw)) / pcm16_full_scale);
     }
     return pcm(std::move(samples), channels, rate);
 }
