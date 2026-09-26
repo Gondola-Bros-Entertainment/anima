@@ -44,7 +44,8 @@ struct RendererOptions {
     std::filesystem::path capture;
     /// Failure injection for lifecycle tests. `instance`, `surface`, `device` and `resources` throw from
     /// construction, as do `texture` and `texture_upload` when the initial selection uploads a mesh;
-    /// `swapchain` throws from each draw() that creates a swapchain. Other stages have no effect here.
+    /// `swapchain` makes the first draw() that creates a swapchain throw RendererFatalError, as a real failure
+    /// there does. Other stages have no effect here.
     RendererFailureStage fail_after = RendererFailureStage::none;
     /// Retires presentation with a device wait-idle even where `VK_EXT_swapchain_maintenance1` present
     /// fences are available.
@@ -79,9 +80,9 @@ struct ResourcePreparationOptions {
 /// A failure after which the renderer accepts only shutdown.
 ///
 /// Thrown for device loss, surface loss, a frame, upload or presentation fence that does not signal within
-/// 5 seconds, and any other failed Vulkan call in draw() outside resource preparation. Afterwards the members
-/// that VulkanRenderer lists throw it again, while shutdown() and the destructor still release everything.
-/// There is no automatic recovery.
+/// 5 seconds, any other failed Vulkan call in draw() outside resource preparation, and any failure to build a
+/// swapchain once draw() has released the previous one. Afterwards the members that VulkanRenderer lists throw
+/// it again, while shutdown() and the destructor still release everything. There is no automatic recovery.
 class RendererFatalError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -257,8 +258,9 @@ class VulkanRenderer {
     /// Writes the next frame that draw() submits to @p path as a binary PPM, 8-bit RGB, creating missing
     /// parent directories; replaces any pending request. Throws `std::invalid_argument` for an empty path.
     ///
-    /// The swapchain is recreated first if it cannot be copied from. That draw() throws `std::runtime_error`
-    /// when the surface has no 8-bit BGRA or RGBA format usable as a copy source or the file cannot be written.
+    /// The swapchain is recreated first if it cannot be copied from. When the surface has no 8-bit BGRA or RGBA
+    /// format usable as a copy source, that draw() drops the request, keeps the current swapchain and throws
+    /// `std::runtime_error`; it also throws `std::runtime_error` when the file cannot be written.
     void request_capture(std::filesystem::path path);
     /// Sets the view used for shading, fog, the sky and culling from a column-major Vulkan view-projection
     /// (clip Y down, depth 0 to 1), such as anima::view_matrix returns.
@@ -324,8 +326,9 @@ class VulkanRenderer {
     /// became visible or cast shadows (prepare_meshes() can upload them earlier) and writes every prepared
     /// instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
     /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface
-    /// loss, a fence timeout or any other Vulkan failure; and `std::runtime_error` for other failures, such as
-    /// an unusable surface format or an unwritable capture file.
+    /// loss, a fence timeout, any other Vulkan failure, or any failure to build a new swapchain once the
+    /// previous one is released; and `std::runtime_error` for other failures, such as a surface that offers no
+    /// usable format, which leaves the current swapchain in place, or an unwritable capture file.
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;
