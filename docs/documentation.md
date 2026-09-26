@@ -47,6 +47,6 @@ update its comments, relevant guide and applicable contract test together.
 
 The [Doxygen comment guide](https://www.doxygen.nl/manual/docblocks.html) describes
 the syntax. [Engine boundaries](engine-boundaries.md) and
-[rendering architecture](rendering-architecture.md) document Anima's ownership
+[rendering architecture](../include/anima/desktop/vulkan_renderer.hpp) document Anima's ownership
 decisions. Automated documentation is useful evidence and navigation; dependency
 isolation, independent consumers and review enforce the boundary in code.

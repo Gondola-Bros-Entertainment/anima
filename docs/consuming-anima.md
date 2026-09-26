@@ -94,7 +94,7 @@ reference. Counters expose candidates, culled/submitted work and palette bytes.
 
 Headless consumers can query `RenderFrustum::intersects` directly without SDL or
 Vulkan, as the external asset consumer demonstrates. See the
-[visibility contract](render-visibility.md) for the public query, clip convention,
+[visibility contract](../include/anima/assets/render_visibility.hpp) for the public query, clip convention,
 conservative behavior, resource lifetime and scaling characteristics.
 Mutations are single-threaded between draws. Render-scene handles are scene-specific
 and generational; removing an instance invalidates its old handle.
@@ -127,7 +127,7 @@ on one thread, between draws; a const shared pointer does not synchronize access
 For explicit inspection, `Scene::snapshot(budget)` returns an owning CPU
 `MeshSnapshot`. `make_mesh_snapshot` and `pose_mesh_snapshot` independently deform source geometry for
 reference calculations. These functions are outside the rendering loop. Snapshot
-budgets and their limits are described in the [resource guide](render-resource-architecture.md).
+budgets and their limits are described in the [resource guide](../include/anima/assets/scene_budget.hpp).
 
 ## Renderer scene replacement
 
@@ -166,7 +166,7 @@ cleanup. Upload work retires before its staging and candidate resources are free
 A hung driver during retirement still requires an external process watchdog.
 
 GPU preparation is synchronous and cached by compiled asset identity. Its API and
-limits are in [resource preparation](resource-preparation.md). Failure injection
+limits are in [resource preparation](../include/anima/desktop/vulkan_renderer.hpp). Failure injection
 is explicitly for tests. Ordinary empty scenes draw the background; the viewer's
 diagnostic triangle also exercises desktop builds without asset support.
 
