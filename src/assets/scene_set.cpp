@@ -1,6 +1,8 @@
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_persistence.hpp"
 #include <anima/scene_set.hpp>
+#include <cstdio>
+#include <exception>
 
 namespace anima {
 namespace {
@@ -36,6 +38,13 @@ class SceneSet::Mutation {
     SceneSet &owner_;
 };
 SceneSet::~SceneSet() {
+    // As for Scene: the update, membership change or driver on the stack resumes after its callback.
+    if (mutating_) {
+        std::fputs("SceneSet destroyed while updating, changing membership or held by a scene driver; "
+                   "destroy it after the call returns\n",
+                   stderr);
+        std::terminate();
+    }
     mutating_ = true;
     retire_all();
 }

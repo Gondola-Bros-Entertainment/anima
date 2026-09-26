@@ -80,6 +80,9 @@ class SceneSet {
     SceneSet() = default;
     /// Invalidates every handle to every member before any component cleanup, then releases the
     /// members.
+    ///
+    /// Destroying the set while it updates its members, changes membership or is held by a scene
+    /// driver writes a diagnostic to `stderr` and terminates the program, as Scene::~Scene() does.
     ~SceneSet();
     SceneSet(const SceneSet &) = delete;
     SceneSet &operator=(const SceneSet &) = delete;
