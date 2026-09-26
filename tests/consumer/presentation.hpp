@@ -410,6 +410,23 @@ inline void run() {
         wrong.bind_signature = std::string(64, 'b');
         rejects([&] { MotionRuntime invalid(actor.actor.asset, wrong, fixture.contract); });
         rejects([&] { MotionRuntime invalid({}, actor.manifest, fixture.contract); });
+        // Unknown fields are rejected at every level, as in the other presentation documents.
+        using Edit = std::pair<std::string_view, std::string_view>;
+        const std::array misspellings{Edit{R"("reference_speed":0.2)", R"("reference_sped":0.2)"},
+                                      Edit{R"({"version":3,)", R"({"version":3,"extra":1,)"}};
+        for (const auto &[from, to] : misspellings) {
+            auto contract = fixture.contract;
+            const auto at = contract.find(from);
+            check(at != std::string::npos, "Motion contract fixture changed");
+            contract.replace(at, from.size(), to);
+            bool rejected = false;
+            try {
+                MotionRuntime invalid(actor.actor.asset, actor.manifest, contract);
+            } catch (const std::invalid_argument &) {
+                rejected = true;
+            }
+            check(rejected, "Motion contract accepted an unknown field");
+        }
         AttachmentLibrary library(decode_attachment_catalog(fixture.catalog, fixture.directory));
         const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.asset);
         auto attachments = AttachmentSet::prepare(library, sockets, {{"probe", "probe"}, {"beacon", "beacon"}});
