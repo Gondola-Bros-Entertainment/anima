@@ -11,7 +11,7 @@ struct InteractionRuntime::Impl {
     Impl(Actors actors, const nlohmann::json &document) : actors_(std::move(actors)) {
         using namespace presentation_data;
         anima::detail::json_fields(document, {"version", "id", "phases", "roles", "attachments", "contacts"});
-        if (document.at("version") != 1 || actors_.empty() || actors_.size() > 64 ||
+        if (document.at("version") != 1 || actors_.empty() || actors_.size() > InteractionBindings::maximum_roles ||
             !document.at("roles").is_object() || document.at("roles").size() != actors_.size())
             throw std::invalid_argument("Invalid coordinated interaction");
         id_ = text(document.at("id"));

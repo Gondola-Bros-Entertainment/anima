@@ -1,6 +1,9 @@
 #include "presentation_data.hpp"
 #include <anima/assets/actor_presentation.hpp>
 namespace anima {
+namespace {
+constexpr std::size_t maximum_slot_variants = 64;
+} // namespace
 ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
                                      std::optional<std::filesystem::path> manifest_override) {
     using namespace presentation_data;
@@ -55,7 +58,7 @@ struct ActionSetCatalog::Impl {
             if (name.empty() || !slots.is_object() || slots.empty())
                 throw std::invalid_argument("Invalid action set");
             for (const auto &[slot, variants] : slots.items()) {
-                if (slot.empty() || !variants.is_array() || variants.empty() || variants.size() > 64)
+                if (slot.empty() || !variants.is_array() || variants.empty() || variants.size() > maximum_slot_variants)
                     throw std::invalid_argument("Invalid action variants");
                 auto &destination = sets_[name][slot];
                 for (const auto &variant : variants) {

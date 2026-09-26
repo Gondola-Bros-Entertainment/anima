@@ -41,9 +41,11 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
     if (!state_->body)
         throw std::invalid_argument("Fitted library requires a body");
     const auto catalog = parse(document);
+    constexpr std::size_t maximum_catalog_items = 65'536;
     anima::detail::json_step([&] {
         anima::detail::json_fields(catalog, {"version", "items"});
-        if (catalog.at("version") != 1 || !catalog.at("items").is_array() || catalog.at("items").size() > 65536)
+        if (catalog.at("version") != 1 || !catalog.at("items").is_array() ||
+            catalog.at("items").size() > maximum_catalog_items)
             throw std::invalid_argument("Invalid garment catalog");
         std::set<std::string> ids;
         for (const auto &item : catalog.at("items")) {

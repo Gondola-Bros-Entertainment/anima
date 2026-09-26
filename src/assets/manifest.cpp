@@ -27,6 +27,10 @@ double number(const Json &value) {
         throw std::runtime_error("Manifest JSON requires a number");
     return value.get<double>();
 }
+constexpr std::streamoff maximum_manifest_bytes = 1024 * 1024;
+constexpr int maximum_manifest_depth = 32;
+// A bind signature is 64 lowercase hexadecimal digits.
+constexpr std::size_t bind_signature_digits = 64;
 void filename(const std::string &value) {
     const std::filesystem::path path = value;
     if (value.empty() || value.find('\0') != std::string::npos || value.find(':') != std::string::npos ||
@@ -39,7 +43,7 @@ Manifest load_manifest(const std::filesystem::path &path) {
     if (!input)
         throw std::runtime_error("Cannot open manifest: " + path.string());
     const auto size = input.tellg();
-    if (size <= 0 || size > 1024 * 1024)
+    if (size <= 0 || size > maximum_manifest_bytes)
         throw std::runtime_error("Manifest exceeds 1 MiB or is empty");
     std::string bytes(static_cast<std::size_t>(size), '\0');
     input.seekg(0);
@@ -48,7 +52,7 @@ Manifest load_manifest(const std::filesystem::path &path) {
         throw std::runtime_error("Cannot read manifest");
     Json json;
     try {
-        json = presentation_data::parse(bytes, 32);
+        json = presentation_data::parse(bytes, maximum_manifest_depth);
     } catch (const std::exception &error) {
         throw std::runtime_error("Invalid manifest JSON: " + std::string(error.what()));
     }
@@ -70,7 +74,7 @@ Manifest load_manifest(const std::filesystem::path &path) {
     if (count < 1 || count > mesh_limits::maximum_skin_joints || std::floor(count) != count)
         throw std::runtime_error("Invalid manifest joint count");
     result.joint_count = static_cast<std::size_t>(count);
-    if (result.skeleton_id.empty() || result.bind_signature.size() != 64 ||
+    if (result.skeleton_id.empty() || result.bind_signature.size() != bind_signature_digits ||
         !std::all_of(result.bind_signature.begin(), result.bind_signature.end(),
                      [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
         throw std::runtime_error("Manifest needs a skeleton ID and hexadecimal bind signature");

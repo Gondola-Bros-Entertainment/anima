@@ -1,6 +1,7 @@
 #pragma once
 #include <anima/core/math.hpp>
 #include <cstdint>
+#include <numbers>
 
 /// @file
 /// Lighting environment values for anima::VulkanRenderer, with their validation. Header-only; needs only
@@ -20,7 +21,7 @@ struct DirectionalLight {
     /// and at least `1e-12`.
     Vec3 direction{-.6F, .9F, .8F};
     /// Finite, nonnegative radiance.
-    Vec3 radiance{1.570796327F, 1.570796327F, 1.570796327F};
+    Vec3 radiance{std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2};
 };
 /// One orthographic shadow region of Environment::sun, fixed in world space.
 ///

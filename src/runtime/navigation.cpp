@@ -3,6 +3,7 @@
 #include <anima/navigation.hpp>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <queue>
 #include <stdexcept>
 
@@ -92,7 +93,8 @@ Graph make_grid(const Grid &g) {
                         (g.costs[z * g.width + static_cast<std::uint32_t>(nx)] == 0 ||
                          g.costs[static_cast<std::uint32_t>(nz) * g.width + x] == 0))
                         continue;
-                    edges.push_back({from, to, double(g.cell_size) * (dx && dz ? std::sqrt(2.0) : 1.0) * g.costs[to]});
+                    edges.push_back(
+                        {from, to, double(g.cell_size) * (dx && dz ? std::numbers::sqrt2 : 1.0) * g.costs[to]});
                 }
         }
     }

@@ -4,6 +4,10 @@ namespace anima {
 namespace {
 // Authored and authoritative action durations match within this many seconds.
 constexpr double timing_tolerance = 1e-6;
+constexpr std::size_t maximum_actions = 4096;
+constexpr std::size_t maximum_phase_layers = 8;
+constexpr std::size_t maximum_phase_props = 8;
+constexpr std::size_t maximum_action_roles = 8;
 } // namespace
 struct ActionRuntime::Impl {
   public:
@@ -13,7 +17,7 @@ struct ActionRuntime::Impl {
             throw std::invalid_argument("Actions require a bound motion resource");
         anima::detail::json_fields(document, {"schema_version", "actions"});
         if (document.at("schema_version") != 1 || !document.at("actions").is_array() ||
-            document.at("actions").empty() || document.at("actions").size() > 4096)
+            document.at("actions").empty() || document.at("actions").size() > maximum_actions)
             throw std::invalid_argument("Invalid action catalog");
         for (const auto &value : document.at("actions")) {
             anima::detail::json_fields(value, {"id", "handling", "phases"}, {"roles"});
@@ -39,7 +43,8 @@ struct ActionRuntime::Impl {
                     }
                 }
                 ActionPhaseBinding binding;
-                if (!p.at("layers").is_array() || p.at("layers").empty() || p.at("layers").size() > 8)
+                if (!p.at("layers").is_array() || p.at("layers").empty() ||
+                    p.at("layers").size() > maximum_phase_layers)
                     throw std::invalid_argument("Action needs 1..8 pose layers per phase");
                 bool full = false;
                 for (const auto &l : p.at("layers")) {
@@ -74,7 +79,7 @@ struct ActionRuntime::Impl {
                     binding.layers.push_back(std::move(layer));
                 }
                 if (p.contains("props")) {
-                    if (!p.at("props").is_array() || p.at("props").size() > 8)
+                    if (!p.at("props").is_array() || p.at("props").size() > maximum_phase_props)
                         throw std::invalid_argument("Invalid action prop tracks");
                     std::set<std::string> roles;
                     for (const auto &prop : p.at("props")) {
@@ -105,7 +110,7 @@ struct ActionRuntime::Impl {
                                     std::move(handling),
                                     {}};
             if (value.contains("roles")) {
-                if (!value.at("roles").is_object() || value.at("roles").size() > 8)
+                if (!value.at("roles").is_object() || value.at("roles").size() > maximum_action_roles)
                     throw std::invalid_argument("Invalid required action roles");
                 for (const auto &[role, profiles] : value.at("roles").items()) {
                     if (role.empty() || !profiles.is_array() || profiles.empty())
@@ -233,7 +238,7 @@ struct ActionRuntime::Impl {
     static ActionWeight weight(const nlohmann::json &value) {
         ActionWeight result;
         result.keys.clear();
-        if (!value.is_array() || value.size() < 2 || value.size() > 32)
+        if (!value.is_array() || value.size() < 2 || value.size() > ActionWeight::maximum_keys)
             throw std::invalid_argument("Action weight needs 2..32 keys");
         double previous = -1;
         for (const auto &key : value) {

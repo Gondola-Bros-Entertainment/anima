@@ -69,21 +69,21 @@ class ActionTimeline {
     /// Throws unless there are 1 to 64 phases with valid, unique ids and durations, at most one
     /// held phase, and at most 1024 cues in total, each valid and ordered within its phase.
     explicit ActionTimeline(std::vector<ActionPhase> phases) : phases_(std::move(phases)) {
-        if (phases_.empty() || phases_.size() > 64)
+        if (phases_.empty() || phases_.size() > maximum_phases)
             throw std::invalid_argument("Action needs 1..64 phases");
         std::set<std::string> names;
         bool held = false;
         std::size_t cues = 0;
         for (const auto &phase : phases_) {
             if (phase.id.empty() || !names.insert(phase.id).second || !std::isfinite(phase.duration) ||
-                phase.duration <= 0 || phase.duration > 3600 || (held && phase.held))
+                phase.duration <= 0 || phase.duration > maximum_phase_seconds || (held && phase.held))
                 throw std::invalid_argument("Invalid/duplicate action phase or multiple held phases");
             held |= phase.held;
             double previous = -1;
             std::set<std::string> unique;
             for (const auto &cue : phase.cues) {
                 if (cue.id.empty() || !unique.insert(cue.id).second || !std::isfinite(cue.phase) || cue.phase < 0 ||
-                    cue.phase > 1 || cue.phase < previous || ++cues > 1024)
+                    cue.phase > 1 || cue.phase < previous || ++cues > maximum_cues)
                     throw std::invalid_argument("Invalid, unordered or excessive action cues");
                 previous = cue.phase;
             }
@@ -116,8 +116,7 @@ class ActionTimeline {
             if (elapsed < end) {
                 const double local = elapsed - start;
                 const double cycles = p.held ? std::floor(local / p.duration) : 0;
-                // Bound conversion independently of the platform's integer cast.
-                if (cycles > 1e12)
+                if (cycles > maximum_held_cycles)
                     throw std::invalid_argument("Action clock exceeds cycle range");
                 return {i,
                         p.held ? (local - cycles * p.duration) / p.duration : local / p.duration,
@@ -157,6 +156,12 @@ class ActionTimeline {
     }
 
   private:
+    static constexpr std::size_t maximum_phases = 64;
+    static constexpr double maximum_phase_seconds = 3600;
+    static constexpr std::size_t maximum_cues = 1024;
+    // Bounds a held phase's cycle count before it is converted to an integer, whatever the platform's cast does
+    // beyond that range.
+    static constexpr double maximum_held_cycles = 1e12;
     void validate_time(double elapsed, std::optional<double> released_at) const {
         if (!std::isfinite(elapsed) || elapsed < 0 ||
             (released_at && (!held_ || !std::isfinite(*released_at) || *released_at < 0)))

@@ -8,13 +8,15 @@ namespace anima {
 namespace {
 constexpr std::size_t maximum_component_bytes = 64 * 1024;
 constexpr float minimum_extent = 1e-4F, maximum_extent = 1e9F;
+constexpr float minimum_vertical_fov_degrees = 1, maximum_vertical_fov_degrees = 179;
 void validate(const CameraSettings &s) {
     if (s.projection != CameraProjection::perspective && s.projection != CameraProjection::orthographic)
         throw std::invalid_argument("Unknown camera projection");
-    if (!std::isfinite(s.vertical_fov_degrees) || s.vertical_fov_degrees < 1 || s.vertical_fov_degrees > 179 ||
-        !std::isfinite(s.orthographic_height) || s.orthographic_height < minimum_extent ||
-        s.orthographic_height > maximum_extent || !std::isfinite(s.near_plane) || s.near_plane < minimum_extent ||
-        !std::isfinite(s.far_plane) || s.far_plane <= s.near_plane || s.far_plane > maximum_extent)
+    if (!std::isfinite(s.vertical_fov_degrees) || s.vertical_fov_degrees < minimum_vertical_fov_degrees ||
+        s.vertical_fov_degrees > maximum_vertical_fov_degrees || !std::isfinite(s.orthographic_height) ||
+        s.orthographic_height < minimum_extent || s.orthographic_height > maximum_extent ||
+        !std::isfinite(s.near_plane) || s.near_plane < minimum_extent || !std::isfinite(s.far_plane) ||
+        s.far_plane <= s.near_plane || s.far_plane > maximum_extent)
         throw std::invalid_argument("Invalid camera lens settings");
 }
 bool contains(const Scene &scene, GameObject object) { return scene.contains(object.id()); }

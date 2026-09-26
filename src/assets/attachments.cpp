@@ -314,7 +314,8 @@ bool AttachmentSet::matches(const std::map<std::string, std::string, std::less<>
 AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library,
                                      const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
                                      const std::map<std::string, std::string, std::less<>> &desired) {
-    if (desired.size() > 8)
+    constexpr std::size_t maximum_held_roles = 8;
+    if (desired.size() > maximum_held_roles)
         throw std::invalid_argument("Too many held attachment roles");
     AttachmentSet result;
     for (const auto &[role, id] : desired) {
