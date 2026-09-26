@@ -30,6 +30,10 @@ void require(bool condition, const char *message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+// Both snapshot functions index the pose by node, so they check its size before reading it.
+void require_pose_for(const Asset &asset, const Pose &pose) {
+    require(pose.world.size() == asset.nodes.size(), "Pose does not match asset nodes");
+}
 // glTF requires a node matrix to be TRS without shear. Its decomposition becomes the node's rest transform, so
 // consumers of local TRS, such as motion transfer, see the node's actual placement. A mirrored matrix gets a
 // negative X scale, and a matrix with a zero-scale axis keeps the identity rotation.
@@ -511,7 +515,7 @@ std::shared_ptr<const Asset> load_motion_asset(const std::filesystem::path &path
 
 void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scene, std::size_t offset,
                         const Mat4 &attachment) {
-    require(pose.world.size() == asset.nodes.size(), "Pose does not match asset nodes");
+    require_pose_for(asset, pose);
     std::vector<std::vector<Mat4>> palettes;
     for (const auto &skin : asset.skins) {
         std::vector<Mat4> palette;
@@ -551,6 +555,7 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
     }
 }
 MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose) {
+    require_pose_for(asset, pose);
     MeshSnapshot scene;
     scene.mesh_nodes = asset.mesh_nodes;
     scene.materials = asset.materials.size();
