@@ -497,9 +497,7 @@ struct VulkanRenderer::Impl {
         vkGetDeviceQueue(device, graphics_family, 0, &graphics_queue);
         vkGetDeviceQueue(device, present_family, 0, &present_queue);
         std::cout << "Presentation retirement: "
-                  << (present_fences ? "EXT_swapchain_maintenance1 fences"
-                                     : "Vulkan 1.1 wait-idle fallback (see docs/engine.md)")
-                  << '\n';
+                  << (present_fences ? "EXT_swapchain_maintenance1 fences" : "Vulkan 1.1 wait-idle fallback") << '\n';
     }
     void create_frame_resources() {
         VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
