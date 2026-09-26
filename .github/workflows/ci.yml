@@ -6,12 +6,18 @@ on:
   pull_request:
   merge_group:
   workflow_dispatch:
+  schedule:
+    # A full weekly run on main refreshes the compiler caches that pull requests restore, which merges from
+    # the queue no longer rebuild. It also runs the weekly CodeQL analysis.
+    - cron: '23 6 * * 2'
 
 permissions:
   contents: read
 
+# Only a newer push to the same pull request supersedes a run. Every other run has a group of its own, so
+# runs on main and in the merge queue are never cancelled or held pending behind one another.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 defaults:
@@ -86,6 +92,9 @@ jobs:
   build:
     name: ${{ matrix.profile }} / ${{ matrix.os }} / ${{ matrix.configuration }}
     needs: repository
+    # The merge queue pushes to main the exact commit its run already built and tested, so that push runs
+    # only the repository checks and CodeQL. Any other push, a schedule or a dispatch builds.
+    if: github.event_name != 'push' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -305,7 +314,9 @@ jobs:
   documentation:
     name: Doxygen reference
     needs: repository
-    if: github.event.repository.private == false
+    if: >-
+      github.event.repository.private == false &&
+      (github.event_name != 'push' || github.actor != 'github-merge-queue[bot]')
     runs-on: macos-15
     timeout-minutes: 15
     steps:
@@ -324,7 +335,7 @@ jobs:
   required:
     name: CI required
     needs: [repository, codeql, build, documentation]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.actor != 'github-merge-queue[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
