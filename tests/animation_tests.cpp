@@ -187,6 +187,11 @@ int main(int argc, char **argv) {
         auto asset = fixture();
         manifest_tests(asset);
         lookup_tests(asset);
+        // A pose too short for a primitive's node is rejected before the snapshot indexes it.
+        auto short_pose = anima::sample_pose(asset);
+        short_pose.world.resize(1);
+        rejects_as<std::runtime_error>([&] { (void)anima::make_mesh_snapshot(asset, short_pose); },
+                                       "Pose does not match asset nodes");
         const auto rest = anima::sample_pose(asset);
         const auto half = anima::sample_pose(asset, &asset.animations[0], .5);
         const auto end = anima::sample_pose(asset, &asset.animations[0], 1);

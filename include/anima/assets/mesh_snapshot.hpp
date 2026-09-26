@@ -78,8 +78,8 @@ struct MeshSnapshot {
     bool default_is_bind_pose = true;
 };
 /// Snapshot of @p asset posed by @p pose on the CPU, skinning with up to four joints per vertex.
-/// @p pose needs one world matrix per node, or `std::out_of_range` or `std::runtime_error` is
-/// thrown; a singular transform or nonfinite result throws `std::runtime_error`.
+/// Throws `std::runtime_error` unless @p pose has one world matrix per node, and for a singular
+/// transform or nonfinite result.
 [[nodiscard]] MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose);
 /// Overwrites the vertices of @p asset's primitives in @p scene, starting at vertex
 /// @p first_vertex, with @p asset posed by @p pose and then transformed by @p attachment.
