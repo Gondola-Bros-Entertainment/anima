@@ -340,6 +340,24 @@ inline int run(int argc, char **argv) {
     require(!dispatch(key).consumed, "Gameplay keys stayed captured after a world click");
     key.type = SDL_EVENT_KEY_UP;
     (void)dispatch(key);
+    // Text input that the application starts is the application's to stop: events and updates leave it
+    // running while no control edits text, and so does a text field that takes focus and loses it.
+    require(SDL_StartTextInput(window.get()), "Application text input did not start");
+    (void)dispatch(motion);
+    ui.update();
+    require(SDL_TextInputActive(window.get()) && !ui.input_state().text,
+            "The UI stopped text input that the application started");
+    require(click(input), "Text field click during application text input failed");
+    ui.update();
+    require(ui.input_state().text, "A focused text field did not report the active text input");
+    world.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    (void)dispatch(world);
+    world.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    (void)dispatch(world);
+    ui.update();
+    require(!ui.input_state().keyboard && SDL_TextInputActive(window.get()),
+            "Blurring a text field stopped text input that the application started");
+    require(SDL_StopTextInput(window.get()), "Application text input did not stop");
     require(click(input), "Focus before focus-loss check failed");
     ui.update();
     focus.type = SDL_EVENT_WINDOW_FOCUS_LOST;
