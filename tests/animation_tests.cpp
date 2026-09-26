@@ -287,6 +287,10 @@ int main(int argc, char **argv) {
         require(player.advance(.01).empty(), "Loop boundary repeated");
         auto compatible = asset;
         require(anima::compatible_skin(asset, compatible).size() == 2, "Variable joint-count rig rejected");
+        compatible.primitives[0].skin = -1;
+        rejects_as<std::runtime_error>([&] { (void)anima::compatible_skin(asset, compatible); },
+                                       "Equipment contains an unskinned mesh; bind it to the target rig");
+        compatible = asset;
         compatible.skins[0].inverse_bind[1][12] = .1F;
         rejects([&] { (void)anima::compatible_skin(asset, compatible); }, "inverse-bind");
         compatible = asset;
