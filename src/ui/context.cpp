@@ -328,6 +328,10 @@ struct UiContext::Impl {
     std::set<int> cancelled_buttons;
     std::set<SDL_Scancode> gameplay_keys; // Pressed while unconsumed; their releases stay with gameplay.
     Rml::ObserverPtr<Rml::Element> pointer_owner;
+    // Set when this context requested the SDL mouse capture that holds a document press. SDL keeps one capture
+    // request for all windows, so a capture already in effect belongs to whoever took it, the application or
+    // SDL's own capture while buttons are held, and only a capture requested here is released here.
+    bool captured_mouse{};
     Impl(SDL_Window *w, VulkanRenderer &r, std::string n)
         : window(w), renderer(r), name(std::move(n)), system(w, stats) {}
     ~Impl() {
@@ -339,6 +343,17 @@ struct UiContext::Impl {
     void running() const {
         if (stopped)
             throw std::logic_error("UI context is shut down");
+    }
+    void capture_mouse() {
+        if (captured_mouse || (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_CAPTURE))
+            return;
+        captured_mouse = SDL_CaptureMouse(true);
+    }
+    void release_mouse() {
+        if (!captured_mouse)
+            return;
+        captured_mouse = false;
+        (void)SDL_CaptureMouse(false);
     }
     void initialize() {
         ui_active = true;
@@ -391,7 +406,7 @@ struct UiContext::Impl {
             }
             buttons.clear();
             pointer_owner.reset();
-            (void)SDL_CaptureMouse(false);
+            release_mouse();
         }
         if (auto *focus = context->GetFocusElement(); focus && !focus->IsVisible(true))
             focus->Blur();
@@ -425,7 +440,7 @@ struct UiContext::Impl {
         if (auto *focus = context->GetFocusElement())
             focus->Blur();
         system.DeactivateKeyboard();
-        (void)SDL_CaptureMouse(false);
+        release_mouse();
     }
     // Framebuffer pixels for SDL window coordinates, checked and rounded from the same scaled value.
     Rml::Vector2i framebuffer_position(float x, float y) const {
@@ -521,7 +536,7 @@ struct UiContext::Impl {
                         if (!owned_pointer)
                             pointer_owner = std::move(owner);
                         buttons.insert(button);
-                        (void)SDL_CaptureMouse(true);
+                        capture_mouse();
                     } else {
                         world_buttons.insert(button);
                         world_pointer = true;
@@ -534,7 +549,7 @@ struct UiContext::Impl {
                     buttons.erase(button);
                     if (owned_pointer && buttons.empty()) {
                         pointer_owner.reset();
-                        (void)SDL_CaptureMouse(false);
+                        release_mouse();
                     }
                 }
             }
@@ -606,7 +621,7 @@ struct UiContext::Impl {
             return;
         stopped = true;
         system.DeactivateKeyboard();
-        (void)SDL_CaptureMouse(false);
+        release_mouse();
         pointer_owner.reset(); // Observer pool belongs to RmlUi; release before Shutdown.
         if (initialized)
             Rml::Shutdown();

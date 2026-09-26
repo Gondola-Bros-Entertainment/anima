@@ -89,11 +89,21 @@ class UiUnsupportedFeature : public std::runtime_error {
 /// context sets the SDL cursor from the RCSS `cursor` property, uses the SDL clipboard and writes
 /// RmlUi log messages to `std::cerr`.
 ///
-/// While a control that edits text has focus, the context starts SDL text input for the window
-/// unless it is already active, and it stops only text input that it started, so text input that
-/// the application started first keeps running. SDL keeps one text input state per window:
-/// starting it again while the context's own is active does not keep it running once the context
-/// stops it.
+/// While a control that edits text has focus, the context moves the SDL text input area to its
+/// caret and starts SDL text input for the window unless it is already active, and it stops only
+/// text input that it started, so text input that the application started first keeps running
+/// with its own properties. A press on a document captures the SDL mouse by the same rule: unless
+/// SDL already reports the window captured (`SDL_WINDOW_MOUSE_CAPTURE`), by the application or by
+/// SDL itself while buttons are held, and the context releases only a capture that it requested.
+///
+/// SDL keeps one text input state per window and one capture request and records no owner, so the
+/// context can misjudge whose they are. Starting either again while the context's own is active
+/// does not keep it once the context ends its own. If the application stops the context's text
+/// input and starts its own while the control has focus, the context still counts it as its own
+/// and stops it when the control loses focus. SDL has no getter for a capture request and does not
+/// report one made while the cursor was outside the window or in relative mode until it next
+/// updates the capture, which a button press does only with `SDL_HINT_MOUSE_AUTO_CAPTURE` on; a
+/// press on a document then requests the capture again and ends it on release.
 class UiContext {
   public:
     /// Initializes RmlUi and creates the RmlUi context @p name for @p window, which @p renderer
@@ -139,11 +149,12 @@ class UiContext {
     /// platform's natural-scrolling setting already applied, so `SDL_MouseWheelEvent::direction`,
     /// which only records that setting, is ignored.
     ///
-    /// A press on a document captures the SDL mouse until its buttons are released; hiding or
-    /// closing that document cancels the press, ends the capture and consumes the release. A
-    /// press outside every document blurs the focused control. Losing window focus releases every
-    /// press and key in RmlUi, blurs the focused control and stops the text input that the context
-    /// started; pointer and key events are then ignored until focus returns.
+    /// A press on a document captures the SDL mouse until its buttons are released, as the class
+    /// describes; hiding or closing that document cancels the press, ends the context's capture and
+    /// consumes the release. A press outside every document blurs the focused control. Losing
+    /// window focus releases every press and key in RmlUi, blurs the focused control, and ends the
+    /// mouse capture and text input that the context started; pointer and key events are then
+    /// ignored until focus returns.
     ///
     /// Before changing any state, whatever the focus or held presses, throws
     /// `std::invalid_argument` for a motion or button event whose coordinates are not finite or,
@@ -179,8 +190,8 @@ class UiContext {
     [[nodiscard]] bool render();
     [[nodiscard]] UiStats stats() const;
     /// Shuts down the document host, then RmlUi: every document, checked handle and borrowed
-    /// RmlUi reference becomes invalid, and mouse capture and the text input that the context
-    /// started stop. Idempotent; the destructor calls it. Throws `std::logic_error` inside an event
+    /// RmlUi reference becomes invalid, and the mouse capture and text input that the context
+    /// started end. Idempotent; the destructor calls it. Throws `std::logic_error` inside an event
     /// callback, changing nothing.
     void shutdown();
 
