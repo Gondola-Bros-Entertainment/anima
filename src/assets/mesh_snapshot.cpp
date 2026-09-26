@@ -207,7 +207,9 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
     std::unordered_map<const cgltf_image *, Texture> decoded;
     for (std::size_t i = 0; i < data->textures_count; ++i) {
         const auto &texture = data->textures[i];
-        require(!texture.has_basisu && !texture.has_webp, "Compressed/WebP textures are unsupported");
+        // A Basis or WebP source is optional unless its extension is required, which is rejected above;
+        // the texture's standard PNG or JPEG source then serves as the fallback.
+        require(texture.image, "Texture needs a PNG or JPEG source");
         if (!decoded.contains(texture.image))
             decoded.emplace(texture.image, decode(texture.image));
         auto value = decoded.at(texture.image);
@@ -348,7 +350,8 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                         const auto n = read(normals, v, cgltf_type_vec3);
                         vertex.normal = {n[0], n[1], n[2]};
                     }
-                    if (tangents) {
+                    // glTF 2.0: without supplied normals, flat normals are generated and tangents are ignored.
+                    if (tangents && normals) {
                         const auto t = read(tangents, v, cgltf_type_vec4);
                         vertex.tangent = {t[0], t[1], t[2], t[3]};
                         require(vertex.tangent[3] == 1 || vertex.tangent[3] == -1, "Invalid tangent handedness");
@@ -416,7 +419,9 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         for (std::size_t c = 0; c < animation.channels_count; ++c) {
             const auto &channel = animation.channels[c];
             AnimationChannel value;
-            require(channel.target_node, "Animation channel has no target node");
+            // glTF 2.0: a channel without a target node is ignored.
+            if (!channel.target_node)
+                continue;
             require(!channel.target_node->has_matrix, "Animation cannot target a matrix node");
             value.node = static_cast<std::size_t>(channel.target_node - data->nodes);
             switch (channel.target_path) {
@@ -457,7 +462,6 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
             clip.duration = std::max(clip.duration, value.times.back());
             clip.channels.push_back(std::move(value));
         }
-        require(clip.duration > 0, "Animation clip has no positive duration");
         asset->animations.push_back(std::move(clip));
     }
     asset->notices.emplace_back(

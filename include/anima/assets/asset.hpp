@@ -59,8 +59,9 @@ struct SourceVertex {
     /// Weights of #joints (`WEIGHTS_0`), normalized to sum to 1; zero when unskinned.
     std::array<float, 4> weights{};
     /// glTF tangent xyz and handedness w (1 or -1), kept through skinning and mirroring transforms.
-    /// When the file has no tangent, w is 0 and the renderer derives a frame from screen-space
-    /// derivatives, leaving the normal unmapped where the UVs are degenerate.
+    /// When the file has no tangent, or no normals, whose generated flat normals make glTF ignore
+    /// supplied tangents, w is 0 and the renderer derives a frame from screen-space derivatives,
+    /// leaving the normal unmapped where the UVs are degenerate.
     std::array<float, 4> tangent{};
     /// `COLOR_0` alpha, 1 when absent or RGB only.
     float alpha = 1;
@@ -223,7 +224,7 @@ struct AnimationChannel {
 /// A named clip.
 struct Animation {
     std::string name;
-    /// Latest key time over all channels, in seconds; positive for imported clips.
+    /// Latest key time over all channels, in seconds; zero for a clip whose keys all sit at time 0.
     double duration{};
     std::vector<AnimationChannel> channels;
 };
@@ -266,11 +267,14 @@ struct Pose {
 /// 256. Geometry comes from the default scene, else the first scene, else every root node; it
 /// must be triangle lists, reach no node twice and contain at least one triangle. Skinned
 /// primitives need `JOINTS_0` and `WEIGHTS_0`; further joint sets are rejected. Clips animate
-/// translation, rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix nodes.
+/// translation, rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix nodes;
+/// channels without a target node are ignored, and a clip whose keys all sit at time 0 is a pose
+/// of zero duration.
 ///
-/// `KHR_materials_unlit` is the only extension that may be required. External files, sparse
-/// accessors, compressed geometry, Basis and WebP textures, texture transforms, `BLEND`
-/// materials, maps on different UV sets, morph targets and GPU instancing are rejected.
+/// `KHR_materials_unlit` is the only extension that may be required. A texture with an optional
+/// Basis or WebP source uses its PNG or JPEG source instead, and needs one. External files,
+/// sparse accessors, compressed geometry, texture transforms, `BLEND` materials, maps on
+/// different UV sets, morph targets and GPU instancing are rejected.
 ///
 /// Throws `std::runtime_error` for unsupported or malformed content, including metallic or
 /// roughness factors outside [0, 1]; `std::invalid_argument` for other material values that
