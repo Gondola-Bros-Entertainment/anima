@@ -287,6 +287,7 @@ struct UiContext::Impl {
     std::set<int> buttons;
     std::set<int> world_buttons;
     std::set<int> cancelled_buttons;
+    std::set<SDL_Scancode> gameplay_keys; // Pressed while unconsumed; their releases stay with gameplay.
     Rml::ObserverPtr<Rml::Element> pointer_owner;
     Impl(SDL_Window *w, VulkanRenderer &r, std::string n)
         : window(w), renderer(r), name(std::move(n)), system(w, stats) {}
@@ -320,10 +321,21 @@ struct UiContext::Impl {
         context->SetDimensions({std::max(1, width), std::max(1, height)});
         context->SetDensityIndependentPixelRatio(scale);
     }
+    // Controls that edit a value with keys capture the keyboard. Buttons, checkboxes, radios and
+    // other elements keep focus for activation and navigation without taking gameplay keys.
+    static bool edits_with_keyboard(const Rml::Element &element) {
+        const auto &tag = element.GetTagName();
+        if (tag == "textarea" || tag == "select")
+            return true;
+        if (tag != "input")
+            return false;
+        const auto type = element.GetAttribute<Rml::String>("type", "text");
+        return type != "button" && type != "submit" && type != "checkbox" && type != "radio";
+    }
     bool keyboard_capture() const {
         auto *focus = context->GetFocusElement();
         return system.focused && focus && focus->IsVisible(true) && focus->GetOwnerDocument() &&
-               focus != focus->GetOwnerDocument();
+               focus != focus->GetOwnerDocument() && edits_with_keyboard(*focus);
     }
     void synchronize_focus() {
         if (!buttons.empty() && (!pointer_owner || !pointer_owner->IsVisible(true))) {
@@ -364,6 +376,7 @@ struct UiContext::Impl {
         cancelled_buttons.clear();
         pointer_owner.reset();
         keys.clear();
+        gameplay_keys.clear();
         if (auto *focus = context->GetFocusElement())
             focus->Blur();
         system.DeactivateKeyboard();
@@ -456,6 +469,9 @@ struct UiContext::Impl {
                     } else {
                         world_buttons.insert(button);
                         world_pointer = true;
+                        // RmlUi keeps focus when a click misses every document; leave the control.
+                        if (auto *focus = context->GetFocusElement(); focus && focus != focus->GetOwnerDocument())
+                            focus->Blur();
                     }
                 } else {
                     propagate = context->ProcessMouseButtonUp(button, mods);
@@ -513,6 +529,15 @@ struct UiContext::Impl {
         result.consumed =
             !(pointer_event && world_pointer) && (!propagate || (pointer_event && (owned_pointer || result.pointer)) ||
                                                   (keyboard_event && (before.keyboard || result.keyboard)));
+        if (keyboard_event && event.key.scancode != SDL_SCANCODE_UNKNOWN &&
+            (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)) {
+            // Like a pointer press, a key keeps its starting ownership: a release whose press reached
+            // gameplay stays with gameplay even if a control took keyboard focus in between.
+            if (event.type == SDL_EVENT_KEY_DOWN && !result.consumed)
+                gameplay_keys.insert(event.key.scancode);
+            else if (event.type == SDL_EVENT_KEY_UP && gameplay_keys.erase(event.key.scancode))
+                result.consumed = false;
+        }
         result.focus_lost = lost;
         return result;
     }

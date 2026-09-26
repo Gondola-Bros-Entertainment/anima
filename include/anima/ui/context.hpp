@@ -13,7 +13,7 @@ namespace anima {
 struct UiInputResult {
     bool consumed{};   // Suppress this event's gameplay action when true.
     bool pointer{};    // UI currently owns pointer interaction.
-    bool keyboard{};   // A document element currently has keyboard focus.
+    bool keyboard{};   // A focused text, select or range control captures the keyboard.
     bool text{};       // SDL text input is active for this UI.
     bool focus_lost{}; // Clear held gameplay actions, even if consumed is false.
 };

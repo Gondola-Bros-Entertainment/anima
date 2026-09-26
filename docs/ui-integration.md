@@ -68,7 +68,12 @@ capture. Clear held gameplay actions on focus loss and when entering a modal gam
 screen; engine input capture is not a game action-state machine. SDL text input is
 activated for text editing and stopped on blur, hiding the focused element, focus
 loss and shutdown. A pointer press retains its starting UI/world ownership until
-release. Hiding or closing the pressed UI document cancels its drag and consumes
+release, and so does a key: a release whose press reached gameplay goes to
+gameplay even if a control takes focus meanwhile. Only focused text, password,
+textarea, select and range controls capture the keyboard; buttons, checkboxes,
+radios and other elements take focus without claiming gameplay keys, and a click
+outside every document blurs the focused control. Hiding or closing the pressed
+UI document cancels its drag and consumes
 the eventual release, without retaining pointer capture. Drawable pixel
 dimensions and display scale refresh on update/events; author scalable layouts in
 `dp`, with CSS `px` representing framebuffer pixels. Pass original SDL coordinates;

@@ -129,7 +129,7 @@ def main():
                     for line in log.splitlines()
                     if line.startswith("RESULT ")
                 )
-                assert result["frames"] == 36 and result["captures"] == 9 and result["clicks"] == 1, result
+                assert result["frames"] == 36 and result["captures"] == 9 and result["clicks"] == 2, result
                 assert result["context_recreations"] == 4 and result["rejected_features"] == 2, result
                 assert result["ui_warnings"] == result["ui_errors"] == 0
                 images = {p.stem: read_ppm(p) for p in directory.glob("*.ppm")}
