@@ -61,6 +61,39 @@ inline std::shared_ptr<anima::Scene> scene(const anima::Asset &asset) {
     (void)result->add(anima::Mesh::compile(asset));
     return result;
 }
+// A swapchain that fails after its predecessor was released leaves nothing to present, so the renderer
+// becomes fatal instead of rebuilding it on every draw.
+inline void reject_failed_swapchain(bool disable_present_fences) {
+    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
+        SDL_CreateWindow("Anima swapchain failure consumer", 320, 240,
+                         SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY),
+        SDL_DestroyWindow};
+    require(bool(window), "SDL window creation failed");
+    anima::RendererOptions options;
+    options.validation = true;
+    options.disable_present_fences = disable_present_fences;
+    options.fail_after = anima::RendererFailureStage::swapchain;
+    anima::VulkanRenderer renderer(window.get(), options);
+    const auto started = std::chrono::steady_clock::now();
+    rejects<anima::RendererFatalError>([&] {
+        // draw() returns false until the window is drawable; the first swapchain it creates fails.
+        for (;;) {
+            require(std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+                    "Swapchain failure watchdog expired");
+            SDL_Event event{};
+            while (SDL_PollEvent(&event)) {
+            }
+            require(!renderer.draw(), "Injected swapchain failure presented a frame");
+            SDL_Delay(5);
+        }
+    });
+    rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); });
+    rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); });
+    const auto stats = renderer.shutdown();
+    require(!stats.validation_errors && !stats.validation_warnings && !stats.swapchain_generations &&
+                !stats.presented_frames,
+            "Failed swapchain cleanup failed");
+}
 inline int run(int argc, char **argv) {
     require(argc >= 3, "Usage: consumer --replace OUTPUT [--no-present-fences] [--fatal STAGE] [--asset GLB]");
     const std::filesystem::path output = argv[2];
@@ -84,6 +117,7 @@ inline int run(int argc, char **argv) {
     struct Quit {
         ~Quit() { SDL_Quit(); }
     } quit;
+    reject_failed_swapchain(options.disable_present_fences);
     std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
         SDL_CreateWindow("Anima scene replacement consumer", 640, 480,
                          SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY),

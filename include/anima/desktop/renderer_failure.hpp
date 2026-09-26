@@ -22,7 +22,7 @@ enum class RendererFailureStage {
     surface,        ///< Construction, after creating the window surface.
     device,         ///< Construction, after creating the logical device.
     resources,      ///< Construction, after frame resources and the initial selection.
-    swapchain,      ///< Swapchain creation in draw(), after the first image's framebuffer.
+    swapchain,      ///< Swapchain creation in draw(), after the first image's framebuffer; throws RendererFatalError.
     vertex,         ///< Preparation, after uploading a new mesh's vertex buffer.
     index,          ///< Preparation, after uploading a new mesh's index buffer.
     texture,        ///< Preparation, after allocating a new mesh's first texture image.

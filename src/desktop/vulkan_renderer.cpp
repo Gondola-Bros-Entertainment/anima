@@ -642,11 +642,36 @@ struct VulkanRenderer::Impl {
         const auto selected_extent = surface_extent(pixels, caps);
         if (selected_extent.width == 0 || selected_extent.height == 0)
             return false;
+        // Check the surface while the current swapchain still exists, so these failures leave it intact.
+        const auto selected = surface_format();
+        if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+            throw std::runtime_error("Surface cannot be a color attachment");
+        const bool capture = !options.capture.empty() && !stats.captured;
+        if (capture && (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+                        (selected.format != VK_FORMAT_B8G8R8A8_SRGB && selected.format != VK_FORMAT_R8G8B8A8_SRGB &&
+                         selected.format != VK_FORMAT_B8G8R8A8_UNORM && selected.format != VK_FORMAT_R8G8B8A8_UNORM))) {
+            options.capture.clear(); // The request fails, not the renderer; later draws go on without it.
+            throw std::runtime_error("Capture requires a transferable BGRA/RGBA8 swapchain");
+        }
         check(vkDeviceWaitIdle(device), "Wait before swapchain recreation");
         wait_for_presentation();
         destroy_swapchain();
+        // Nothing can be presented until the replacement is complete, so any failure from here on is fatal.
+        try {
+            create_swapchain(caps, selected, selected_extent, capture);
+        } catch (const std::exception &error) {
+            fatal = true;
+            throw RendererFatalError(error.what());
+        }
+        resize = false;
+        ++stats.swapchain_generations;
+        std::cout << "Swapchain " << stats.swapchain_generations << ": " << extent.width << 'x' << extent.height
+                  << " pixels, " << images.size() << " images\n";
+        return true;
+    }
+    void create_swapchain(const VkSurfaceCapabilitiesKHR &caps, VkSurfaceFormatKHR selected, VkExtent2D selected_extent,
+                          bool capture) {
         extent = selected_extent;
-        const auto selected = surface_format();
         format = selected.format;
         auto count = caps.minImageCount + 1;
         if (caps.maxImageCount > 0)
@@ -659,13 +684,6 @@ struct VulkanRenderer::Impl {
                 break;
             }
         }
-        const bool capture = !options.capture.empty() && !stats.captured;
-        if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
-            throw std::runtime_error("Surface cannot be a color attachment");
-        if (capture && (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
-                        (format != VK_FORMAT_B8G8R8A8_SRGB && format != VK_FORMAT_R8G8B8A8_SRGB &&
-                         format != VK_FORMAT_B8G8R8A8_UNORM && format != VK_FORMAT_R8G8B8A8_UNORM)))
-            throw std::runtime_error("Capture requires a transferable BGRA/RGBA8 swapchain");
         VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
         info.surface = surface;
         info.minImageCount = count;
@@ -734,11 +752,6 @@ struct VulkanRenderer::Impl {
         }
         if (capture)
             create_capture();
-        resize = false;
-        ++stats.swapchain_generations;
-        std::cout << "Swapchain " << stats.swapchain_generations << ": " << extent.width << 'x' << extent.height
-                  << " pixels, " << images.size() << " images\n";
-        return true;
     }
     void create_render_pass() {
         VkAttachmentDescription attachment{};
