@@ -62,7 +62,7 @@ class Body {
     void teleport(Pose pose);
     void set_velocity(Vec3 velocity);
     void set_angular_velocity(Vec3 velocity);
-    void add_impulse(Vec3 impulse);
+    void add_impulse(Vec3 impulse); // Enabled dynamic bodies only.
     void move_kinematic(Pose target, double seconds);
     void set_enabled(bool enabled);
     [[nodiscard]] bool enabled() const;

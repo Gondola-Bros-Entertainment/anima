@@ -363,7 +363,8 @@ void Body::add_impulse(Vec3 impulse) {
     vector(impulse);
     auto w = lock();
     const auto &e = w->entries.at(id_);
-    require(e.motion == Motion::dynamic, "Only dynamic bodies accept impulses");
+    // Disabled bodies are outside Jolt's broadphase, and AddImpulse activates without checking membership.
+    require(e.motion == Motion::dynamic && e.enabled, "Only enabled dynamic bodies accept impulses");
     w->system.GetBodyInterface().AddImpulse(e.id, j(impulse));
 }
 void Body::move_kinematic(Pose target, double seconds) {
