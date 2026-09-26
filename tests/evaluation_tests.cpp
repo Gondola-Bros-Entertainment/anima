@@ -1,5 +1,6 @@
 #include <anima/assets/evaluation.hpp>
 #include <anima/assets/interaction.hpp>
+#include <anima/assets/motion_runtime.hpp>
 #include <iostream>
 #include <limits>
 #include <numbers>
@@ -23,6 +24,12 @@ template <class F> void rejects(F f) {
     }
     throw std::runtime_error("Expected invalid evaluation input to be rejected");
 }
+// A default-initialized contact result holds defined values: reading an uninitialized member would not be a
+// constant expression, so this would not compile.
+static_assert([] {
+    MotionEvaluation::Contact contact;
+    return contact.error == 0 && !contact.reachable && contact.weight == 1;
+}());
 Mat4 translated(Vec3 v) {
     Transform t;
     t.translation = v;

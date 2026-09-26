@@ -80,9 +80,9 @@ struct MotionEvaluation {
     struct Contact {
         std::string chain;
         /// Distance from the end joint to the target after weighting.
-        float error;
+        float error{};
         /// Whether the target was within the chain's reach.
-        bool reachable;
+        bool reachable{};
         /// Requested weight.
         float weight = 1;
     };
