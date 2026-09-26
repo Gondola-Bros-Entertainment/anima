@@ -18,9 +18,9 @@
 ///
 /// Part of the optional `anima::desktop` target (`ANIMA_BUILD_DESKTOP=ON`); no Vulkan type appears in the
 /// public API. Scenes, environments and mesh preparation also need asset support (`ANIMA_BUILD_ASSETS=ON`).
-/// Without it anima::VulkanRenderer draws only its clear color and the diagnostic triangle; its set_scenes,
-/// prepare_meshes and prepare_mesh members throw `std::logic_error`, and set_environment validates its
-/// argument, then throws `std::logic_error`.
+/// Without it anima::VulkanRenderer draws only its clear color and the diagnostic triangle, with a UiContext's UI
+/// composited over them; its set_scenes, prepare_meshes and prepare_mesh members throw `std::logic_error`, and
+/// set_environment validates its argument, then throws `std::logic_error`.
 
 struct SDL_Window;
 
