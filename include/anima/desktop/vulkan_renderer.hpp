@@ -225,7 +225,8 @@ struct ResourceStats {
 /// fragments whose texture alpha times material alpha times vertex alpha is below the cutoff, in the color
 /// and shadow passes alike. Unlit materials show their base color without lighting, shadows or emission, cast
 /// no shadows and still receive fog and exposure. Skinned vertices blend up to four joint matrices on the GPU.
-/// Normals use the inverse transpose of the vertex's matrix, and a singular matrix gives the normal +Y.
+/// Normals transform as normal() transforms them: in the inverse transpose's direction, and for a matrix that
+/// collapses an axis, as the flattened surface's normal.
 /// Triangles wound counterclockwise on screen face the viewer, and a back face shades with its normal
 /// reversed. A matrix with a negative determinant, such as a scale of (-1, 1, 1), reverses the winding of the
 /// triangles it places, as glTF specifies for mirrored nodes, so a mirrored draw shades as the mirror image of
