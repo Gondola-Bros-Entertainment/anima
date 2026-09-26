@@ -55,6 +55,34 @@ void run_chord() {
     key(SDL_SCANCODE_S, true, 3);
     check(!shortcuts.state("save").active, "SDL focus gain replayed the old chord modifier");
 }
+void run_mouse_identity() {
+    i::Context look({{"look", i::ActionType::button, {{{i::ControlKind::mouse_button, SDL_BUTTON_RIGHT}}}}});
+    const auto button = [&](bool down, SDL_MouseID which) {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = 8;
+        event.button.which = which;
+        event.button.button = SDL_BUTTON_RIGHT;
+        const auto converted = i::from_sdl(event, 8);
+        check(bool(converted), "SDL mouse button was not converted");
+        look.process(*converted);
+        return converted->source.device;
+    };
+    // SDL reports `which` as 0 outside relative mode and as the mouse instance inside it.
+    button(true, 0);
+    check(look.state("look").active, "SDL mouse press did not activate its action");
+    button(false, 5);
+    check(!look.state("look").active, "Release after entering relative mode left the button held");
+    check(button(true, 5) == 0, "SDL mouse button was not reported on the global mouse");
+    button(false, 0);
+    check(!look.state("look").active, "Release after leaving relative mode left the button held");
+    button(true, 0);
+    SDL_Event removed{};
+    removed.type = SDL_EVENT_MOUSE_REMOVED;
+    removed.mdevice.which = 5;
+    look.process(*i::from_sdl(removed, 8));
+    check(!look.state("look").active, "SDL mouse removal left a button held");
+}
 void run() {
     i::Context c({{"accept", i::ActionType::button, {{{i::ControlKind::key, SDL_SCANCODE_SPACE}}}},
                   {"stick", i::ActionType::axis, {{{i::ControlKind::gamepad_axis, SDL_GAMEPAD_AXIS_LEFTX}}}}});
@@ -127,6 +155,7 @@ void run() {
     }
     check(caught, "Missing target window was accepted");
     run_chord();
+    run_mouse_identity();
 }
 } // namespace
 int main() {
