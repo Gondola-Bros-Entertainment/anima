@@ -177,28 +177,39 @@ class Render final : public Rml::RenderInterface {
         textures.emplace(handle, std::move(image));
         return handle;
     }
+    // RmlUi handles a texture that cannot be loaded itself: it logs a warning, does not load that source again
+    // and draws the element untextured. An image file is content, so its failure is reported the same way, with
+    // the reason, and never latches a render failure.
+    static Rml::TextureHandle unloadable(Rml::Vector2i &dimensions, const std::string &reason,
+                                         const Rml::String &path) {
+        dimensions = {};
+        Rml::Log::Message(Rml::Log::LT_WARNING, "UI image %s: %s", reason.c_str(), path.c_str());
+        return 0;
+    }
     Rml::TextureHandle LoadTexture(Rml::Vector2i &dimensions, const Rml::String &path) override {
         std::ifstream file(std::filesystem::path(reinterpret_cast<const char8_t *>(path.c_str())),
                            std::ios::binary | std::ios::ate);
-        if (!file || file.tellg() <= 0 || file.tellg() > maximum_encoded_texture_bytes) {
-            unsupported("missing or excessive PNG/JPEG image");
-            return 0;
-        }
-        std::vector<unsigned char> encoded(static_cast<size_t>(file.tellg()));
+        if (!file)
+            return unloadable(dimensions, "is missing or cannot be opened", path);
+        const auto bytes = file.tellg();
+        if (bytes <= 0 || bytes > maximum_encoded_texture_bytes)
+            return unloadable(dimensions, "is empty or exceeds the encoded image size limit", path);
+        std::vector<unsigned char> encoded(static_cast<size_t>(bytes));
         file.seekg(0);
         file.read(reinterpret_cast<char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
-        if (!file) {
-            unsupported("unreadable image");
-            return 0;
-        }
+        if (!file)
+            return unloadable(dimensions, "could not be read", path);
         int channels = 0;
         std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels{
             stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()), &dimensions.x, &dimensions.y,
                                   &channels, 4),
             stbi_image_free};
         if (!pixels) {
-            unsupported("image format (only PNG/JPEG supported)");
-            return 0;
+            const char *reason = stbi_failure_reason();
+            return unloadable(dimensions,
+                              std::string("is not a PNG or JPEG that the decoder accepts (") +
+                                  (reason ? reason : "no reason given") + ")",
+                              path);
         }
         const auto count = size_t(dimensions.x) * size_t(dimensions.y) * 4;
         for (size_t i = 0; i < count; i += 4)
