@@ -45,6 +45,7 @@
 #include "culling.hpp"
 #include "environment.hpp"
 #include "foliage.hpp"
+#include "materials.hpp"
 #include "replacement.hpp"
 #include "resources.hpp"
 #include <SDL3/SDL.h>
@@ -319,6 +320,12 @@ int main(int argc, char **argv) {
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")
             return replacement_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--material-sampling")
+            return material_test::run_sampling(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--pbr")
+            return material_test::run_pbr(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--surface-maps")
+            return material_test::run_surface_maps(argc, argv);
 #endif
         anima::FixedStepClock clock;
         const std::array variants{anima::ActionVariant{"observe", {}}, anima::ActionVariant{"signal", {"beacon"}}};
