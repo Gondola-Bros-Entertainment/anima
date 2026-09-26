@@ -327,8 +327,7 @@ inline int run(int argc, char **argv) {
     // The cylinder's 0..30-degree side is nearly tangent to this light, while
     // its interpolated radial normals still face it. No external caster exists.
     // This exposes receiver-plane extrapolation across curved geometry that a
-    // single sloped plane cannot exercise. Python checks analytically selected
-    // pixels whose complete PCF footprint lies within the configured bias.
+    // single sloped plane cannot exercise.
     const auto curved = curved_fixture();
     auto curved_scene = std::make_shared<anima::Scene>();
     (void)curved_scene->add(anima::Mesh::compile(*curved));
@@ -361,8 +360,8 @@ inline int run(int argc, char **argv) {
     capture("sky-shadows-disabled");
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Environment GPU validation failed");
-    std::cout << "PASS environment: cutout shadows, independent visibility, reference parity, settings rollback and "
-                 "retirement\n";
+    std::cout << "PASS environment: shadow casters, detail-pass visibility, invalid-setting rejection, lighting "
+                 "replacement and retirement\n";
     return 0;
 }
 } // namespace environment_test

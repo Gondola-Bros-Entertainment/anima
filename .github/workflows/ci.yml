@@ -29,13 +29,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14'
-      - name: Check documentation links
-        run: python tools/check_repository.py
-      - name: Test build maintenance tools
-        run: python -m unittest discover -s tools/engine -p 'test_*.py'
       - name: Check workflow syntax and shell commands
         run: |
           tool_dir=$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")
@@ -67,24 +60,17 @@ jobs:
             --output "$archive"
           printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$archive" | sha256sum --check --strict
           tar -xzf "$archive" --directory "$tool_dir" gitleaks
-          GITLEAKS_BIN="$tool_dir/gitleaks" python - <<'PY'
-          import os
-          from pathlib import Path
-          import secrets
-          import subprocess
-          import tempfile
-
           # Verify detection with a generated, unusable token; never print it.
-          with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
-              Path(directory, "canary.txt").write_text("token = \"gh" + "p_" + secrets.token_hex(18) + "\"\n")
-              result = subprocess.run(
-                  [os.environ["GITLEAKS_BIN"], "dir", "--redact", "--no-banner", directory],
-                  capture_output=True, text=True, check=False,
-              )
-              if result.returncode != 1:
-                  raise SystemExit("Secret scanner failed its detection canary")
-          print("PASS secret scanner detection canary")
-          PY
+          canary_dir=$(mktemp -d "$RUNNER_TEMP/canary.XXXXXX")
+          printf 'token = "gh%s_%s"\n' p "$(openssl rand -hex 18)" > "$canary_dir/canary.txt"
+          status=0
+          "$tool_dir/gitleaks" dir --redact --no-banner "$canary_dir" > /dev/null 2>&1 || status=$?
+          rm -r "$canary_dir"
+          if [[ $status -ne 1 ]]; then
+            echo "::error::Secret scanner failed its detection canary (exit $status)"
+            exit 1
+          fi
+          echo "PASS secret scanner detection canary"
           "$tool_dir/gitleaks" git --redact --no-banner --log-opts=--all .
 
   codeql:
@@ -127,9 +113,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.14'
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |

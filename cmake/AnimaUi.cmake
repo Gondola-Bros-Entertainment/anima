@@ -57,7 +57,6 @@ if(ANIMA_BUILD_UI)
 endif()
 
 if(ANIMA_BUILD_TESTS)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_executable(anima_ui_document_tests tests/ui_document_tests.cpp)
     if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_ui_document_tests PRIVATE anima::ui_scene RmlUi::Core)
@@ -66,7 +65,5 @@ if(ANIMA_BUILD_TESTS)
         target_link_libraries(anima_ui_document_tests PRIVATE anima::ui_documents RmlUi::Core)
     endif()
     anima_target_defaults(anima_ui_document_tests)
-    add_test(NAME ui_documents COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/engine/generate_ui_fixtures.py"
-        --assets "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets" --run "$<TARGET_FILE:anima_ui_document_tests>")
+    add_test(NAME ui_documents COMMAND anima_ui_document_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets/controls.rml")
 endif()

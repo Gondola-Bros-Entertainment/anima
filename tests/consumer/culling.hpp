@@ -141,7 +141,7 @@ inline int run(int argc, char **argv) {
         compare("clip-" + std::to_string(clips++));
     }
     // Move the camera across object edges and clip through the object with the
-    // near plane. Exact on/off images are checked by the Python driver.
+    // near plane.
     for (const auto offset : {anima::Vec3{-radius, 0, 0}, anima::Vec3{radius, 0, 0}, anima::Vec3{0, -radius, 0},
                               anima::Vec3{0, radius, 0}}) {
         camera.target = center + offset;

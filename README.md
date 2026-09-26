@@ -12,8 +12,7 @@ behavior and current limitations.
 
 ## Build
 
-The headless runtime requires CMake 3.25+ and a C++20 compiler. The default test
-configuration also requires Python 3.10+ for repository checks:
+The headless runtime requires CMake 3.25+ and a C++20 compiler:
 
 ```sh
 git clone https://github.com/Gondola-Bros-Entertainment/anima.git
@@ -83,17 +82,15 @@ describe how applications supply content, policy and scheduling.
 ## Development
 
 Public headers live in `include/anima`, implementations in `src`, applications
-in `apps`, and shaders in `shaders`. Tests and synthetic fixtures are in `tests`;
-GPU verification tools are in `tools/engine`. Applications own their asset
-authoring and export pipelines; Anima imports and runs the resulting resources.
+in `apps`, and shaders in `shaders`. Tests, GPU consumers and synthetic fixtures
+are in `tests`. Applications own their asset authoring and export pipelines; Anima
+imports and runs the resulting resources.
 
 macOS, Windows and Linux are development targets. Headless compiler checks and
 GPU/device qualification are separate: a successful build does not establish
 physical-device support. See [contributing](CONTRIBUTING.md) for the local workflow.
 
-Keep generated output in ignored `build` or `out` directories. GPU runners delete
-readbacks after successful comparisons; remove failed captures after investigation.
-Check documentation links with `python3 tools/check_repository.py`.
+Keep generated output in ignored `build` or `out` directories.
 
 ## License
 

@@ -9,7 +9,7 @@ optional [RmlUi integration](ui-integration.md).
 
 Requires CMake 3.25+, a C++20 compiler, and (desktop only) SDL3 3.2+ plus a Vulkan
 SDK with `glslc`. The tested SDK is 1.4.341.1. Use the same CPU architecture for
-all dependencies. Tests and GPU verification tools require Python 3.10+.
+all dependencies.
 macOS uses MoltenVK; Windows/Linux need a Vulkan GPU driver.
 No GPU, SDL, Vulkan, image library or asset parser is needed for the `core` preset.
 The desktop configure step checks for headers declaring
@@ -55,13 +55,11 @@ MoltenVK explicitly for reproducible GPU verification:
 
 ```sh
 VK_DRIVER_FILES=/usr/local/share/vulkan/icd.d/MoltenVK_icd.json \
-  python3 tools/engine/gpu_smoke.py build/desktop/anima_check \
-  --asset /path/to/character.glb --output build/verification
+  ./build/desktop/anima --asset /path/to/character.glb --validation
 ```
 
-On Windows use PowerShell `$env:VK_DRIVER_FILES` if driver selection is necessary,
-and pass the `.exe` path to the Python runner. Ordinary `ctest` never opens a
-window. Use the
+On Windows use PowerShell `$env:VK_DRIVER_FILES` if driver selection is necessary.
+Ordinary `ctest` never opens a window. Use the
 [local qualification workflow](local-qualification.md) for Mac, Windows and Linux
 checks alongside the repository's CI checks.
 Hardware checks remain separate. Their runner source is under `tests/desktop/`;
@@ -87,8 +85,9 @@ embedded into the executable, so launching from another directory works.
   silent. These options require a manifest.
 - `--frames N` exits after N successful presentations, with a 20-second deadline.
 - Scripted checks use `anima_check`, built with `ANIMA_BUILD_TESTS=ON`. Its
-  `--smoke` mode validates resize/minimize/restore; `--preview-smoke DIR` checks
-  playback; `--fail-after STAGE` exercises typed initialization failures.
+  `--smoke` mode validates resize/minimize/restore; `--preview-smoke DIR` plays
+  the preview script and writes 28 captures to `DIR`; `--fail-after STAGE`
+  exercises typed initialization failures.
   The ordinary `anima` viewer does not accept these scenario options.
 - `--timeout N` changes the frame-mode deadline. `--capture file.ppm` saves the first
   rendered frame through GPU readback. PPM is RGB8; sRGB swapchains are preferred.
@@ -195,12 +194,10 @@ with diagnostics; automatic recovery is not implemented. Recreation waits for id
 and rebuilds resources, so it can stall briefly. This favors a small, inspectable
 foundation over throughput.
 
-The Python GPU harness enables synchronization validation with
-`VK_LAYER_VALIDATE_SYNC=1`, gives each subprocess a 35-second watchdog, validates
-capture content and lifecycle counters, and checks five initialization stages plus
-mesh-upload cleanup. The CLI has finite acquisition/frame waits and its own loop deadline. Teardown
-waits for presentation completion before destroying resources; driver hangs there
-or inside other Vulkan/OS calls require the external watchdog.
+Set `VK_LAYER_VALIDATE_SYNC=1` to add synchronization validation. The CLI has
+finite acquisition/frame waits and its own loop deadline. Teardown waits for
+presentation completion before destroying resources; a driver hang there or inside
+other Vulkan/OS calls needs an external timeout.
 
 ## Exported fixture and reproducibility
 
@@ -224,24 +221,10 @@ The same fixture options work with `headless`. Synthetic importer and animation
 tests run without generated assets or Blender. Pinned
 vendored library revisions/licenses are in [third_party/README.md](../third_party/README.md).
 
-Run the additional GPU checks in the same configured Vulkan environment:
-
-```sh
-python3 tools/engine/gpu_preview_smoke.py build/desktop/anima_check
-python3 tools/engine/gpu_material_smoke.py build/desktop/anima
-python3 tools/engine/gpu_pbr_smoke.py build/desktop/anima
-```
-
-The preview smoke generates a skinned fixture with Idle and Walk clips. An optional
-manifest argument exercises an external asset with those embedded clips.
-It does not load application-owned independent motion contracts. Use `--manifest`
-with `--frames 1 --capture PATH` for a static model check.
-
-The animated run presents 360 frames at a scripted 1/60-second pose step, exercises
-resize/minimize/restore, and writes 28 readbacks. It checks changing Idle/Walk poses, exact pause/restart captures and stable bind restoration.
-Texture and in-flight upload failure paths are checked separately. Its process
-watchdog is 55 seconds. The material runner generates five embedded-texture quad
-fixtures and compares GPU pixels to linear-light expectations.
+Run exported models through the viewer in the same configured Vulkan environment.
+`anima` exits non-zero on a timeout, a frame-count mismatch, a requested capture
+that was not written, or any validation message. For a static model check, use
+`--manifest PATH --frames 1 --capture PATH`.
 
 Consuming projects own asset authoring and export qualification. Each skinned
 asset retains its own rest transforms, inverse binds and skin weights. Shared

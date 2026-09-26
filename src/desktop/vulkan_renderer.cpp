@@ -1606,7 +1606,7 @@ struct VulkanRenderer::Impl {
                 std::fprintf(stderr, "Device idle failed during cleanup: %d\n", idle);
             }
             // Never destroy presentation resources merely because a timed wait expired.
-            // The smoke runner's process watchdog handles a hung driver during teardown.
+            // A hung driver during teardown needs an external process timeout.
             try {
                 wait_for_presentation(UINT64_MAX);
             } catch (const std::exception &error) {

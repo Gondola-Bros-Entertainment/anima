@@ -107,7 +107,7 @@ inline int run(int argc, char **argv) {
     capture("restored-mask");
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Foliage GPU validation failed");
-    std::cout << "PASS foliage: mip coverage, independent material uses, reference parity and replacement\n";
+    std::cout << "PASS foliage: mask, material and replacement scenes rendered with clean validation\n";
     return 0;
 }
 } // namespace foliage_test
