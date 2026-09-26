@@ -55,6 +55,15 @@ function(anima_target_defaults target)
     endif()
 endfunction()
 
+if(ANIMA_BUILD_TESTS)
+    # Shared doctest runner; suites that link it define only their TEST_CASEs.
+    add_library(anima_test_main OBJECT tests/test_main.cpp)
+    target_include_directories(anima_test_main SYSTEM PUBLIC third_party/doctest)
+    # Cast asserted expressions to void so [[nodiscard]] calls can be checked for exceptions.
+    target_compile_definitions(anima_test_main PUBLIC DOCTEST_CONFIG_VOID_CAST_EXPRESSIONS)
+    anima_target_defaults(anima_test_main)
+endif()
+
 add_library(anima_core STATIC
     src/core/fixed_step.cpp
     src/core/transform.cpp
@@ -252,7 +261,7 @@ if(ANIMA_BUILD_TESTS)
     anima_target_defaults(anima_audio_tests)
     add_test(NAME audio_mixer COMMAND anima_audio_tests)
     add_executable(anima_core_tests tests/core_tests.cpp)
-    target_link_libraries(anima_core_tests PRIVATE anima::core)
+    target_link_libraries(anima_core_tests PRIVATE anima::core anima_test_main)
     anima_target_defaults(anima_core_tests)
     add_test(NAME core_timing COMMAND anima_core_tests)
     add_executable(anima_heightfield_tests tests/heightfield_tests.cpp)
