@@ -118,10 +118,7 @@ Mat4 rotation_matrix(Quat q) {
 }
 Mat4 about(Vec3 pivot, Quat q) {
     auto result = rotation_matrix(q);
-    const auto offset = pivot - point(result, pivot);
-    result[12] = offset.x;
-    result[13] = offset.y;
-    result[14] = offset.z;
+    set_translation(result, pivot - point(result, pivot));
     return result;
 }
 } // namespace
@@ -143,8 +140,7 @@ Mat4 blend_affine(const Mat4 &from, const Mat4 &to, float weight) {
                 value += rotation[k * 4 + i] * (a.stretch[k][j] * (1 - weight) + b.stretch[k][j] * weight);
             result[j * 4 + i] = static_cast<float>(value);
         }
-    for (unsigned i = 12; i < 15; ++i)
-        result[i] = from[i] * (1 - weight) + to[i] * weight;
+    set_translation(result, translation_of(from) * (1 - weight) + translation_of(to) * weight);
     (void)linear(result);
     return result;
 }
