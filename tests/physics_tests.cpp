@@ -323,8 +323,7 @@ TEST_CASE("Invalid colliders and centers of mass are rejected without leaking bo
     rejects_collider<std::invalid_argument>(world, compound, compound_count);
     compound.children.resize(1);
     compound.children[0].pose.rotation = {0, 0, 0, 0};
-    // Quaternion normalization reports a zero rotation as runtime_error, unlike the other validators.
-    rejects_collider<std::runtime_error>(world, compound, "Zero quaternion");
+    rejects_collider<MathError>(world, compound, math_error_message(MathErrorCode::zero_quaternion));
     compound.children[0].pose = {};
     compound.children[0].pose.position.x = beyond_vector_range;
     rejects_collider<std::invalid_argument>(world, compound, vector_range);

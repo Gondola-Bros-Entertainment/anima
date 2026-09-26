@@ -9,7 +9,9 @@ enum class MathErrorCode {
     inverse_overflow,
     invalid_frustum,
     nonfinite_projection,
-    singular_projection
+    singular_projection,
+    nonfinite_quaternion,
+    zero_quaternion
 };
 constexpr const char *math_error_message(MathErrorCode code) noexcept {
     switch (code) {
@@ -25,6 +27,10 @@ constexpr const char *math_error_message(MathErrorCode code) noexcept {
         return "View projection must be finite";
     case MathErrorCode::singular_projection:
         return "View projection must be invertible";
+    case MathErrorCode::nonfinite_quaternion:
+        return "Cannot normalize nonfinite quaternion";
+    case MathErrorCode::zero_quaternion:
+        return "Cannot normalize zero quaternion";
     }
     return "Invalid math operation";
 }
@@ -42,6 +48,10 @@ constexpr std::string_view math_error_name(MathErrorCode code) noexcept {
         return "nonfinite_projection";
     case MathErrorCode::singular_projection:
         return "singular_projection";
+    case MathErrorCode::nonfinite_quaternion:
+        return "nonfinite_quaternion";
+    case MathErrorCode::zero_quaternion:
+        return "zero_quaternion";
     }
     return "unknown_math_error";
 }

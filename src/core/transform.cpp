@@ -1,15 +1,23 @@
 #include <anima/core/transform.hpp>
 
+#include <anima/core/math_error.hpp>
+
 namespace anima {
+namespace {
+// Squared norms below this are treated as zero: normalizing them would amplify rounding noise.
+constexpr double minimum_squared_norm = 1e-20;
+// Above this cosine the arc is too short for sin(angle) to divide by, so slerp blends linearly.
+constexpr float linear_blend_cosine = 0.9995F;
+} // namespace
 Quat unit_quaternion(Quat q) {
     double sum = 0;
     for (const auto v : q) {
         if (!std::isfinite(v))
-            throw std::runtime_error("Non-finite quaternion");
+            throw MathError(MathErrorCode::nonfinite_quaternion);
         sum += double(v) * v;
     }
-    if (sum < 1e-20)
-        throw std::runtime_error("Zero quaternion");
+    if (sum < minimum_squared_norm)
+        throw MathError(MathErrorCode::zero_quaternion);
     const auto scale = static_cast<float>(1 / std::sqrt(sum));
     for (auto &v : q)
         v *= scale;
@@ -28,7 +36,7 @@ Quat slerp(Quat a, Quat b, float t) {
     }
     cosine = std::clamp(cosine, 0.F, 1.F);
     float wa = 1 - t, wb = t;
-    if (cosine < 0.9995F) {
+    if (cosine < linear_blend_cosine) {
         const auto angle = std::acos(cosine), denominator = std::sin(angle);
         wa = std::sin((1 - t) * angle) / denominator;
         wb = std::sin(t * angle) / denominator;
