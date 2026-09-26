@@ -527,8 +527,10 @@ struct UiContext::Impl {
                 pointer_event = true;
                 if (world_pointer)
                     break;
-                const float direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? 1.F : -1.F;
-                propagate = context->ProcessMouseWheel({event.wheel.x * direction, event.wheel.y * direction}, mods);
+                // SDL's x is positive to the right and its y positive for scrolling up; RmlUi scrolls right and
+                // down for positive values, so only y flips. The values already follow the platform's natural
+                // scrolling: the SDL backends that report SDL_MOUSEWHEEL_FLIPPED only record it there.
+                propagate = context->ProcessMouseWheel({event.wheel.x, -event.wheel.y}, mods);
             }
             break;
         case SDL_EVENT_KEY_DOWN:
