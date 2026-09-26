@@ -90,7 +90,7 @@ jobs:
     uses: ./.github/workflows/codeql.yml
 
   build:
-    name: ${{ matrix.profile }} / ${{ matrix.os }} / ${{ matrix.configuration }}
+    name: ${{ matrix.preset }} / ${{ matrix.os }}
     needs: repository
     # The merge queue pushes to main the exact commit its run already built and tested, so that push runs
     # only the repository checks and CodeQL. Any other push, a schedule or a dispatch builds.
@@ -100,19 +100,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2022]
-        configuration: [Debug, Release]
-        profile: [headless]
+        # Each leg is a preset, so `cmake --workflow --preset <preset>` reproduces it. The macOS full leg runs
+        # the documented full preset against Homebrew packages, the only leg that uses an installed SDL.
         include:
-          - {os: ubuntu-24.04, configuration: Debug, profile: full}
-          - {os: macos-15, configuration: Debug, profile: full}
-          - {os: windows-2022, configuration: Debug, profile: full}
-          - {os: ubuntu-24.04, configuration: Debug, profile: sanitizers}
-          - {os: macos-15, configuration: Debug, profile: sanitizers}
-          - {os: windows-2022, configuration: RelWithDebInfo, profile: sanitizers}
+          - {os: ubuntu-24.04, profile: headless, preset: ci-headless-debug}
+          - {os: ubuntu-24.04, profile: headless, preset: ci-headless-release}
+          - {os: macos-15, profile: headless, preset: ci-headless-debug}
+          - {os: macos-15, profile: headless, preset: ci-headless-release}
+          - {os: windows-2022, profile: headless, preset: ci-headless-debug}
+          - {os: windows-2022, profile: headless, preset: ci-headless-release}
+          - {os: ubuntu-24.04, profile: full, preset: ci-full-debug}
+          - {os: ubuntu-24.04, profile: full, preset: ci-full-release}
+          - {os: macos-15, profile: full, preset: full}
+          - {os: windows-2022, profile: full, preset: ci-full-debug}
+          - {os: ubuntu-24.04, profile: sanitizers, preset: ci-sanitizers}
+          - {os: macos-15, profile: sanitizers, preset: ci-sanitizers}
+          - {os: windows-2022, profile: sanitizers, preset: ci-sanitizers-msvc}
     env:
       PROFILE: ${{ matrix.profile }}
-      CONFIGURATION: ${{ matrix.configuration }}
+      PRESET: ${{ matrix.preset }}
       CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.os == 'macos-15' && '3' || '4' }}
       CCACHE_MAXSIZE: ${{ matrix.os == 'windows-2022' && matrix.profile != 'headless' && '1G' || '500M' }}
       CCACHE_COMPILERCHECK: content
@@ -146,7 +152,7 @@ jobs:
             packages+=(freetype)
           fi
           if [[ "$PROFILE" == full ]]; then
-            packages+=(vulkan-loader shaderc)
+            packages+=(vulkan-loader shaderc sdl3)
           fi
           brew install "${packages[@]}"
       - name: Initialize native Windows compiler
@@ -177,11 +183,10 @@ jobs:
           }
           Expand-Archive $archive "$env:RUNNER_TEMP/ccache-tool"
           "$env:RUNNER_TEMP/ccache-tool/ccache-4.14-windows-x86_64" >> $env:GITHUB_PATH
-      - name: Enable Ninja and compiler cache
+      - name: Enable compiler cache
         run: |
           {
             echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
-            echo 'CMAKE_GENERATOR=Ninja'
             echo 'CMAKE_C_COMPILER_LAUNCHER=ccache'
             echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
           } >> "$GITHUB_ENV"
@@ -189,9 +194,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
-          key: ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-${{ github.sha }}
+          key: ccache-v2-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.preset }}-${{ github.sha }}
           restore-keys: |
-            ccache-v1-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.profile }}-${{ matrix.configuration }}-
+            ccache-v2-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.preset }}-
       - name: Identify Windows dependency toolchain
         if: runner.os == 'Windows' && matrix.profile != 'headless'
         id: vcpkg
@@ -234,50 +239,22 @@ jobs:
         run: ccache --zero-stats
       - name: Configure
         run: |
-          args=(-DCMAKE_BUILD_TYPE="$CONFIGURATION"
-                -DANIMA_BUILD_DESKTOP=OFF -DANIMA_BUILD_ASSETS=ON
-                -DANIMA_BUILD_TESTS=ON -DANIMA_WARNINGS_AS_ERRORS=ON)
+          # The preset defines the leg. These arguments only adapt it to this runner.
+          args=()
           if [[ "$RUNNER_OS" == Windows ]]; then
+            # ccache caches MSVC objects only with embedded debug information and without precompiled headers.
             args+=(-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON)
-          fi
-          if [[ "$PROFILE" != headless ]]; then
-            args+=(-DANIMA_BUILD_PHYSICS=ON -DANIMA_BUILD_PHYSICS2D=ON
-                   -DANIMA_BUILD_UI_DOCUMENTS=ON -DANIMA_BUILD_INPUT_SDL=ON
-                   -DANIMA_BUILD_AUDIO_OUTPUT=ON -DANIMA_FETCH_SDL=ON
-                   "-DANIMA_INPUT_SDL_INCLUDE_DIR=$PWD/build/ci/_deps/sdl3-src/include"
-                   -DSDL_SHARED=OFF -DSDL_STATIC=ON
-                   -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF)
-          fi
-          if [[ "$RUNNER_OS" == Windows && "$PROFILE" != headless ]]; then
-            args+=("-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-                   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
-          fi
-          if [[ "$PROFILE" == full ]]; then
-            args+=(-DANIMA_BUILD_DESKTOP=ON -DANIMA_BUILD_UI=ON -DSDL_WAYLAND=OFF)
-          elif [[ "$PROFILE" == sanitizers ]]; then
-            args+=(-DANIMA_ENABLE_SANITIZERS=ON -DSDL_VIDEO=OFF -DSDL_UNIX_CONSOLE_BUILD=ON)
-            if [[ "$RUNNER_OS" == Windows ]]; then
-              args+=("-DCMAKE_CONFIGURATION_TYPES=$CONFIGURATION")
-              # alloc_dealloc_mismatch stays at ASan's Windows default (off): MSVC's operator new[]
-              # forwards to operator new, so new[]/delete[] pairs are reported as mismatches.
-              # Linux sanitizers keep the check on by default.
-              asan_options=continue_on_error=0:strict_string_checks=1
-            else
-              export CC=clang CXX=clang++
-              asan_options=halt_on_error=1:strict_string_checks=1
-              if [[ "$RUNNER_OS" == Linux ]]; then
-                asan_options+=:detect_leaks=1
-              fi
-              echo 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1' >> "$GITHUB_ENV"
+            if [[ "$PROFILE" != headless ]]; then
+              args+=("-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+                     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
             fi
-            echo "ASAN_OPTIONS=$asan_options" >> "$GITHUB_ENV"
           fi
-          cmake -S . -B build/ci "${args[@]}"
+          cmake --preset "$PRESET" "${args[@]}"
       - name: Locate Windows ASan runtime
         if: runner.os == 'Windows' && matrix.profile == 'sanitizers'
         shell: pwsh
         run: |
-          $compilerFile = Get-ChildItem build/ci/CMakeFiles/*/CMakeCXXCompiler.cmake | Select-Object -First 1
+          $compilerFile = Get-ChildItem "build/$env:PRESET/CMakeFiles/*/CMakeCXXCompiler.cmake" | Select-Object -First 1
           $match = Select-String -Path $compilerFile.FullName -Pattern '^set\(CMAKE_CXX_COMPILER "([^"]+)"\)'
           $compilerDirectory = Split-Path $match.Matches[0].Groups[1].Value
           if (!(Test-Path "$compilerDirectory/clang_rt.asan_dynamic-x86_64.dll")) {
@@ -285,27 +262,25 @@ jobs:
           }
           $compilerDirectory >> $env:GITHUB_PATH
       - name: Build
-        run: cmake --build build/ci --config "$CONFIGURATION"
+        run: cmake --build --preset "$PRESET"
+      # The test preset reports failures' output and fails when a step selects no tests; each step adds its
+      # selection and time limit.
       - name: Test runtime and CLI
         run: >-
-          ctest --test-dir build/ci -C "$CONFIGURATION"
-          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-          --timeout 600 --no-tests=error --label-exclude consumer
+          ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 600 --label-exclude consumer
       - name: Check isolated consumer configurations
         run: >-
-          ctest --test-dir build/ci -C "$CONFIGURATION"
-          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-          --timeout 180 --no-tests=error --label-regex '^consumer-configure$'
+          ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 180 --label-regex '^consumer-configure$'
       - name: Build independent consumers
         run: >-
-          ctest --test-dir build/ci -C "$CONFIGURATION"
-          --verbose --output-on-failure --timeout 1200 --no-tests=error
+          ctest --preset "$PRESET" --verbose --timeout 1200
           --label-regex '^consumer-build$'
       - name: Test independent public APIs
         run: >-
-          ctest --test-dir build/ci -C "$CONFIGURATION"
-          --output-on-failure --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-          --timeout 60 --no-tests=error --label-regex '^consumer-runtime$'
+          ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          --timeout 60 --label-regex '^consumer-runtime$'
           --fixture-exclude-setup '^consumer_build$'
       - name: Compiler cache statistics
         if: always()
