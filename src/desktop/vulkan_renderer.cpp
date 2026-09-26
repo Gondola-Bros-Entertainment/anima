@@ -1833,13 +1833,20 @@ bool VulkanRenderer::srgb_presentation() {
     }
 }
 bool VulkanRenderer::draw_ui(const detail::UiFrame &frame) {
+    // A renderer that failed earlier stays fatal after shutdown, so only a failure of this call is replaced below.
+    const bool fatal_before = impl_->fatal;
     try {
         return impl_->draw(&frame);
     } catch (const VulkanFailure &error) {
         impl_->fatal = true;
         throw RendererFatalError(error.what());
+    } catch (const RendererFatalError &) {
+        throw; // Already reports the failure that made the renderer fatal.
     } catch (...) {
-        if (impl_->fatal)
+        // Retiring a pending UI texture upload while another exception unwinds it can find the device lost and
+        // make the renderer fatal; report the loss rather than that exception. Only a VulkanFailure can unwind
+        // a pending UI upload today, and the first handler reports it.
+        if (!fatal_before && impl_->fatal)
             throw RendererFatalError("Device lost while retiring UI upload");
         throw;
     }

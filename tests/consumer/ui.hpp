@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <string_view>
 
 namespace ui_test {
@@ -509,6 +510,54 @@ inline int run(int argc, char **argv) {
             SDL_Delay(5);
         }
         ++frames;
+    }
+    { // Once the renderer is fatal, render() reports the renderer's own failure, as VulkanRenderer::draw does.
+        anima::UiContext failing(window.get(), renderer);
+        failing.load_font(assets / "LatoLatin-Regular.ttf");
+        auto controls = failing.open_document(assets / "controls.rml");
+        controls.show();
+        failing.update();
+        anima::SceneReplacementOptions device_loss;
+        device_loss.fail_after = anima::RendererFailureStage::device_lost;
+        bool fatal = false;
+        try {
+            renderer.set_scenes({reference_test::scene(*mesh)}, device_loss);
+        } catch (const anima::RendererFatalError &) {
+            fatal = true;
+        }
+        require(fatal, "Injected device loss did not make the renderer fatal");
+        std::string drawn, rendered;
+        try {
+            (void)renderer.draw();
+        } catch (const anima::RendererFatalError &error) {
+            drawn = error.what();
+        }
+        try {
+            (void)failing.render();
+        } catch (const anima::RendererFatalError &error) {
+            rendered = error.what();
+        }
+        if (rendered != drawn)
+            std::cerr << "draw(): " << drawn << "\nrender(): " << rendered << '\n';
+        require(!drawn.empty() && rendered == drawn, "UI rendering replaced the renderer's fatal failure");
+        // A fatal renderer stays fatal after shutdown, when both report the shutdown instead.
+        (void)renderer.shutdown();
+        const auto shutdown_error = [](const auto &call) {
+            try {
+                (void)call();
+            } catch (const std::logic_error &error) {
+                return std::string(error.what());
+            } catch (const std::exception &error) {
+                return std::string("not a std::logic_error: ") + error.what();
+            }
+            return std::string("no exception");
+        };
+        drawn = shutdown_error([&] { return renderer.draw(); });
+        rendered = shutdown_error([&] { return failing.render(); });
+        if (rendered != drawn)
+            std::cerr << "draw(): " << drawn << "\nrender(): " << rendered << '\n';
+        require(rendered == drawn && drawn == "Renderer is shut down",
+                "UI rendering replaced the shutdown error of a failed renderer");
     }
     const auto stats = renderer.shutdown();
     require(stats.presented_frames == frames && stats.capture_count == captures && !stats.validation_errors &&
