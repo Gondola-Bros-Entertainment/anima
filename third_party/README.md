@@ -43,7 +43,7 @@ cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421  doctest/doctes
   [MIT license](rmlui/LICENSE.txt), and the [FreeType License](rmlui/FreeType-FTL.txt).
 
 SDL3 is found from an installed package by default. The optional CMake fetch is
-pinned to SDL 3.4.2 commit `683181b47cfabd293e3ea409f838915b8297a4fd`.
+pinned to SDL 3.4.16 commit `fa2c02bb6e21974a89ea9824bc53c9932abe5f9c`.
 Vulkan and glslc come from the installed SDK.
 
 ## Test assets

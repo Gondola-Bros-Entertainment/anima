@@ -28,7 +28,7 @@ cmake --workflow --preset desktop
 ```
 
 Desktop builds need SDL3 3.2+ (installed, or `-DANIMA_FETCH_SDL=ON` for the pinned
-SDL 3.4.2) and a Vulkan SDK with `glslc` whose headers declare
+SDL 3.4.16) and a Vulkan SDK with `glslc` whose headers declare
 `VK_EXT_surface_maintenance1` and `VK_EXT_swapchain_maintenance1`. At runtime the
 renderer needs Vulkan 1.1, through MoltenVK on macOS. `--validation` requires the
 Vulkan validation layer, and the UI modules require FreeType. `anima --help` lists
