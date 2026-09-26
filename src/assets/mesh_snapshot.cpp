@@ -1,4 +1,5 @@
 #include "mesh_limits.hpp"
+#include "rotation_matrix.hpp"
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/scene_validation.hpp>
 #include <cgltf.h>
@@ -28,6 +29,30 @@ constexpr unsigned maximum_hierarchy_depth = 256;
 void require(bool condition, const char *message) {
     if (!condition)
         throw std::runtime_error(message);
+}
+// glTF requires a node matrix to be TRS without shear. Its decomposition becomes the node's rest transform, so
+// consumers of local TRS, such as motion transfer, see the node's actual placement. A mirrored matrix gets a
+// negative X scale, and a matrix with a zero-scale axis keeps the identity rotation.
+Transform decompose(const Mat4 &m) {
+    Transform result;
+    result.translation = translation_of(m);
+    const std::array axes{axis_x(m), axis_y(m), axis_z(m)};
+    result.scale = {length(axes[0]), length(axes[1]), length(axes[2])};
+    if (dot(cross(axes[0], axes[1]), axes[2]) < 0)
+        result.scale.x = -result.scale.x;
+    const std::array scales{result.scale.x, result.scale.y, result.scale.z};
+    if (std::ranges::any_of(scales, [](float s) { return s == 0; }))
+        return result;
+    detail::Matrix3 rotation{};
+    for (unsigned c = 0; c < 3; ++c) {
+        const auto column = axes[c] * (1 / scales[c]);
+        rotation[0][c] = column.x;
+        rotation[1][c] = column.y;
+        rotation[2][c] = column.z;
+    }
+    if (const auto q = detail::rotation_quaternion(rotation))
+        result.rotation = *q;
+    return result;
 }
 std::string name(const char *value) {
     if (!value)
@@ -190,6 +215,8 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         value.rest.scale = {node.scale[0], node.scale[1], node.scale[2]};
         value.has_matrix = node.has_matrix;
         cgltf_node_transform_local(&node, value.rest_matrix.data());
+        if (value.has_matrix)
+            value.rest = decompose(value.rest_matrix);
         asset->nodes.push_back(value);
     }
     for (std::size_t i = 0; i < data->skins_count; ++i) {

@@ -28,7 +28,10 @@ struct AssetNode {
     std::string name;
     /// Index of the parent node, or -1 for a root.
     int parent = -1;
-    /// Local rest translation, rotation and scale. Unused when #has_matrix is set.
+    /// Local rest translation, rotation and scale. For a node authored as a matrix, the matrix's
+    /// decomposition, which glTF requires to exist: a mirrored matrix has a negative X scale, and one
+    /// with a zero-scale axis keeps the identity rotation. Pose world matrices of such a node use
+    /// #rest_matrix; motion transfer and other readers of local TRS use this decomposition.
     Transform rest;
     /// Whether the node was authored as a matrix. Such nodes keep #rest_matrix in every pose and
     /// cannot be animated.
