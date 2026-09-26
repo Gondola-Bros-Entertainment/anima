@@ -38,7 +38,8 @@ inline Vec3 audio_right(Vec3 forward, Vec3 up) {
     const auto f = length(forward), u = length(up);
     if (f < audio_direction_epsilon || u < audio_direction_epsilon)
         throw std::invalid_argument("Invalid audio listener orientation");
-    const auto right = cross(up * (1 / u), forward * (1 / f));
+    // Right-handed, like cameras: facing -Z with +Y up puts +X on the listener's right.
+    const auto right = cross(forward * (1 / f), up * (1 / u));
     if (length(right) < audio_direction_epsilon)
         throw std::invalid_argument("Parallel audio listener orientation vectors");
     return normalized(right);

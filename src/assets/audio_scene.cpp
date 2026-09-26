@@ -59,7 +59,7 @@ void AudioSource::seek(double seconds) { sound_.seek(seconds); }
 template <class Scenes> void detail::AudioSceneAccess::synchronize(Scenes &scenes, Audio &audio) {
     SceneDriver::check(scenes);
     (void)audio.sample_rate(); // Reject a moved-from mixer even for an empty scene.
-    Vec3 position{}, forward{0, 0, 1}, up{0, 1, 0};
+    Vec3 position{}, forward = view_forward, up = world_up;
     bool have_listener = false;
     for (auto listener : scenes.template components<AudioListener>()) {
         if (!listener.active())
@@ -68,9 +68,9 @@ template <class Scenes> void detail::AudioSceneAccess::synchronize(Scenes &scene
             throw std::invalid_argument("Audio scene has multiple enabled listeners");
         have_listener = true;
         const auto m = listener.object().world_matrix();
-        position = {m[12], m[13], m[14]};
-        forward = {m[8], m[9], m[10]};
-        up = {m[4], m[5], m[6]};
+        position = translation_of(m);
+        forward = -axis_z(m); // Listeners face local -Z, as cameras do.
+        up = axis_y(m);
         detail::audio_location(position);
         (void)detail::audio_right(forward, up);
     }
