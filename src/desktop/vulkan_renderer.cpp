@@ -1842,10 +1842,11 @@ void VulkanRenderer::set_environment(const Environment &environment) {
     const RenderFrustum detail_frustum(detail_shadow);
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(impl_->physical, &properties);
+    // A disabled region allocates only its 1x1 placeholder, so the device bounds enabled regions alone.
     for (const auto &region : {environment.shadow, environment.detail_shadow})
-        if (region.resolution > properties.limits.maxImageDimension2D ||
-            region.resolution > properties.limits.maxFramebufferWidth ||
-            region.resolution > properties.limits.maxFramebufferHeight)
+        if (region.enabled && (region.resolution > properties.limits.maxImageDimension2D ||
+                               region.resolution > properties.limits.maxFramebufferWidth ||
+                               region.resolution > properties.limits.maxFramebufferHeight))
             throw std::invalid_argument("Shadow resolution exceeds device capabilities");
     impl_->environment = environment;
     impl_->shadow_view = shadow;

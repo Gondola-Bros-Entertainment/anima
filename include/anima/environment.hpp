@@ -36,7 +36,9 @@ struct DirectionalLight {
 /// the receiver plane's depth at that texel, found from screen-space position derivatives rather than
 /// shading normals, less the bias; nearly edge-on planes fall back to the bias alone.
 ///
-/// Every field is validated even while the region is disabled.
+/// A disabled region is validated like an enabled one: validate_environment_settings() checks every field and
+/// directional_shadow_matrix() its projection. Only the device limit that VulkanRenderer::set_environment
+/// places on #resolution is skipped while the region is disabled.
 struct DirectionalShadow {
     /// Renders the region's casters into its depth map each frame. A disabled region casts nothing and keeps
     /// only a 1x1 placeholder map.
@@ -47,7 +49,8 @@ struct DirectionalShadow {
     float extent = 30;
     /// Region depth along the light, centered on #center, finite and positive.
     float depth = 100;
-    /// Depth map edge in texels, nonzero. VulkanRenderer::set_environment also limits it to the device.
+    /// Depth map edge in texels, nonzero. While the region is #enabled, VulkanRenderer::set_environment also
+    /// limits it to the device; a disabled region keeps a 1x1 map whatever its value.
     std::uint32_t resolution = 2048;
     /// Receiver bias in normalized shadow depth, where 1 spans #depth; finite and nonnegative.
     float constant_bias = .0005F;
