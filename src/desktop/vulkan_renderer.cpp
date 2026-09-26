@@ -303,6 +303,10 @@ struct VulkanRenderer::Impl {
     VkDeviceMemory capture_memory{};
     void *capture_mapping{};
     bool capture_coherent{};
+    // Whether the pending request reads the frame into memory instead of options.capture, and the image read
+    // back, held until take_capture().
+    bool capture_to_memory{};
+    std::optional<CapturedImage> captured_image;
 
     Impl(SDL_Window *borrowed_window, RendererOptions settings)
         : window(borrowed_window), options(std::move(settings)) {}
@@ -674,11 +678,14 @@ struct VulkanRenderer::Impl {
         const auto selected = surface_format();
         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
             throw std::runtime_error("Surface cannot be a color attachment");
-        const bool capture = !options.capture.empty(); // A pending request; writing or failing it clears the path.
+        // A pending request, to a file or into memory; completing or failing it clears both.
+        const bool capture = capture_to_memory || !options.capture.empty();
         if (capture && (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
                         (selected.format != VK_FORMAT_B8G8R8A8_SRGB && selected.format != VK_FORMAT_R8G8B8A8_SRGB &&
                          selected.format != VK_FORMAT_B8G8R8A8_UNORM && selected.format != VK_FORMAT_R8G8B8A8_UNORM))) {
-            options.capture.clear(); // The request fails, not the renderer; later draws go on without it.
+            // The request fails, not the renderer; later draws go on without it.
+            options.capture.clear();
+            capture_to_memory = false;
             throw std::runtime_error("Capture requires a transferable BGRA/RGBA8 swapchain");
         }
         check(vkDeviceWaitIdle(device), "Wait before swapchain recreation");
@@ -1294,6 +1301,7 @@ struct VulkanRenderer::Impl {
     void save_capture() {
         // Consume the request first, so a file that cannot be written is reported by one draw, not every draw.
         const auto path = std::exchange(options.capture, {});
+        const bool to_memory = std::exchange(capture_to_memory, false);
         check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait for capture");
         if (!capture_coherent) {
             VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
@@ -1301,25 +1309,29 @@ struct VulkanRenderer::Impl {
             range.size = VK_WHOLE_SIZE;
             check(vkInvalidateMappedMemoryRanges(device, 1, &range), "Invalidate readback memory");
         }
-        if (!path.parent_path().empty())
-            std::filesystem::create_directories(path.parent_path());
-        std::ofstream output(path, std::ios::binary);
-        if (!output)
-            throw std::runtime_error("Cannot open capture output: " + path.string());
-        output << "P6\n" << extent.width << ' ' << extent.height << "\n255\n";
-        const auto *bytes = static_cast<const unsigned char *>(capture_mapping);
+        const auto *bytes = static_cast<const std::uint8_t *>(capture_mapping);
         const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
         const auto count = static_cast<std::size_t>(extent.width) * extent.height;
-        std::vector<unsigned char> rgb(count * 3);
+        std::vector<std::uint8_t> rgb(count * 3);
         for (std::size_t i = 0; i < count; ++i) {
             rgb[i * 3] = bytes[i * 4 + (bgra ? 2 : 0)];
             rgb[i * 3 + 1] = bytes[i * 4 + 1];
             rgb[i * 3 + 2] = bytes[i * 4 + (bgra ? 0 : 2)];
         }
-        output.write(reinterpret_cast<const char *>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
-        output.close();
-        if (!output)
-            throw std::runtime_error("Failed writing capture");
+        if (to_memory)
+            captured_image = CapturedImage{extent.width, extent.height, std::move(rgb)};
+        else {
+            if (!path.parent_path().empty())
+                std::filesystem::create_directories(path.parent_path());
+            std::ofstream output(path, std::ios::binary);
+            if (!output)
+                throw std::runtime_error("Cannot open capture output: " + path.string());
+            output << "P6\n" << extent.width << ' ' << extent.height << "\n255\n";
+            output.write(reinterpret_cast<const char *>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
+            output.close();
+            if (!output)
+                throw std::runtime_error("Failed writing capture");
+        }
         stats.captured = true;
         ++stats.capture_count;
     }
@@ -1523,7 +1535,7 @@ struct VulkanRenderer::Impl {
         if (timing_queries)
             vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
                                 TimingQuery::after_resolve);
-        const bool capture = capture_buffer && !options.capture.empty();
+        const bool capture = capture_buffer && (capture_to_memory || !options.capture.empty());
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         barrier.dstAccessMask = capture ? VK_ACCESS_TRANSFER_READ_BIT : 0;
@@ -1783,10 +1795,22 @@ void VulkanRenderer::request_capture(std::filesystem::path path) {
     if (path.empty())
         throw std::invalid_argument("Capture path is empty");
     impl_->options.capture = std::move(path);
+    impl_->capture_to_memory = false;
+    impl_->captured_image.reset();
     impl_->stats.captured = false;
     if (!impl_->capture_buffer)
         impl_->resize = true;
 }
+void VulkanRenderer::request_capture() {
+    impl_->running();
+    impl_->options.capture.clear();
+    impl_->capture_to_memory = true;
+    impl_->captured_image.reset();
+    impl_->stats.captured = false;
+    if (!impl_->capture_buffer)
+        impl_->resize = true;
+}
+std::optional<CapturedImage> VulkanRenderer::take_capture() { return std::exchange(impl_->captured_image, {}); }
 void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
     impl_->running();
     for (float value : view_projection)

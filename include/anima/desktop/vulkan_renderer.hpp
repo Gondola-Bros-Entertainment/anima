@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -40,7 +41,8 @@ struct RendererOptions {
     /// `std::runtime_error` when either is missing. Warnings and errors are printed to standard error and
     /// counted in RenderStats.
     bool validation = false;
-    /// Initial capture path, handled as VulkanRenderer::request_capture does; empty requests none.
+    /// Initial capture path, handled as VulkanRenderer::request_capture(std::filesystem::path) does; empty
+    /// requests none.
     std::filesystem::path capture;
     /// Failure injection for lifecycle tests. `instance`, `surface`, `device` and `resources` throw from
     /// construction, as do `texture` and `texture_upload` when the initial selection uploads a mesh;
@@ -97,6 +99,17 @@ class SceneResourceError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+/// One frame read back into memory by VulkanRenderer::request_capture().
+struct CapturedImage {
+    /// Width in pixels, the swapchain's at that frame.
+    std::uint32_t width{};
+    /// Height in pixels.
+    std::uint32_t height{};
+    /// `3 * width * height` bytes: rows from top to bottom, each pixel's red, green and blue as displayed,
+    /// sRGB-encoded, with no row padding.
+    std::vector<std::uint8_t> rgb;
+};
+
 /// Cumulative counters returned by VulkanRenderer::shutdown.
 struct RenderStats {
     /// Frames presented. A frame whose presentation reports the swapchain out of date is not counted; a capture
@@ -108,9 +121,9 @@ struct RenderStats {
     std::uint32_t validation_warnings{};
     /// Validation errors, plus failed waits during teardown.
     std::uint32_t validation_errors{};
-    /// Whether the latest requested capture has been written.
+    /// Whether the latest capture request has completed: its file written, or its image read back into memory.
     bool captured{};
-    /// Captures written.
+    /// Capture requests completed, to files and into memory.
     std::uint32_t capture_count{};
     /// Accepted selections, counting the initial one from construction (even an empty one).
     std::uint32_t scene_generations{};
@@ -265,7 +278,8 @@ class VulkanRenderer {
     /// Makes the next draw() recreate the swapchain for the window's current pixel size.
     void request_resize() noexcept;
     /// Writes the next frame that draw() submits to @p path as a binary PPM, 8-bit RGB, creating missing
-    /// parent directories; replaces any pending request. Throws `std::invalid_argument` for an empty path.
+    /// parent directories; replaces any pending request and discards an image that take_capture() has not
+    /// returned. Throws `std::invalid_argument` for an empty path.
     ///
     /// The swapchain is recreated first if it cannot be copied from. A request that fails is consumed: one
     /// draw() throws `std::runtime_error` for it, RenderStats::captured stays false, and later draws neither
@@ -274,6 +288,17 @@ class VulkanRenderer {
     /// submitted the frame and, unless presentation reported the swapchain out of date, presented and counted
     /// it.
     void request_capture(std::filesystem::path path);
+    /// Reads the next frame that draw() submits back into memory for take_capture(); replaces any pending
+    /// request, including one for a file, and discards an image that take_capture() has not returned.
+    ///
+    /// The swapchain is recreated first if it cannot be copied from. A request that fails is consumed as a file
+    /// request is: when the surface has no 8-bit BGRA or RGBA format usable as a copy source, one draw() throws
+    /// `std::runtime_error`, keeps the current swapchain and presents nothing, RenderStats::captured stays
+    /// false, and later draws neither retry nor report it.
+    void request_capture();
+    /// Hands over the image that the latest request_capture() read back. Empty until a draw() completes that
+    /// request, after a newer request, and once the image has been taken.
+    [[nodiscard]] std::optional<CapturedImage> take_capture();
     /// Sets the view used for shading, fog, the sky and culling from a column-major Vulkan view-projection
     /// (clip Y down, depth 0 to 1), such as anima::view_matrix returns.
     ///
