@@ -338,7 +338,15 @@ int main(int argc, char **argv) {
         (void)argv;
         std::cout << "PASS external consumer using public Anima targets\n";
         return 0;
-    } catch (const std::exception &error) {
+    }
+#ifdef CONSUMER_DESKTOP
+    catch (const anima::RendererUnavailableError &error) {
+        return gpu_check::unavailable(error);
+    } catch (const gpu_check::Unavailable &error) {
+        return gpu_check::unavailable(error);
+    }
+#endif
+    catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
     }
