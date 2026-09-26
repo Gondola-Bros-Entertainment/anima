@@ -21,7 +21,7 @@ struct SDLSession {
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
             const std::string error = SDL_GetError();
             SDL_Quit();
-            throw std::runtime_error("SDL_Init: " + error);
+            throw anima::viewer::DisplayUnavailable("SDL_Init: " + error);
         }
     }
     ~SDLSession() { SDL_Quit(); }
@@ -73,7 +73,7 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY),
             SDL_DestroyWindow};
         if (!window)
-            throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
+            throw DisplayUnavailable(std::string("SDL_CreateWindow: ") + SDL_GetError());
 #ifdef ANIMA_HAS_ASSETS
         if (preview)
             SDL_SetWindowTitle(window.get(), ("Anima | " + preview->manifest().asset_id).c_str());
@@ -220,6 +220,10 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
                   << ",\"validation_errors\":" << stats.validation_errors
                   << ",\"timed_out\":" << (timed_out ? "true" : "false") << "}\n";
         return passed ? 0 : 1;
+    } catch (const DisplayUnavailable &) {
+        throw;
+    } catch (const RendererUnavailableError &) {
+        throw;
     } catch (const std::exception &error) {
         std::cerr << "Anima: " << error.what() << '\n';
         return 1;
