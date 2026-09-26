@@ -320,6 +320,27 @@ struct VulkanRenderer::Impl {
             throw InjectedRendererFailure(stage, true);
     }
     void initialize() {
+        // Reject stages that construction and draw() never fire, before any work, as set_scenes() does.
+        constexpr auto unknown_stage = "Unknown initialization failure stage";
+        switch (options.fail_after) {
+        case RendererFailureStage::none:
+        case RendererFailureStage::instance:
+        case RendererFailureStage::surface:
+        case RendererFailureStage::device:
+        case RendererFailureStage::resources:
+        case RendererFailureStage::swapchain:
+            break;
+        case RendererFailureStage::texture:
+        case RendererFailureStage::texture_upload:
+#ifdef ANIMA_HAS_ASSETS
+            // Only the initial selection's mesh uploads fire these.
+            if (!options.scenes.empty())
+                break;
+#endif
+            throw std::invalid_argument(unknown_stage);
+        default:
+            throw std::invalid_argument(unknown_stage);
+        }
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();

@@ -45,7 +45,8 @@ struct RendererOptions {
     /// Failure injection for lifecycle tests. `instance`, `surface`, `device` and `resources` throw from
     /// construction, as do `texture` and `texture_upload` when the initial selection uploads a mesh;
     /// `swapchain` makes the first draw() that creates a swapchain throw RendererFatalError, as a real failure
-    /// there does. Other stages have no effect here.
+    /// there does. Construction throws `std::invalid_argument` for any other stage, and for `texture` and
+    /// `texture_upload` when #scenes is empty or asset support is off, since no initial upload can fire them.
     RendererFailureStage fail_after = RendererFailureStage::none;
     /// Retires presentation with a device wait-idle even where `VK_EXT_swapchain_maintenance1` present
     /// fences are available.
@@ -244,9 +245,10 @@ class VulkanRenderer {
     ///
     /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that
     /// supports swapchains and can present to the window; the first draw() with a drawable window creates the
-    /// swapchain. Throws `std::invalid_argument` for a null @p window, what set_scenes() throws for the
-    /// initial selection, InjectedRendererFailure for RendererOptions::fail_after and `std::runtime_error`
-    /// for other failures, including failed Vulkan calls; completed stages are released before the exception
+    /// swapchain. Throws `std::invalid_argument` for a RendererOptions::fail_after stage that the option says
+    /// construction rejects, before anything else, and for a null @p window; what set_scenes() throws for the
+    /// initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
+    /// other failures, including failed Vulkan calls. Completed stages are released before the exception
     /// propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.

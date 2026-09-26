@@ -21,6 +21,20 @@ template <class E, class F> void rejects(F action) {
     }
     throw std::runtime_error("Expected resource operation failure");
 }
+// Failures injected into set_scenes() and prepare_mesh() report their stage, no initialization and wording that
+// fits both calls.
+template <class F> void injected(anima::RendererFailureStage stage, F action) {
+    const auto expected =
+        "Injected resource preparation failure after " + std::string(anima::renderer_failure_name(stage));
+    try {
+        action();
+    } catch (const anima::InjectedRendererFailure &error) {
+        if (error.stage() != stage || error.initialization() || error.what() != expected)
+            throw std::runtime_error("Injected failure misreported itself: " + std::string(error.what()));
+        return;
+    }
+    throw std::runtime_error("Expected an injected resource failure");
+}
 inline std::shared_ptr<const anima::Asset> fixture() {
     auto asset = std::make_shared<anima::Asset>();
     asset->nodes.resize(2);
@@ -221,27 +235,27 @@ inline int run(int argc, char **argv) {
                 "Join/leave duplicated or reuploaded a shared mesh");
     }
     capture("after-churn");
-    for (const auto *stage : {"vertex", "index", "texture", "texture-upload", "descriptors", "ready"}) {
+    for (const auto *name : {"vertex", "index", "texture", "texture-upload", "descriptors", "ready"}) {
+        const auto stage = anima::parse_renderer_failure_stage(name);
         {
             const std::array candidate{anima::Mesh::compile(*asset)};
             const anima::MeshPreparation candidate_preparation(candidate.front());
-            rejects<std::runtime_error>(
-                [&] { renderer.prepare_mesh(candidate_preparation, {anima::parse_renderer_failure_stage(stage)}); });
+            injected(stage, [&] { renderer.prepare_mesh(candidate_preparation, {stage}); });
         }
-        capture(std::string("preload-rollback-") + stage);
+        capture(std::string("preload-rollback-") + name);
         {
             auto candidate = std::make_shared<anima::Scene>();
             (void)candidate->add(anima::Mesh::compile(*asset));
-            rejects<std::runtime_error>(
-                [&] { renderer.set_scenes({candidate}, {anima::parse_renderer_failure_stage(stage)}); });
+            injected(stage, [&] { renderer.set_scenes({candidate}, {stage}); });
         }
-        capture(std::string("rollback-") + stage);
+        capture(std::string("rollback-") + name);
     }
     {
         auto candidate = std::make_shared<anima::Scene>();
         for (unsigned i = 0; i < 33; ++i)
             (void)candidate->add(compiled);
-        rejects<std::runtime_error>([&] { renderer.set_scenes({candidate}, {anima::RendererFailureStage::palette}); });
+        injected(anima::RendererFailureStage::palette,
+                 [&] { renderer.set_scenes({candidate}, {anima::RendererFailureStage::palette}); });
         capture("rollback-palette");
     }
     source->set_pose(a, pose_at(.6), left);
