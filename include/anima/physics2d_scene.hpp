@@ -15,6 +15,11 @@ namespace anima::physics2d {
 /// is presentation depth: the simulation ignores it and dynamic updates keep it. Size belongs in
 /// the Collider, not in object scale. Destroying the component removes its body, including after
 /// the world is gone.
+///
+/// The world reflects the scene as of the last step(): the driver applies the component's active
+/// state and the poses of moved stationary and kinematic objects only when it runs. Until then,
+/// the body of a component that was disabled, deactivated or restored disabled still takes part
+/// in queries and contacts.
 class RigidBody {
   public:
     /// Creates the body in @p world. Throws `std::invalid_argument` for a dynamic child object, a
