@@ -41,19 +41,17 @@ sources; an RmlUi override must already carry the patch described in
 ### Sanitizers
 
 `ANIMA_ENABLE_SANITIZERS=ON` instruments Anima and its source-built dependencies
-with AddressSanitizer, plus UndefinedBehaviorSanitizer on Linux and macOS. Use a
-separate Debug build:
+with AddressSanitizer, plus UndefinedBehaviorSanitizer on Linux and macOS. CI's
+sanitizer builds are presets that fetch the pinned SDL. On Linux and macOS they use
+Clang in Debug:
 
 ```sh
-CC=clang CXX=clang++ cmake --preset headless -B build/sanitizers -DANIMA_ENABLE_SANITIZERS=ON
-cmake --build build/sanitizers
-ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-  ctest --test-dir build/sanitizers --output-on-failure
+cmake --workflow --preset ci-sanitizers
 ```
 
-On Windows, use a separate `RelWithDebInfo` configuration from a Visual Studio
-developer environment; configuration rejects the MSVC debug options that ASan
-cannot use.
+On Windows, run `cmake --workflow --preset ci-sanitizers-msvc` from a Visual Studio
+developer environment. It builds `RelWithDebInfo`, because configuration rejects the
+MSVC debug options that ASan cannot use.
 
 ### GPU and device checks
 
@@ -80,15 +78,18 @@ cmake --build build/docs --target anima_docs
 
 ## Pull requests
 
-CI builds headless, full and sanitizer configurations on Linux, macOS and Windows
-and runs every test. It also lints the workflows, checks formatting, scans the Git
-history for secrets, and runs CodeQL and the Doxygen build; `CI required` gates
-merging. CodeQL runs its `security-extended` queries on the workflows and on C++. It
-analyzes C++ from a traced build of every module, because extraction without a build
-infers compiler flags and include paths, which is less accurate for code with many
-external dependencies. Results in fetched dependencies and vendored headers are
-dropped before upload. Record the commands and results of checks CI cannot run, such
-as GPU and device checks, in the pull request.
+CI builds headless, full and sanitizer configurations on Linux, macOS and Windows,
+plus an optimized full build on Linux, and runs every test. Each of these legs is a
+preset, so `cmake --workflow --preset <preset>` reproduces it: `ci-headless-debug`,
+`ci-full-release` and the others, and `full` itself on macOS. CI also lints the
+workflows, checks formatting, scans the Git history for secrets, and runs CodeQL
+and the Doxygen build; `CI required` gates merging. CodeQL runs its
+`security-extended` queries on the workflows and on C++. It analyzes C++ from a
+traced build of every module, because extraction without a build infers compiler
+flags and include paths, which is less accurate for code with many external
+dependencies. Results in fetched dependencies and vendored headers are dropped
+before upload. Record the commands and results of checks CI cannot run, such as
+GPU and device checks, in the pull request.
 
 Submit only material you are authorized to contribute. Contributions to Anima's
 original code and documentation use [Apache-2.0](LICENSE); preserve third-party

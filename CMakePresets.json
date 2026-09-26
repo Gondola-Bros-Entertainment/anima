@@ -49,13 +49,89 @@
         "ANIMA_BUILD_INPUT_SDL": true,
         "ANIMA_BUILD_AUDIO_OUTPUT": true
       }
+    },
+    {
+      "name": "ci",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "ci-fetched-sdl",
+      "hidden": true,
+      "cacheVariables": {
+        "ANIMA_FETCH_SDL": true,
+        "ANIMA_INPUT_SDL_INCLUDE_DIR": "${sourceDir}/build/${presetName}/_deps/sdl3-src/include",
+        "SDL_SHARED": false,
+        "SDL_STATIC": true,
+        "SDL_RENDER": false,
+        "SDL_GPU": false,
+        "SDL_CAMERA": false
+      }
+    },
+    {
+      "name": "ci-headless-debug",
+      "displayName": "CI: headless, Debug",
+      "inherits": ["ci", "headless"]
+    },
+    {
+      "name": "ci-headless-release",
+      "displayName": "CI: headless, Release",
+      "inherits": "ci-headless-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "ci-full-debug",
+      "displayName": "CI: every module with a fetched static SDL, Debug",
+      "inherits": ["ci", "ci-fetched-sdl", "full"],
+      "cacheVariables": { "SDL_WAYLAND": false }
+    },
+    {
+      "name": "ci-full-release",
+      "displayName": "CI: every module with a fetched static SDL, Release",
+      "inherits": "ci-full-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "ci-sanitizer-modules",
+      "hidden": true,
+      "inherits": ["ci", "ci-fetched-sdl", "headless"],
+      "cacheVariables": {
+        "ANIMA_ENABLE_SANITIZERS": true,
+        "ANIMA_BUILD_PHYSICS": true,
+        "ANIMA_BUILD_PHYSICS2D": true,
+        "ANIMA_BUILD_UI_DOCUMENTS": true,
+        "ANIMA_BUILD_INPUT_SDL": true,
+        "ANIMA_BUILD_AUDIO_OUTPUT": true,
+        "SDL_VIDEO": false,
+        "SDL_UNIX_CONSOLE_BUILD": true
+      }
+    },
+    {
+      "name": "ci-sanitizers",
+      "displayName": "CI: AddressSanitizer and UBSan with Clang, Debug (Linux / macOS)",
+      "inherits": "ci-sanitizer-modules",
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "environment": { "CC": "clang", "CXX": "clang++" }
+    },
+    {
+      "name": "ci-sanitizers-msvc",
+      "displayName": "CI: AddressSanitizer with MSVC, RelWithDebInfo (Windows)",
+      "inherits": "ci-sanitizer-modules",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "CMAKE_CONFIGURATION_TYPES": "RelWithDebInfo" }
     }
   ],
   "buildPresets": [
     { "name": "core", "configurePreset": "core" },
     { "name": "headless", "configurePreset": "headless" },
     { "name": "desktop", "configurePreset": "desktop" },
-    { "name": "full", "configurePreset": "full" }
+    { "name": "full", "configurePreset": "full" },
+    { "name": "ci-headless-debug", "configurePreset": "ci-headless-debug" },
+    { "name": "ci-headless-release", "configurePreset": "ci-headless-release" },
+    { "name": "ci-full-debug", "configurePreset": "ci-full-debug" },
+    { "name": "ci-full-release", "configurePreset": "ci-full-release" },
+    { "name": "ci-sanitizers", "configurePreset": "ci-sanitizers", "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+    { "name": "ci-sanitizers-msvc", "configurePreset": "ci-sanitizers-msvc", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } }
   ],
   "testPresets": [
     {
@@ -67,7 +143,30 @@
     { "name": "core", "inherits": "defaults", "configurePreset": "core" },
     { "name": "headless", "inherits": "defaults", "configurePreset": "headless" },
     { "name": "desktop", "inherits": "defaults", "configurePreset": "desktop" },
-    { "name": "full", "inherits": "defaults", "configurePreset": "full" }
+    { "name": "full", "inherits": "defaults", "configurePreset": "full" },
+    { "name": "ci-headless-debug", "inherits": "defaults", "configurePreset": "ci-headless-debug" },
+    { "name": "ci-headless-release", "inherits": "defaults", "configurePreset": "ci-headless-release" },
+    { "name": "ci-full-debug", "inherits": "defaults", "configurePreset": "ci-full-debug" },
+    { "name": "ci-full-release", "inherits": "defaults", "configurePreset": "ci-full-release" },
+    {
+      "name": "ci-sanitizers",
+      "description": "AddressSanitizer checks for leaks by default on Linux, not on macOS.",
+      "inherits": "defaults",
+      "configurePreset": "ci-sanitizers",
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "environment": {
+        "ASAN_OPTIONS": "halt_on_error=1:strict_string_checks=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
+    },
+    {
+      "name": "ci-sanitizers-msvc",
+      "description": "alloc_dealloc_mismatch keeps its Windows default, off: MSVC's operator new[] forwards to operator new, so new[] and delete[] pairs would be reported as mismatches.",
+      "inherits": "defaults",
+      "configurePreset": "ci-sanitizers-msvc",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "environment": { "ASAN_OPTIONS": "continue_on_error=0:strict_string_checks=1" }
+    }
   ],
   "workflowPresets": [
     {
@@ -100,6 +199,54 @@
         { "type": "configure", "name": "full" },
         { "type": "build", "name": "full" },
         { "type": "test", "name": "full" }
+      ]
+    },
+    {
+      "name": "ci-headless-debug",
+      "steps": [
+        { "type": "configure", "name": "ci-headless-debug" },
+        { "type": "build", "name": "ci-headless-debug" },
+        { "type": "test", "name": "ci-headless-debug" }
+      ]
+    },
+    {
+      "name": "ci-headless-release",
+      "steps": [
+        { "type": "configure", "name": "ci-headless-release" },
+        { "type": "build", "name": "ci-headless-release" },
+        { "type": "test", "name": "ci-headless-release" }
+      ]
+    },
+    {
+      "name": "ci-full-debug",
+      "steps": [
+        { "type": "configure", "name": "ci-full-debug" },
+        { "type": "build", "name": "ci-full-debug" },
+        { "type": "test", "name": "ci-full-debug" }
+      ]
+    },
+    {
+      "name": "ci-full-release",
+      "steps": [
+        { "type": "configure", "name": "ci-full-release" },
+        { "type": "build", "name": "ci-full-release" },
+        { "type": "test", "name": "ci-full-release" }
+      ]
+    },
+    {
+      "name": "ci-sanitizers",
+      "steps": [
+        { "type": "configure", "name": "ci-sanitizers" },
+        { "type": "build", "name": "ci-sanitizers" },
+        { "type": "test", "name": "ci-sanitizers" }
+      ]
+    },
+    {
+      "name": "ci-sanitizers-msvc",
+      "steps": [
+        { "type": "configure", "name": "ci-sanitizers-msvc" },
+        { "type": "build", "name": "ci-sanitizers-msvc" },
+        { "type": "test", "name": "ci-sanitizers-msvc" }
       ]
     }
   ]
