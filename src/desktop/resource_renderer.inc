@@ -20,6 +20,17 @@ static_assert(sizeof(ResourcePush) == 128 && offsetof(ResourcePush, indices) == 
               offsetof(ResourcePush, factor) == 112 && sizeof(Mat4) == 64);
 static_assert(sizeof(SourceVertex) == 96 && offsetof(SourceVertex, joints) == 44 &&
               offsetof(SourceVertex, weights) == 60);
+// SourceVertex attributes that the resource vertex shader reads, by location.
+static constexpr auto resource_attributes = std::to_array<VkVertexInputAttributeDescription>({
+    {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, position)},
+    {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, normal)},
+    {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, color)},
+    {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(SourceVertex, uv)},
+    {4, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(SourceVertex, joints)},
+    {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, weights)},
+    {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, tangent)},
+    {7, 0, VK_FORMAT_R32_SFLOAT, offsetof(SourceVertex, alpha)},
+});
 VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};
@@ -99,7 +110,7 @@ void create_resource_layout() {
     vkGetPhysicalDeviceProperties(physical, &properties);
     if (properties.limits.maxPushConstantsSize < sizeof(ResourcePush) ||
         properties.limits.maxPerStageDescriptorStorageBuffers < 1 || properties.limits.maxBoundDescriptorSets < 3 ||
-        properties.limits.maxVertexInputAttributes < 8 ||
+        properties.limits.maxVertexInputAttributes < resource_attributes.size() ||
         properties.limits.maxVertexInputBindingStride < sizeof(SourceVertex))
         throw std::runtime_error("Device lacks resource renderer interface limits");
     VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
