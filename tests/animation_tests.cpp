@@ -14,6 +14,15 @@ void require(bool condition, const char *message) {
 void near(double a, double b, const char *message, double tolerance = 1e-5) {
     require(std::abs(a - b) < tolerance, message);
 }
+void rejects_quaternion(anima::Quat q, anima::MathErrorCode expected) {
+    try {
+        (void)anima::unit_quaternion(q);
+    } catch (const anima::MathError &error) {
+        require(error.code() == expected, "Quaternion rejection reported the wrong code");
+        return;
+    }
+    throw std::runtime_error("Invalid quaternion was accepted");
+}
 template <class F> void rejects(F action, const std::string &expected = "") {
     try {
         action();
@@ -189,7 +198,9 @@ int main(int argc, char **argv) {
         for (const double v : unit)
             norm += v * v;
         near(norm, 1, "Quaternion normalization");
-        rejects([] { (void)anima::unit_quaternion({0, 0, 0, 0}); }, "Zero quaternion");
+        rejects_quaternion({0, 0, 0, 0}, anima::MathErrorCode::zero_quaternion);
+        rejects_quaternion({0, 0, 0, std::numeric_limits<float>::quiet_NaN()},
+                           anima::MathErrorCode::nonfinite_quaternion);
         auto step = asset.animations[0];
         step.channels.resize(1);
         step.channels[0].interpolation = anima::Interpolation::step;
