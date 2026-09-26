@@ -6,6 +6,8 @@
 #include <anima/ui/context.hpp>
 #include <chrono>
 #include <iostream>
+#include <limits>
+#include <string_view>
 
 namespace ui_test {
 inline void require(bool value, const char *message) {
@@ -119,6 +121,20 @@ inline int run(int argc, char **argv) {
     focus.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
     focus.window.windowID = window_id;
     (void)dispatch(focus);
+    // Malformed pointer input goes straight to the context, which must reject it before the event
+    // changes anything, whatever presses are held.
+    const float not_a_number = std::numeric_limits<float>::quiet_NaN();
+    constexpr float beyond_int_range = 1e10F; // Farther than any int framebuffer coordinate.
+    constexpr std::string_view invalid_coordinates = "Invalid UI pointer coordinates";
+    const auto rejects = [&](const SDL_Event &event, std::string_view expected, const char *failure) {
+        bool rejected = false;
+        try {
+            (void)ui.process_event(event);
+        } catch (const std::invalid_argument &error) {
+            rejected = std::string_view(error.what()) == expected;
+        }
+        require(rejected, failure);
+    };
     const auto point = [&](Rml::Element *element) {
         const auto pos = element->GetAbsoluteOffset(Rml::BoxArea::Border);
         const auto size = element->GetBox().GetSize(Rml::BoxArea::Border);
@@ -197,6 +213,10 @@ inline int run(int argc, char **argv) {
     wheel.type = SDL_EVENT_MOUSE_WHEEL;
     wheel.wheel.windowID = window_id;
     wheel.wheel.y = -3;
+    auto malformed_wheel = wheel;
+    malformed_wheel.wheel.y = not_a_number;
+    rejects(malformed_wheel, "Invalid UI wheel delta", "A non-finite wheel delta was accepted");
+    require(scroll->GetScrollTop() == 0, "A rejected wheel event scrolled the panel");
     require(dispatch(wheel).consumed, "Scroll wheel escaped an interactive panel");
     for (unsigned i = 0; i < 5; ++i) {
         SDL_Delay(20);
@@ -223,6 +243,10 @@ inline int run(int argc, char **argv) {
         document.hide();
         ui.update();
         require(!ui.input_state().pointer, "Hidden document retained a held pointer");
+        auto malformed_release = held;
+        malformed_release.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        malformed_release.button.y = not_a_number;
+        rejects(malformed_release, invalid_coordinates, "A non-finite release of a cancelled press was accepted");
         held.type = SDL_EVENT_MOUSE_BUTTON_UP;
         require(dispatch(held).consumed && clicks == 1, "Cancelled UI drag escaped or clicked");
         document.show();
@@ -243,6 +267,18 @@ inline int run(int argc, char **argv) {
     motion.motion.y = button_point.y;
     require(!dispatch(motion).consumed && !ui.input_state().pointer, "UI stole a world drag crossing a panel");
     require(!dispatch(wheel).consumed, "UI stole scrolling during a world drag");
+    auto malformed = drag;
+    malformed.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    malformed.button.x = not_a_number;
+    rejects(malformed, invalid_coordinates, "A non-finite release during a world drag was accepted");
+    malformed = motion;
+    malformed.motion.y = not_a_number;
+    rejects(malformed, invalid_coordinates, "Non-finite motion during a world drag was accepted");
+    malformed = drag;
+    malformed.button.button = SDL_BUTTON_RIGHT;
+    malformed.button.x = beyond_int_range;
+    rejects(malformed, invalid_coordinates, "An out-of-range press during a world drag was accepted");
+    require(!dispatch(motion).consumed && !ui.input_state().pointer, "A rejected pointer event ended the world drag");
     drag.type = SDL_EVENT_MOUSE_BUTTON_UP;
     drag.button.x = button_point.x;
     drag.button.y = button_point.y;
@@ -296,6 +332,9 @@ inline int run(int argc, char **argv) {
     focus.type = SDL_EVENT_WINDOW_FOCUS_LOST;
     require(dispatch(focus).focus_lost && !ui.input_state().keyboard && !SDL_TextInputActive(window.get()),
             "Focus loss did not release text/keyboard");
+    malformed = motion;
+    malformed.motion.x = not_a_number;
+    rejects(malformed, invalid_coordinates, "Non-finite motion was accepted while the window lacked focus");
     focus.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
     (void)dispatch(focus);
     auto mesh = std::make_shared<anima::MeshSnapshot>();

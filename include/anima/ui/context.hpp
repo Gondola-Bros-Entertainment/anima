@@ -122,9 +122,12 @@ class UiContext {
     /// press and key in RmlUi, blurs the focused control and stops text input; pointer and key
     /// events are then ignored until focus returns.
     ///
-    /// Throws `std::invalid_argument` for non-finite or out-of-range pointer coordinates and
-    /// `std::runtime_error` when SDL reports invalid display metrics. After applying the event, it
-    /// rethrows a captured callback exception; see UiDocuments::check_events.
+    /// Before changing any state, whatever the focus or held presses, throws
+    /// `std::invalid_argument` for a motion or button event whose coordinates are not finite or,
+    /// scaled by the pixel density, exceed `std::numeric_limits<int>::max() - 1` in magnitude, and
+    /// for a wheel event whose delta is not finite. Throws `std::runtime_error` when SDL reports
+    /// invalid display metrics. After applying the event, it rethrows a captured callback
+    /// exception; see UiDocuments::check_events.
     [[nodiscard]] UiInputResult process_event(const SDL_Event &event);
     /// Current capture state without an event; UiInputResult::consumed and
     /// UiInputResult::focus_lost are false.
