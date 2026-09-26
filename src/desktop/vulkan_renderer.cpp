@@ -1738,6 +1738,7 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, RendererOptions options)
 VulkanRenderer::~VulkanRenderer() = default;
 void VulkanRenderer::request_resize() noexcept { impl_->resize = true; }
 void VulkanRenderer::request_capture(std::filesystem::path path) {
+    impl_->running();
     if (path.empty())
         throw std::invalid_argument("Capture path is empty");
     impl_->options.capture = std::move(path);
