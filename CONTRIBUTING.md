@@ -13,6 +13,9 @@ Scene and prefab documents use one current format; do not add compatibility
 readers or forwarding APIs for removed contracts.
 
 For a behavior change, include a regression that tests the public contract.
+New and updated suites use [doctest](third_party/README.md): link `anima_test_main` and assert
+each rejection with `CHECK_THROWS_WITH_AS` or `REQUIRE_THROWS_WITH_AS` against its exact
+exception type and message.
 New runtime capabilities should have an independent consumer. Update the relevant
 guide and public API comments together. Documentation should describe current
 behavior; issue discussions hold proposals and delivery plans.
