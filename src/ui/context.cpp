@@ -2,6 +2,7 @@
 #include <RmlUi_Platform_SDL.h>
 #include <algorithm>
 #include <anima/ui/context.hpp>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -9,12 +10,20 @@
 #include <map>
 #include <set>
 #include <stb_image.h>
+#include <string_view>
 
 namespace anima {
 namespace {
 constexpr std::size_t maximum_frame_vertices = 2'000'000;
 constexpr int maximum_texture_dimension = 8192; // Matches the shared stb decoder's dimension bound.
 constexpr std::streamoff maximum_encoded_texture_bytes = 64 * 1024 * 1024;
+// RML controls that edit a value with keys, and the input types that only activate.
+constexpr std::string_view textarea_tag = "textarea";
+constexpr std::string_view select_tag = "select";
+constexpr std::string_view input_tag = "input";
+constexpr std::string_view input_type_attribute = "type";
+constexpr std::string_view default_input_type = "text";
+constexpr std::array<std::string_view, 4> activation_input_types{"button", "submit", "checkbox", "radio"};
 bool ui_active{}; // RmlUi process globals; all access is on the UI/render thread.
 std::string utf8(const std::filesystem::path &path) {
     const auto text = path.u8string();
@@ -325,12 +334,13 @@ struct UiContext::Impl {
     // other elements keep focus for activation and navigation without taking gameplay keys.
     static bool edits_with_keyboard(const Rml::Element &element) {
         const auto &tag = element.GetTagName();
-        if (tag == "textarea" || tag == "select")
+        if (tag == textarea_tag || tag == select_tag)
             return true;
-        if (tag != "input")
+        if (tag != input_tag)
             return false;
-        const auto type = element.GetAttribute<Rml::String>("type", "text");
-        return type != "button" && type != "submit" && type != "checkbox" && type != "radio";
+        const auto type =
+            element.GetAttribute<Rml::String>(Rml::String(input_type_attribute), Rml::String(default_input_type));
+        return std::ranges::find(activation_input_types, std::string_view(type)) == activation_input_types.end();
     }
     bool keyboard_capture() const {
         auto *focus = context->GetFocusElement();
