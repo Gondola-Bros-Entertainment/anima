@@ -80,7 +80,9 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             vertices = 0;
         };
         for (const auto &primitive : source.primitives) {
-            if (!chunk.primitives.empty() && chunk.primitives.back().material != primitive.material)
+            // Material changes split only under a vertex limit; without one the geometry stays in one Mesh.
+            if (vertices_per_resource && !chunk.primitives.empty() &&
+                chunk.primitives.back().material != primitive.material)
                 flush();
             for (std::size_t first = 0; first < primitive.vertices.size();) {
                 if (vertices > vertex_limit - 3)
@@ -99,6 +101,12 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             }
         }
         flush();
+        // A source without primitives still compiles, as compile() does, into one Mesh of its nodes.
+        if (result.empty()) {
+            Asset nodes;
+            nodes.nodes = source.nodes;
+            result.push_back(Mesh::compile(nodes));
+        }
     }
     return result;
 }
