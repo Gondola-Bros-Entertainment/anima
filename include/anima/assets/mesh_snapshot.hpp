@@ -78,16 +78,17 @@ struct MeshSnapshot {
     bool default_is_bind_pose = true;
 };
 /// Snapshot of @p asset posed by @p pose on the CPU, skinning with up to four joints per vertex.
-/// Throws `std::runtime_error` unless @p pose has one world matrix per node, and for a singular
-/// transform or nonfinite result.
+/// Normals follow normal(), so a joint scaled to zero is valid. Throws `std::runtime_error` unless
+/// @p pose has one world matrix per node, and for a nonfinite result.
 [[nodiscard]] MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose);
 /// Overwrites the vertices of @p asset's primitives in @p scene, starting at vertex
 /// @p first_vertex, with @p asset posed by @p pose and then transformed by @p attachment.
 ///
 /// Draw ranges of @p scene that start where one of the primitives is written get that primitive's
-/// node matrix; topology and materials are unchanged. Throws `std::runtime_error` unless @p pose
-/// has one world matrix per node and for a singular transform or nonfinite result, and
-/// `std::out_of_range` when the vertices do not fit. A failure can leave the range partly written.
+/// node matrix; topology and materials are unchanged. Normals follow normal(), as in
+/// make_mesh_snapshot(). Throws `std::runtime_error` unless @p pose has one world matrix per node
+/// and for a nonfinite result, and `std::out_of_range` when the vertices do not fit. A failure can
+/// leave the range partly written.
 void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scene, std::size_t first_vertex = 0,
                         const Mat4 &attachment = identity());
 /// Imports the GLB at @p path with load_asset and snapshots its rest pose. Needs no manifest or
