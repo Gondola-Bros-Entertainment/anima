@@ -1,6 +1,10 @@
 #include "presentation_data.hpp"
 #include <anima/assets/action_runtime.hpp>
 namespace anima {
+namespace {
+// Authored and authoritative action durations match within this many seconds.
+constexpr double timing_tolerance = 1e-6;
+} // namespace
 struct ActionRuntime::Impl {
   public:
     Impl(std::shared_ptr<const anima::Asset> asset, std::shared_ptr<const MotionRuntime> motion,
@@ -146,7 +150,7 @@ struct ActionRuntime::Impl {
                 before += phase.duration;
             duration += phase.duration;
         }
-        if (std::abs(before - *windup) > 1e-6 || std::abs(duration - fixed_duration) > 1e-6)
+        if (std::abs(before - *windup) > timing_tolerance || std::abs(duration - fixed_duration) > timing_tolerance)
             throw std::invalid_argument("Held action windup/recovery must match authoritative timing");
     }
     std::string loadout_handling(std::string_view id, const std::map<std::string, std::string, std::less<>> &roles,

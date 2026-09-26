@@ -16,7 +16,7 @@ void require(bool value, const char *message) {
     if (!value)
         throw std::invalid_argument(message);
 }
-void scalar(float value, float bound = 1e6F) {
+void scalar(float value, float bound = detail::maximum_vector_component) {
     require(std::isfinite(value) && std::abs(value) <= bound, "2D physics value outside finite supported range");
 }
 void vector(Vec2 v) {
@@ -24,7 +24,9 @@ void vector(Vec2 v) {
     scalar(v.y);
 }
 void duration(double seconds) {
-    require(std::isfinite(seconds) && seconds >= 1e-6 && seconds <= .1, "2D physics step outside [0.000001, 0.1]");
+    require(std::isfinite(seconds) && seconds >= detail::minimum_step_seconds &&
+                seconds <= detail::maximum_step_seconds,
+            "2D physics step outside [0.000001, 0.1]");
 }
 b2Vec2 b(Vec2 v) { return {v.x, v.y}; }
 Vec2 a(b2Vec2 v) { return {v.x, v.y}; }
@@ -81,14 +83,15 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
     std::uint64_t next = 1;
     std::map<std::uint64_t, Entry> entries;
     std::map<std::uint64_t, std::uint64_t> shapes;
-    std::array<std::uint16_t, 16> masks;
+    std::array<std::uint16_t, detail::collision_layer_count> masks;
     std::map<Pair, bool> touching;
     std::vector<ContactEvent> events;
     explicit WorldState(WorldSettings s) : settings(s) {
         vector(s.gravity);
-        require(s.max_bodies > 0 && s.max_bodies <= 1000000 && s.substeps >= 1 && s.substeps <= 16,
+        require(s.max_bodies > 0 && s.max_bodies <= detail::maximum_world_bodies && s.substeps >= 1 &&
+                    s.substeps <= detail::maximum_substeps,
                 "Invalid 2D world capacity/substeps");
-        masks.fill(0xffff);
+        masks.fill(detail::all_layers);
         auto def = b2DefaultWorldDef();
         def.gravity = b(s.gravity);
         def.enableSleep = s.sleeping;
@@ -233,7 +236,7 @@ void Body::move_kinematic(Pose p, double seconds) {
     require(e.motion == Motion::kinematic, "2D body is not kinematic");
     const auto old = b2Body_GetTransform(e.body);
     const float angle = std::remainder(p.angle - std::atan2(old.q.s, old.q.c), 2 * std::numbers::pi_v<float>);
-    require(!e.fixed_rotation || std::abs(angle) < 1e-6F,
+    require(!e.fixed_rotation || std::abs(angle) < detail::fixed_rotation_tolerance,
             "Fixed-rotation 2D body cannot change angle through velocity");
     // Set both velocities explicitly, including a stationary target. Box2D's
     // target helper ignores small target deltas and can retain an old velocity.
@@ -287,11 +290,11 @@ Body World::create(const BodySettings &s) {
     const auto pose = transform(s.pose);
     vector(s.velocity);
     scalar(s.angular_velocity);
-    require(s.motion >= Motion::stationary && s.motion <= Motion::dynamic && s.layer < 16,
+    require(s.motion >= Motion::stationary && s.motion <= Motion::dynamic && s.layer < detail::collision_layer_count,
             "Invalid 2D body motion/layer");
-    require(std::isfinite(s.density) && s.density >= .001F && s.density <= 10000 && std::isfinite(s.friction) &&
-                s.friction >= 0 && s.friction <= 1 && std::isfinite(s.restitution) && s.restitution >= 0 &&
-                s.restitution <= 1,
+    require(std::isfinite(s.density) && s.density >= detail::minimum_density && s.density <= detail::maximum_density &&
+                std::isfinite(s.friction) && s.friction >= 0 && s.friction <= 1 && std::isfinite(s.restitution) &&
+                s.restitution >= 0 && s.restitution <= 1,
             "Invalid 2D body material/density");
     require(s.motion != Motion::stationary || (s.velocity.x == 0 && s.velocity.y == 0 && s.angular_velocity == 0),
             "Static 2D body has velocity");
@@ -342,7 +345,8 @@ Body World::create(const BodySettings &s) {
     return state_->handle(id);
 }
 void World::set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide) {
-    require(a < 16 && b < 16, "2D physics layer must be in [0,15]");
+    require(a < detail::collision_layer_count && b < detail::collision_layer_count,
+            "2D physics layer must be in [0,15]");
     if (!state_->entries.empty())
         throw std::logic_error("Configure 2D layers before creating bodies");
     const auto set = [collide](std::uint16_t &mask, unsigned bit) {
@@ -419,7 +423,7 @@ struct Query {
 };
 void displacement(Vec2 v) {
     vector(v);
-    require(v.x * v.x + v.y * v.y > 1e-12F, "Zero 2D cast displacement; use overlap");
+    require(v.x * v.x + v.y * v.y > detail::minimum_squared_displacement, "Zero 2D cast displacement; use overlap");
 }
 } // namespace
 std::optional<Hit> World::raycast(Vec2 origin, Vec2 delta, QueryFilter filter) const {

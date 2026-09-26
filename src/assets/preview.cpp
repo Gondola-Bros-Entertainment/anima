@@ -91,6 +91,8 @@ std::vector<ClipEvent> Playback::advance(double elapsed) {
     return events;
 }
 namespace {
+// compatible_skin's documented bound on inverse-bind and rest world matrix differences.
+constexpr float skin_match_tolerance = 1e-4F;
 float difference(const Mat4 &a, const Mat4 &b) {
     float d = 0;
     for (unsigned i = 0; i < 16; ++i)
@@ -132,10 +134,10 @@ std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &ch
             throw std::runtime_error("Equipment hierarchy mismatch at " + name +
                                      "; export against the target body's rig");
         const auto bind_error = difference(base.inverse_bind.at(found->second), gear.inverse_bind.at(i));
-        if (bind_error > 1e-4F)
+        if (bind_error > skin_match_tolerance)
             throw std::runtime_error("Equipment inverse-bind mismatch at " + name + " (max error " +
                                      std::to_string(bind_error) + "); refit/export for this body profile");
-        if (difference(base_pose.world.at(base_node), gear_pose.world.at(node)) > 1e-4F)
+        if (difference(base_pose.world.at(base_node), gear_pose.world.at(node)) > skin_match_tolerance)
             throw std::runtime_error("Equipment rest-pose mismatch at " + name +
                                      "; use the target body's rest transforms");
         mapping.emplace_back(node, base_node);

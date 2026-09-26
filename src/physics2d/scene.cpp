@@ -15,7 +15,7 @@ Pose planar_pose(GameObject object, Motion motion) {
     for (float value : {position.x, position.y})
         if (!std::isfinite(value) || std::abs(value) > detail::maximum_position)
             throw std::invalid_argument("2D physics position outside supported range");
-    const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 1e-4F; };
+    const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < detail::planar_tolerance; };
     const auto x = axis_x(m), y = axis_y(m), z = axis_z(m);
     if (!near(x.x * x.x + x.y * x.y, 1) || !near(y.x * y.x + y.y * y.y, 1) || !near(x.x * y.x + x.y * y.y, 0) ||
         !near(x.x * y.y - x.y * y.x, 1) || !near(x.z, 0) || !near(y.z, 0) || !near(z.x, 0) || !near(z.y, 0) ||
@@ -38,7 +38,7 @@ RigidBody::RigidBody(GameObject object, World &world, BodySettings settings) : s
 RigidBody::~RigidBody() { body_.remove(); }
 namespace {
 template <class Scenes> void step_scenes(Scenes &scenes, World &world, double seconds) {
-    if (!std::isfinite(seconds) || seconds < 1e-6 || seconds > .1)
+    if (!std::isfinite(seconds) || seconds < detail::minimum_step_seconds || seconds > detail::maximum_step_seconds)
         throw std::invalid_argument("Invalid 2D physics fixed step");
     anima::detail::SceneDriver::check(scenes);
     auto components = scenes.template components<RigidBody>();
@@ -49,7 +49,7 @@ template <class Scenes> void step_scenes(Scenes &scenes, World &world, double se
         poses.push_back(planar_pose(component.object(), component->settings().motion));
         if (component->settings().motion == Motion::kinematic && component->settings().fixed_rotation &&
             std::abs(std::remainder(poses.back().angle - component->body().pose().angle,
-                                    2 * std::numbers::pi_v<float>)) >= 1e-6F)
+                                    2 * std::numbers::pi_v<float>)) >= detail::fixed_rotation_tolerance)
             throw std::invalid_argument("Fixed-rotation kinematic object changed angle");
     }
     for (std::size_t i = 0; i < components.size(); ++i) {

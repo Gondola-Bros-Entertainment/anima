@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/assets/asset.hpp>
+#include <numbers>
 #include <span>
 
 /// @file
@@ -112,7 +113,7 @@ struct TwoBoneContact {
     float minimum_angle = 0;
     /// Largest interior angle at #middle, in radians, at most pi (straight). The limits bound the
     /// reach and never stretch a limb.
-    float maximum_angle = 3.14159265358979323846F;
+    float maximum_angle = std::numbers::pi_v<float>;
     /// Optional orientation for #end.
     std::optional<Quat> end_rotation;
 };

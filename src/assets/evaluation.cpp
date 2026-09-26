@@ -1,10 +1,14 @@
 #include "rotation_matrix.hpp"
 #include <anima/assets/evaluation.hpp>
+#include <numbers>
 #include <numeric>
 #include <set>
 
 namespace anima {
 namespace {
+// Vectors no longer than this have no usable direction.
+constexpr float minimum_direction_length = 1e-8F;
+
 void require(bool value, const char *message) {
     if (!value)
         throw std::invalid_argument(message);
@@ -18,20 +22,25 @@ double determinant(const M3 &m) {
            m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 }
 M3 linear(const Mat4 &m) {
+    // Largest summed deviation of the bottom row from (0, 0, 0, 1) that still counts as affine.
+    constexpr float affine_tolerance = 1e-5F;
+    constexpr double minimum_determinant = 1e-12;
     for (float x : m)
         require(std::isfinite(x), "Nonfinite affine transform");
-    require(std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1) < 1e-5F,
+    require(std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1) < affine_tolerance,
             "Evaluation needs affine transforms");
     M3 result{};
     for (unsigned r = 0; r < 3; ++r)
         for (unsigned c = 0; c < 3; ++c)
             result[r][c] = m[c * 4 + r];
-    require(determinant(result) > 1e-12, "Evaluation needs nonsingular, positive-determinant transforms");
+    require(determinant(result) > minimum_determinant, "Evaluation needs nonsingular, positive-determinant transforms");
     return result;
 }
 M3 inverse_transpose(const M3 &m) {
+    // The inverse divides by the determinant, so smaller magnitudes count as singular.
+    constexpr double singular_determinant = 1e-20;
     const double d = determinant(m);
-    require(std::isfinite(d) && std::abs(d) > 1e-20, "Polar decomposition is singular");
+    require(std::isfinite(d) && std::abs(d) > singular_determinant, "Polar decomposition is singular");
     M3 result{};
     for (unsigned r = 0; r < 3; ++r)
         for (unsigned c = 0; c < 3; ++c)
@@ -50,10 +59,13 @@ struct Polar {
     M3 stretch;
 };
 Polar polar(const Mat4 &m) {
+    constexpr unsigned maximum_iterations = 64;
+    // The iteration has converged once a step changes no element by this much.
+    constexpr double convergence = 1e-12;
     const auto a = linear(m);
     auto r = a;
     bool converged = false;
-    for (unsigned iteration = 0; iteration < 64; ++iteration) {
+    for (unsigned iteration = 0; iteration < maximum_iterations; ++iteration) {
         const auto it = inverse_transpose(r);
         double nr = 0, ni = 0, error = 0;
         for (unsigned i = 0; i < 3; ++i)
@@ -68,7 +80,7 @@ Polar polar(const Mat4 &m) {
                 error = std::max(error, std::abs(next - r[i][j]));
                 r[i][j] = next;
             }
-        if (error < 1e-12) {
+        if (error < convergence) {
             converged = true;
             break;
         }
@@ -99,13 +111,22 @@ std::vector<std::size_t> order(const std::vector<int> &parents) {
         visit(visit, i);
     return result;
 }
+// Returns a vector perpendicular to the unit vector @p v, at least 0.6 long: its cross product with the X
+// axis, or with the Y axis when @p v lies near the X axis.
+Vec3 perpendicular(Vec3 v) {
+    constexpr float near_x_axis = .8F;
+    return cross(v, std::abs(v.x) < near_x_axis ? Vec3{1, 0, 0} : Vec3{0, 1, 0});
+}
 Quat rotation_between(Vec3 from, Vec3 to) {
-    require(length(from) > 1e-8F && length(to) > 1e-8F, "Degenerate contact direction");
+    // Below this cosine the directions are opposite and their half-way axis is undefined.
+    constexpr float opposite_cosine = -.999999F;
+    require(length(from) > minimum_direction_length && length(to) > minimum_direction_length,
+            "Degenerate contact direction");
     from = normalized(from);
     to = normalized(to);
     const float cosine = std::clamp(dot(from, to), -1.F, 1.F);
-    if (cosine < -.999999F) {
-        const auto axis = normalized(cross(from, std::abs(from.x) < .8F ? Vec3{1, 0, 0} : Vec3{0, 1, 0}));
+    if (cosine < opposite_cosine) {
+        const auto axis = normalized(perpendicular(from));
         return {axis.x, axis.y, axis.z, 0};
     }
     const auto axis = cross(from, to);
@@ -258,28 +279,34 @@ ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose
     require(c.start != c.middle && c.middle != c.end && rig.descendant(c.middle, c.start) &&
                 rig.descendant(c.end, c.middle),
             "Contact needs an ordered, distinct two-bone chain");
-    constexpr float pi = 3.14159265358979323846F;
+    // Limbs, and the shortest planned reach, must be longer than this.
+    constexpr float minimum_limb_length = 1e-6F;
+    // A bend direction shorter than this does not define the bend plane.
+    constexpr float minimum_bend_length = 1e-7F;
+    // A target this far outside the reach the angle limits allow still counts as reachable.
+    constexpr float reach_tolerance = 1e-5F;
     require(std::isfinite(c.minimum_angle) && std::isfinite(c.maximum_angle) && c.minimum_angle >= 0 &&
-                c.maximum_angle <= pi && c.minimum_angle < c.maximum_angle,
+                c.maximum_angle <= std::numbers::pi_v<float> && c.minimum_angle < c.maximum_angle,
             "Invalid contact angle limits");
     for (auto v : {c.target.x, c.target.y, c.target.z, c.pole.x, c.pole.y, c.pole.z})
         require(std::isfinite(v), "Nonfinite contact target/pole");
     auto w = rig.world(pose);
     const auto start = translation_of(w[c.start]), middle = translation_of(w[c.middle]), end = translation_of(w[c.end]);
     const float a = length(middle - start), b = length(end - middle), requested = length(c.target - start);
-    require(a > 1e-6F && b > 1e-6F, "Degenerate contact limb");
+    require(a > minimum_limb_length && b > minimum_limb_length, "Degenerate contact limb");
     const auto distance_for = [&](float angle) {
         return std::sqrt(std::max(0.F, a * a + b * b - 2 * a * b * std::cos(angle)));
     };
-    const float minimum = std::max(distance_for(c.minimum_angle), 1e-6F), maximum = distance_for(c.maximum_angle);
+    const float minimum = std::max(distance_for(c.minimum_angle), minimum_limb_length),
+                maximum = distance_for(c.maximum_angle);
     require(maximum >= minimum, "Contact limits have no usable reach");
     const float distance = std::clamp(requested, minimum, maximum);
-    const auto direction = normalized(requested > 1e-8F ? c.target - start : end - start);
+    const auto direction = normalized(requested > minimum_direction_length ? c.target - start : end - start);
     auto bend = c.pole - start - direction * dot(c.pole - start, direction);
-    if (length(bend) < 1e-7F)
+    if (length(bend) < minimum_bend_length)
         bend = middle - start - direction * dot(middle - start, direction);
-    if (length(bend) < 1e-7F)
-        bend = cross(direction, std::abs(direction.x) < .8F ? Vec3{1, 0, 0} : Vec3{0, 1, 0});
+    if (length(bend) < minimum_bend_length)
+        bend = perpendicular(direction);
     bend = normalized(bend);
     const float along = (a * a - b * b + distance * distance) / (2 * distance);
     const auto new_middle = start + direction * along + bend * std::sqrt(std::max(0.F, a * a - along * along));
@@ -307,6 +334,6 @@ ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose
         result = rig.layer(pose, result, rig.subtree_mask(c.start, c.weight));
     const auto final = rig.world(result);
     return {std::move(result), length(translation_of(final[c.end]) - c.target), a, b,
-            requested >= minimum - 1e-5F && requested <= maximum + 1e-5F};
+            requested >= minimum - reach_tolerance && requested <= maximum + reach_tolerance};
 }
 } // namespace anima

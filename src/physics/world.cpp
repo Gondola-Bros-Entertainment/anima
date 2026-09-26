@@ -42,6 +42,9 @@ constexpr std::uint32_t maximum_world_bodies = 65'536;
 // FixedStepClock's default, at one collision step.
 constexpr double collision_steps_per_second = 60;
 constexpr double collision_step_tolerance = 1e-6;
+// A mesh triangle whose unnormalized normal, the cross product of two edges, has a squared length at or
+// below this is degenerate.
+constexpr float minimum_squared_triangle_normal = 1e-12F;
 
 void require(bool value, const char *message) {
     if (!value)
@@ -173,7 +176,8 @@ JPH::RefConst<JPH::Shape> shape(const Collider &c, bool query = false, bool chil
             const auto x = c.indices[i], y = c.indices[i + 1], z = c.indices[i + 2];
             require(x < vertices.size() && y < vertices.size() && z < vertices.size(), "Mesh index out of range");
             const auto area = cross(c.vertices[y] - c.vertices[x], c.vertices[z] - c.vertices[x]);
-            require(std::isfinite(dot(area, area)) && dot(area, area) > 1e-12F, "Degenerate collider triangle");
+            require(std::isfinite(dot(area, area)) && dot(area, area) > minimum_squared_triangle_normal,
+                    "Degenerate collider triangle");
             triangles.emplace_back(x, y, z);
         }
         result = JPH::MeshShapeSettings(vertices, triangles).Create();
@@ -220,7 +224,7 @@ JPH::RefConst<JPH::Shape> shape(const Collider &c, bool query = false, bool chil
 }
 struct Layers final : JPH::BroadPhaseLayerInterface, JPH::ObjectVsBroadPhaseLayerFilter, JPH::ObjectLayerPairFilter {
     std::array<std::uint16_t, detail::collision_layer_count> masks;
-    Layers() { masks.fill(0xffff); }
+    Layers() { masks.fill(detail::all_layers); }
     JPH::uint GetNumBroadPhaseLayers() const override { return 2; }
     JPH::BroadPhaseLayer GetBroadPhaseLayer(JPH::ObjectLayer layer) const override {
         return JPH::BroadPhaseLayer(static_cast<JPH::BroadPhaseLayer::Type>(layer / detail::collision_layer_count));
@@ -542,7 +546,7 @@ Hit hit(detail::WorldState &world, const JPH::CollideShapeResult &result, float 
 std::optional<Hit> World::raycast(Vec3 origin, Vec3 displacement, QueryFilter filter) const {
     vector(origin);
     vector(displacement);
-    require(dot(displacement, displacement) > 1e-12F, "Zero ray displacement");
+    require(dot(displacement, displacement) > detail::minimum_squared_displacement, "Zero ray displacement");
     if (filter.ignore.valid() && !owns(filter.ignore))
         throw std::invalid_argument("Foreign query body");
     Filter filters(filter, owns(filter.ignore) ? state_->entries.at(filter.ignore.id_).id : JPH::BodyID{});
@@ -561,7 +565,8 @@ std::optional<Hit> World::raycast(Vec3 origin, Vec3 displacement, QueryFilter fi
 }
 std::optional<Hit> World::sweep(const Collider &collider, Pose start, Vec3 displacement, QueryFilter filter) const {
     vector(displacement);
-    require(dot(displacement, displacement) > 1e-12F, "Zero sweep displacement; use overlap");
+    require(dot(displacement, displacement) > detail::minimum_squared_displacement,
+            "Zero sweep displacement; use overlap");
     if (filter.ignore.valid() && !owns(filter.ignore))
         throw std::invalid_argument("Foreign query body");
     Filter filters(filter, owns(filter.ignore) ? state_->entries.at(filter.ignore.id_).id : JPH::BodyID{});
