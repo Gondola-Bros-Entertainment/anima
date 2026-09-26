@@ -1716,7 +1716,11 @@ struct VulkanRenderer::Impl {
 VulkanRenderer::VulkanRenderer(SDL_Window *window, RendererOptions options)
     : impl_(std::make_unique<Impl>(window, std::move(options))) {
     // If initialize throws, the already-constructed Impl owns and frees every completed stage.
-    impl_->initialize();
+    try {
+        impl_->initialize();
+    } catch (const VulkanFailure &error) {
+        throw std::runtime_error(error.what()); // VulkanFailure is private.
+    }
 }
 VulkanRenderer::~VulkanRenderer() = default;
 void VulkanRenderer::request_resize() noexcept { impl_->resize = true; }
