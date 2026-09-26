@@ -109,6 +109,11 @@ struct VulkanRenderer::Impl {
     RendererOptions options;
     RenderStats stats{};
     FrameProfile profile{};
+    // Timestamps of a profiled frame, in the order draw() writes them; FrameProfile's GPU fields are the
+    // intervals between them.
+    struct TimingQuery {
+        enum : std::uint32_t { start, after_shadows, after_scene, after_resolve, end, count };
+    };
     VkQueryPool timing_queries{};
     std::uint32_t timestamp_bits{};
     double timestamp_period{};
@@ -539,7 +544,7 @@ struct VulkanRenderer::Impl {
         if (options.profile && timestamp_bits && timestamp_period > 0) {
             VkQueryPoolCreateInfo queries{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             queries.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            queries.queryCount = 5;
+            queries.queryCount = TimingQuery::count;
             check(vkCreateQueryPool(device, &queries, nullptr, &timing_queries), "Create timing query pool");
         }
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -554,7 +559,9 @@ struct VulkanRenderer::Impl {
             check(vkCreateShaderModule(device, &shader, nullptr, &fs), "Create fragment shader");
         };
         make_shaders(vertex_code, fragment_code, vertex_shader, fragment_shader);
-        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 16 * sizeof(float)};
+        // The diagnostic triangle's push range, in bytes; its shader reads only the leading vec2 scale.
+        constexpr std::uint32_t diagnostic_push_bytes = 16 * sizeof(float);
+        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, diagnostic_push_bytes};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.pushConstantRangeCount = 1;
         layout.pPushConstantRanges = &push;
@@ -870,26 +877,17 @@ struct VulkanRenderer::Impl {
         VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
 #ifdef ANIMA_HAS_ASSETS
         const VkVertexInputBindingDescription resource_binding{0, sizeof(SourceVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-        const VkVertexInputAttributeDescription resource_attributes[]{
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, position)},
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, normal)},
-            {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, color)},
-            {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(SourceVertex, uv)},
-            {4, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(SourceVertex, joints)},
-            {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, weights)},
-            {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, tangent)},
-            {7, 0, VK_FORMAT_R32_SFLOAT, offsetof(SourceVertex, alpha)}};
         if (resource) {
             vertex.vertexBindingDescriptionCount = 1;
             vertex.pVertexBindingDescriptions = &resource_binding;
-            vertex.vertexAttributeDescriptionCount = 8;
-            vertex.pVertexAttributeDescriptions = resource_attributes;
+            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(resource_attributes.size());
+            vertex.pVertexAttributeDescriptions = resource_attributes.data();
         }
         const VkVertexInputAttributeDescription shadow_resource_attributes[]{
             resource_attributes[0], resource_attributes[3], resource_attributes[4], resource_attributes[5],
             resource_attributes[7]};
         if (shadow) {
-            vertex.vertexAttributeDescriptionCount = 5;
+            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(shadow_resource_attributes));
             vertex.pVertexAttributeDescriptions = shadow_resource_attributes;
         }
 #endif
@@ -1039,8 +1037,13 @@ struct VulkanRenderer::Impl {
         info.addressModeU = wrap(source.u);
         info.addressModeV = wrap(source.v);
         info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        // Preserve minification with nearest level-zero selection without mipmaps.
-        info.maxLod = source.mipmapped ? static_cast<float>(levels - 1) : 0.25F;
+        // Without mipmaps, keep glTF's minification filter while sampling level 0 only. The Vulkan specification's
+        // VkSamplerCreateInfo note emulates OpenGL's GL_NEAREST and GL_LINEAR minification this way: with
+        // VK_SAMPLER_MIPMAP_MODE_NEAREST, minLod 0 and maxLod 0.25, the level of detail can still be positive, so
+        // minFilter applies, while mip selection always rounds down to the base level. A maximum of zero would
+        // always magnify, applying magFilter instead.
+        constexpr float unmipmapped_max_lod = .25F;
+        info.maxLod = source.mipmapped ? static_cast<float>(levels - 1) : unmipmapped_max_lod;
         info.maxAnisotropy = 1;
         auto sampler = std::make_shared<GpuSampler>();
         sampler->device = device;
@@ -1370,22 +1373,31 @@ struct VulkanRenderer::Impl {
         }
 #endif
         if (timing_pending) {
-            std::array<std::uint64_t, 10> values{};
-            const auto result = vkGetQueryPoolResults(device, timing_queries, 0, 5, sizeof(values), values.data(),
-                                                      2 * sizeof(std::uint64_t),
+            // With VK_QUERY_RESULT_64_BIT and VK_QUERY_RESULT_WITH_AVAILABILITY_BIT, each query writes its timestamp
+            // and then a value that is nonzero once that timestamp is available.
+            struct TimestampResult {
+                std::uint64_t timestamp, available;
+            };
+            std::array<TimestampResult, TimingQuery::count> results{};
+            const auto result = vkGetQueryPoolResults(device, timing_queries, 0, TimingQuery::count, sizeof(results),
+                                                      results.data(), sizeof(TimestampResult),
                                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
             if (result != VK_NOT_READY)
                 check(result, "Read GPU timestamps");
-            if (result == VK_SUCCESS && values[1] && values[3] && values[5] && values[7] && values[9]) {
+            if (result == VK_SUCCESS &&
+                std::all_of(results.begin(), results.end(), [](const auto &query) { return query.available != 0; })) {
                 const auto mask = timestamp_bits >= 64 ? UINT64_MAX : (std::uint64_t{1} << timestamp_bits) - 1;
-                const auto milliseconds = [&](unsigned a, unsigned b) {
-                    return double((values[b * 2] - values[a * 2]) & mask) * timestamp_period / 1e6;
+                const auto milliseconds = [&](std::uint32_t from, std::uint32_t to) {
+                    // The device's timestamp period is in nanoseconds per tick.
+                    const std::chrono::duration<double, std::nano> elapsed(
+                        double((results[to].timestamp - results[from].timestamp) & mask) * timestamp_period);
+                    return std::chrono::duration<double, std::milli>(elapsed).count();
                 };
-                profile.gpu_ms = milliseconds(0, 4);
-                profile.gpu_shadow_ms = milliseconds(0, 1);
-                profile.gpu_scene_ms = milliseconds(1, 2);
-                profile.gpu_resolve_ms = milliseconds(2, 3);
-                profile.gpu_transfer_ms = milliseconds(3, 4);
+                profile.gpu_ms = milliseconds(TimingQuery::start, TimingQuery::end);
+                profile.gpu_shadow_ms = milliseconds(TimingQuery::start, TimingQuery::after_shadows);
+                profile.gpu_scene_ms = milliseconds(TimingQuery::after_shadows, TimingQuery::after_scene);
+                profile.gpu_resolve_ms = milliseconds(TimingQuery::after_scene, TimingQuery::after_resolve);
+                profile.gpu_transfer_ms = milliseconds(TimingQuery::after_resolve, TimingQuery::end);
                 profile.gpu_available = true;
             }
             timing_pending = false;
@@ -1443,16 +1455,19 @@ struct VulkanRenderer::Impl {
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(command, &begin), "Begin command buffer");
         if (timing_queries) {
-            vkCmdResetQueryPool(command, timing_queries, 0, 5);
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timing_queries, 0);
+            vkCmdResetQueryPool(command, timing_queries, 0, TimingQuery::count);
+            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timing_queries, TimingQuery::start);
         }
 #ifdef ANIMA_HAS_ASSETS
         record_shadow();
 #endif
         if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, 1);
+            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
+                                TimingQuery::after_shadows);
+        // The fixed background wherever neither the sky nor a mesh is drawn.
+        constexpr VkClearColorValue clear_color{{0.018F, 0.027F, 0.041F, 1.0F}};
         std::array<VkClearValue, 2> clear{};
-        clear[0].color = {{0.018F, 0.027F, 0.041F, 1.0F}};
+        clear[0].color = clear_color;
         clear[1].depthStencil = {1, 0};
         VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         pass.renderPass = render_pass;
@@ -1494,7 +1509,8 @@ struct VulkanRenderer::Impl {
 #endif
         vkCmdEndRenderPass(command);
         if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, 2);
+            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
+                                TimingQuery::after_scene);
 #ifdef ANIMA_HAS_ASSETS
         finish_world_writes();
         record_display(image.framebuffer);
@@ -1505,7 +1521,8 @@ struct VulkanRenderer::Impl {
         vkCmdEndRenderPass(command);
 #endif
         if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, 3);
+            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
+                                TimingQuery::after_resolve);
         const bool capture = capture_buffer && !options.capture.empty();
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -1542,7 +1559,7 @@ struct VulkanRenderer::Impl {
                                  nullptr, 0, nullptr, 1, &barrier);
         }
         if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, 4);
+            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, TimingQuery::end);
         check(vkEndCommandBuffer(command), "End command buffer");
         const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
