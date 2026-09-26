@@ -197,9 +197,6 @@ Both use the consolidated consumer dependency build. Run these checks with the
 [local qualification workflow](local-qualification.md). GPU rendering, DPI and
 hardware input need separate desktop checks.
 
-UI tests generate their 2×2 RGBA image from numeric texels into temporary storage;
-the repository contains no image fixture and builds create no images. The test
-wrapper and GPU smoke harness stage the control document and licensed font there,
-then remove all temporary fixtures on success or failure. GPU readback images are
-also removed after validation, including failed runs; text/JSON evidence remains.
-See the [fixture instructions](../tests/ui/assets/README.md) for direct consumer runs.
+UI tests load the control document, the licensed font and a 2×2 RGBA image from
+`tests/ui/assets`; see the [fixture notes](../tests/ui/assets/README.md). Running
+`consumer_ui --ui OUTPUT ASSETS` writes its captures to `OUTPUT`.

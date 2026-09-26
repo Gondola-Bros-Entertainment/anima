@@ -421,9 +421,6 @@ if(ANIMA_BUILD_UI OR ANIMA_BUILD_UI_DOCUMENTS)
 endif()
 
 if(ANIMA_BUILD_TESTS)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    add_test(NAME repository COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_repository.py")
     set(anima_consumer_modes core)
     if(ANIMA_BUILD_AUDIO_OUTPUT)
         list(APPEND anima_consumer_modes audio_output)

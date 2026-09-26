@@ -1,8 +1,6 @@
 .DS_Store
 /build/
 /out/
-__pycache__/
-*.py[cod]
 /CMakeUserPresets.json
 
 # Local credentials and machine-specific secrets.

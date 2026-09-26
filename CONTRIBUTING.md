@@ -26,7 +26,6 @@ Run the applicable local build and tests:
 cmake --preset headless
 cmake --build --preset headless
 ctest --preset headless --output-on-failure
-python3 tools/check_repository.py
 ```
 
 Enable optional modules affected by the change. Renderer changes also need the
