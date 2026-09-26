@@ -9,8 +9,7 @@ function(anima_add_box2d)
     set(BOX2D_COMPILE_WARNING_AS_ERROR OFF)
     FetchContent_Declare(box2d
         URL https://codeload.github.com/erincatto/box2d/tar.gz/refs/tags/v3.1.1
-        URL_HASH SHA256=fb6ef914b50f4312d7d921a600eabc12318bb3c55a0b8c0b90608fa4488ef2e4
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        URL_HASH SHA256=fb6ef914b50f4312d7d921a600eabc12318bb3c55a0b8c0b90608fa4488ef2e4)
     FetchContent_MakeAvailable(box2d)
     anima_enable_sanitizers(box2d)
     set(anima_box2d_source "${box2d_SOURCE_DIR}" PARENT_SCOPE)
