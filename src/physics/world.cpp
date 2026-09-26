@@ -20,7 +20,9 @@
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
+#include <algorithm>
 #include <anima/physics.hpp>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -35,6 +37,11 @@ constexpr float hull_construction_tolerance = .0001F;
 constexpr float minimum_body_mass = .001F;
 constexpr float maximum_body_mass = 1'000'000.F;
 constexpr std::uint32_t maximum_world_bodies = 65'536;
+// Jolt is stable at one collision step per 1/60 s and asks for one per started 1/60 s beyond that
+// (HelloWorld.cpp). The tolerance keeps a 1/60 s step rounded up to whole nanoseconds, such as
+// FixedStepClock's default, at one collision step.
+constexpr double collision_steps_per_second = 60;
+constexpr double collision_step_tolerance = 1e-6;
 
 void require(bool value, const char *message) {
     if (!value)
@@ -503,7 +510,10 @@ void World::set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide) {
 }
 void World::step(double seconds) {
     duration(seconds);
-    const auto error = state_->system.Update(static_cast<float>(seconds), 1, &state_->allocator, &state_->jobs);
+    const int collision_steps =
+        std::max(1, static_cast<int>(std::ceil(seconds * collision_steps_per_second - collision_step_tolerance)));
+    const auto error =
+        state_->system.Update(static_cast<float>(seconds), collision_steps, &state_->allocator, &state_->jobs);
     state_->reconcile();
     if (error != JPH::EPhysicsUpdateError::None)
         throw std::runtime_error("Physics update exceeded contact/pair capacity");

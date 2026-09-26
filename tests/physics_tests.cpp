@@ -429,6 +429,21 @@ TEST_CASE("A sensor pair is reported only when either body can move") {
     CHECK(events.size() == 2u);
 }
 
+TEST_CASE("A long step does not let a discrete body pass through a floor") {
+    // Covering one tick's distance per collision step, the body meets the floor during a 0.1 s step; a single
+    // collision step at the start of the step would see it 0.25 m away and move it straight through.
+    constexpr float speed = 12;
+    constexpr float floor_half_thickness = .25F;
+    constexpr float start_height = .6F;
+    World world(weightless(4));
+    (void)world.create(box({}, {5, floor_half_thickness, 5}));
+    auto body = world.create(box({0, start_height, 0}, {.1F, .1F, .1F}, Motion::dynamic));
+    body.set_velocity({0, -speed, 0});
+    world.step(long_step);
+    INFO("height after one long step: ", body.pose().position.y);
+    CHECK(body.pose().position.y > 0);
+}
+
 TEST_CASE("Mesh decks support rays, sweeps and overlaps from above and below") {
     // A bridge deck with an upper surface, an underside and a seam, without heightfield assumptions.
     constexpr float deck_height = 3;
