@@ -273,13 +273,22 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
     }
     Body handle(std::uint64_t id) { return Body(weak_from_this(), id); }
     Body handle(JPH::BodyID id) { return handle(system.GetBodyInterface().GetUserData(id)); }
-    void OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &m,
-                        JPH::ContactSettings &) override {
+    void record(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &m) {
         auto first = a.GetUserData(), second = b.GetUserData();
         if (first > second)
             std::swap(first, second);
         contacts[{a.GetID(), m.mSubShapeID1, b.GetID(), m.mSubShapeID2}] = {first, second,
                                                                             a.IsSensor() || b.IsSensor()};
+    }
+    void OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &m,
+                        JPH::ContactSettings &) override {
+        record(a, b, m);
+    }
+    // forget() drops contacts that Jolt still considers continuous, for example when a disabled body is
+    // reenabled before the next step; recording persisted contacts restores them and reports a new begin.
+    void OnContactPersisted(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &m,
+                            JPH::ContactSettings &) override {
+        record(a, b, m);
     }
     void OnContactRemoved(const JPH::SubShapeIDPair &pair) override { contacts.erase(pair); }
     void reconcile() {
@@ -382,10 +391,17 @@ void Body::set_enabled(bool enabled) {
     auto &e = w->entries.at(id_);
     if (enabled == e.enabled)
         return;
-    if (enabled)
-        w->system.GetBodyInterface().AddBody(e.id, JPH::EActivation::Activate);
-    else {
-        w->system.GetBodyInterface().RemoveBody(e.id);
+    auto &bodies = w->system.GetBodyInterface();
+    if (enabled) {
+        bodies.AddBody(e.id, JPH::EActivation::Activate);
+    } else {
+        // Removal deactivates the body, which zeroes its velocities. Restoring them afterwards does not
+        // reactivate it, because Jolt only activates bodies that are in the broadphase.
+        const auto linear = bodies.GetLinearVelocity(e.id);
+        const auto angular = bodies.GetAngularVelocity(e.id);
+        bodies.RemoveBody(e.id);
+        bodies.SetLinearVelocity(e.id, linear);
+        bodies.SetAngularVelocity(e.id, angular);
         w->forget(id_);
     }
     e.enabled = enabled;
@@ -450,7 +466,9 @@ Body World::create(const BodySettings &s) {
         static_cast<JPH::ObjectLayer>(s.layer + (s.motion == Motion::stationary ? 0 : detail::collision_layer_count)));
     settings.mLinearVelocity = j(s.velocity);
     settings.mAngularVelocity = j(s.angular_velocity);
-    settings.mCollideKinematicVsNonDynamic = s.motion == Motion::kinematic;
+    // Only kinematic sensors pair with stationary and kinematic bodies, as in Box2D. Jolt reserves this costly
+    // pairing for sensors.
+    settings.mCollideKinematicVsNonDynamic = s.motion == Motion::kinematic && s.sensor;
     settings.mFriction = s.friction;
     settings.mRestitution = s.restitution;
     settings.mIsSensor = s.sensor;
@@ -525,7 +543,11 @@ std::optional<Hit> World::raycast(Vec3 origin, Vec3 displacement, QueryFilter fi
     const auto body = state_->handle(result.mBodyID);
     JPH::BodyLockRead lock(state_->system.GetBodyLockInterface(), result.mBodyID);
     const auto p = ray.GetPointOnRay(result.mFraction);
-    return Hit{body, result.mFraction, a(p), a(lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, p)), 0};
+    auto normal = lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, p);
+    // Mesh hits report the triangle's winding normal; face it back along the ray, as sweeps do.
+    if (normal.Dot(ray.mDirection) > 0)
+        normal = -normal;
+    return Hit{body, result.mFraction, a(p), a(normal), 0};
 }
 std::optional<Hit> World::sweep(const Collider &collider, Pose start, Vec3 displacement, QueryFilter filter) const {
     vector(displacement);

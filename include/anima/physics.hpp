@@ -33,6 +33,7 @@ struct WorldState;
 enum class Motion {
     stationary, ///< Never moves. Mesh colliders require this mode.
     kinematic,  ///< Moved only by its velocity, Body::move_kinematic or Body::teleport; ignores forces and contacts.
+                ///< Contacts stationary and kinematic bodies only when either body is a sensor.
     dynamic     ///< Simulated under gravity, contacts and impulses.
 };
 /// Collider geometry kind; selects which Collider fields describe the geometry.
@@ -148,8 +149,9 @@ class Body {
     /// Moves a kinematic body so its authored origin reaches @p target after @p seconds, in
     /// [0.000001, 0.1]. Throws for other motion types.
     void move_kinematic(Pose target, double seconds);
-    /// Disabled bodies keep their state but leave collisions and queries, end their contacts
-    /// and reject impulses. A reenabled dynamic body resumes from its saved pose.
+    /// Disabled bodies keep their pose and velocities and accept writes to them, but leave
+    /// collisions and queries, end their contacts and reject impulses. Reenabling resumes from
+    /// that state and reports contacts that still touch as new begin events.
     void set_enabled(bool enabled);
     [[nodiscard]] bool enabled() const;
     /// Destroys the body and ends its contacts. Idempotent, including after world destruction.
@@ -181,7 +183,8 @@ struct Hit {
     float fraction{};
     /// World-space contact point.
     Vec3 point{};
-    /// World-space normal pointing out of the hit surface.
+    /// World-space normal pointing from the hit surface toward the query: back along a ray or
+    /// sweep, including on mesh undersides.
     Vec3 normal{};
     /// Overlap depth for World::overlap results.
     float penetration{};

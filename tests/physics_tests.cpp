@@ -421,6 +421,7 @@ TEST_CASE("Mesh decks support rays, sweeps and overlaps from above and below") {
                     "Deck ray or normal failed");
     ray = world.raycast({0, 1, 0}, {0, 4, 0});
     REQUIRE_MESSAGE((ray && ray->body == deck), "Bridge underside missing");
+    REQUIRE_MESSAGE(ray->normal.y < -axis_alignment, "Underside ray normal must face the ray, as the sweep's does");
     Collider sphere;
     sphere.shape = Shape::sphere;
     sphere.radius = .5F;
@@ -549,4 +550,83 @@ TEST_CASE("Disabled bodies reject impulses") {
     crate.set_enabled(true);
     crate.add_impulse({0, 2, 0});
     REQUIRE_MESSAGE(crate.velocity().y > 0, "Reenabled body did not accept an impulse");
+}
+
+TEST_CASE("Reenabling a body before the next step reports its contact again") {
+    World world;
+    (void)world.create(box({0, -.5F, 0}, {20, .5F, 20}));
+    auto resting = world.create(box({0, 4, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+    for (int i = 0; i < settle_ticks; ++i)
+        world.step(tick);
+    auto events = world.take_events();
+    REQUIRE(events.size() == 1u);
+    REQUIRE(events[0].phase == ContactPhase::begin);
+    resting.set_enabled(false);
+    events = world.take_events();
+    REQUIRE(events.size() == 1u);
+    REQUIRE(events[0].phase == ContactPhase::end);
+    resting.set_enabled(true);
+    world.step(tick);
+    events = world.take_events();
+    REQUIRE_MESSAGE(events.size() == 1u, "Reenabled contact reported no begin event");
+    REQUIRE(events[0].phase == ContactPhase::begin);
+}
+
+TEST_CASE("Disabling a body keeps its velocities") {
+    World world(weightless(1));
+    auto moving = world.create(box({}, {.5F, .5F, .5F}, Motion::dynamic));
+    const Vec3 velocity{1, 2, 3};
+    const Vec3 spin{.5F, 0, 0};
+    moving.set_velocity(velocity);
+    moving.set_angular_velocity(spin);
+    moving.set_enabled(false);
+    REQUIRE_MESSAGE(near(moving.velocity(), velocity), "Disabling cleared the linear velocity");
+    moving.set_enabled(true);
+    REQUIRE_MESSAGE((near(moving.velocity(), velocity) && near(moving.angular_velocity(), spin)),
+                    "Reenabling lost the saved velocities");
+}
+
+TEST_CASE("Kinematic bodies pair with stationary bodies only as sensors") {
+    // The stationary box spans x in [-1, 1]; each kinematic box overlaps it from one side only.
+    World world(weightless(5));
+    (void)world.create(box({}, {1, 1, 1}));
+    (void)world.create(box({-.9F, 0, 0}, {.5F, .5F, .5F}, Motion::kinematic));
+    world.step(tick);
+    REQUIRE_MESSAGE(world.take_events().empty(), "Kinematic body reported a contact with a stationary body");
+    auto sensor = box({.9F, 0, 0}, {.5F, .5F, .5F}, Motion::kinematic);
+    sensor.sensor = true;
+    (void)world.create(sensor);
+    world.step(tick);
+    const auto events = world.take_events();
+    REQUIRE(events.size() == 1u);
+    REQUIRE_MESSAGE((events[0].sensor && events[0].phase == ContactPhase::begin),
+                    "Kinematic sensor missed a stationary body");
+    // A stationary trigger still detects a kinematic body, well away from the boxes above.
+    auto trigger = box({0, 10, 0}, {1, 1, 1});
+    trigger.sensor = true;
+    (void)world.create(trigger);
+    (void)world.create(box({0, 10, 0}, {.5F, .5F, .5F}, Motion::kinematic));
+    world.step(tick);
+    const auto triggered = world.take_events();
+    REQUIRE(triggered.size() == 1u);
+    REQUIRE_MESSAGE((triggered[0].sensor && triggered[0].phase == ContactPhase::begin),
+                    "Stationary trigger missed a kinematic body");
+}
+
+TEST_CASE("A disabled body stores pose and velocity writes until it is reenabled") {
+    World world(weightless(1));
+    auto body = world.create(box({}, {.5F, .5F, .5F}, Motion::dynamic));
+    body.set_enabled(false);
+    const Vec3 position{1, 2, 3};
+    const Vec3 velocity{1, 0, 0};
+    const Vec3 spin{0, 1, 0};
+    body.teleport({position});
+    body.set_velocity(velocity);
+    body.set_angular_velocity(spin);
+    REQUIRE_MESSAGE((near(body.pose().position, position) && near(body.velocity(), velocity) &&
+                     near(body.angular_velocity(), spin)),
+                    "Disabled body lost a write");
+    body.set_enabled(true);
+    REQUIRE_MESSAGE((near(body.velocity(), velocity) && near(body.angular_velocity(), spin)),
+                    "Reenabled body lost its stored velocities");
 }
