@@ -75,8 +75,7 @@ class UiUnsupportedFeature : public std::runtime_error {
 /// Only one UiContext may be live at a time; another may be created after shutdown(). While one
 /// is live, do not initialize or shut down RmlUi or replace its interfaces. The context borrows
 /// its window and renderer: shut it down before shutting down the renderer or destroying the
-/// window, and destroy it before `SDL_Quit`. Destroying a live context inside one of its event
-/// callbacks terminates the program.
+/// window, and destroy it before `SDL_Quit`.
 ///
 /// After shutdown(), every member except stats() and shutdown() throws `std::logic_error`. The
 /// context sets the SDL cursor from the RCSS `cursor` property, uses the SDL clipboard and writes
@@ -93,6 +92,11 @@ class UiContext {
     /// the surface offers no sRGB format or when RmlUi or SDL fails; a failed construction releases
     /// what it initialized.
     UiContext(SDL_Window *window, VulkanRenderer &renderer, std::string name = "anima");
+    /// Performs shutdown().
+    ///
+    /// Destroying the context inside one of its event callbacks, where shutdown() throws, writes a
+    /// diagnostic to `stderr` and terminates the program instead, as UiDocuments::~UiDocuments()
+    /// does for its host: RmlUi would be shut down beneath the event dispatch in progress.
     ~UiContext();
     UiContext(const UiContext &) = delete;
     UiContext &operator=(const UiContext &) = delete;

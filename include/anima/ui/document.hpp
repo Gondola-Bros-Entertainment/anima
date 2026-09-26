@@ -186,12 +186,17 @@ class UiDocument {
 /// UiContext does so for its own host. Documents, element handles and subscriptions may outlive
 /// the host, whose shutdown invalidates them. The host adds no rendering, input or context
 /// updates: an application hosting documents without UiContext drives the native context itself
-/// and then calls check_events(). Destroying the host inside one of its event callbacks
-/// terminates the program.
+/// and then calls check_events().
 class UiDocuments {
   public:
     /// Borrows @p context until shutdown().
     explicit UiDocuments(Rml::Context &context);
+    /// Performs shutdown().
+    ///
+    /// Destroying the host inside one of its event callbacks, where shutdown() throws, writes a
+    /// diagnostic to `stderr` and terminates the program instead: the event dispatch in progress
+    /// resumes when the callback returns. Destroy it after the callback returns. A callback of
+    /// another host may destroy it.
     ~UiDocuments();
     UiDocuments(const UiDocuments &) = delete;
     UiDocuments &operator=(const UiDocuments &) = delete;
