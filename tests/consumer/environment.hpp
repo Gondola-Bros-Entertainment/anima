@@ -4,9 +4,11 @@
 #include <anima/lighting.hpp>
 #include <anima/scene_set.hpp>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <limits>
 #include <numbers>
+#include <string_view>
 namespace environment_test {
 inline std::shared_ptr<const anima::Asset> fixture(bool sloped = false) {
     auto asset = std::make_shared<anima::Asset>();
@@ -296,6 +298,26 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
     capture("detail-disabled");
     require(renderer.resource_stats().shadow_draw_calls == 2, "Disabled detail pass still submitted geometry");
+    // A disabled region keeps its 1x1 map, so only enabling it holds its resolution to the device's limits.
+    constexpr auto beyond_any_device = std::numeric_limits<std::uint32_t>::max(); // A 2D image edge no GPU offers.
+    constexpr std::string_view device_limit = "Shadow resolution exceeds device capabilities";
+    const auto placeholder_bytes = renderer.resource_stats().shadow_bytes;
+    auto oversized = environment;
+    oversized.detail_shadow.resolution = beyond_any_device;
+    renderer.set_environment(oversized);
+    capture("");
+    require(renderer.resource_stats().shadow_bytes == placeholder_bytes, "A disabled region outgrew its 1x1 map");
+    oversized.detail_shadow.enabled = true;
+    bool limited = false;
+    try {
+        renderer.set_environment(oversized);
+    } catch (const std::invalid_argument &error) {
+        limited = error.what() == device_limit;
+    }
+    require(limited, "Enabling a region beyond the device's limits was not rejected");
+    capture("");
+    require(renderer.resource_stats().shadow_bytes == placeholder_bytes, "A rejected environment replaced a map");
+    renderer.set_environment(environment);
     const auto slope = fixture(true);
     auto slope_scene = std::make_shared<anima::Scene>();
     (void)slope_scene->add(anima::Mesh::compile(*slope));

@@ -72,9 +72,9 @@ class SceneEnvironment {
 /// orientation (see DirectionalLightComponent); other lights may stay active without being selected.
 /// Disabled environments and environments under inactive parents do not count. The result is validated with
 /// validate_environment() and both shadow projections with directional_shadow_matrix(), including disabled
-/// regions; VulkanRenderer::set_environment checks device limits later. Throws `std::invalid_argument` for a
-/// missing, ambiguous, null, stale, foreign or inactive selection and for invalid values, and
-/// `std::logic_error` while @p scene is updating, under construction or no longer live.
+/// regions; VulkanRenderer::set_environment later checks enabled regions against device limits. Throws
+/// `std::invalid_argument` for a missing, ambiguous, null, stale, foreign or inactive selection and for
+/// invalid values, and `std::logic_error` while @p scene is updating, under construction or no longer live.
 ///
 /// Read-only: runs no component hooks, advances no time, keeps no reference and changes no renderer. Resolve
 /// after scene updates; geometry and camera selection are separate.

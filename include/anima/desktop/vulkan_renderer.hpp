@@ -281,11 +281,12 @@ class VulkanRenderer {
     void set_frustum_culling(bool enabled);
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
-    /// Validates @p environment with validate_environment() and both regions with directional_shadow_matrix(),
-    /// and requires each region's DirectionalShadow::resolution, enabled or not, to fit the device's 2D image
-    /// and framebuffer limits. Invalid input throws `std::invalid_argument` or anima::MathError and keeps the
-    /// previous environment. The next draw() allocates changed shadow maps and throws SceneResourceError if
-    /// that fails.
+    /// Validates @p environment with validate_environment() and both regions, enabled or not, with
+    /// directional_shadow_matrix(). Each enabled region's DirectionalShadow::resolution must also fit the
+    /// device's 2D image and framebuffer limits; a disabled region keeps a 1x1 map, so its resolution meets that
+    /// check only in a call that enables it. Invalid input throws `std::invalid_argument` or anima::MathError
+    /// and keeps the previous environment. The next draw() allocates changed shadow maps and throws
+    /// SceneResourceError if that fails.
     void set_environment(const Environment &environment);
     /// Selects the scenes to draw, or clears the selection with an empty list; the renderer keeps the pointers.
     /// It never follows SceneSet::active(); SceneSet::render_scenes() lists a set's scenes.
