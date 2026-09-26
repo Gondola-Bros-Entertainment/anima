@@ -369,6 +369,28 @@ inline int run(int argc, char **argv) {
     rejects(malformed, invalid_coordinates, "Non-finite motion was accepted while the window lacked focus");
     focus.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
     (void)dispatch(focus);
+    // A mouse capture that the application requests is the application's to release. SDL shows a capture in
+    // the window flags only while the window has keyboard focus to request it and mouse focus to hold it, and
+    // mouse focus needs the cursor inside the window, so these checks run only when a capture shows.
+    const auto mouse_captured = [&] { return (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_MOUSE_CAPTURE) != 0; };
+    const auto skip_capture = [&](const char *checks) {
+        std::cout << "SKIP " << checks << ": keyboard focus " << (SDL_GetKeyboardFocus() == window.get() ? "yes" : "no")
+                  << ", mouse focus " << (SDL_GetMouseFocus() == window.get() ? "yes" : "no") << '\n';
+    };
+    const bool capture_shows = SDL_CaptureMouse(true) && mouse_captured();
+    if (capture_shows) {
+        focus.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+        (void)dispatch(focus);
+        require(mouse_captured(), "UI focus loss released the application's mouse capture");
+        focus.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+        (void)dispatch(focus);
+        require(click(doc.GetElementById("status")) && mouse_captured(),
+                "A UI press released the application's mouse capture");
+    } else {
+        skip_capture("UI focus loss keeps the application's mouse capture");
+        skip_capture("a UI press keeps the application's mouse capture");
+    }
+    (void)SDL_CaptureMouse(false);
     auto mesh = std::make_shared<anima::MeshSnapshot>();
     mesh->vertices = {{{-1, -1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}},
                       {{1, -1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}},
@@ -423,9 +445,14 @@ inline int run(int argc, char **argv) {
     subscription.disconnect();
     const auto ui_stats = ui.stats();
     require(!ui_stats.log_errors && !ui_stats.log_warnings, "RmlUi emitted diagnostics");
+    const bool capture_held = SDL_CaptureMouse(true) && mouse_captured();
+    if (!capture_held)
+        skip_capture("UI shutdown keeps the application's mouse capture");
     ui.shutdown();
     ui.shutdown();
     require(!SDL_TextInputActive(window.get()), "UI shutdown left text input active");
+    require(!capture_held || mouse_captured(), "UI shutdown released the application's mouse capture");
+    (void)SDL_CaptureMouse(false);
     renderer.request_capture(output / "after-ui-shutdown.ppm");
     while (!renderer.draw())
         SDL_Delay(5);
