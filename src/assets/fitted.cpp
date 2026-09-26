@@ -6,7 +6,7 @@ static std::filesystem::path relative_model(const std::string &name) {
     const std::filesystem::path result = name;
     if (result.is_absolute() || result.extension() != ".glb" ||
         std::any_of(result.begin(), result.end(), [](const auto &component) { return component == ".."; }))
-        throw std::invalid_argument("Garment model must be a relative GLB inside its catalog directory");
+        throw std::invalid_argument("Garment model must be a relative .glb path without '..'");
     return result;
 }
 struct FittedLibrary::State {
