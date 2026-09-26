@@ -178,6 +178,7 @@ inline int run(int argc, char **argv) {
         rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); });
         rejects<anima::RendererFatalError>([&] { renderer.set_scenes({}); });
         rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); });
+        rejects<anima::RendererFatalError>([&] { renderer.request_capture(output / "after-fatal.ppm"); });
         const auto stats = renderer.shutdown();
         require(!stats.validation_errors && !stats.validation_warnings && stats.scene_generations == generations,
                 "Fatal replacement cleanup failed");
@@ -292,6 +293,8 @@ inline int run(int argc, char **argv) {
     require(renderer.shutdown().capture_count == captures, "Repeated shutdown changed statistics");
     rejects<std::logic_error>([&] { renderer.set_scenes({}); });
     rejects<std::logic_error>([&] { (void)renderer.draw(); });
+    rejects<std::logic_error>([&] { renderer.request_capture(output / "after-shutdown.ppm"); });
+    require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");
     std::cout
         << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"scene_generations\":" << generations
         << ",\"swapchain_generations\":" << stats.swapchain_generations << ",\"recoverable_rollbacks\":" << rollbacks

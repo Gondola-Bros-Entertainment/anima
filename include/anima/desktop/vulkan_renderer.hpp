@@ -235,8 +235,8 @@ struct ResourceStats {
 /// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to
 /// standard output.
 ///
-/// After shutdown(), set_view(), set_frustum_culling(), set_environment(), set_scenes(), prepare_meshes(),
-/// prepare_mesh() and draw() throw `std::logic_error`; after a RendererFatalError they throw
+/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_environment(), set_scenes(),
+/// prepare_meshes(), prepare_mesh() and draw() throw `std::logic_error`; after a RendererFatalError they throw
 /// RendererFatalError.
 class VulkanRenderer {
   public:
