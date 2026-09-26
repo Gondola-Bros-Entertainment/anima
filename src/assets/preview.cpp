@@ -147,7 +147,7 @@ std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &ch
     }
     for (const auto &primitive : equipment.primitives)
         if (primitive.skin != 0)
-            throw std::runtime_error("Chest equipment contains an unskinned mesh; bind it to the target rig");
+            throw std::runtime_error("Equipment contains an unskinned mesh; bind it to the target rig");
     return mapping;
 }
 AssetPreview::AssetPreview(const std::filesystem::path &manifest) : manifest_(read_manifest(manifest)) {
