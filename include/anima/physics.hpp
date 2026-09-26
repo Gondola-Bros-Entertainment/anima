@@ -228,8 +228,9 @@ class World {
     /// initially. Throws `std::logic_error` once the world has bodies.
     void set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide);
     /// Advances one simulation step of @p seconds, in [0.000001, 0.1]. Drive it from a fixed
-    /// cadence such as anima::FixedStepClock. Throws `std::runtime_error` when contacts exceed
-    /// capacity; the partially advanced step is not rolled back.
+    /// cadence such as anima::FixedStepClock. A step longer than 1/60 s runs one collision step per
+    /// started 1/60 s, which Jolt needs to stay stable. Throws `std::runtime_error` when contacts
+    /// exceed capacity; the partially advanced step is not rolled back.
     void step(double seconds);
     /// Drains contact events recorded by step(), Body::remove() and Body::set_enabled().
     [[nodiscard]] std::vector<ContactEvent> take_events();
