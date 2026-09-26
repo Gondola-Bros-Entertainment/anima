@@ -437,7 +437,7 @@ endif()
 
 if(ANIMA_BUILD_TESTS AND ANIMA_BUILD_PHYSICS AND ANIMA_BUILD_PHYSICS2D)
     add_executable(anima_physics_backends_tests tests/physics_backends_tests.cpp)
-    target_link_libraries(anima_physics_backends_tests PRIVATE anima::physics anima::physics2d)
+    target_link_libraries(anima_physics_backends_tests PRIVATE anima::physics anima::physics2d anima_test_main)
     anima_target_defaults(anima_physics_backends_tests)
     add_test(NAME physics_backends COMMAND anima_physics_backends_tests)
     if(ANIMA_BUILD_ASSETS)
