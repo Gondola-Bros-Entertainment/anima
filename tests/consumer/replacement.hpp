@@ -1,5 +1,6 @@
 #pragma once
 // Standalone consumer: public APIs only. No game rules or engine implementation.
+#include "gpu_checks.hpp"
 #include <SDL3/SDL.h>
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/scene.hpp>
@@ -94,11 +95,7 @@ inline void reject_unfireable_injection() {
 // A swapchain that fails after its predecessor was released leaves nothing to present, so the renderer
 // becomes fatal instead of rebuilding it on every draw.
 inline void reject_failed_swapchain(bool disable_present_fences) {
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima swapchain failure consumer", 320, 240,
-                         SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY),
-        SDL_DestroyWindow};
-    require(bool(window), "SDL window creation failed");
+    const auto window = gpu_check::window("Anima swapchain failure consumer", 320, 240, SDL_WINDOW_HIGH_PIXEL_DENSITY);
     anima::RendererOptions options;
     options.validation = true;
     options.disable_present_fences = disable_present_fences;
@@ -128,10 +125,7 @@ inline void reject_failed_swapchain(bool disable_present_fences) {
 // frame counts if it was presented, and later draws present and count without writing again.
 inline void reject_unwritable_capture(const std::filesystem::path &output, bool disable_present_fences) {
     constexpr unsigned later_frames = 3; // Enough to show the write is not retried.
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima capture failure consumer", 320, 240, SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY),
-        SDL_DestroyWindow};
-    require(bool(window), "SDL window creation failed");
+    const auto window = gpu_check::window("Anima capture failure consumer", 320, 240, SDL_WINDOW_HIGH_PIXEL_DENSITY);
     anima::RendererOptions options;
     options.validation = true;
     options.disable_present_fences = disable_present_fences;
@@ -183,6 +177,7 @@ inline void reject_unwritable_capture(const std::filesystem::path &output, bool 
     require((counted || out_of_date) && !stats.captured && !stats.capture_count && !stats.validation_errors &&
                 !stats.validation_warnings,
             "A failed capture changed frame or capture statistics");
+    std::filesystem::remove(directory);
 }
 inline int run(int argc, char **argv) {
     require(argc >= 3, "Usage: consumer --replace OUTPUT [--no-present-fences] [--fatal STAGE] [--asset GLB]");
@@ -203,27 +198,21 @@ inline int run(int argc, char **argv) {
     }
     require(fatal.empty() || fatal == "upload-timeout" || fatal == "device-lost", "Unknown fatal injection");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    require(SDL_Init(SDL_INIT_VIDEO), "SDL initialization failed");
-    struct Quit {
-        ~Quit() { SDL_Quit(); }
-    } quit;
+    gpu_check::Video video;
     reject_failed_swapchain(options.disable_present_fences);
     reject_unwritable_capture(output, options.disable_present_fences);
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima scene replacement consumer", 640, 480,
-                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY),
-        SDL_DestroyWindow};
-    require(bool(window), "SDL window creation failed");
+    const auto window = gpu_check::window("Anima scene replacement consumer", 640, 480,
+                                          SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     const auto window_id = SDL_GetWindowID(window.get());
-    std::filesystem::create_directories(output);
     options.validation = true;
-    options.capture = output / "empty-start.ppm";
     anima::VulkanRenderer renderer(window.get(), options);
     renderer.set_view(anima::identity());
+    renderer.request_capture(); // The first frame, before any scene is selected.
+    gpu_check::Captures images(output);
     const auto started = std::chrono::steady_clock::now();
     unsigned frames = 0, captures = 1, generations = 1, rollbacks = 0, mutation_rejections = 0;
     const auto pump = [&] {
-        require(std::chrono::steady_clock::now() - started < std::chrono::seconds(25), "Replacement watchdog expired");
+        require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Replacement watchdog expired");
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
             require(event.type != SDL_EVENT_QUIT && event.type != SDL_EVENT_WINDOW_CLOSE_REQUESTED,
@@ -244,8 +233,9 @@ inline int run(int argc, char **argv) {
         }
     };
     const auto capture = [&](const std::string &name) {
-        renderer.request_capture(output / (name + ".ppm"));
+        renderer.request_capture();
         frame();
+        images.add(name, gpu_check::take(renderer));
         ++captures;
     };
     const auto replace = [&](std::vector<std::shared_ptr<const anima::Scene>> selection) {
@@ -253,6 +243,7 @@ inline int run(int argc, char **argv) {
         ++generations;
     };
     frame();
+    images.add("empty-start", gpu_check::take(renderer));
     frame();
     const auto a_data = geometry(2);
     auto b_data = geometry(3);
@@ -270,8 +261,10 @@ inline int run(int argc, char **argv) {
         rejects<anima::RendererFatalError>([&] { renderer.set_scenes({}); });
         rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); });
         rejects<anima::RendererFatalError>([&] { renderer.request_capture(output / "after-fatal.ppm"); });
+        rejects<anima::RendererFatalError>([&] { renderer.request_capture(); });
         const auto stats = renderer.shutdown();
-        require(!stats.validation_errors && !stats.validation_warnings && stats.scene_generations == generations,
+        require(!stats.validation_errors && !stats.validation_warnings && stats.scene_generations == generations &&
+                    generations == 2,
                 "Fatal replacement cleanup failed");
         require(renderer.shutdown().presented_frames == frames, "Repeated shutdown changed statistics");
         std::cout << "RESULT {\"fatal_injection\":\"" << fatal
@@ -385,7 +378,35 @@ inline int run(int argc, char **argv) {
     rejects<std::logic_error>([&] { renderer.set_scenes({}); });
     rejects<std::logic_error>([&] { (void)renderer.draw(); });
     rejects<std::logic_error>([&] { renderer.request_capture(output / "after-shutdown.ppm"); });
+    rejects<std::logic_error>([&] { renderer.request_capture(); });
     require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");
+    const unsigned imported = asset.empty() ? 0 : 1;
+    constexpr unsigned expected_rollbacks = 8, expected_mutation_rejections = 3, expected_generations = 32,
+                       expected_captures = 18;
+    require(rollbacks == expected_rollbacks && mutation_rejections == expected_mutation_rejections &&
+                stats.scene_generations == expected_generations + imported && stats.swapchain_generations >= 2 &&
+                captures == expected_captures + imported && images.size() == captures,
+            "Replacement counted unexpected rollbacks, rejections, selections, swapchains or captures");
+    // Empty selections show only the background, and every rejected or rolled-back change leaves the accepted
+    // scene's image exactly as it was.
+    images.require_clear("empty-start", "The first frame drew geometry");
+    images.require_clear("empty-end", "An empty scene drew geometry");
+    images.require_clear("empty-final", "An empty selection drew geometry");
+    images.require_same("empty-start", "empty-end", "An empty scene differs from no selection");
+    for (const auto *preserved :
+         {"restored", "rollback-vertex", "rollback-index", "rollback-texture", "rollback-texture-upload",
+          "rollback-descriptors", "rollback-ready", "rollback-invalid", "rollback-update"})
+        images.require_same(preserved, "scene-a", "The old scene was not preserved");
+    constexpr double least_change = .01;
+    images.require_changed("scene-a", "updated", least_change, "Updating the instance had no visible effect");
+    images.require_changed("scene-a", "scene-b", least_change, "Replacing the scene had no visible effect");
+    images.require_same("scene-b", "scene-b-repeat", "Repeated replacement changed the scene's image");
+    images.require(!gpu_check::same_size(images["resized"], images["scene-a"]),
+                   "The resized window kept its capture size", {"resized", "scene-a"});
+    for (const auto *drawn : {"scene-a", "scene-b", "resized", "restored-window"})
+        images.require_foreground(drawn, "Expected geometry is not visible");
+    if (imported)
+        images.require_foreground("external-asset", "The imported asset is not visible");
     std::cout
         << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"scene_generations\":" << generations
         << ",\"swapchain_generations\":" << stats.swapchain_generations << ",\"recoverable_rollbacks\":" << rollbacks

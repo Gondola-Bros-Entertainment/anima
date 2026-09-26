@@ -83,15 +83,8 @@ std::shared_ptr<const anima::Asset> triangle() {
 void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id left, anima::Scene::Id right,
             const std::shared_ptr<const anima::Asset> &asset, const std::filesystem::path &output) {
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    require(SDL_Init(SDL_INIT_VIDEO), "SDL initialization failed");
-    struct Quit {
-        ~Quit() { SDL_Quit(); }
-    } quit;
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window{
-        SDL_CreateWindow("Anima external consumer smoke", 800, 600, SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY),
-        SDL_DestroyWindow};
-    require(bool(window), "SDL window creation failed");
-    std::filesystem::create_directories(output);
+    gpu_check::Video video;
+    const auto window = gpu_check::window("Anima external consumer smoke", 800, 600, SDL_WINDOW_HIGH_PIXEL_DENSITY);
     const auto bounds = instances->bounds();
     auto overlay = scenes.create("overlay");
     auto right_object = overlay->create("Right", instances->object(right).renderer().mesh());
@@ -105,8 +98,18 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     anima::RendererOptions options;
     options.scenes = scenes.render_scenes();
     options.validation = true;
-    options.capture = output / "consumer-start.ppm";
     anima::VulkanRenderer renderer(window.get(), options);
+    // Each capture is taken once a draw() has presented its frame.
+    gpu_check::Captures captures(output);
+    std::optional<std::string> pending = "consumer-start";
+    renderer.request_capture();
+    const auto collect = [&] {
+        if (pending)
+            if (auto image = renderer.take_capture()) {
+                captures.add(*pending, std::move(*image));
+                pending.reset();
+            }
+    };
     anima::OrbitCamera camera;
     camera.frame(bounds.minimum, bounds.maximum);
     int width = 0, height = 0;
@@ -126,7 +129,7 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     unsigned frames = 0;
     bool requested = false;
     while (frames < 30) {
-        require(std::chrono::steady_clock::now() - started < std::chrono::seconds(20), "Consumer GPU watchdog expired");
+        require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Consumer GPU watchdog expired");
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
@@ -149,40 +152,45 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
                 instances->object(left).renderer().set_pose(pose);
             }
             instances->object(left).renderer().set_material_factor(0, {.8F, .3F, .2F});
-            renderer.request_capture(output / "consumer-updated.ppm");
+            require(!pending, "The first frame was not read back");
+            renderer.request_capture();
+            pending = "consumer-updated";
         }
-        if (renderer.draw())
+        if (renderer.draw()) {
             ++frames;
-        else
+            collect();
+        } else
             SDL_Delay(10);
     }
     require(right_object.renderer().mesh() == instances->instance(left).asset,
             "Scenes stopped sharing geometry during rendering");
     require(renderer.resource_stats().mesh_uploads == 1, "Multi-scene selection uploaded a shared mesh twice");
     auto capture = [&](const char *name) {
-        renderer.request_capture(output / name);
+        renderer.request_capture();
+        pending = name;
         const auto end = frames + 10;
         while (frames < end) {
-            require(std::chrono::steady_clock::now() - started < std::chrono::seconds(20),
-                    "Unload GPU watchdog expired");
-            if (renderer.draw())
+            require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Unload GPU watchdog expired");
+            if (renderer.draw()) {
                 ++frames;
-            else
+                collect();
+            } else
                 SDL_Delay(10);
         }
+        require(!pending, "A requested frame was not read back");
     };
     settings.projection = anima::CameraProjection::orthographic;
     settings.orthographic_height = camera.radius * 2.5F;
     lens->configure(settings);
     renderer.set_view(anima::view_matrix(scenes, aspect));
-    capture("consumer-orthographic.ppm");
+    capture("consumer-orthographic");
     eye.set_position(eye.position() + anima::Vec3{.5F, 0, 0});
     renderer.set_view(anima::view_matrix(scenes, aspect));
-    capture("consumer-camera-moved.ppm");
+    capture("consumer-camera-moved");
     cameras = scenes.replace(cameras, saved_camera, {}, codecs);
     require(!eye.valid() && !selection && !lens, "Camera replacement retained runtime handles");
     renderer.set_view(anima::view_matrix(scenes, aspect));
-    capture("consumer-camera-restored.ppm");
+    capture("consumer-camera-restored");
     selection = cameras->components<anima::CameraView>().front();
     selection->camera = eye; // Stale selection must fail before renderer publication.
     bool rejected = false;
@@ -192,19 +200,19 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
         rejected = true;
     }
     require(rejected, "Stale camera selection was accepted");
-    capture("consumer-camera-rejected.ppm");
+    capture("consumer-camera-rejected");
     selection->camera = cameras->components<anima::Camera>().front().object();
     scenes.unload(instances);
     require(!instances && options.scenes.front()->size() == 0 && right_object.valid(),
             "Unloading one scene affected another scene or retained objects");
-    capture("consumer-partial.ppm");
+    capture("consumer-partial");
     require(renderer.resource_stats().instances == 1, "Retained selection lost the surviving scene");
     renderer.set_scenes({overlay.render_scene()});
-    capture("consumer-overlay.ppm");
+    capture("consumer-overlay");
     scenes.unload(overlay);
-    capture("consumer-unloaded.ppm");
+    capture("consumer-unloaded");
     renderer.set_scenes({});
-    capture("consumer-cleared.ppm");
+    capture("consumer-cleared");
     const auto resources = renderer.resource_stats();
     require(resources.instances == 0 && resources.draw_calls == 0 && resources.shadow_draw_calls == 0,
             "Unloaded scenes still submitted mesh draws");
@@ -212,6 +220,44 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     require(stats.presented_frames == 110 && stats.capture_count == 10 && !stats.validation_errors &&
                 !stats.validation_warnings,
             "External consumer GPU validation failed");
+    // A persisted camera reproduces the original view, a rejected selection changes nothing, an unloaded scene
+    // renders as an empty renderer does, and unloading one scene leaves the other's image untouched.
+    captures.require_same("consumer-camera-restored", "consumer-updated",
+                          "Persisted camera replacement changed the rendered view");
+    captures.require_same("consumer-camera-rejected", "consumer-camera-restored",
+                          "Rejected camera selection changed the renderer");
+    constexpr double least_change = .005;
+    captures.require_changed("consumer-orthographic", "consumer-updated", least_change,
+                             "The orthographic projection had no visible effect");
+    captures.require_changed("consumer-orthographic", "consumer-camera-moved", least_change,
+                             "Moving the orthographic camera had no visible effect");
+    captures.require_same("consumer-unloaded", "consumer-cleared",
+                          "A retained unloaded scene rendered differently from an empty renderer");
+    captures.require_same("consumer-partial", "consumer-overlay", "Unloading one scene changed the surviving scene");
+    captures.require(!gpu_check::same(captures["consumer-partial"], captures["consumer-unloaded"]),
+                     "The surviving scene did not render", {"consumer-partial", "consumer-unloaded"});
+    // Updating the left instance leaves the right half, where the other instance stands, exactly as it was.
+    const auto &start = captures["consumer-start"], &updated = captures["consumer-updated"];
+    captures.require(gpu_check::same_size(start, updated), "The update changed the capture size",
+                     {"consumer-start", "consumer-updated"});
+    bool right_unchanged = true;
+    std::size_t right_foreground = 0;
+    const auto background = gpu_check::pixel(start, 0, 0);
+    for (std::size_t y = 0; y < start.height; ++y)
+        for (std::size_t x = start.width / 2; x < start.width; ++x) {
+            const auto before = gpu_check::pixel(start, x, y);
+            right_unchanged = right_unchanged && before == gpu_check::pixel(updated, x, y);
+            constexpr int changed_level = 20;
+            if (gpu_check::difference(before, background) > changed_level)
+                ++right_foreground;
+        }
+    captures.require(right_unchanged, "Updating the left instance changed the right half of the image",
+                     {"consumer-start", "consumer-updated"});
+    captures.require_changed("consumer-start", "consumer-updated", least_change,
+                             "Updating the left instance had no visible effect");
+    constexpr double least_foreground = .01;
+    captures.require(double(right_foreground) > double(std::size_t{start.width} * start.height) * least_foreground,
+                     "The unchanged right instance was not visible", {"consumer-start"});
     std::cout << "PASS external GPU consumer: 110 frames, 10 captures, scene cameras and multi-scene partial unload; "
                  "validation_warnings=0 validation_errors=0\n";
 }
