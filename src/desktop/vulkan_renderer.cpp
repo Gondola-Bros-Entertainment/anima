@@ -1445,6 +1445,12 @@ struct VulkanRenderer::Impl {
             vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(scale), scale);
             vkCmdDraw(command, 3, 1, 0, 0);
         }
+#if defined(ANIMA_UI) && !defined(ANIMA_HAS_ASSETS)
+        // Without the linear world target this pass renders the swapchain image, and the UI pipeline
+        // was created for it, so the UI composites here rather than in the display pass below.
+        if (ui_frame)
+            record_ui(*ui_frame);
+#endif
         vkCmdEndRenderPass(command);
         if (timing_queries)
             vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, 2);
