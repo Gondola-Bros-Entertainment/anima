@@ -289,8 +289,8 @@ void Audio::render(std::span<float> output) {
             };
             const float l = sample(0), r = channels == 1 ? l : sample(1);
             const double amplitude = bus_gain * voice.volume;
-            output[out] += static_cast<float>((mono ? (l + r) * .5F : l) * left * amplitude);
-            output[out + 1] += static_cast<float>((mono ? (l + r) * .5F : r) * right * amplitude);
+            output[out] += static_cast<float>((mono ? (l + r) * .5 : l) * left * amplitude);
+            output[out + 1] += static_cast<float>((mono ? (l + r) * .5 : r) * right * amplitude);
             voice.frame += advance;
             if (voice.fade_duration > 0) {
                 voice.fade_elapsed = std::min(voice.fade_elapsed + 1.0 / audio.rate, voice.fade_duration);
