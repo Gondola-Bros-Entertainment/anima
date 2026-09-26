@@ -575,6 +575,9 @@ UiContext::UiContext(SDL_Window *window, VulkanRenderer &renderer, std::string n
         throw std::invalid_argument("UI needs a window and nonempty context name");
     if (ui_active)
         throw std::logic_error("Only one live Anima UI context is supported");
+    // Rejected once here, before RmlUi starts, rather than by every render().
+    if (!renderer.srgb_presentation())
+        throw std::runtime_error(detail::srgb_presentation_required);
     impl_ = std::make_unique<Impl>(window, renderer, std::move(name));
     impl_->initialize();
     impl_->documents = std::make_unique<UiDocuments>(*impl_->context);

@@ -335,6 +335,8 @@ class VulkanRenderer {
 
   private:
     friend class UiContext;
+    // Whether the surface offers the sRGB format that UI blending needs; UiContext checks it at construction.
+    [[nodiscard]] bool srgb_presentation();
     [[nodiscard]] bool draw_ui(const detail::UiFrame &frame);
     struct Impl;
     std::unique_ptr<Impl> impl_;

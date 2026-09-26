@@ -99,6 +99,9 @@ bool has_extension(const std::vector<VkExtensionProperties> &properties, const c
     return std::any_of(properties.begin(), properties.end(),
                        [name](const auto &p) { return std::strcmp(p.extensionName, name) == 0; });
 }
+// Swapchain formats in order of preference, each in VK_COLOR_SPACE_SRGB_NONLINEAR_KHR.
+constexpr std::array preferred_surface_formats{VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
+                                               VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
 } // namespace
 
 struct VulkanRenderer::Impl {
@@ -609,6 +612,25 @@ struct VulkanRenderer::Impl {
         check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps), "Query surface capabilities");
         return caps;
     }
+    // The format recreate() gives the swapchain: the first preferred format that the surface offers, otherwise
+    // its first format. A lone VK_FORMAT_UNDEFINED means that the surface accepts any format.
+    VkSurfaceFormatKHR surface_format() const {
+        const auto formats = enumerate<VkSurfaceFormatKHR>(
+            [&](auto *n, auto *p) { return vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, n, p); },
+            "Enumerate surface formats");
+        if (formats.empty())
+            throw std::runtime_error("Surface has no formats");
+        if (formats.size() == 1 && formats.front().format == VK_FORMAT_UNDEFINED)
+            return {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+        for (const auto desired : preferred_surface_formats) {
+            const auto found = std::find_if(formats.begin(), formats.end(), [&](const auto &value) {
+                return value.format == desired && value.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            });
+            if (found != formats.end())
+                return *found;
+        }
+        return formats.front();
+    }
     static VkExtent2D surface_extent(VkExtent2D pixels, const VkSurfaceCapabilitiesKHR &caps) {
         return caps.currentExtent.width != UINT32_MAX
                    ? caps.currentExtent
@@ -624,24 +646,7 @@ struct VulkanRenderer::Impl {
         wait_for_presentation();
         destroy_swapchain();
         extent = selected_extent;
-        auto formats = enumerate<VkSurfaceFormatKHR>(
-            [&](auto *n, auto *p) { return vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, n, p); },
-            "Enumerate surface formats");
-        if (formats.empty())
-            throw std::runtime_error("Surface has no formats");
-        VkSurfaceFormatKHR selected = formats.front();
-        if (formats.size() == 1 && selected.format == VK_FORMAT_UNDEFINED)
-            selected = {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
-        for (auto desired :
-             {VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM}) {
-            const auto found = std::find_if(formats.begin(), formats.end(), [&](const auto &value) {
-                return value.format == desired && value.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-            });
-            if (found != formats.end()) {
-                selected = *found;
-                break;
-            }
-        }
+        const auto selected = surface_format();
         format = selected.format;
         auto count = caps.minImageCount + 1;
         if (caps.maxImageCount > 0)
@@ -1818,6 +1823,15 @@ RenderStats VulkanRenderer::shutdown() {
 }
 FrameProfile VulkanRenderer::frame_profile() const noexcept { return impl_->profile; }
 #ifdef ANIMA_UI
+bool VulkanRenderer::srgb_presentation() {
+    impl_->running();
+    try {
+        return impl_->srgb_presentation();
+    } catch (const VulkanFailure &error) {
+        impl_->fatal = true;
+        throw RendererFatalError(error.what());
+    }
+}
 bool VulkanRenderer::draw_ui(const detail::UiFrame &frame) {
     try {
         return impl_->draw(&frame);
