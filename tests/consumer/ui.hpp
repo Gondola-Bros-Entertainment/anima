@@ -5,6 +5,7 @@
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/ui/context.hpp>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string_view>
@@ -436,6 +437,36 @@ inline int run(int argc, char **argv) {
         ++rejected_features;
         unsupported_warnings += unsupported.stats().log_warnings;
         require(!unsupported.stats().log_errors, "Unsupported-feature fixture emitted an RmlUi error");
+    }
+    { // As in RmlUi, an image that cannot be loaded is a warning, and the frames after it still render.
+        constexpr unsigned unloadable_images = 2;  // A missing file and a file that is not PNG or JPEG.
+        constexpr unsigned warnings_per_image = 2; // The reason, then RmlUi's own report of the texture.
+        constexpr unsigned checked_frames = 2;
+        std::ofstream(output / "unsupported.tga", std::ios::binary) << "not a PNG or JPEG image";
+        anima::UiContext images(window.get(), renderer);
+        // RmlUi resolves decorator images against their style sheet, which an inline style lacks.
+        auto unloadable = images.documents().from_memory(
+            "<rml><head><style>#decorated { display: block; width: 32px; height: 32px; "
+            "decorator: image(unsupported.tga); }</style></head><body>"
+            "<img src='missing.png' style='width:32px;height:32px;'/><div id='decorated'></div></body></rml>",
+            (output / "unloadable-images.rml").string());
+        unloadable.show();
+        for (unsigned frame_index = 0; frame_index < checked_frames; ++frame_index) {
+            bool presented = false;
+            try {
+                images.update();
+                while (!(presented = images.render())) {
+                    SDL_Delay(5);
+                    images.update();
+                }
+            } catch (const anima::UiUnsupportedFeature &error) {
+                std::cerr << "Frame " << frame_index << " threw: " << error.what() << '\n';
+            }
+            require(presented, "An image that could not be loaded stopped UI rendering");
+            ++frames;
+        }
+        require(images.stats().log_warnings == unloadable_images * warnings_per_image && !images.stats().log_errors,
+                "An image that could not be loaded was not reported as a warning");
     }
     { // A corrected document can render after unsupported contexts are destroyed.
         anima::UiContext recovered(window.get(), renderer);

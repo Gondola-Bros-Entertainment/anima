@@ -50,7 +50,7 @@ struct UiStats {
     std::uint64_t updates{};
     /// UiContext::render calls that presented a frame.
     std::uint64_t rendered_frames{};
-    /// Warnings RmlUi logged.
+    /// Warnings RmlUi logged, including those for images that could not be loaded.
     std::uint32_t log_warnings{};
     /// Errors and failed assertions RmlUi logged.
     std::uint32_t log_errors{};
@@ -61,10 +61,18 @@ struct UiStats {
 /// Unsupported features: render layers, filters and backdrop effects, mask images, custom and
 /// gradient shaders, and clip masks, which RmlUi uses to clip to rounded borders or through
 /// transforms. Rejected resources: non-finite or malformed geometry, non-finite transforms, more
-/// than 2,000,000 triangle vertices in one frame, textures over 8,192 pixels on either axis, and
-/// image files that are missing, empty, over 64 MiB or not PNG or JPEG. The failure is sticky:
-/// every later render() throws it again, so shut the context down and create a new one after
-/// fixing the document.
+/// than 2,000,000 triangle vertices in one frame, and generated textures, such as font atlases,
+/// over 8,192 pixels on either axis.
+///
+/// The failure latches: once one is detected, render() throws it and so does every later
+/// render(), before drawing, whatever the documents do meanwhile. To recover, shut the context
+/// down, fix the document and create a new context.
+///
+/// An image file that cannot be loaded is not such a failure. A file that is missing, unreadable,
+/// empty or over 64 MiB, or is not a PNG or JPEG of at most 8,192 pixels on each axis, is handled
+/// as RmlUi handles it: it logs warnings, which UiStats::log_warnings counts, and its element is
+/// drawn untextured. RmlUi does not load that source again while the context lives, so a repaired
+/// file at the same path is used by the next context.
 class UiUnsupportedFeature : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -151,10 +159,12 @@ class UiContext {
     /// Returns false without presenting when the renderer cannot present, as VulkanRenderer::draw
     /// does, or when the UI layout does not yet match the swapchain size; the next update() and
     /// render() retry. Before acquiring a swapchain image, it throws UiUnsupportedFeature when a
-    /// document needs an unsupported render feature. Throws `std::runtime_error` if the surface
-    /// stops offering an sRGB format after construction, `std::invalid_argument` when a UI
+    /// document needs an unsupported render feature; that failure latches, as the class states,
+    /// while an image that cannot be loaded only logs warnings. Throws `std::runtime_error` if the
+    /// surface stops offering an sRGB format after construction, `std::invalid_argument` when a UI
     /// texture exceeds the device's image size limit, and otherwise fails as VulkanRenderer::draw
-    /// does.
+    /// does. The context does not latch those failures: each render() tries again, so they recur
+    /// only while their cause remains, such as a document that uses the oversized texture.
     [[nodiscard]] bool render();
     [[nodiscard]] UiStats stats() const;
     /// Shuts down the document host, then RmlUi: every document, checked handle and borrowed
