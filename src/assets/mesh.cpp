@@ -1,7 +1,11 @@
+#include "alpha_coverage.hpp"
+#include <algorithm>
 #include <anima/scene.hpp>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace anima {
 std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &source, MeshCompileOptions options) {
@@ -24,26 +28,30 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
         // Limits are supplied by the consumer; the immutable source is preserved.
         Asset chunk;
         chunk.nodes = source.nodes;
-        chunk.materials = source.materials;
-        chunk.textures = source.textures;
-        for (std::size_t texture_id = 0; texture_id < chunk.textures.size(); ++texture_id) {
-            auto &texture = chunk.textures[texture_id];
-            if (!texture_edge || std::max(texture.width, texture.height) <= texture_edge)
-                continue;
-            TextureMipOptions mip_options;
-            for (const auto &material : chunk.materials)
-                if (material.texture == static_cast<int>(texture_id) && material.alpha_mode == AlphaMode::mask &&
-                    material.alpha > 0)
-                    mip_options.alpha_coverage_cutoff = std::clamp(material.alpha_cutoff / material.alpha, .001F, 1.F);
-            auto mips = texture_mips(texture, mip_options);
+        const auto oversized = [&](const Texture &texture) {
+            return texture_edge && std::max(texture.width, texture.height) > texture_edge;
+        };
+        // A texture and the alpha-coverage cutoff of one of its uses. An oversized texture shrinks once per
+        // cutoff its uses need, so each shrunk level keeps the coverage that its upload's mips preserve.
+        using TextureUse = std::pair<int, std::optional<float>>;
+        std::map<TextureUse, Texture> shrunk;
+        const auto fitted = [&](const TextureUse &use) {
+            const auto &authored = source.textures.at(use.first);
+            if (!oversized(authored))
+                return authored;
+            if (const auto found = shrunk.find(use); found != shrunk.end())
+                return found->second;
+            auto mips = texture_mips(authored, {.alpha_coverage_cutoff = use.second});
             const auto found = std::find_if(mips.begin(), mips.end(),
                                             [&](const auto &m) { return std::max(m.width, m.height) <= texture_edge; });
+            auto texture = authored;
             if (found != mips.end()) {
                 texture.width = found->width;
                 texture.height = found->height;
                 texture.rgba = std::move(found->rgba);
             }
-        }
+            return shrunk.emplace(use, std::move(texture)).first->second;
+        };
         std::size_t vertices = 0;
         const auto flush = [&] {
             if (chunk.primitives.empty())
@@ -51,13 +59,17 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             Asset batch;
             batch.nodes = chunk.nodes;
             batch.primitives = std::move(chunk.primitives);
-            std::map<int, int> materials, textures;
-            const auto texture = [&](int &id) {
+            std::map<int, int> materials;
+            std::map<TextureUse, int> textures;
+            const auto texture = [&](int &id, std::optional<float> cutoff = std::nullopt) {
                 if (id < 0)
                     return;
-                auto [it, inserted] = textures.emplace(id, static_cast<int>(batch.textures.size()));
+                if (!oversized(source.textures.at(id)))
+                    cutoff.reset(); // Kept as authored, so every use shares one copy.
+                const TextureUse use{id, cutoff};
+                auto [it, inserted] = textures.emplace(use, static_cast<int>(batch.textures.size()));
                 if (inserted)
-                    batch.textures.push_back(chunk.textures.at(id));
+                    batch.textures.push_back(fitted(use));
                 id = it->second;
             };
             for (auto &primitive : batch.primitives) {
@@ -65,8 +77,8 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
                     continue;
                 auto [it, inserted] = materials.emplace(primitive.material, static_cast<int>(batch.materials.size()));
                 if (inserted) {
-                    auto material = chunk.materials.at(primitive.material);
-                    texture(material.texture);
+                    auto material = source.materials.at(primitive.material);
+                    texture(material.texture, detail::alpha_coverage_cutoff(material));
                     texture(material.normal_texture);
                     texture(material.metallic_roughness_texture);
                     texture(material.emissive_texture);

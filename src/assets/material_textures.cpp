@@ -1,3 +1,4 @@
+#include "alpha_coverage.hpp"
 #include <anima/assets/material_textures.hpp>
 #include <anima/assets/scene_validation.hpp>
 #include <map>
@@ -17,10 +18,9 @@ MaterialTexturePlan material_texture_plan(std::span<const Material> materials, s
         for (std::size_t binding = 0; binding < bindings.size(); ++binding) {
             const auto source = sources[binding];
             TextureMipOptions options;
-            if (binding == 0 && source >= 0 && textures[source].sampler.mipmapped &&
-                material.alpha_mode == AlphaMode::mask && material.alpha_cutoff > 0 &&
-                material.alpha_cutoff <= material.alpha)
-                options.alpha_coverage_cutoff = material.alpha_cutoff / material.alpha;
+            // Only a mip chain needs correcting; an unmipmapped image uploads its base level alone.
+            if (binding == 0 && source >= 0 && textures[source].sampler.mipmapped)
+                options.alpha_coverage_cutoff = detail::alpha_coverage_cutoff(material);
             const auto [entry, inserted] =
                 images.try_emplace(Key{source, options.alpha_coverage_cutoff}, plan.images.size());
             if (inserted)

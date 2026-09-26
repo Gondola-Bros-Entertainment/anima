@@ -41,7 +41,9 @@ struct MeshCompileOptions {
     /// at least 3. A nonzero limit also gives each Mesh the primitives of only one material.
     std::size_t max_vertices{};
     /// Maximum texture width and height. A larger texture is replaced by its first mip level that fits, from
-    /// texture_mips() with alpha coverage preserved for masked base colors. Zero keeps authored sizes.
+    /// texture_mips(). A masked base color keeps its alpha coverage at the cutoff `alpha_cutoff / alpha` when
+    /// that is in (0, 1], the rule material_texture_plan() applies to mip chains, and uses that need different
+    /// cutoffs, or none, get separate copies. Zero keeps authored sizes.
     unsigned max_texture_edge{};
 };
 
