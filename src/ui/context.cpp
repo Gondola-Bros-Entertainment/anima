@@ -683,9 +683,19 @@ bool UiContext::render() {
     impl_->context->Render();
     if (!impl_->render.failure.empty())
         throw UiUnsupportedFeature(impl_->render.failure);
-    const bool presented = impl_->renderer.draw_ui(impl_->render.frame);
-    if (presented)
-        ++impl_->stats.rendered_frames;
+    // The renderer's own count decides, so a frame presented by a call that then throws is counted too.
+    const auto presented_before = impl_->renderer.presented_frames();
+    const auto count_presented = [&] {
+        impl_->stats.rendered_frames += impl_->renderer.presented_frames() - presented_before;
+    };
+    bool presented = false;
+    try {
+        presented = impl_->renderer.draw_ui(impl_->render.frame);
+    } catch (...) {
+        count_presented();
+        throw;
+    }
+    count_presented();
     return presented;
 }
 UiStats UiContext::stats() const { return impl_->stats; }
