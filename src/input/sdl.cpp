@@ -7,6 +7,12 @@
 #error Anima input requires SDL 3.2 or later headers
 #endif
 namespace anima::input {
+namespace {
+// SDL reports a mouse button's `which` as 0 outside relative mouse mode and as the mouse instance ID
+// inside it, and toggling the mode sends no releases, so one physical button can arrive under two IDs.
+// Reporting every mouse button on SDL's global mouse (ID 0) keeps each press and release paired.
+constexpr std::uint32_t global_mouse = 0;
+} // namespace
 std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
     if (!window)
         throw std::invalid_argument("SDL input conversion requires a nonzero target window ID");
@@ -26,7 +32,7 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (e.button.windowID == window && e.button.which != SDL_TOUCH_MOUSEID)
             result = Event{EventType::control,
-                           {ControlKind::mouse_button, e.button.button, e.button.which},
+                           {ControlKind::mouse_button, e.button.button, global_mouse},
                            e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? 1.F : 0.F};
         break;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -53,8 +59,9 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
         result = Event{EventType::disconnect, {ControlKind::key, 0, e.kdevice.which}, 0};
         break;
     case SDL_EVENT_MOUSE_REMOVED:
+        // SDL releases no buttons when a mouse is removed, and every button is held on the global mouse.
         if (e.mdevice.which != SDL_TOUCH_MOUSEID)
-            result = Event{EventType::disconnect, {ControlKind::mouse_button, 0, e.mdevice.which}, 0};
+            result = Event{EventType::disconnect, {ControlKind::mouse_button, 0, global_mouse}, 0};
         break;
     default:
         break;

@@ -169,8 +169,11 @@ The target window ID must be nonzero. Key, mouse-button and focus events are
 filtered to that window. Keyboard repeats and unknown scancodes are ignored;
 scancodes use the physical-key field documented by [SDL](https://wiki.libsdl.org/SDL3/SDL_KeyboardEvent).
 The adapter normalizes the asymmetric signed [axis endpoints](https://wiki.libsdl.org/SDL3/SDL_GamepadAxisEvent)
-to exactly -1 and +1. Gamepad removal/remapping and keyboard/mouse removal clear
-corresponding device state. Gamepad events have no window ID; Context focus gates
+to exactly -1 and +1. Gamepad removal/remapping and keyboard removal clear
+corresponding device state. Mouse buttons are reported on SDL's global mouse,
+device 0, because SDL identifies individual mice only in relative mode and sends
+no releases when that mode changes; removing any mouse clears held mouse buttons.
+Gamepad events have no window ID; Context focus gates
 their delivery. The application still opens/closes gamepads through SDL and feeds
 events from its single existing pump. Device addition alone does not open a device.
 
