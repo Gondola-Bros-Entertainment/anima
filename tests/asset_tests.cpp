@@ -1,22 +1,35 @@
+#include "near.hpp"
 #include <anima/assets/asset.hpp>
 #include <anima/assets/imports.hpp>
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/preview.hpp>
+// This suite supplies its own main, which reads the optional exported GLB argument.
+#define DOCTEST_CONFIG_IMPLEMENT
+#include <doctest/doctest.h>
+
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
-#include <string_view>
+#include <vector>
 
+using namespace anima;
 namespace {
-void require(bool condition, const char *message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-void near(float actual, float expected, const char *message) { require(std::abs(actual - expected) < 1e-4F, message); }
+constexpr float tolerance = 1e-4F; // Absolute error allowed in imported and posed values.
+constexpr auto exported_test = "An exported GLB loads its geometry in its bind pose";
+// cgltf reports a GLB shorter than its header's length as cgltf_result_data_too_short.
+constexpr auto truncated_glb = "Parse GLB failed (cgltf 1)";
+constexpr auto invalid_factors = "Invalid material factors";
+
+// The GLB that the exported_import test names on the command line.
+std::optional<std::filesystem::path> exported_glb;
+
 void integer(std::vector<char> &bytes, std::uint32_t value) {
     for (unsigned i = 0; i < 4; ++i)
         bytes.push_back(static_cast<char>((value >> (i * 8)) & 255));
@@ -27,6 +40,8 @@ struct Temp {
         std::filesystem::temp_directory_path() /
         ("anima-import-tests-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     Temp() { std::filesystem::create_directory(directory); }
+    Temp(const Temp &) = delete;
+    Temp &operator=(const Temp &) = delete;
     ~Temp() {
         std::error_code error;
         std::filesystem::remove_all(directory, error);
@@ -60,12 +75,12 @@ std::filesystem::path motion_fixture(const Temp &temp) {
     const auto path = temp.directory / "motion.glb";
     std::ofstream output(path, std::ios::binary);
     output.write(glb.data(), static_cast<std::streamsize>(glb.size()));
-    require(bool(output), "Cannot write motion fixture");
+    REQUIRE(bool(output));
     return path;
 }
 std::filesystem::path fixture(const Temp &temp, const std::string &kind) {
     std::vector<char> bin;
-    for (auto p : {anima::Vec3{0, 0, 0}, anima::Vec3{1, 0, 0}, anima::Vec3{0, 1, 0}}) {
+    for (auto p : {Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}}) {
         for (float f : {p.x, p.y, p.z, 0.70710678F, 0.70710678F, 0.0F})
             scalar(bin, f);
     }
@@ -79,7 +94,7 @@ std::filesystem::path fixture(const Temp &temp, const std::string &kind) {
         for (float f : {1.F, 0.F, 0.F, 0.F})
             scalar(bin, f);
     bin.resize(140, 0); // byte joint indices
-    auto inverse = anima::identity();
+    auto inverse = identity();
     if (kind == "bind")
         inverse[13] = -5;
     for (auto value : inverse)
@@ -180,235 +195,263 @@ std::filesystem::path fixture(const Temp &temp, const std::string &kind) {
     integer(glb, 0x004e4942);
     glb.insert(glb.end(), bin.begin(), bin.end());
     if (kind == "truncated") {
-        require(glb.size() >= 16, "Synthetic GLB is too short to truncate");
+        REQUIRE(glb.size() >= 16);
         glb.erase(glb.end() - 16, glb.end());
     }
     const auto path = temp.directory / (kind + ".glb");
     std::ofstream output(path, std::ios::binary);
     output.write(glb.data(), static_cast<std::streamsize>(glb.size()));
-    require(bool(output), "Cannot write synthetic GLB");
+    REQUIRE(bool(output));
     return path;
 }
 } // namespace
-int main(int argc, char **argv) {
-    try {
-        Temp temp;
-        const auto reimport_path = fixture(temp, "bind");
-        anima::AssetImports imports(temp.directory);
-        auto imported = imports.add<anima::Asset>("body", [&](anima::ImportSource &source) {
-            return anima::load_asset(source.read(reimport_path.filename()));
-        });
-        const auto original_import = imported.get();
-        std::filesystem::copy_file(fixture(temp, "animation"), reimport_path,
-                                   std::filesystem::copy_options::overwrite_existing);
-        require(imports.refresh() == std::vector<std::string>{"body"} && imported.revision() == 2 &&
-                    imported.get()->animations.size() == 1 && original_import->animations.empty(),
-                "GLB reimport did not publish an independent resource version");
-        std::filesystem::copy_file(fixture(temp, "truncated"), reimport_path,
-                                   std::filesystem::copy_options::overwrite_existing);
-        bool broken_import = false;
-        try {
-            imports.refresh();
-        } catch (const std::runtime_error &) {
-            broken_import = true;
-        }
-        require(broken_import && imported.revision() == 2 && imported.get()->animations.size() == 1,
-                "Broken GLB reimport destroyed the accepted resource");
-        (void)fixture(temp, "bind");
-        const auto motion_path = motion_fixture(temp);
-        const auto motion = anima::load_motion_asset(motion_path);
-        require(motion->primitives.empty() && motion->skins.empty() && motion->animations.size() == 1,
-                "Independent motion imported rendering payload");
-        const auto moving = anima::sample_pose(*motion, &motion->animations[0], .5);
-        near(moving.world[1][12], 11, "Independent motion lost parent transform");
-        near(moving.world[2][12], 11, "Unkeyed attachment did not follow animation");
-        auto local = moving.local;
-        local[0].translation.x = 20;
-        const auto rebound = anima::pose_from_local(*motion, local);
-        near(rebound.world[2][12], 21, "Bound local pose did not propagate to descendants");
-        near(rebound.world[2][13], 3, "Bound local pose lost unkeyed rest translation");
-        bool invalid_local = false, geometry_as_motion = false, motion_as_geometry = false;
-        try {
-            (void)anima::pose_from_local(*motion, std::span<const anima::Transform>(local).first(2));
-        } catch (const std::invalid_argument &) {
-            invalid_local = true;
-        }
-        try {
-            (void)anima::load_motion_asset(fixture(temp, "animation"));
-        } catch (const std::runtime_error &) {
-            geometry_as_motion = true;
-        }
-        try {
-            (void)anima::load_asset(motion_path);
-        } catch (const std::runtime_error &) {
-            motion_as_geometry = true;
-        }
-        require(invalid_local && geometry_as_motion && motion_as_geometry, "Resource contract was not enforced");
-        const auto masked = anima::load_glb(fixture(temp, "mask"));
-        require(masked.material_data[0].alpha_mode == anima::AlphaMode::mask, "Lost MASK alpha mode");
-        near(masked.material_data[0].alpha_cutoff, .35F, "Lost alpha cutoff");
-        near(masked.material_data[0].alpha, .7F, "Lost material alpha");
-        near(masked.vertices[0].alpha, 0, "Lost vertex colour alpha");
-        const auto pbr = anima::load_glb(fixture(temp, "pbr"));
-        near(pbr.material_data[0].metallic, .7F, "Lost metallic factor");
-        near(pbr.material_data[0].roughness, .23F, "Lost roughness factor");
-        near(pbr.material_data[1].metallic, 1, "Wrong glTF metallic default");
-        near(pbr.material_data[1].roughness, 1, "Wrong glTF roughness default");
-        const auto implicit = anima::load_glb(fixture(temp, "implicit-material"));
-        near(implicit.material_data.at(implicit.primitives[0].material_index).metallic, 1,
-             "Missing glTF material must use spec default");
-        const auto scene = anima::load_glb(fixture(temp, "instances"));
-        require(scene.mesh_nodes == 2 && scene.primitives.size() == 4 && scene.vertices.size() == 12,
-                "Lost primitive or mesh instance");
-        require(scene.primitives[0].material_index == 0 && scene.primitives[1].material_index == 1,
-                "Lost material assignment");
-        near(scene.minimum.x, -4, "Wrong matrix/mirror transform");
-        near(scene.maximum.x, 13, "Wrong nested TRS transform");
-        near(scene.maximum.y, 5, "Wrong scale/translation");
-        near(scene.maximum.z, 3, "Wrong hierarchy/default scene");
-        near(scene.vertices[0].normal.x, 0.8320503F, "Wrong inverse-transpose normal x");
-        near(scene.vertices[0].normal.y, 0.5547002F, "Wrong inverse-transpose normal y");
-        near(scene.vertices[0].color.x, 1, "Wrong red factor");
-        near(scene.vertices[3].color.y, 1, "Wrong green factor");
-        near(scene.vertices[6].normal.x, -0.70710678F, "Wrong normal under mirrored scale");
-        const auto skinned = anima::load_glb(fixture(temp, "skin"));
-        require(skinned.skinned_vertices == 6 && !skinned.default_is_bind_pose, "Skin was ignored or mislabeled bind");
-        near(skinned.minimum.y, 5, "Joint transform was not applied");
-        near(skinned.minimum.x, 0, "Skinned mesh transform applied twice");
-        const auto bind = anima::load_glb(fixture(temp, "bind"));
-        require(bind.default_is_bind_pose, "Inverse binds were ignored");
-        near(bind.minimum.y, 0, "Inverse bind did not cancel joint translation");
-        const auto manifest_path = temp.directory / "bind.asset.json";
-        {
-            std::ofstream output(manifest_path);
-            output << R"({"schema_version":1,"units":"meters","asset_id":"test.bind","model":"bind.glb",
-                "skeleton":{"id":"test.rig","joint_count":1,"bind_signature":")"
-                   << std::string(64, '0') << R"("},"clips":[],"equipment":[]})";
-            require(bool(output), "Cannot write static manifest");
-        }
-        anima::AssetPreview preview(manifest_path);
-        const auto static_status = preview.status();
-        const auto static_pose = preview.pose().world;
-        require(preview.is_bind() && !preview.playback().animation() && static_status == "Bind pose | static",
-                "Clip-free model is not a static preview");
-        preview.toggle_play();
-        preview.restart();
-        require(preview.advance(.25).empty() && preview.is_bind() && preview.pose().world == static_pose &&
-                    preview.status() == static_status,
-                "Static playback controls changed the bind pose");
-        bool missing_clip = false, missing_timeline = false;
-        try {
-            preview.select("Walk");
-        } catch (const std::out_of_range &) {
-            missing_clip = true;
-        }
-        try {
-            preview.seek(.5);
-        } catch (const std::invalid_argument &) {
-            missing_timeline = true;
-        }
-        require(missing_clip && missing_timeline && preview.is_bind() && preview.pose().world == static_pose &&
-                    preview.status() == static_status,
-                "Rejected static playback operation corrupted the preview");
-        for (const auto *kind : {"animation", "step"}) {
-            const auto animated = anima::load_asset(fixture(temp, kind));
-            require(animated->animations.size() == 1, "Animation channels not imported");
-            const auto pose = anima::sample_pose(*animated, &animated->animations[0], .5);
-            near(pose.world[1][12], std::string(kind) == "step" ? 10.F : 11.F,
-                 "Imported sampler interpolation incorrect");
-        }
-        for (const auto &[kind, diagnostic] :
-             {std::pair{"cubic", "CUBICSPLINE"}, std::pair{"duplicate-channel", "Duplicate animation target"},
-              std::pair{"bad-times", "increase strictly"}}) {
-            bool rejected = false;
-            try {
-                (void)anima::load_asset(fixture(temp, kind));
-            } catch (const std::runtime_error &error) {
-                rejected = std::string(error.what()).find(diagnostic) != std::string::npos;
-            }
-            require(rejected, "Unsupported animation needs an explicit diagnostic");
-        }
-        for (const auto *kind : {"bad-index", "bad-view", "sparse", "extension", "alpha", "truncated"}) {
-            bool rejected = false;
-            try {
-                (void)anima::load_glb(fixture(temp, kind));
-            } catch (const std::runtime_error &) {
-                rejected = true;
-            }
-            require(rejected, "Invalid or unsupported GLB accepted");
-        }
-        // validate_material owns the factor ranges.
-        for (const auto *kind : {"bad-metallic", "bad-roughness"}) {
-            bool rejected = false;
-            try {
-                (void)anima::load_glb(fixture(temp, kind));
-            } catch (const std::invalid_argument &error) {
-                rejected = std::string_view(error.what()) == "Invalid material factors";
-            }
-            require(rejected, "An out-of-range material factor was not rejected by validate_material");
-        }
-        const auto projection = anima::perspective(1.5F, 0.1F, 100.F);
-        near((-0.1F * projection[10] + projection[14]) / 0.1F, 0, "Vulkan near plane incorrect");
-        near((-100.F * projection[10] + projection[14]) / 100.F, 1, "Vulkan far plane incorrect");
-        anima::OrbitCamera camera;
-        camera.frame(scene.minimum, scene.maximum);
-        const auto origin = anima::view_origin(camera.matrix(1.5F));
-        const auto eye =
-            camera.target + anima::Vec3{std::sin(camera.yaw) * std::cos(camera.pitch), std::sin(camera.pitch),
-                                        std::cos(camera.yaw) * std::cos(camera.pitch)} *
-                                camera.distance;
-        near(origin[0], eye.x, "View origin x incorrect");
-        near(origin[1], eye.y, "View origin y incorrect");
-        near(origin[2], eye.z, "View origin z incorrect");
-        near(origin[3], 1, "Perspective origin must be a point");
-        near(anima::length(camera.position() - eye), 0, "Orbit position disagrees with the view matrix");
-        for (const float yaw : {0.F, 1.F, -2.F, 3.F}) {
-            camera.yaw = yaw;
-            const auto forward = camera.horizontal_forward(), right = camera.horizontal_right();
-            near(forward.y, 0, "Orbit movement must stay horizontal");
-            near(right.y, 0, "Orbit strafe must stay horizontal");
-            near(anima::length(forward), 1, "Orbit forward is not normalized");
-            near(anima::length(right), 1, "Orbit right is not normalized");
-            near(anima::dot(forward, right), 0, "Orbit horizontal axes are not perpendicular");
-            const auto toward = camera.target - camera.position();
-            near(anima::length(forward - anima::normalized(anima::Vec3{toward.x, 0, toward.z})), 0,
-                 "Orbit forward disagrees with its viewing direction");
-            near(anima::length(right - anima::cross(forward, {0, 1, 0})), 0, "Orbit strafe is reversed");
-        }
-        auto ortho = anima::identity();
-        ortho[5] = -1;
-        ortho[10] = -.01F;
-        const anima::Vec3 oe{4, 2, 5}, ot{-1, 0, 1};
-        const auto direction = anima::view_origin(anima::operator*(ortho, anima::look_at(oe, ot)));
-        const auto expected = anima::normalized(oe - ot);
-        near(direction[0], expected.x, "Orthographic direction x incorrect");
-        near(direction[1], expected.y, "Orthographic direction y incorrect");
-        near(direction[2], expected.z, "Orthographic direction z incorrect");
-        near(direction[3], 0, "Orthographic origin must be a direction");
-        bool singular_rejected = false;
-        try {
-            (void)anima::view_origin({});
-        } catch (const std::invalid_argument &) {
-            singular_rejected = true;
-        }
-        require(singular_rejected, "Singular view matrix accepted");
-        camera.orbit(999, 999);
-        camera.zoom(999);
-        require(camera.pitch <= 1.4F && camera.distance >= camera.radius * 1.2F, "Camera exceeded bounds");
-        for (const auto value : camera.matrix(1.5F))
-            require(std::isfinite(value), "Camera produced non-finite matrix");
-        if (argc > 1) {
-            const auto asset = anima::load_glb(argv[1]);
-            require(asset.mesh_nodes > 0 && !asset.vertices.empty(), "External asset has no geometry");
-            require(asset.default_is_bind_pose, "External asset did not load in its bind pose");
-            anima::print_mesh_report(asset);
-        }
-        std::cout
-            << "PASS: all primitives, scene selection/instances, indexed/strided accessors, mirrored TRS, normals, "
-               "materials, CPU skin/inverse binds, malformed data, unsupported features, orbit projection\n";
-        return 0;
-    } catch (const std::exception &error) {
-        std::cerr << "FAIL: " << error.what() << '\n';
-        return 1;
+
+TEST_CASE("A reimport publishes an independent version, and a failed reimport keeps the accepted one") {
+    const Temp temp;
+    const auto reimport_path = fixture(temp, "bind");
+    AssetImports imports(temp.directory);
+    auto imported = imports.add<Asset>(
+        "body", [&](ImportSource &source) { return load_asset(source.read(reimport_path.filename())); });
+    const auto original_import = imported.get();
+    std::filesystem::copy_file(fixture(temp, "animation"), reimport_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    CHECK(imports.refresh() == std::vector<std::string>{"body"});
+    CHECK(imported.revision() == 2);
+    CHECK(imported.get()->animations.size() == 1);
+    CHECK(original_import->animations.empty());
+    std::filesystem::copy_file(fixture(temp, "truncated"), reimport_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    CHECK_THROWS_WITH_AS(imports.refresh(), truncated_glb, std::runtime_error);
+    CHECK(imported.revision() == 2);
+    CHECK(imported.get()->animations.size() == 1);
+}
+
+TEST_CASE("A motion resource animates its hierarchy without a rendering payload") {
+    const Temp temp;
+    const auto motion = load_motion_asset(motion_fixture(temp));
+    CHECK(motion->primitives.empty());
+    CHECK(motion->skins.empty());
+    REQUIRE(motion->animations.size() == 1);
+    const auto moving = sample_pose(*motion, &motion->animations[0], .5);
+    CHECK(moving.world[1][12] == Near{11, tolerance}); // The parent's transform applies.
+    CHECK(moving.world[2][12] == Near{11, tolerance}); // The unkeyed attachment follows the animation.
+    // A bound local pose moves the descendants and keeps their unkeyed rest translation.
+    auto local = moving.local;
+    local[0].translation.x = 20;
+    const auto rebound = pose_from_local(*motion, local);
+    CHECK(rebound.world[2][12] == Near{21, tolerance});
+    CHECK(rebound.world[2][13] == Near{3, tolerance});
+    CHECK_THROWS_WITH_AS(pose_from_local(*motion, std::span<const Transform>(local).first(2)),
+                         "Local pose must cover every asset node", std::invalid_argument);
+}
+
+TEST_CASE("The geometry and motion loaders reject each other's resources") {
+    const Temp temp;
+    CHECK_THROWS_WITH_AS(load_motion_asset(fixture(temp, "animation")),
+                         "Motion resources require animation without geometry, skins or materials", std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_asset(motion_fixture(temp)), "Selected scene contains no renderable triangles",
+                         std::runtime_error);
+}
+
+TEST_CASE("Materials keep their alpha mask, metallic-roughness factors and glTF defaults") {
+    const Temp temp;
+    const auto masked = load_glb(fixture(temp, "mask"));
+    CHECK(masked.material_data.at(0).alpha_mode == AlphaMode::mask);
+    CHECK(masked.material_data[0].alpha_cutoff == Near{.35F, tolerance});
+    CHECK(masked.material_data[0].alpha == Near{.7F, tolerance});
+    CHECK(masked.vertices.at(0).alpha == Near{0, tolerance}); // The vertex colour's alpha.
+    const auto pbr = load_glb(fixture(temp, "pbr"));
+    CHECK(pbr.material_data.at(0).metallic == Near{.7F, tolerance});
+    CHECK(pbr.material_data[0].roughness == Near{.23F, tolerance});
+    // glTF's defaults for factors a material omits.
+    CHECK(pbr.material_data.at(1).metallic == Near{1, tolerance});
+    CHECK(pbr.material_data[1].roughness == Near{1, tolerance});
+    // A primitive without a material uses the spec's default material.
+    const auto implicit = load_glb(fixture(temp, "implicit-material"));
+    CHECK(implicit.material_data.at(implicit.primitives.at(0).material_index).metallic == Near{1, tolerance});
+}
+
+TEST_CASE("The default scene keeps each primitive and instance with its transform, normals and material") {
+    const Temp temp;
+    const auto scene = load_glb(fixture(temp, "instances"));
+    CHECK(scene.mesh_nodes == 2);
+    REQUIRE(scene.primitives.size() == 4);
+    REQUIRE(scene.vertices.size() == 12);
+    CHECK(scene.primitives[0].material_index == 0);
+    CHECK(scene.primitives[1].material_index == 1);
+    CHECK(scene.minimum.x == Near{-4, tolerance}); // The mirrored matrix instance.
+    CHECK(scene.maximum.x == Near{13, tolerance}); // The nested TRS.
+    CHECK(scene.maximum.y == Near{5, tolerance});
+    CHECK(scene.maximum.z == Near{3, tolerance}); // Only the default scene's hierarchy.
+    // Normals transform by the inverse transpose, including under mirrored scale.
+    CHECK(scene.vertices[0].normal.x == Near{0.8320503F, tolerance});
+    CHECK(scene.vertices[0].normal.y == Near{0.5547002F, tolerance});
+    CHECK(scene.vertices[6].normal.x == Near{-0.70710678F, tolerance});
+    // Vertex colours carry each material's base color factor.
+    CHECK(scene.vertices[0].color.x == Near{1, tolerance});
+    CHECK(scene.vertices[3].color.y == Near{1, tolerance});
+}
+
+TEST_CASE("A skin applies its joint's transform, and inverse binds cancel it") {
+    const Temp temp;
+    const auto skinned = load_glb(fixture(temp, "skin"));
+    CHECK(skinned.skinned_vertices == 6);
+    CHECK_FALSE(skinned.default_is_bind_pose);
+    CHECK(skinned.minimum.y == Near{5, tolerance});
+    CHECK(skinned.minimum.x == Near{0, tolerance}); // The skinned mesh node's own transform is ignored.
+    const auto bind = load_glb(fixture(temp, "bind"));
+    CHECK(bind.default_is_bind_pose);
+    CHECK(bind.minimum.y == Near{0, tolerance});
+}
+
+TEST_CASE("A model without clips previews statically, and rejected playback leaves it unchanged") {
+    const Temp temp;
+    (void)fixture(temp, "bind");
+    const auto manifest_path = temp.directory / "bind.asset.json";
+    {
+        std::ofstream output(manifest_path);
+        output << R"({"schema_version":1,"units":"meters","asset_id":"test.bind","model":"bind.glb",
+            "skeleton":{"id":"test.rig","joint_count":1,"bind_signature":")"
+               << std::string(64, '0') << R"("},"clips":[],"equipment":[]})";
+        REQUIRE(bool(output));
     }
+    AssetPreview preview(manifest_path);
+    const auto static_status = preview.status();
+    const auto static_pose = preview.pose().world;
+    CHECK(preview.is_bind());
+    CHECK_FALSE(preview.playback().animation());
+    CHECK(static_status == "Bind pose | static");
+    preview.toggle_play();
+    preview.restart();
+    CHECK(preview.advance(.25).empty());
+    CHECK(preview.is_bind());
+    CHECK(preview.pose().world == static_pose);
+    CHECK(preview.status() == static_status);
+    CHECK_THROWS_WITH_AS(preview.select("Walk"), "Clip has no manifest playback policy: Walk", std::out_of_range);
+    CHECK_THROWS_WITH_AS(preview.seek(.5), "Invalid playback seek", std::invalid_argument);
+    CHECK(preview.is_bind());
+    CHECK(preview.pose().world == static_pose);
+    CHECK(preview.status() == static_status);
+}
+
+TEST_CASE("Imported LINEAR and STEP samplers interpolate as declared") {
+    const Temp temp;
+    for (const auto *kind : {"animation", "step"}) {
+        CAPTURE(kind);
+        const auto animated = load_asset(fixture(temp, kind));
+        REQUIRE(animated->animations.size() == 1);
+        const auto pose = sample_pose(*animated, &animated->animations[0], .5);
+        CHECK(pose.world[1][12] == Near{std::string(kind) == "step" ? 10.F : 11.F, tolerance});
+    }
+}
+
+TEST_CASE("Unsupported animation samplers and channels are rejected with their reason") {
+    const Temp temp;
+    CHECK_THROWS_WITH_AS(
+        load_asset(fixture(temp, "cubic")),
+        "Unsupported animation interpolation: only LINEAR and STEP are implemented (CUBICSPLINE rejected)",
+        std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_asset(fixture(temp, "duplicate-channel")), "Duplicate animation target channel",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_asset(fixture(temp, "bad-times")), "Animation times must increase strictly",
+                         std::runtime_error);
+}
+
+TEST_CASE("Invalid and unsupported GLB content is rejected with its reason") {
+    const Temp temp;
+    // cgltf's validation reports an index beyond the vertices as cgltf_result_data_too_short.
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-index")),
+                         "Validate GLB structure/accessor bounds failed (cgltf 1)", std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-view")), "Buffer view exceeds embedded buffer bounds",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "sparse")), "Sparse accessors are unsupported", std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "extension")), "Required glTF extension is unsupported",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "alpha")), "General alpha BLEND materials are unsupported",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "truncated")), truncated_glb, std::runtime_error);
+}
+
+TEST_CASE("Material factors outside their ranges are rejected by validate_material") {
+    // validate_material owns the factor ranges.
+    const Temp temp;
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-metallic")), invalid_factors, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-roughness")), invalid_factors, std::invalid_argument);
+}
+
+TEST_CASE("A perspective projection maps the near and far planes to Vulkan depths 0 and 1") {
+    const auto projection = perspective(1.5F, 0.1F, 100.F);
+    CHECK((-0.1F * projection[10] + projection[14]) / 0.1F == Near{0, tolerance});
+    CHECK((-100.F * projection[10] + projection[14]) / 100.F == Near{1, tolerance});
+}
+
+TEST_CASE("An orbit camera's view origin and horizontal axes follow its orientation within its bounds") {
+    const Temp temp;
+    const auto scene = load_glb(fixture(temp, "instances"));
+    OrbitCamera camera;
+    camera.frame(scene.minimum, scene.maximum);
+    const auto origin = view_origin(camera.matrix(1.5F));
+    const auto eye = camera.target + Vec3{std::sin(camera.yaw) * std::cos(camera.pitch), std::sin(camera.pitch),
+                                          std::cos(camera.yaw) * std::cos(camera.pitch)} *
+                                         camera.distance;
+    CHECK(origin[0] == Near{eye.x, tolerance});
+    CHECK(origin[1] == Near{eye.y, tolerance});
+    CHECK(origin[2] == Near{eye.z, tolerance});
+    CHECK(origin[3] == Near{1, tolerance}); // A perspective origin is a point.
+    CHECK(length(camera.position() - eye) == Near{0, tolerance});
+    for (const float yaw : {0.F, 1.F, -2.F, 3.F}) {
+        CAPTURE(yaw);
+        camera.yaw = yaw;
+        const auto forward = camera.horizontal_forward(), right = camera.horizontal_right();
+        CHECK(forward.y == Near{0, tolerance});
+        CHECK(right.y == Near{0, tolerance});
+        CHECK(length(forward) == Near{1, tolerance});
+        CHECK(length(right) == Near{1, tolerance});
+        CHECK(dot(forward, right) == Near{0, tolerance});
+        const auto toward = camera.target - camera.position();
+        CHECK(length(forward - normalized(Vec3{toward.x, 0, toward.z})) == Near{0, tolerance});
+        CHECK(length(right - cross(forward, {0, 1, 0})) == Near{0, tolerance}); // Strafing is not reversed.
+    }
+    camera.orbit(999, 999);
+    camera.zoom(999);
+    CHECK(camera.pitch <= 1.4F);
+    CHECK(camera.distance >= camera.radius * 1.2F);
+    for (const auto value : camera.matrix(1.5F))
+        CHECK(std::isfinite(value));
+}
+
+TEST_CASE("An orthographic view origin is the direction toward the camera, and a singular view is rejected") {
+    auto ortho = identity();
+    ortho[5] = -1;
+    ortho[10] = -.01F;
+    const Vec3 oe{4, 2, 5}, ot{-1, 0, 1};
+    const auto direction = view_origin(ortho * look_at(oe, ot));
+    const auto expected = normalized(oe - ot);
+    CHECK(direction[0] == Near{expected.x, tolerance});
+    CHECK(direction[1] == Near{expected.y, tolerance});
+    CHECK(direction[2] == Near{expected.z, tolerance});
+    CHECK(direction[3] == Near{0, tolerance}); // An orthographic origin is a direction.
+    CHECK_THROWS_WITH_AS(view_origin({}), math_error_message(MathErrorCode::singular_projection), MathError);
+}
+
+TEST_CASE(exported_test) {
+    REQUIRE(exported_glb);
+    const auto asset = load_glb(*exported_glb);
+    CHECK(asset.mesh_nodes > 0);
+    CHECK_FALSE(asset.vertices.empty());
+    CHECK(asset.default_is_bind_pose);
+    print_mesh_report(asset);
+}
+
+int main(int argc, char **argv) {
+    doctest::Context context(argc, argv);
+    // exported_import names an exported GLB: the first argument that is not a doctest option.
+    for (int i = 1; i < argc; ++i)
+        if (argv[i][0] != '-') {
+            exported_glb = argv[i];
+            break;
+        }
+    if (!exported_glb)
+        context.addFilter("test-case-exclude", exported_test);
+    return context.run();
 }

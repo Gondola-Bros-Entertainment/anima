@@ -144,6 +144,10 @@ if(ANIMA_BUILD_ASSETS)
         anima_target_defaults(anima_image_decoder_tests)
         add_test(NAME image_decoder COMMAND anima_image_decoder_tests)
         add_executable(anima_asset_tests tests/asset_tests.cpp)
+        # Its own doctest main reads the optional exported GLB argument, so it takes only the
+        # runner's include directory and definition rather than linking anima_test_main.
+        target_include_directories(anima_asset_tests SYSTEM PRIVATE third_party/doctest)
+        target_compile_definitions(anima_asset_tests PRIVATE DOCTEST_CONFIG_VOID_CAST_EXPRESSIONS)
         target_link_libraries(anima_asset_tests PRIVATE anima::assets)
         anima_target_defaults(anima_asset_tests)
         add_test(NAME asset_import COMMAND anima_asset_tests)
