@@ -76,6 +76,27 @@ cmake -S docs -B build/docs
 cmake --build build/docs --target anima_docs
 ```
 
+## Dependencies
+
+Jolt, Box2D and RmlUi are fetched from pinned archives, and SDL, when fetched, from
+a pinned release commit. Each pin is in its `cmake/Anima*.cmake` file and recorded
+in its notes under [third_party](third_party/README.md). To update one:
+
+1. Point the URL or `GIT_TAG` at the new release, keeping the release name in a
+   comment beside a commit, and replace `URL_HASH` with the SHA-256 of the new
+   archive (`cmake -E sha256sum` on the downloaded file).
+2. Update the release, revision and hash in its notes, its license file if the
+   license changed, and any patch it carries; RmlUi's patch must still apply.
+3. Read the upstream release notes for API and behavior changes.
+4. Run the `full` workflow and the CI presets that fetch the dependency
+   (`ci-full-release` and `ci-sanitizers`), and the GPU checks when SDL or RmlUi
+   changes.
+
+Vendored headers under `third_party` are replaced whole at the new revision: update
+their table and SHA-256 list in [third_party/README.md](third_party/README.md) and
+reapply the local changes it records. GitHub Actions are pinned by commit with a
+version comment, and Dependabot proposes their updates.
+
 ## Pull requests
 
 CI builds headless, full and sanitizer configurations on Linux, macOS and Windows,
