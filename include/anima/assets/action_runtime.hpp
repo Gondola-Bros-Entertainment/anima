@@ -128,7 +128,8 @@ struct ActionSample {
 class ActionRuntime {
   public:
     using Definitions = std::map<std::string, ActionDefinition, std::less<>>;
-    /// Decodes @p document for @p motion, retaining @p asset and @p motion.
+    /// Decodes @p document for @p motion, which it retains; the actions pose the model @p motion is
+    /// bound to.
     ///
     /// The document has `schema_version` 1 and 1 to 4096 `actions`. Each action has a unique
     /// `id`, a nonempty list of unique `handling` profiles, `phases`, and optional `roles` (at most
@@ -141,10 +142,8 @@ class ActionRuntime {
     /// not have. Intervals are two numbers in [0, 1]; weight curves are as in weight(). Masks must
     /// exist in @p motion, and a handling layer's clip must use its declared mask.
     ///
-    /// Clips and contact chains must also exist in @p motion. Throws also for a null @p asset or
-    /// @p motion.
-    ActionRuntime(std::shared_ptr<const Asset> asset, std::shared_ptr<const MotionRuntime> motion,
-                  std::string_view document);
+    /// Clips and contact chains must also exist in @p motion. Throws also for a null @p motion.
+    ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document);
     /// Action @p id. Throws `std::out_of_range` for an unknown id.
     const ActionDefinition &definition(std::string_view id) const;
     /// Checks the caller's timing and handling for action @p id.

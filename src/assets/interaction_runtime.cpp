@@ -45,9 +45,9 @@ struct InteractionRuntime::Impl {
                 entry["layers"] = layers.at("layers");
                 action["phases"].push_back(std::move(entry));
             }
-            runtimes_.emplace(id, std::make_shared<ActionRuntime>(
-                                      actor.asset, actor.motion,
-                                      nlohmann::json{{"schema_version", 1}, {"actions", {action}}}.dump()));
+            runtimes_.emplace(id,
+                              std::make_shared<ActionRuntime>(
+                                  actor.motion, nlohmann::json{{"schema_version", 1}, {"actions", {action}}}.dump()));
             roles.push_back({id, actor.asset});
         }
         std::vector<anima::InteractionAttachment> attachments;
