@@ -7,11 +7,9 @@ constexpr double timing_tolerance = 1e-6;
 } // namespace
 struct ActionRuntime::Impl {
   public:
-    Impl(std::shared_ptr<const anima::Asset> asset, std::shared_ptr<const MotionRuntime> motion,
-         const nlohmann::json &document)
-        : asset_(std::move(asset)), motion_(std::move(motion)) {
+    Impl(std::shared_ptr<const MotionRuntime> motion, const nlohmann::json &document) : motion_(std::move(motion)) {
         using namespace presentation_data;
-        if (!asset_ || !motion_)
+        if (!motion_)
             throw std::invalid_argument("Actions require a bound motion resource");
         anima::detail::json_fields(document, {"schema_version", "actions"});
         if (document.at("schema_version") != 1 || !document.at("actions").is_array() ||
@@ -251,15 +249,12 @@ struct ActionRuntime::Impl {
     }
 
   private:
-    std::shared_ptr<const anima::Asset> asset_;
     std::shared_ptr<const MotionRuntime> motion_;
     std::map<std::string, ActionDefinition, std::less<>> actions_;
 };
-ActionRuntime::ActionRuntime(std::shared_ptr<const Asset> asset, std::shared_ptr<const MotionRuntime> motion,
-                             std::string_view document)
-    : impl_(presentation_data::decode_step([&] {
-          return std::make_shared<Impl>(std::move(asset), std::move(motion), presentation_data::parse(document));
-      })) {}
+ActionRuntime::ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document)
+    : impl_(presentation_data::decode_step(
+          [&] { return std::make_shared<Impl>(std::move(motion), presentation_data::parse(document)); })) {}
 ActionWeight ActionRuntime::weight(std::string_view document) {
     return detail::json_step([&] { return Impl::weight(presentation_data::parse(document)); });
 }

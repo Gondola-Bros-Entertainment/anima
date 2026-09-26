@@ -513,7 +513,7 @@ inline void run() {
             {"id":"sustain","duration":0.4,"held":true,"layers":[{"clip":"signal","mask":"port","interval":[0.5,0.5]}]},
             {"id":"release","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[0.5,1]}],"cues":[{"id":"signal.emit","at":0}]},
             {"id":"recover","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[1,0]}]}]}]})";
-        ActionRuntime runtime(actor.actor.asset, motion, actions);
+        ActionRuntime runtime(motion, actions);
         runtime.validate_timing("signal", "port", .2, .6);
         ActionSetCatalog choices(
             R"({"version":1,"sets":{"operator":{"use":[{"action":"signal","requires":["can.signal"]}]}}})", runtime);
@@ -539,9 +539,7 @@ inline void run() {
         auto missing = attachments;
         missing.roles.erase("beacon");
         rejects([&] { validate_attachment_action(runtime, library, missing, "signal"); });
-        rejects([&] {
-            ActionRuntime invalid(actor.actor.asset, motion, R"({"schema_version":1,"schema_version":1,"actions":[]})");
-        });
+        rejects([&] { ActionRuntime invalid(motion, R"({"schema_version":1,"schema_version":1,"actions":[]})"); });
         rejects_as<std::out_of_range>([&] { (void)runtime.definition("absent"); }, "Unknown action: absent");
         rejects_as<std::out_of_range>([&] { (void)motion->clip("absent"); }, "Missing animation: absent");
         rejects_as<std::out_of_range>([&] { (void)motion->metadata("absent"); }, "Unknown base motion/action: absent");
@@ -562,16 +560,12 @@ inline void run() {
         rejects_as<std::out_of_range>([&] { (void)choices.resolve("absent", "use", actor.capabilities); },
                                       "Missing presentation reference: absent");
         rejects_as<std::invalid_argument>(
-            [&] {
-                ActionRuntime unknown(actor.actor.asset, motion,
-                                      with_first(actions, R"("clip":"signal")", R"("clip":"absent")"));
-            },
+            [&] { ActionRuntime unknown(motion, with_first(actions, R"("clip":"signal")", R"("clip":"absent")")); },
             "Missing animation: absent");
         rejects_as<std::invalid_argument>(
             [&] {
                 ActionRuntime unknown(
-                    actor.actor.asset, motion,
-                    with_first(actions, R"("props":[)", R"("contacts":{"absent":[[0,1],[1,1]]},"props":[)"));
+                    motion, with_first(actions, R"("props":[)", R"("contacts":{"absent":[[0,1],[1,1]]},"props":[)"));
             },
             "Unknown motion chain: absent");
         rejects_as<std::invalid_argument>(
