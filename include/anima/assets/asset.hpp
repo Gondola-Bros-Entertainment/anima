@@ -287,12 +287,14 @@ struct Pose {
 /// 1 GiB (268,435,456 texels), which is checked from their headers before any is decoded. Limits:
 /// 4096 nodes, 4096 materials, 4096 textures before the copies that give a texture a second
 /// encoding, 4096 images, 1 to 512 joints per skin, 2,000,000 elements per accessor, 2,000,000
-/// expanded vertices in total and a node depth of 256. Geometry comes from the default scene, else
-/// the first scene, else every root node; it must be triangle lists, reach no node twice and
-/// contain at least one triangle. Skinned primitives need `JOINTS_0` and `WEIGHTS_0`; further
-/// joint sets are rejected. Clips animate translation, rotation or scale with `LINEAR` or `STEP`
-/// keys and cannot target matrix nodes; channels without a target node are ignored, and a clip
-/// whose keys all sit at time 0 is a pose of zero duration.
+/// expanded vertices in total, 8,000,000 animation keys in total and a node depth of 256. Geometry
+/// comes from the default scene, else the first scene, else every root node; it must be triangle
+/// lists, reach no node twice and contain at least one triangle. Skinned primitives need
+/// `JOINTS_0` and `WEIGHTS_0`; further joint sets are rejected. Clips animate translation,
+/// rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix nodes; channels without
+/// a target node are ignored, and a clip whose keys all sit at time 0 is a pose of zero duration.
+/// Every other channel counts its keys toward the key limit, even when it shares its sampler's
+/// accessors with other channels, and the limit is checked before any key is read.
 ///
 /// `KHR_materials_unlit` is the only extension that may be required. A texture with an optional
 /// Basis or WebP source uses its PNG or JPEG source instead, and needs one. External files,
