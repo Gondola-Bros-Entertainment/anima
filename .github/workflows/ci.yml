@@ -7,8 +7,8 @@ on:
   merge_group:
   workflow_dispatch:
   schedule:
-    # A full weekly run on main refreshes the compiler caches that pull requests restore, which merges from
-    # the queue no longer rebuild. It also runs the weekly CodeQL analysis.
+    # A full weekly run on main refreshes the compiler and dependency caches that every run restores, since
+    # merges from the queue no longer rebuild. It also runs the weekly CodeQL analysis.
     - cron: '23 6 * * 2'
 
 permissions:
@@ -193,8 +193,12 @@ jobs:
             echo 'CMAKE_C_COMPILER_LAUNCHER=ccache'
             echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
           } >> "$GITHUB_ENV"
+      # Only runs on main save caches. A run restores caches from its own branch and from main, so a cache
+      # saved for a pull request or the merge queue would serve no other run, and would push main's out of
+      # the repository's cache quota.
       - name: Restore compiler cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: compiler-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-v2-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.preset }}-${{ github.sha }}
@@ -218,6 +222,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/vcpkg-cache
           key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
+          # A runner image with a newer vcpkg starts from the latest binaries; vcpkg reuses each package whose ABI
+          # hash is unchanged.
+          restore-keys: |
+            vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-
       - name: Install Windows dependencies
         if: runner.os == 'Windows' && matrix.profile != 'headless'
         shell: pwsh
@@ -232,12 +240,30 @@ jobs:
           "$installed/tools/shaderc" >> $env:GITHUB_PATH
           "$installed/bin" >> $env:GITHUB_PATH
           "$installed/debug/bin" >> $env:GITHUB_PATH
+      - name: Keep only the installed Windows dependency binaries
+        if: runner.os == 'Windows' && matrix.profile != 'headless'
+        shell: pwsh
+        run: |
+          # A fallback restore also brings archives of older package builds. vcpkg names each archive after its
+          # package's ABI hash and records the hashes it installed, so the cache keeps only those.
+          $status = "$env:VCPKG_INSTALLATION_ROOT/installed/vcpkg/status"
+          $installed = @(Select-String -Path $status -Pattern '^Abi: ([0-9a-f]+)$' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value })
+          if ($installed.Count -eq 0) { throw "vcpkg recorded no package ABI hash in $status" }
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/vcpkg-cache" -Recurse -File -Filter *.zip)
+          $stale = @($archives | Where-Object { $installed -notcontains $_.BaseName })
+          $kept = $archives.Count - $stale.Count
+          if ($kept -lt $installed.Count) { throw "Only $kept of $($installed.Count) installed packages have an archive" }
+          if ($stale.Count) { $stale | Remove-Item }
+          "Kept $kept archives and removed $($stale.Count) that this install did not use"
       - name: Save Windows dependency binaries
-        if: runner.os == 'Windows' && matrix.profile != 'headless' && steps.windows-dependencies.outputs.cache-hit != 'true'
+        if: >-
+          runner.os == 'Windows' && matrix.profile != 'headless' && github.ref == 'refs/heads/main' &&
+          steps.windows-dependencies.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-${{ matrix.profile == 'full' && 'desktop' || 'sanitizers' }}-v1-${{ matrix.os }}-${{ steps.vcpkg.outputs.revision }}
+          key: ${{ steps.windows-dependencies.outputs.cache-primary-key }}
       - name: Reset compiler cache statistics
         run: ccache --zero-stats
       - name: Configure
@@ -280,6 +306,12 @@ jobs:
         run: >-
           ctest --preset "$PRESET" --verbose --timeout 1200
           --label-regex '^consumer-build$'
+      - name: Save compiler cache
+        if: github.ref == 'refs/heads/main' && steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Test independent public APIs
         run: >-
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
