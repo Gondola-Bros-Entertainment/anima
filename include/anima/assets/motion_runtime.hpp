@@ -12,7 +12,7 @@
 /// GLB holds geometry and a skin, and the motion GLB (see load_motion_asset) holds nodes and clips
 /// only; clips that the model carries itself are not used. A version 3 motion contract (a JSON
 /// document; see Manifest::motion_contract) declares the evaluation joints, masks, contact chains,
-/// base clips and handling layers.
+/// base clips and layer clips.
 /// MotionRuntime checks node identity, ancestry and bind pose before transferring motion onto the
 /// model. Evaluated poses are presentation only; they never move a gameplay actor. Callers
 /// supply rig recipes, clip choice and gameplay rules.
@@ -27,9 +27,9 @@
 namespace anima {
 /// One layer for MotionRuntime::evaluate.
 struct MotionLayer {
-    /// Base clip or handling layer to sample.
+    /// Base clip or layer clip to sample.
     std::string clip;
-    /// Contract mask that the layer affects; a handling layer must use its declared mask.
+    /// Contract mask that the layer affects; a layer clip must use its declared mask.
     std::string mask;
     /// Seconds into #clip.
     double time{};
@@ -104,15 +104,15 @@ class MotionRuntime {
     /// `joints` [start, middle, end], `minimum_angle` and `maximum_angle`, as in TwoBoneContact).
     /// `clips` lists the base clips: unique nonempty `name`, `loop`, `events` (`time` and nonempty
     /// `name`, in nondecreasing time within the clip) and optional positive finite
-    /// `reference_speed`. `layers` maps each handling layer to its `mask`, `owned_joints` and
+    /// `reference_speed`. `layers` maps each layer clip to its `mask`, `owned_joints` and
     /// `context_joints`.
     ///
     /// Clips of the model and of the manifest are ignored. Each joint name must name one model
     /// node and one motion node, and every motion node must match a uniquely named model node with
-    /// the same parent name and a rest world matrix within `1e-5`. A layer's `owned_joints` must list
-    /// exactly its mask's joints and `context_joints` their parents outside the mask, and its clip
-    /// may animate only those joints. Every motion clip must be exactly one base clip or layer,
-    /// with at least one base clip.
+    /// the same parent name and a rest world matrix within `1e-5`. A layer clip's `owned_joints`
+    /// must list exactly its mask's joints and `context_joints` their parents outside the mask,
+    /// and the clip may animate only those joints. Every motion clip must be exactly one base clip
+    /// or layer clip, with at least one base clip.
     MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract);
     /// Reads the file that Manifest::motion_contract names beside the manifest and constructs a
     /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
@@ -132,30 +132,30 @@ class MotionRuntime {
     /// Whether one chain's start joint is at or below the other's. Throws `std::out_of_range` for an
     /// unknown chain.
     bool contacts_overlap(std::string_view first, std::string_view second) const;
-    /// Motion clip @p name, a base clip or handling layer. Throws `std::out_of_range` for an unknown
+    /// Motion clip @p name, a base clip or layer clip. Throws `std::out_of_range` for an unknown
     /// name.
     const Animation &clip(std::string_view name) const;
-    /// Metadata of base clip @p name. Throws `std::out_of_range` for handling layers and unknown
-    /// names.
+    /// Metadata of base clip @p name. Throws `std::out_of_range` for layer clips and unknown names.
     const ClipMetadata &metadata(std::string_view name) const;
-    /// Base clips by name, without handling layers.
+    /// Base clips by name, without layer clips.
     const std::map<std::string, ClipMetadata, std::less<>> &clips() const;
-    /// Whether @p name is a handling layer.
+    /// Whether @p name is a layer clip.
     bool is_layer(std::string_view name) const;
-    /// Mask of handling layer @p name. Throws `std::out_of_range` for other names.
+    /// Mask of layer clip @p name. Throws `std::out_of_range` for other names.
     const std::string &layer_mask(std::string_view name) const;
     /// Model pose with clip @p name sampled at @p time seconds, clamped to the clip rather than
     /// looped. Model nodes that the motion lacks keep their rest transforms.
     Pose sample(std::string_view name, double time) const;
-    /// Samples base clip @p motion at @p time and overrides the mask of handling layer @p carry with
-    /// that layer, sampled at the same fraction of its duration. An empty @p carry returns the
+    /// Samples base clip @p motion at @p time and overrides the mask of layer clip @p layer with
+    /// that clip, sampled at the same fraction of its duration. An empty @p layer returns the
     /// sampled pose, with local transforms; otherwise the result is world-only.
-    Pose compose(std::string_view motion, double time, std::string_view carry) const;
-    /// Checks that the masks of the nonempty handling layers in @p carries share no joint. Throws
+    Pose compose(std::string_view motion, double time, std::string_view layer) const;
+    /// Checks that the masks of the nonempty layer clips in @p layers share no joint. Throws
     /// `std::invalid_argument` for overlapping masks and `std::out_of_range` for an unknown layer.
-    void validate_carries(std::span<const std::string_view> carries) const;
-    /// compose() with several carry layers, applied in order after validate_carries().
-    Pose compose_loadout(std::string_view motion, double time, std::span<const std::string_view> carries) const;
+    void validate_layers(std::span<const std::string_view> layers) const;
+    /// compose() with several layer clips, applied in order after validate_layers(); empty names
+    /// are skipped.
+    Pose compose_layers(std::string_view motion, double time, std::span<const std::string_view> layers) const;
     /// Blends two model poses by @p weight in [0, 1] over the evaluation rig. A weight of 0 or 1
     /// returns that input unchanged; otherwise the result is world-only and unmapped nodes follow
     /// @p to.
@@ -164,7 +164,7 @@ class MotionRuntime {
     /// the result so far.
     ///
     /// Empty controls return @p source unchanged; otherwise the pose is world-only. Throws for an
-    /// invalid weight, a handling layer on another mask or an override with a reference clip, and
+    /// invalid weight, a layer clip on another mask or an override with a reference clip, and
     /// `std::out_of_range` for an unknown clip, mask, chain or joint.
     MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 

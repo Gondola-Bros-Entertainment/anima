@@ -13,6 +13,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace anima;
@@ -216,4 +217,25 @@ TEST_CASE("An attachment set prepares as many roles as the caller names") {
     CHECK(prepared.roles.size() == 9);
     CHECK(prepared.matches(desired));
     CHECK(library.resident_assets().size() == 1); // Every role shares the one loaded model.
+}
+
+TEST_CASE("Layer clips compose over a base clip on disjoint masks, and overlapping masks are rejected") {
+    const MotionFixture fixture;
+    const auto runtime = fixture.runtime();
+    const std::array<std::string_view, 2> both{"layer.limb", "layer.side"};
+    const auto composed = runtime.compose_layers("base", .5, both);
+    const auto limb_only = runtime.compose("base", .5, "layer.limb");
+    // Each layer clip is sampled halfway, an eighth turn about +Z, on its own mask only.
+    constexpr float eighth_turn_cosine = .70710678F;
+    CHECK(composed.world[1][0] == Near{eighth_turn_cosine, pose_tolerance});
+    CHECK(composed.world[4][0] == Near{eighth_turn_cosine, pose_tolerance});
+    CHECK(limb_only.world[1][0] == Near{eighth_turn_cosine, pose_tolerance});
+    CHECK(limb_only.world[4][0] == Near{1, pose_tolerance});
+    CHECK(composed.world[0][14] == Near{.5, pose_tolerance}); // The base clip still moves the root.
+    const std::array<std::string_view, 2> overlapping{"layer.limb", "layer.limb"};
+    CHECK_THROWS_WITH_AS(runtime.validate_layers(overlapping), "Motion layers have overlapping joint ownership",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(runtime.compose_layers("base", .5, overlapping),
+                         "Motion layers have overlapping joint ownership", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(runtime.layer_mask("absent"), "Unknown motion layer: absent", std::out_of_range);
 }

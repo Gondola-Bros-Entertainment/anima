@@ -67,7 +67,7 @@ struct ActionRuntime::Impl {
                         layer.weight = weight(l.at("weight"));
                     (void)clip(layer.clip);
                     if (motion_->is_layer(layer.clip) && layer.mask != motion_->layer_mask(layer.clip))
-                        throw std::invalid_argument("Action must respect handling resource ownership");
+                        throw std::invalid_argument("Action layer must use its layer clip's mask");
                     if (l.contains("reference")) {
                         anima::detail::json_fields(l.at("reference"), {"clip", "at"});
                         layer.reference = text(l.at("reference").at("clip"));

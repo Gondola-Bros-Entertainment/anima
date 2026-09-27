@@ -79,7 +79,7 @@ struct MotionRuntime::Impl {
     const std::string &layer_mask(std::string_view name) const {
         const auto found = layers_.find(name);
         if (found == layers_.end())
-            throw std::out_of_range("Unknown handling layer: " + std::string(name));
+            throw std::out_of_range("Unknown motion layer: " + std::string(name));
         return found->second;
     }
     anima::Pose sample(std::string_view name, double time) const {
@@ -90,40 +90,41 @@ struct MotionRuntime::Impl {
         }
         return anima::pose_from_local(*asset_, local);
     }
-    anima::Pose compose(std::string_view motion, double time, std::string_view carry) const {
+    anima::Pose compose(std::string_view motion, double time, std::string_view layer) const {
         (void)metadata(motion);
         auto base = sample(motion, time);
-        if (carry.empty())
+        if (layer.empty())
             return base;
         const auto phase = std::clamp(time / clip(motion).duration, 0., 1.);
-        const auto layer = sample(carry, phase * clip(carry).duration);
-        return rig_.render_pose(base, rig_.layer(rig_.encode(base), rig_.encode(layer), mask_named(layer_mask(carry))));
+        const auto layered = sample(layer, phase * clip(layer).duration);
+        return rig_.render_pose(base,
+                                rig_.layer(rig_.encode(base), rig_.encode(layered), mask_named(layer_mask(layer))));
     }
-    void validate_carries(std::span<const std::string_view> carries) const {
+    void validate_layers(std::span<const std::string_view> layers) const {
         std::vector<float> occupied(rig_.size());
-        for (const auto carry : carries)
-            if (!carry.empty()) {
-                const auto &weights = mask_named(layer_mask(carry));
+        for (const auto layer : layers)
+            if (!layer.empty()) {
+                const auto &weights = mask_named(layer_mask(layer));
                 for (std::size_t i = 0; i < weights.size(); ++i) {
                     if (occupied[i] > 0 && weights[i] > 0)
-                        throw std::invalid_argument("Held carry layers have overlapping joint ownership");
+                        throw std::invalid_argument("Motion layers have overlapping joint ownership");
                     occupied[i] += weights[i];
                 }
             }
     }
-    anima::Pose compose_loadout(std::string_view motion, double time, std::span<const std::string_view> carries) const {
-        validate_carries(carries);
-        if (carries.empty())
+    anima::Pose compose_layers(std::string_view motion, double time, std::span<const std::string_view> layers) const {
+        validate_layers(layers);
+        if (layers.empty())
             return compose(motion, time, {});
-        if (carries.size() == 1)
-            return compose(motion, time, carries.front());
+        if (layers.size() == 1)
+            return compose(motion, time, layers.front());
         auto base = compose(motion, time, {});
         auto evaluated = rig_.encode(base);
         const auto phase = std::clamp(time / clip(motion).duration, 0., 1.);
-        for (const auto carry : carries)
-            if (!carry.empty())
-                evaluated = rig_.layer(evaluated, rig_.encode(sample(carry, phase * clip(carry).duration)),
-                                       mask_named(layer_mask(carry)));
+        for (const auto layer : layers)
+            if (!layer.empty())
+                evaluated = rig_.layer(evaluated, rig_.encode(sample(layer, phase * clip(layer).duration)),
+                                       mask_named(layer_mask(layer)));
         return rig_.render_pose(base, evaluated);
     }
     anima::Pose blend(const anima::Pose &from, const anima::Pose &to, float weight) const {
@@ -272,11 +273,11 @@ struct MotionRuntime::Impl {
                 }
             if (value.at("owned_joints").get<std::set<std::string>>() != owned ||
                 value.at("context_joints").get<std::set<std::string>>() != context || metadata_.contains(name))
-                throw std::invalid_argument("Invalid handling ownership/context");
+                throw std::invalid_argument("Invalid motion layer ownership/context");
             for (const auto &channel : clip(name).channels) {
                 const auto &joint = resource_->nodes[channel.node].name;
                 if (!owned.contains(joint) && !context.contains(joint))
-                    throw std::invalid_argument("Handling resource contains unowned motion");
+                    throw std::invalid_argument("Motion layer animates joints it does not own");
             }
             layers_.emplace(name, mask);
         }
@@ -319,15 +320,15 @@ const std::map<std::string, ClipMetadata, std::less<>> &MotionRuntime::clips() c
 bool MotionRuntime::is_layer(std::string_view name) const { return impl_->is_layer(name); }
 const std::string &MotionRuntime::layer_mask(std::string_view name) const { return impl_->layer_mask(name); }
 Pose MotionRuntime::sample(std::string_view name, double time) const { return impl_->sample(name, time); }
-Pose MotionRuntime::compose(std::string_view motion, double time, std::string_view carry) const {
-    return impl_->compose(motion, time, carry);
+Pose MotionRuntime::compose(std::string_view motion, double time, std::string_view layer) const {
+    return impl_->compose(motion, time, layer);
 }
-void MotionRuntime::validate_carries(std::span<const std::string_view> carries) const {
-    return impl_->validate_carries(carries);
+void MotionRuntime::validate_layers(std::span<const std::string_view> layers) const {
+    return impl_->validate_layers(layers);
 }
-Pose MotionRuntime::compose_loadout(std::string_view motion, double time,
-                                    std::span<const std::string_view> carries) const {
-    return impl_->compose_loadout(motion, time, carries);
+Pose MotionRuntime::compose_layers(std::string_view motion, double time,
+                                   std::span<const std::string_view> layers) const {
+    return impl_->compose_layers(motion, time, layers);
 }
 Pose MotionRuntime::blend(const Pose &from, const Pose &to, float weight) const {
     return impl_->blend(from, to, weight);
