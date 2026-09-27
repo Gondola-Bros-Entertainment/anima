@@ -282,9 +282,13 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
                                    const AttachmentSet &attachments,
                                    const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
                                    bool exclusive_primary = true);
-/// Checks that @p attachments can perform @p action and returns the handling profile to use, as
-/// ActionRuntime::loadout_handling chooses it with the catalog's empty handling. Every required
+/// Checks that @p attachments can perform @p action: the handling profiles of the attached items
+/// must meet the action's required roles (see ActionRuntime::validate_roles), and every required
 /// prop track of the action must be a track of the visual attached for its role.
-std::string validate_attachment_action(const ActionRuntime &runtime, const AttachmentLibrary &library,
-                                       const AttachmentSet &attachments, std::string_view action);
+///
+/// The handling profile that performs the action is the caller's choice, which
+/// ActionRuntime::sample checks. Throws `std::out_of_range` for an unknown action or item, and
+/// `std::invalid_argument` for an unmet role or a missing required track.
+void validate_attachment_action(const ActionRuntime &runtime, const AttachmentLibrary &library,
+                                const AttachmentSet &attachments, std::string_view action);
 } // namespace anima

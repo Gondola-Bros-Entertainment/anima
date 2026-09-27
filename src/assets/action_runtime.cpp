@@ -2,8 +2,6 @@
 #include <anima/assets/action_runtime.hpp>
 namespace anima {
 namespace {
-// Authored and authoritative action durations match within this many seconds.
-constexpr double timing_tolerance = 1e-6;
 constexpr std::size_t maximum_actions = 4096;
 constexpr std::size_t maximum_phase_layers = 8;
 constexpr std::size_t maximum_phase_props = 8;
@@ -132,46 +130,12 @@ struct ActionRuntime::Impl {
             throw std::out_of_range("Unknown action: " + std::string(id));
         return found->second;
     }
-    // Generic caller timing contract: no inventory, damage, class or network rules.
-    void validate_timing(std::string_view id, std::string_view handling, std::optional<double> windup,
-                         double fixed_duration) const {
-        const auto &action = definition(id);
-        if (!std::isfinite(fixed_duration) || fixed_duration <= 0 ||
-            (windup && (!std::isfinite(*windup) || *windup < 0)) || action.timeline.held() != bool(windup) ||
-            !action.handling.contains(handling))
-            throw std::invalid_argument("Gameplay and presentation action modes/handling disagree");
-        if (!windup)
-            return; // Existing timed performances use the duration adapter.
-        double before = 0, duration = 0;
-        bool held = false;
-        for (const auto &phase : action.timeline.phases()) {
-            if (phase.held) {
-                held = true;
-                continue;
-            }
-            if (!held)
-                before += phase.duration;
-            duration += phase.duration;
-        }
-        if (std::abs(before - *windup) > timing_tolerance || std::abs(duration - fixed_duration) > timing_tolerance)
-            throw std::invalid_argument("Held action windup/recovery must match authoritative timing");
-    }
-    std::string loadout_handling(std::string_view id, const std::map<std::string, std::string, std::less<>> &roles,
-                                 std::string_view empty_handling) const {
-        const auto &action = definition(id);
-        for (const auto &[role, profiles] : action.required_roles) {
+    void validate_roles(std::string_view id, const std::map<std::string, std::string, std::less<>> &roles) const {
+        for (const auto &[role, profiles] : definition(id).required_roles) {
             const auto found = roles.find(role);
             if (found == roles.end() || !profiles.contains(found->second))
                 throw std::invalid_argument("Missing or incompatible required action role: " + role);
         }
-        if (roles.empty() && action.handling.contains(empty_handling))
-            return std::string(empty_handling);
-        for (const auto &[role, profile] : roles) {
-            (void)role;
-            if (action.handling.contains(profile))
-                return profile;
-        }
-        throw std::invalid_argument("No equipped handling can perform this action");
     }
     const auto &definitions() const { return actions_; }
     double scale(const ActionRequest &request) const {
@@ -264,14 +228,9 @@ ActionWeight ActionRuntime::weight(std::string_view document) {
     return detail::json_step([&] { return Impl::weight(presentation_data::parse(document)); });
 }
 const ActionDefinition &ActionRuntime::definition(std::string_view id) const { return impl_->definition(id); }
-void ActionRuntime::validate_timing(std::string_view id, std::string_view handling, std::optional<double> windup,
-                                    double fixed_duration) const {
-    return impl_->validate_timing(id, handling, windup, fixed_duration);
-}
-std::string ActionRuntime::loadout_handling(std::string_view id,
-                                            const std::map<std::string, std::string, std::less<>> &roles,
-                                            std::string_view empty_handling) const {
-    return impl_->loadout_handling(id, roles, empty_handling);
+void ActionRuntime::validate_roles(std::string_view id,
+                                   const std::map<std::string, std::string, std::less<>> &roles) const {
+    impl_->validate_roles(id, roles);
 }
 const ActionRuntime::Definitions &ActionRuntime::definitions() const { return impl_->definitions(); }
 double ActionRuntime::scale(const ActionRequest &request) const { return impl_->scale(request); }

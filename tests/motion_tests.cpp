@@ -131,6 +131,16 @@ std::string attachment_catalog() {
         "items":[{"id":"prop","category":"test","visual":"prop","handling":"grip"}]})";
 }
 
+// Two actions on the limb. reach needs a tool role held with the grip profile and may be performed with
+// either profile; twirl needs the tool's visual to have a spin track, which the prop lacks.
+constexpr auto action_catalog = R"({"schema_version":1,"actions":[
+    {"id":"reach","handling":["free","grip"],"roles":{"tool":["grip"]},"phases":[{"id":"extend","duration":0.5,
+      "layers":[{"clip":"layer.limb","mask":"limb","interval":[0,1]}],
+      "props":[{"role":"tool","track":"spin","interval":[0,1],"required":false}]}]},
+    {"id":"twirl","handling":["grip"],"phases":[{"id":"spin","duration":0.5,
+      "layers":[{"clip":"layer.limb","mask":"limb","interval":[0,1]}],
+      "props":[{"role":"tool","track":"spin","interval":[0,1]}]}]}]})";
+
 // A limb model bound to its motion: the motion GLB on disk, the manifest and the contract that names it, and
 // a prop model with a grip socket at the end of the limb.
 struct MotionFixture {
@@ -238,4 +248,32 @@ TEST_CASE("Layer clips compose over a base clip on disjoint masks, and overlappi
     CHECK_THROWS_WITH_AS(runtime.compose_layers("base", .5, overlapping),
                          "Motion layers have overlapping joint ownership", std::invalid_argument);
     CHECK_THROWS_WITH_AS(runtime.layer_mask("absent"), "Unknown motion layer: absent", std::out_of_range);
+}
+
+TEST_CASE("Actions check the roles they require, and the caller chooses the handling profile") {
+    constexpr auto unmet_role = "Missing or incompatible required action role: tool";
+    const MotionFixture fixture;
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    const ActionRuntime actions(motion, action_catalog);
+    // Roles the action does not require are ignored.
+    CHECK_NOTHROW(actions.validate_roles("reach", {{"spare", "free"}, {"tool", "grip"}}));
+    CHECK_THROWS_WITH_AS(actions.validate_roles("reach", {}), unmet_role, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(actions.validate_roles("reach", {{"tool", "free"}}), unmet_role, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(actions.validate_roles("absent", {}), "Unknown action: absent", std::out_of_range);
+
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    const auto held = AttachmentSet::prepare(library, fixture.sockets, {{"tool", "prop"}});
+    CHECK_NOTHROW(validate_attachment_action(actions, library, held, "reach"));
+    CHECK_THROWS_WITH_AS(validate_attachment_action(actions, library, AttachmentSet{}, "reach"), unmet_role,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(validate_attachment_action(actions, library, held, "twirl"),
+                         "Action requires an unavailable attachment role/track", std::invalid_argument);
+    // Either accepted profile performs the action while the tool is held; the runtime does not pick one.
+    const auto base = motion->sample("base", 0);
+    for (const auto *handling : {"free", "grip"}) {
+        CAPTURE(handling);
+        CHECK(actions.sample(base, {"reach", 1, .25, {}, {}}, handling).clock.phase == 0);
+    }
+    CHECK_THROWS_WITH_AS(actions.sample(base, {"reach", 1, .25, {}, {}}, "other"),
+                         "Action is incompatible with this handling profile", std::invalid_argument);
 }
