@@ -46,7 +46,11 @@ std::string changed(std::string text, std::string_view from, std::string_view to
 } // namespace
 
 TEST_CASE("Malformed document text is rejected as std::invalid_argument") {
-    REQUIRE_THROWS_AS(Prefab::deserialize("{", {}, {}), std::invalid_argument);
+    REQUIRE_THROWS_WITH_AS(
+        Prefab::deserialize("{", {}, {}),
+        "[json.exception.parse_error.101] parse error at line 1, column 2: syntax error while parsing object key - "
+        "unexpected end of input; expected string literal",
+        std::invalid_argument);
 }
 
 TEST_CASE("A mistyped document field is rejected as std::invalid_argument") {
@@ -57,7 +61,8 @@ TEST_CASE("A mistyped document field is rejected as std::invalid_argument") {
     const auto at = document.find(name_field);
     REQUIRE(at != std::string::npos);
     document.replace(at, name_field.size(), R"("name": 5)");
-    REQUIRE_THROWS_AS(Prefab::deserialize(document, {}, codecs), std::invalid_argument);
+    REQUIRE_THROWS_WITH_AS(Prefab::deserialize(document, {}, codecs),
+                           "[json.exception.type_error.302] type must be string, but is number", std::invalid_argument);
 }
 
 TEST_CASE("Component state that is not UTF-8 is rejected on output as std::invalid_argument") {
@@ -69,7 +74,8 @@ TEST_CASE("Component state that is not UTF-8 is rejected on output as std::inval
     auto root = scene.create("probe");
     root.add_component<Tag>();
     const auto prefab = Prefab::capture(root, codecs);
-    REQUIRE_THROWS_AS(prefab.serialize({}), std::invalid_argument);
+    REQUIRE_THROWS_WITH_AS(prefab.serialize({}), "[json.exception.type_error.316] invalid UTF-8 byte at index 0: 0xFF",
+                           std::invalid_argument);
 }
 
 TEST_CASE("A number outside the float range is rejected, not narrowed") {
