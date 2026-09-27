@@ -257,8 +257,7 @@ std::uint64_t decode_next_key(const Json &value, std::span<const Prefab::Node> n
         require(!next_key || next_key > node.key.value, "Invalid scene next object key");
     return next_key;
 }
-Decoded decode(std::string_view document, std::string_view kind, const MeshResolver &resolve) {
-    const auto parsed = detail::parse_json(document, maximum_document_bytes);
+Decoded decode_document(const Json &parsed, std::string_view kind, const MeshResolver &resolve) {
     require(parsed.is_object() && parsed.contains("version"), "Invalid scene document");
     require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
             "Unsupported scene document version");
@@ -274,6 +273,94 @@ Decoded decode(std::string_view document, std::string_view kind, const MeshResol
     if (kind == scene_kind)
         next_key = decode_next_key(parsed.at("next_key"), nodes);
     return {std::move(nodes), next_key};
+}
+Decoded decode(std::string_view document, std::string_view kind, const MeshResolver &resolve) {
+    return decode_document(detail::parse_json(document, maximum_document_bytes), kind, resolve);
+}
+std::shared_ptr<Scene> instantiate_scene(const Decoded &decoded, const ComponentCodecs &codecs) {
+    for (const auto &node : decoded.nodes)
+        codecs.validate(node.components);
+    auto scene = std::make_shared<Scene>();
+    detail::ScenePersistence::next_key(*scene, decoded.next_key);
+    (void)instantiate_nodes(*scene, decoded.nodes, nullptr, identity(), &codecs, true);
+    return scene;
+}
+
+// A validated scene set document before any scene exists.
+struct DecodedSet {
+    struct Member {
+        std::string key;
+        Decoded content;
+    };
+    struct Reference {
+        ObjectKey key, object;
+        std::size_t scene;
+    };
+    std::vector<Member> scenes;
+    std::optional<std::size_t> active;
+    std::vector<Reference> references;
+};
+DecodedSet decode_scene_set(const Json &parsed, const MeshResolver &resolve, const ComponentCodecs &codecs) {
+    detail::json_fields(parsed, {"version", "kind", "active", "scenes", "references"});
+    require(parsed.at("version").is_number_integer() && parsed.at("version") == scene_set_version,
+            "Unsupported scene set document version");
+    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == scene_set_kind,
+            "Invalid scene set document kind");
+    const auto &documents = parsed.at("scenes"), &table = parsed.at("references");
+    require(documents.is_array() && documents.size() <= maximum_scenes, "Invalid scene set scene count");
+    require(table.is_array() && table.size() <= maximum_objects, "Invalid scene set reference count");
+
+    DecodedSet result;
+    result.scenes.reserve(documents.size());
+    std::map<std::string, std::size_t, std::less<>> namespaces;
+    std::vector<std::set<ObjectKey>> unmapped;
+    unmapped.reserve(documents.size());
+    MeshResources resources;
+    std::size_t object_count = 0;
+    for (const auto &value : documents) {
+        detail::json_fields(value, {"key", "next_key", "objects"});
+        auto key = value.at("key").get<std::string>();
+        require(!key.empty() && key.size() <= maximum_namespace_bytes && key.find('\0') == std::string::npos,
+                "Invalid scene namespace");
+        require(namespaces.emplace(key, result.scenes.size()).second, "Duplicate scene namespace");
+        const auto &objects = value.at("objects");
+        require(objects.is_array() && objects.size() <= maximum_objects - object_count,
+                "Scene set exceeds the object limit");
+        auto nodes = decode_nodes(objects, false, resolve, resources);
+        object_count += nodes.size();
+        std::set<ObjectKey> keys;
+        for (const auto &node : nodes) {
+            codecs.validate(node.components);
+            keys.insert(node.key);
+        }
+        const auto next_key = decode_next_key(value.at("next_key"), nodes);
+        unmapped.push_back(std::move(keys));
+        result.scenes.push_back({std::move(key), {std::move(nodes), next_key}});
+    }
+    const auto &active = parsed.at("active");
+    if (result.scenes.empty())
+        require(active.is_null(), "Empty scene set has an active scene");
+    else {
+        require(active.is_string(), "Scene set requires an active namespace");
+        const auto found = namespaces.find(active.get_ref<const std::string &>());
+        require(found != namespaces.end(), "Active scene namespace is missing");
+        result.active = found->second;
+    }
+
+    result.references.reserve(table.size());
+    std::set<ObjectKey> reference_keys;
+    require(table.size() == object_count, "Scene set reference table must cover every object");
+    for (const auto &value : table) {
+        detail::json_fields(value, {"key", "scene", "object"});
+        const auto key = ObjectKey::parse(value.at("key").get<std::string>());
+        const auto object = ObjectKey::parse(value.at("object").get<std::string>());
+        require(key.value && reference_keys.insert(key).second, "Null or duplicate scene set reference key");
+        const auto found = namespaces.find(value.at("scene").get<std::string>());
+        require(found != namespaces.end(), "Scene set reference namespace is missing");
+        require(unmapped[found->second].erase(object) == 1, "Missing or duplicate scene set reference target");
+        result.references.push_back({key, object, found->second});
+    }
+    return result;
 }
 } // namespace
 
@@ -393,14 +480,7 @@ std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentC
 }
 std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver &resolve,
                                   const ComponentCodecs &codecs) {
-    const auto decoded = detail::json_step([&] { return decode(document, scene_kind, resolve); });
-    const auto &nodes = decoded.nodes;
-    for (const auto &node : nodes)
-        codecs.validate(node.components);
-    auto scene = std::make_shared<Scene>();
-    detail::ScenePersistence::next_key(*scene, decoded.next_key);
-    (void)instantiate_nodes(*scene, nodes, nullptr, identity(), &codecs, true);
-    return scene;
+    return instantiate_scene(detail::json_step([&] { return decode(document, scene_kind, resolve); }), codecs);
 }
 
 namespace detail {
@@ -455,98 +535,28 @@ std::string serialize_scene_set(SceneSet &scenes, const MeshName &name, const Co
 
 std::unique_ptr<SceneSet> load_scene_set(std::string_view document, const MeshResolver &resolve,
                                          const ComponentCodecs &codecs) {
-    const auto parsed = parse_json(document, maximum_document_bytes);
-    json_fields(parsed, {"version", "kind", "active", "scenes", "references"});
-    require(parsed.at("version").is_number_integer() && parsed.at("version") == scene_set_version,
-            "Unsupported scene set document version");
-    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == scene_set_kind,
-            "Invalid scene set document kind");
-    const auto &documents = parsed.at("scenes"), &table = parsed.at("references");
-    require(documents.is_array() && documents.size() <= maximum_scenes, "Invalid scene set scene count");
-    require(table.is_array() && table.size() <= maximum_objects, "Invalid scene set reference count");
-
-    struct DecodedScene {
-        std::string key;
-        Decoded content;
-    };
-    std::vector<DecodedScene> decoded;
-    decoded.reserve(documents.size());
-    std::map<std::string, std::size_t, std::less<>> namespaces;
-    std::vector<std::set<ObjectKey>> unmapped;
-    unmapped.reserve(documents.size());
-    MeshResources resources;
-    std::size_t object_count = 0;
-    for (const auto &value : documents) {
-        json_fields(value, {"key", "next_key", "objects"});
-        auto key = value.at("key").get<std::string>();
-        require(!key.empty() && key.size() <= maximum_namespace_bytes && key.find('\0') == std::string::npos,
-                "Invalid scene namespace");
-        require(namespaces.emplace(key, decoded.size()).second, "Duplicate scene namespace");
-        const auto &objects = value.at("objects");
-        require(objects.is_array() && objects.size() <= maximum_objects - object_count,
-                "Scene set exceeds the object limit");
-        auto nodes = decode_nodes(objects, false, resolve, resources);
-        object_count += nodes.size();
-        std::set<ObjectKey> keys;
-        for (const auto &node : nodes) {
-            codecs.validate(node.components);
-            keys.insert(node.key);
-        }
-        const auto next_key = decode_next_key(value.at("next_key"), nodes);
-        unmapped.push_back(std::move(keys));
-        decoded.push_back({std::move(key), {std::move(nodes), next_key}});
-    }
-    const auto &active = parsed.at("active");
-    std::optional<std::size_t> active_index;
-    if (decoded.empty())
-        require(active.is_null(), "Empty scene set has an active scene");
-    else {
-        require(active.is_string(), "Scene set requires an active namespace");
-        const auto found = namespaces.find(active.get_ref<const std::string &>());
-        require(found != namespaces.end(), "Active scene namespace is missing");
-        active_index = found->second;
-    }
-
-    struct Reference {
-        ObjectKey key, object;
-        std::size_t scene;
-    };
-    std::vector<Reference> decoded_references;
-    decoded_references.reserve(table.size());
-    std::set<ObjectKey> reference_keys;
-    require(table.size() == object_count, "Scene set reference table must cover every object");
-    for (const auto &value : table) {
-        json_fields(value, {"key", "scene", "object"});
-        const auto key = ObjectKey::parse(value.at("key").get<std::string>());
-        const auto object = ObjectKey::parse(value.at("object").get<std::string>());
-        require(key.value && reference_keys.insert(key).second, "Null or duplicate scene set reference key");
-        const auto found = namespaces.find(value.at("scene").get<std::string>());
-        require(found != namespaces.end(), "Scene set reference namespace is missing");
-        require(unmapped[found->second].erase(object) == 1, "Missing or duplicate scene set reference target");
-        decoded_references.push_back({key, object, found->second});
-    }
-
+    const auto decoded = decode_scene_set(parse_json(document, maximum_document_bytes), resolve, codecs);
     // A complete owner provides cross-scene rollback: all staged identities die
     // before any decoded component is released, including cyclic object links.
     auto staged = std::make_unique<SceneSet>();
     std::vector<SceneRef> selected;
-    selected.reserve(decoded.size());
-    for (const auto &scene : decoded) {
+    selected.reserve(decoded.scenes.size());
+    for (const auto &scene : decoded.scenes) {
         auto created = staged->create(scene.key);
         ScenePersistence::next_key(created.get(), scene.content.next_key);
         (void)instantiate_nodes(created.get(), scene.content.nodes, nullptr, identity(), nullptr, true);
         selected.push_back(created);
     }
-    if (active_index)
-        staged->set_active(selected[*active_index]);
+    if (decoded.active)
+        staged->set_active(selected[*decoded.active]);
     std::vector<ObjectReferences::Entry> entries;
-    entries.reserve(decoded_references.size());
-    for (const auto &reference : decoded_references)
+    entries.reserve(decoded.references.size());
+    for (const auto &reference : decoded.references)
         entries.push_back({reference.key, selected[reference.scene]->find(reference.object)});
     const ObjectReferences references(entries);
     const SceneDriver::Scope scope(*staged);
-    for (std::size_t i = 0; i < decoded.size(); ++i)
-        for (const auto &node : decoded[i].content.nodes)
+    for (std::size_t i = 0; i < decoded.scenes.size(); ++i)
+        for (const auto &node : decoded.scenes[i].content.nodes)
             codecs.restore(selected[i]->find(node.key), node.components, references);
     return staged;
 }
