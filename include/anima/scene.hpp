@@ -325,7 +325,7 @@ class Scene {
 /// the local setters do not invert. A transform change validates the whole affected subtree, then
 /// moves descendants and renderers at once, keeping their animation poses. Its work is proportional
 /// to that subtree, and the scene keeps its working storage, so a change allocates only when it
-/// affects more objects or palette matrices than any earlier one.
+/// affects more objects, palette matrices or mesh primitives than any earlier one.
 class GameObject {
   public:
     /// Invalid handle.

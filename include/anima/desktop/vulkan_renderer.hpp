@@ -233,8 +233,9 @@ struct ResourceStats {
 ///
 /// The GPU mesh cache is keyed by Mesh object: each cached Mesh owns one vertex buffer, one index buffer and
 /// its own material images, even when another Mesh has identical content. Buffers and images are suballocated
-/// from larger device memory blocks, so the device's `maxMemoryAllocationCount`, which Vulkan allows to be as
-/// low as 4096, does not bound how many Meshes can be cached. Once the previous frame finishes,
+/// from larger device memory blocks, except that a large resource, or one the driver asks to place alone, gets
+/// its own allocation. The device's `maxMemoryAllocationCount`, which Vulkan allows to be as low as 4096,
+/// therefore limits only resources placed alone, not how many Meshes can be cached. Once the previous frame finishes,
 /// draw() releases every cached Mesh that only the renderer still references; a draw() that returns early
 /// because the window is not drawable releases nothing. Selection, culling and visibility never evict, and
 /// there is no size budget.
