@@ -131,7 +131,9 @@ function(add_anima_consumer mode target test_name)
     endif()
     target_compile_features(${target} PRIVATE cxx_std_20)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /WX /permissive- /utf-8)
+        # One translation unit compiles every consumer header, which exceeds the default object format's
+        # section limit in Debug.
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive- /utf-8 /bigobj)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
