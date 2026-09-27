@@ -145,6 +145,11 @@ jobs:
             packages+=(libvulkan-dev glslc libx11-dev libxext-dev libxrandr-dev
                        libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libasound2-dev)
           fi
+          if [[ "$PRESET" == ci-full-release ]]; then
+            # Mesa's lavapipe, a software Vulkan driver, runs the gpu label on a virtual X display. Openbox
+            # manages its windows, and xprop shows when it has.
+            packages+=(mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb openbox x11-utils)
+          fi
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y "${packages[@]}"
       - name: Install macOS build dependencies
@@ -267,7 +272,8 @@ jobs:
       - name: Build
         run: cmake --build --preset "$PRESET"
       # The test preset reports failures' output and fails when a step selects no tests; each step adds its
-      # selection and time limit. The gpu label needs a display and a Vulkan driver, which these legs do not set up.
+      # selection and time limit. The gpu label needs a display and a Vulkan driver, so only the lavapipe step
+      # below runs it.
       - name: Test runtime and CLI
         run: >-
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
@@ -285,6 +291,33 @@ jobs:
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           --timeout 60 --label-regex '^consumer-runtime$'
           --fixture-exclude-setup '^consumer_build$'
+      # Each check sets its own time limit. ANIMA_REQUIRE_GPU fails a check that finds no display or device
+      # instead of skipping it. vulkaninfo fails first when the driver does not load, and records the device.
+      # The checks minimize and restore windows, which X11 leaves to the window manager, so they start once
+      # Openbox has announced itself on the root window with _NET_SUPPORTING_WM_CHECK.
+      - name: Test the renderer on lavapipe
+        if: runner.os == 'Linux' && matrix.preset == 'ci-full-release'
+        timeout-minutes: 30
+        env:
+          ANIMA_REQUIRE_GPU: '1'
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+        run: |
+          vulkaninfo --summary
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x1024x24' bash -c '
+            openbox &
+            until xprop -root _NET_SUPPORTING_WM_CHECK | grep "window id" > /dev/null; do
+              kill -0 $! || { echo "Openbox exited before managing the display" >&2; exit 1; }
+              sleep 0.1
+            done
+            exec "$@"
+          ' bash ctest --preset "$PRESET" --label-regex '^gpu$' --fixture-exclude-setup '^consumer_build$'
+      - name: Upload the images of failed GPU comparisons
+        if: failure() && runner.os == 'Linux' && matrix.preset == 'ci-full-release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gpu-checks
+          path: build/ci-full-release/gpu-checks
+          if-no-files-found: ignore
       - name: Compiler cache statistics
         if: always()
         run: ccache --show-stats

@@ -85,8 +85,12 @@ as skipped; set `ANIMA_REQUIRE_GPU=1` to make that a failure. With several Vulka
 drivers installed, choose one with `VK_DRIVER_FILES`. `ctest -L gpu -N -V` shows
 each check's command, which also runs on its own.
 
-For renderer or UI changes, run the label on a GPU, and report the device and driver
-used, and any platform left untested, in the pull request.
+CI runs the label on Linux with Mesa's lavapipe, a software Vulkan driver, under a
+virtual X display. That checks rendering logic and validation on every pull request,
+but not a hardware driver: for renderer or UI changes, also run the label on a GPU,
+and report the device and driver used, and any platform left untested, in the pull
+request. The checks minimize and restore windows, which X11 leaves to the window
+manager, so a virtual display needs one running; CI starts Openbox.
 
 Audio tests use SDL's dummy driver, so they produce no sound and measure no
 latency. Physical input devices, text input methods and display scaling also need
