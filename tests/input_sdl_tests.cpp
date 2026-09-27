@@ -2,6 +2,7 @@
 #include <anima/input_sdl.hpp>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 
@@ -11,11 +12,39 @@ namespace i = anima::input;
 namespace {
 constexpr std::uint32_t window = 8;
 
+// A GUID in the layout SDL builds for a USB gamepad (src/joystick/SDL_joystick.c:2932-2974), with vendor @p vendor.
+SDL_GUID model_guid(Uint8 vendor) {
+    SDL_GUID guid{};
+    guid.data[0] = 0x03;
+    guid.data[4] = vendor;
+    return guid;
+}
+// Stands in for SDL_GetGamepadGUIDForID while gamepads 5 and 9, identical units of one model, and 7, of another,
+// are connected. Like SDL, it returns a zero GUID for an instance it does not report
+// (src/joystick/SDL_joystick.c:3485-3500).
+SDL_GUID connected_guid(std::uint32_t instance) {
+    if (instance == 5 || instance == 9)
+        return model_guid(0x5e);
+    return instance == 7 ? model_guid(0x4c) : SDL_GUID{};
+}
+// Stands in for SDL_GetGamepadGUIDForID once SDL reports no gamepad.
+SDL_GUID no_guid(std::uint32_t) { return SDL_GUID{}; }
 // Converts @p event for the input context of the window, which must accept it.
-i::Event convert(const SDL_Event &event) {
-    const auto converted = i::from_sdl(event, window);
+i::Event convert(const SDL_Event &event, i::SdlGamepadGuid lookup = connected_guid) {
+    const auto converted = i::from_sdl(event, window, lookup);
     REQUIRE(converted);
     return *converted;
+}
+bool converts(const SDL_Event &event, std::uint32_t target = window) {
+    return i::from_sdl(event, target, connected_guid).has_value();
+}
+SDL_Event gamepad_button(SDL_GamepadButton button, bool down, SDL_JoystickID gamepad) {
+    SDL_Event event{};
+    event.type = down ? SDL_EVENT_GAMEPAD_BUTTON_DOWN : SDL_EVENT_GAMEPAD_BUTTON_UP;
+    event.gbutton.which = gamepad;
+    event.gbutton.button = static_cast<Uint8>(button);
+    event.gbutton.down = down;
+    return event;
 }
 // A key event in the window, as SDL_SendKeyboardKeyInternal posts it (src/events/SDL_keyboard.c:638-652).
 SDL_Event key_event(SDL_Scancode code, bool down, SDL_KeyboardID keyboard, bool repeat = false) {
@@ -42,10 +71,10 @@ SDL_Event window_event(SDL_EventType type) {
 TEST_CASE("Key presses in the target window drive actions, without repeats") {
     i::Context c({{"accept", i::ActionType::button, {{{i::ControlKind::key, SDL_SCANCODE_SPACE}}}}});
     auto e = key_event(SDL_SCANCODE_SPACE, true, 3);
-    CHECK_FALSE(i::from_sdl(e, 7)); // Another window's event is filtered out.
+    CHECK_FALSE(converts(e, 7)); // Another window's event is filtered out.
     c.process(convert(e));
     CHECK(c.state("accept").pressed);
-    CHECK_FALSE(i::from_sdl(key_event(SDL_SCANCODE_SPACE, true, 3, true), window));
+    CHECK_FALSE(converts(key_event(SDL_SCANCODE_SPACE, true, 3, true)));
     c.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_LOST)));
     CHECK(c.state("accept").canceled); // SDL focus loss cancels held input.
     c.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_GAINED)));
@@ -62,7 +91,7 @@ TEST_CASE("Keys of every keyboard share SDL's global keyboard, so a key two keyb
     CHECK(pressed.source.device == 0u);
     c.process(pressed);
     CHECK(c.state("back").active);
-    CHECK_FALSE(i::from_sdl(key_event(SDL_SCANCODE_S, true, 4, true), window));
+    CHECK_FALSE(converts(key_event(SDL_SCANCODE_S, true, 4, true)));
     c.process(convert(key_event(SDL_SCANCODE_S, false, 4)));
     // The first release releases the key while keyboard 3 still holds it, as SDL's own key state does.
     CHECK_FALSE(c.state("back").active);
@@ -136,6 +165,41 @@ TEST_CASE("Gamepad axes reach -1 and 1 exactly, and remapping or removing the ga
     CHECK(removed.source.device == 12u);
 }
 
+// SDL posts a gamepad's addition, then its button events under its instance ID (src/joystick/SDL_gamepad.c:4411-4453).
+// Removing it releases its held buttons before posting the removal (src/joystick/SDL_gamepad.c:357-375 and :434-456);
+// the HIDAPI driver drops the instance first (src/joystick/hidapi/SDL_hidapijoystick.c:821-839), so when the
+// application converts those releases, SDL_GetGamepadGUIDForID returns a zero GUID for it. Reconnecting gives the
+// gamepad a new instance ID, since SDL never reuses one (include/SDL3/SDL_joystick.h:96-106).
+TEST_CASE("Gamepad events carry SDL's GUID, so a binding by identity follows its gamepad to a new instance ID") {
+    SDL_Event added{};
+    added.type = SDL_EVENT_GAMEPAD_ADDED;
+    added.gdevice.which = 5;
+    CHECK_FALSE(converts(added));
+    const auto pressed = convert(gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH, true, 5));
+    const auto guid = model_guid(0x5e);
+    CHECK(std::ranges::equal(pressed.source.identity, guid.data)); // Byte for byte, first byte first.
+    i::Binding jump{{i::ControlKind::gamepad_button, SDL_GAMEPAD_BUTTON_SOUTH, i::any_device, pressed.source.identity}};
+    i::Context c({{"jump", i::ActionType::button, {jump}}});
+    c.process(pressed);
+    CHECK(c.state("jump").pressed);
+    const auto released = convert(gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH, false, 5), no_guid);
+    CHECK(released.source.identity == i::DeviceIdentity{});
+    c.process(released);
+    CHECK_FALSE(c.state("jump").active); // A release converted without the GUID still releases the press.
+    SDL_Event removed{};
+    removed.type = SDL_EVENT_GAMEPAD_REMOVED;
+    removed.gdevice.which = 5;
+    c.process(convert(removed, no_guid));
+    c.begin_frame();
+    c.process(convert(gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH, true, 9)));
+    CHECK(c.state("jump").pressed); // The reconnected gamepad matches under its new instance ID.
+    c.process(convert(gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH, false, 9)));
+    c.process(convert(gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH, true, 7)));
+    CHECK_FALSE(c.state("jump").active); // A gamepad of another model does not.
+    // Keys and mouse buttons carry no identity.
+    CHECK(convert(key_event(SDL_SCANCODE_SPACE, true, 3)).source.identity == i::DeviceIdentity{});
+}
+
 // SDL posts button presses from the global mouse outside relative mode (src/events/SDL_mouse.c:991-1003); the touch
 // events it emulates as mouse buttons carry SDL_TOUCH_MOUSEID.
 TEST_CASE("Mouse buttons convert, except touch-emulated ones") {
@@ -151,14 +215,16 @@ TEST_CASE("Mouse buttons convert, except touch-emulated ones") {
     CHECK(convert(e).value == 0);
     e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     e.button.which = SDL_TOUCH_MOUSEID;
-    CHECK_FALSE(i::from_sdl(e, window));
+    CHECK_FALSE(converts(e));
 }
 
-TEST_CASE("Text input is not an action input, and a zero target window is rejected") {
+TEST_CASE("Text input is not an action input, and a zero target window or a null GUID lookup is rejected") {
     SDL_Event e{};
     e.type = SDL_EVENT_TEXT_INPUT;
-    CHECK_FALSE(i::from_sdl(e, window));
-    CHECK_THROWS_WITH_AS(i::from_sdl(e, 0), "SDL input conversion requires a nonzero target window ID",
+    CHECK_FALSE(converts(e));
+    CHECK_THROWS_WITH_AS(i::from_sdl(e, 0, connected_guid), "SDL input conversion requires a nonzero target window ID",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::from_sdl(e, window, nullptr), "SDL input conversion requires a gamepad GUID lookup",
                          std::invalid_argument);
 }
 
@@ -172,7 +238,6 @@ TEST_CASE("Codes beyond each control kind's range are dropped") {
     constexpr Uint8 highest_gamepad_button = 63;
     constexpr Uint8 highest_gamepad_axis = 15;
     constexpr SDL_JoystickID gamepad = 7;
-    const auto converts = [](const SDL_Event &event) { return i::from_sdl(event, window).has_value(); };
     SDL_Event key{};
     key.type = SDL_EVENT_KEY_DOWN;
     key.key.windowID = window;
@@ -248,7 +313,7 @@ TEST_CASE("Converted SDL keys drive a chord across keyboards through removal and
     CHECK_FALSE(shortcuts.state("save").pressed);
     auto elsewhere = key_event(SDL_SCANCODE_S, false, 3);
     elsewhere.key.windowID = window + 1;
-    CHECK_FALSE(i::from_sdl(elsewhere, window));
+    CHECK_FALSE(converts(elsewhere));
     shortcuts.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_GAINED)));
     shortcuts.begin_frame();
     key(SDL_SCANCODE_S, true, 3);
