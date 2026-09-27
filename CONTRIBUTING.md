@@ -38,6 +38,19 @@ sources; an RmlUi override must already carry the patch described in
 [third_party/rmlui](third_party/rmlui/README.md). `ANIMA_TEST_GLB` and
 `ANIMA_TEST_MANIFEST` add regressions against an exported model and its manifest.
 
+### Benchmarks
+
+`anima_scene_benchmarks` times hierarchy construction, bulk destruction and per-frame
+scene work. CTest runs it at 1,024 objects to check each scenario's result. Measure a
+Release build at its default 65,536 objects, the scene document limit, and record the
+machine and configuration with the numbers:
+
+```sh
+cmake -S . -B build/benchmarks -G Ninja -DCMAKE_BUILD_TYPE=Release -DANIMA_BUILD_DESKTOP=OFF
+cmake --build build/benchmarks --target anima_scene_benchmarks
+build/benchmarks/anima_scene_benchmarks --repetitions 5
+```
+
 ### Sanitizers
 
 `ANIMA_ENABLE_SANITIZERS=ON` instruments Anima and its source-built dependencies

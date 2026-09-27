@@ -239,6 +239,13 @@ if(ANIMA_BUILD_ASSETS)
                                   construction scene_set_update idle)
             add_test(NAME scene_destruction_${scenario} COMMAND anima_scene_destruction_tests ${scenario})
         endforeach()
+        add_executable(anima_scene_benchmarks tests/scene_benchmarks.cpp)
+        target_link_libraries(anima_scene_benchmarks PRIVATE anima::assets)
+        anima_target_defaults(anima_scene_benchmarks)
+        # A small count checks every scenario's result; measurements use a Release build and the
+        # default count (CONTRIBUTING.md).
+        add_test(NAME scene_benchmarks COMMAND anima_scene_benchmarks --objects 1024 --repetitions 1)
+        set_tests_properties(scene_benchmarks PROPERTIES LABELS benchmark)
         add_executable(anima_audio_scene_tests tests/audio_scene_tests.cpp)
         target_link_libraries(anima_audio_scene_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_audio_scene_tests)
