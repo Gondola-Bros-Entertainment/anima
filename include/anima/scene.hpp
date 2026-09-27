@@ -64,7 +64,9 @@ struct SceneLifetime {
 ///
 /// Scenes cannot be copied or moved. Mutations validate only the instance data they change, never
 /// whole vertex arrays, and hierarchy traversal is iterative, so depth does not consume the call
-/// stack.
+/// stack. Creating an object takes amortized time independent of the scene's other objects, and
+/// destroying objects takes amortized time proportional to them and their components, apart from a
+/// term logarithmic in the number of free slots each time one is reused or freed.
 ///
 /// Components are ordinary C++ types attached with GameObject::add_component. The scene calls
 /// these optional public hooks only while a component is active (enabled, on an object active in
@@ -284,7 +286,8 @@ class Scene {
     std::shared_ptr<detail::SceneLifetime> lifetime_;
     std::size_t object_count_{};
     std::uint64_t next_key_ = 1; // Zero means exhausted; never wrap/reuse a retired key.
-    std::map<ObjectKey, Id> keys_;
+    // Live objects by ObjectKey::value.
+    std::unordered_map<std::uint64_t, Id> keys_;
     std::vector<Slot> slots_;
     // Min-heap of reusable slots. Its capacity covers every slot, so removal never allocates.
     std::vector<std::size_t> free_slots_;
