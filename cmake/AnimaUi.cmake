@@ -64,6 +64,10 @@ if(ANIMA_BUILD_TESTS)
     else()
         target_link_libraries(anima_ui_document_tests PRIVATE anima::ui_documents RmlUi::Core)
     endif()
+    # Its own doctest main reads the controls document argument, so it takes only the runner's include
+    # directory and definition rather than linking anima_test_main.
+    target_include_directories(anima_ui_document_tests SYSTEM PRIVATE third_party/doctest)
+    target_compile_definitions(anima_ui_document_tests PRIVATE DOCTEST_CONFIG_VOID_CAST_EXPRESSIONS)
     anima_target_defaults(anima_ui_document_tests)
     add_test(NAME ui_documents COMMAND anima_ui_document_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets/controls.rml")
     add_executable(anima_ui_destruction_tests tests/ui_destruction_tests.cpp)
