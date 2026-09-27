@@ -6,6 +6,7 @@
 #include <map>
 #include <span>
 #include <typeindex>
+#include <unordered_map>
 
 /// @file
 /// Scenes of GameObjects with transforms, optional mesh renderers and native C++ components.
@@ -133,10 +134,14 @@ class Scene {
     /// Runs one frame: reconciles lifecycle as synchronize_lifecycle() does, then calls every
     /// participant's `on_update(seconds)`, then every participant's `on_late_update(seconds)`.
     ///
-    /// Participants are the components attached and active at entry; components added or activated
-    /// during the call wait for a later call, and one removed, disabled or deactivated during the
-    /// call skips its remaining hooks. Order within a phase is unspecified. @p seconds is passed
-    /// through unchanged: the application owns accumulation, pausing and time scale.
+    /// Participants are the components attached and active at entry whose types declare any of the
+    /// hooks above; components added or activated during the call wait for a later call, and one
+    /// removed, disabled or deactivated during the call skips its remaining hooks. The call pins each
+    /// participant's value, so one removed during the call is destroyed when the call ends; a
+    /// component without hooks is not pinned. Order within a phase is unspecified. The call visits
+    /// only components whose types declare hooks, so other objects and components add no work.
+    /// @p seconds is passed through unchanged: the application owns accumulation, pausing and time
+    /// scale.
     ///
     /// Throws `std::invalid_argument` unless @p seconds is finite and nonnegative, and
     /// `std::logic_error` while the scene is running component hooks or cleanup, constructing a
@@ -159,7 +164,8 @@ class Scene {
     /// update().
     void synchronize_lifecycle();
     /// Every attachment of component type `T`, including disabled ones and those on inactive
-    /// objects.
+    /// objects. It visits only attachments of `T`, so objects and components of other types add
+    /// no work.
     template <class T> [[nodiscard]] std::vector<ComponentRef<T>> components();
     /// Whether @p id names a live object of this scene.
     [[nodiscard]] bool contains(Id id) const noexcept;
@@ -241,12 +247,24 @@ class Scene {
         std::optional<Pose> pose;
         std::map<std::type_index, std::shared_ptr<detail::ComponentRecord>> components;
     };
+    // Attached components of one type, or every attached component whose type has hooks. Each
+    // record stores its positions; removal moves the last record into the gap, so a list is
+    // sorted again by slot, then type, only when it is read.
+    struct ComponentList {
+        std::vector<std::shared_ptr<detail::ComponentRecord>> records;
+        bool ordered = true;
+    };
     Id id_at(std::size_t index) const noexcept { return {owner_, slots_[index].generation, index}; }
     void link_child(std::size_t parent, std::size_t child) noexcept;
     void unlink_child(std::size_t child) noexcept;
     void release_slot(std::size_t index) noexcept;
     void retire_instance(Slot &entry) noexcept;
     void compact_instances() const noexcept;
+    void index_component(const std::shared_ptr<detail::ComponentRecord> &record);
+    void unindex_component(detail::ComponentRecord &record) noexcept;
+    std::span<const std::shared_ptr<detail::ComponentRecord>> attached_components(std::type_index type);
+    static std::span<const std::shared_ptr<detail::ComponentRecord>> ordered(ComponentList &list,
+                                                                             bool scheduled) noexcept;
     Slot &slot(Id id);
     GameObject create_with_key(ObjectKey key, std::string name, std::shared_ptr<const Mesh> mesh);
     const Slot &slot(Id id) const;
@@ -274,6 +292,8 @@ class Scene {
     // until compact_instances(), which instances() runs first and removal runs once half are null.
     mutable std::vector<Id> active_;
     mutable std::size_t removed_instances_{};
+    std::unordered_map<std::type_index, ComponentList> component_types_;
+    ComponentList scheduled_;
     bool updating_{};
     std::size_t constructing_{};
 };

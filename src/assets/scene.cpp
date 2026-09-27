@@ -198,6 +198,9 @@ void Scene::invalidate() noexcept {
     active_.clear();
     removed_instances_ = 0;
     object_count_ = 0;
+    // The slots still own every record, so dropping the lists destroys no component.
+    component_types_.clear();
+    scheduled_ = {};
     for (auto &entry : slots_)
         for (auto &[type, record] : entry.components) {
             (void)type;
@@ -322,11 +325,11 @@ GameObject Scene::create_with_key(ObjectKey key, std::string name, std::shared_p
     const Id id{owner_, entry.generation, index};
     try {
         keys_.emplace(key, id);
-        auto transform = std::make_shared<detail::ComponentRecord>(object(id));
+        auto transform = std::make_shared<detail::ComponentRecord>(object(id), typeid(ObjectTransform), false);
         transform->value =
             std::make_unique<detail::ComponentBox<ObjectTransform>>(object(id), ObjectTransform(object(id)));
-        transform->attached = true;
-        entry.components.emplace(typeid(ObjectTransform), std::move(transform));
+        entry.components.emplace(typeid(ObjectTransform), transform);
+        index_component(transform);
         if (mesh)
             assign_mesh(id, std::move(mesh));
     } catch (...) {
@@ -377,16 +380,16 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
     // Allocate before publishing. Replacement keeps the object's transform, but
     // resets overrides and uses either the authored initial pose or mesh defaults.
     if (!entry.value.asset) {
-        auto renderer = std::make_shared<detail::ComponentRecord>(object(id));
+        auto renderer = std::make_shared<detail::ComponentRecord>(object(id), typeid(MeshRenderer), false);
         renderer->value = std::make_unique<detail::ComponentBox<MeshRenderer>>(object(id), MeshRenderer(object(id)));
         entry.components.emplace(typeid(MeshRenderer), renderer);
         try {
+            index_component(renderer);
             active_.push_back(id);
         } catch (...) {
             detach_component(id, typeid(MeshRenderer));
             throw;
         }
-        renderer->attached = true;
         entry.instance = active_.size() - 1;
     }
     entry.value = std::move(next);
@@ -477,6 +480,8 @@ void Scene::remove(Id id) {
         // subtree is removed, so they cannot observe partially removed objects.
         for (auto &[type, component] : entry.components) {
             (void)type;
+            if (component->attached)
+                unindex_component(*component);
             component->attached = false;
             component->retired_next = std::move(retired);
             retired = std::move(component);

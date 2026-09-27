@@ -22,6 +22,28 @@ template <class Operation> std::size_t allocated_by(Operation &&operation) {
     return counted_allocation_bytes;
 }
 
+struct Tag {
+    int value{};
+};
+struct Ticking {
+    unsigned *updates;
+    void on_update(double) { ++*updates; }
+};
+
+// Bytes allocated by one update of a scene where @p count objects have only a component without
+// hooks and one more object has a component with an update hook.
+std::size_t sparse_update_bytes(std::size_t count) {
+    anima::Scene scene;
+    for (std::size_t i = 0; i < count; ++i)
+        (void)scene.create().add_component<Tag>();
+    unsigned updates = 0;
+    (void)scene.create().add_component<Ticking>(&updates);
+    scene.update(0); // Delivers the first on_enable, so the measured update only ticks.
+    const auto bytes = allocated_by([&] { scene.update(0); });
+    REQUIRE(updates == 2);
+    return bytes;
+}
+
 // Bytes allocated while @p count new objects are attached to one parent.
 std::size_t wide_attach_bytes(std::size_t count) {
     anima::Scene scene;
@@ -51,4 +73,11 @@ TEST_CASE("Attaching children allocates no more per child as their parent grows"
     // per child at the larger count.
     const auto small = wide_attach_bytes(256), large = wide_attach_bytes(4096);
     CHECK(large <= 16 * small);
+}
+
+TEST_CASE("An update allocates nothing for objects and components without hooks") {
+    // Snapshotting every attached component would allocate for each of the 4,096 extra objects'
+    // transform and tag.
+    const auto small = sparse_update_bytes(16), large = sparse_update_bytes(4096);
+    CHECK(large <= small);
 }
