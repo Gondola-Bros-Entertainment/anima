@@ -17,7 +17,7 @@ option:hover, option:checked { background-color: #5080a0; }
 #clipchild { display: block; width: 160dp; height: 80dp; background-color: #ff0000; }
 #alpha { position: absolute; left: 350dp; top: 120dp; width: 100dp; height: 80dp; background-color: #ffffff80; }
 #transform { position: absolute; left: 350dp; top: 230dp; width: 50dp; height: 30dp; background-color: #00ff00; transform: translate(30dp, 10dp); }
-#image { position: absolute; left: 480dp; top: 230dp; width: 64dp; height: 64dp; }
+#image { position: absolute; left: 480dp; top: 230dp; width: 66dp; height: 66dp; }
 </style></head>
 <body>
 <div id="panel"><h1>Reusable UI</h1>
