@@ -218,30 +218,29 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
 #endif
 } // namespace
 int main(int argc, char **argv) {
+    try {
 #ifdef CONSUMER_RUNTIME
-    runtime_consumer::run();
+        runtime_consumer::run();
 #endif
 #if defined(CONSUMER_UI_DOCUMENTS) || defined(CONSUMER_UI_SCENE)
-    documents_consumer::run();
+        documents_consumer::run();
 #endif
 
 #ifdef CONSUMER_PHYSICS
-    consume_physics();
+        consume_physics();
 #endif
 #ifdef CONSUMER_PHYSICS_SCENE
-    {
-        anima::physics::World physics;
-        anima::Scene scene;
-        auto object = scene.create("independent physics object");
-        object.add_component<anima::physics::RigidBody>(physics);
-        anima::physics::step(scene, physics, 1. / 60);
-        object.destroy();
-        if (physics.size())
-            return 1;
-    }
+        {
+            anima::physics::World physics;
+            anima::Scene scene;
+            auto object = scene.create("independent physics object");
+            object.add_component<anima::physics::RigidBody>(physics);
+            anima::physics::step(scene, physics, 1. / 60);
+            object.destroy();
+            require(physics.size() == 0, "Independent physics scene consumer kept a destroyed object's body");
+        }
 #endif
 
-    try {
         consume_navigation();
         consume_input();
 #ifdef CONSUMER_AUDIO_OUTPUT
