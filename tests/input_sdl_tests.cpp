@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <stdexcept>
 
+// The event sequences below are ones SDL 3.4 can post; the comment above each test names the SDL 3.4.16 source that
+// produces them.
 namespace i = anima::input;
 namespace {
 constexpr std::uint32_t window = 8;
@@ -15,31 +17,102 @@ i::Event convert(const SDL_Event &event) {
     REQUIRE(converted);
     return *converted;
 }
+// A key event in the window, as SDL_SendKeyboardKeyInternal posts it (src/events/SDL_keyboard.c:638-652).
+SDL_Event key_event(SDL_Scancode code, bool down, SDL_KeyboardID keyboard, bool repeat = false) {
+    SDL_Event event{};
+    event.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    event.key.windowID = window;
+    event.key.which = keyboard;
+    event.key.scancode = code;
+    event.key.down = down;
+    event.key.repeat = repeat;
+    return event;
+}
+SDL_Event window_event(SDL_EventType type) {
+    SDL_Event event{};
+    event.type = type;
+    event.window.windowID = window;
+    return event;
+}
 } // namespace
 
+// SDL posts a repeat for a press of a key it already holds, such as the system's auto-repeat
+// (src/events/SDL_keyboard.c:550-556). A focus loss with the key still held is what SDL posts when focus moves to
+// another of the application's windows, which resets no keys (src/events/SDL_keyboard.c:348-356).
 TEST_CASE("Key presses in the target window drive actions, without repeats") {
     i::Context c({{"accept", i::ActionType::button, {{{i::ControlKind::key, SDL_SCANCODE_SPACE}}}}});
-    SDL_Event e{};
-    e.type = SDL_EVENT_KEY_DOWN;
-    e.key.windowID = window;
-    e.key.scancode = SDL_SCANCODE_SPACE;
-    e.key.which = 3;
+    auto e = key_event(SDL_SCANCODE_SPACE, true, 3);
     CHECK_FALSE(i::from_sdl(e, 7)); // Another window's event is filtered out.
     c.process(convert(e));
     CHECK(c.state("accept").pressed);
-    e.key.repeat = true;
-    CHECK_FALSE(i::from_sdl(e, window));
-    e = {};
-    e.type = SDL_EVENT_WINDOW_FOCUS_LOST;
-    e.window.windowID = window;
-    c.process(convert(e));
+    CHECK_FALSE(i::from_sdl(key_event(SDL_SCANCODE_SPACE, true, 3, true), window));
+    c.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_LOST)));
     CHECK(c.state("accept").canceled); // SDL focus loss cancels held input.
-    e.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
-    c.process(convert(e));
+    c.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_GAINED)));
     CHECK(c.focused());
 }
 
-TEST_CASE("Gamepad axes reach -1 and 1 exactly, and removing the gamepad disconnects it") {
+// Windows raw keyboard input posts each key under its keyboard's device handle
+// (src/video/windows/SDL_windowsevents.c:735-794). SDL keeps one state per scancode for all keyboards, so it posts
+// keyboard 4's press of the S keyboard 3 holds as a repeat (src/events/SDL_keyboard.c:550-556), posts keyboard 4's
+// release, and drops keyboard 3's release of the released key (src/events/SDL_keyboard.c:559-561).
+TEST_CASE("Keys of every keyboard share SDL's global keyboard, so a key two keyboards hold never sticks") {
+    i::Context c({{"back", i::ActionType::button, {{{i::ControlKind::key, SDL_SCANCODE_S}}}}});
+    const auto pressed = convert(key_event(SDL_SCANCODE_S, true, 3));
+    CHECK(pressed.source.device == 0u);
+    c.process(pressed);
+    CHECK(c.state("back").active);
+    CHECK_FALSE(i::from_sdl(key_event(SDL_SCANCODE_S, true, 4, true), window));
+    c.process(convert(key_event(SDL_SCANCODE_S, false, 4)));
+    // The first release releases the key while keyboard 3 still holds it, as SDL's own key state does.
+    CHECK_FALSE(c.state("back").active);
+    CHECK(c.state("back").released);
+    CHECK_FALSE(c.state("back").canceled);
+    c.begin_frame();
+    c.process(convert(key_event(SDL_SCANCODE_S, true, 3)));
+    CHECK(c.state("back").pressed); // SDL dropped keyboard 3's release, so its next press is a fresh one.
+}
+
+// Windows raw keyboard input posts the press under the keyboard's device handle
+// (src/video/windows/SDL_windowsevents.c:735-794). Entering a window's modal move or resize loop resets the keyboard
+// without a focus change (src/video/windows/SDL_windowsevents.c:1920-1922), and SDL_ResetKeyboard posts the release
+// under SDL_GLOBAL_KEYBOARD_ID, 0 (src/events/SDL_keyboard.c:224-237).
+TEST_CASE("A key SDL resets on its global keyboard releases a press made under a keyboard's own ID") {
+    constexpr SDL_KeyboardID raw_keyboard = 0x10043;
+    i::Context c({{"forward", i::ActionType::button, {{{i::ControlKind::key, SDL_SCANCODE_W}}}}});
+    c.process(convert(key_event(SDL_SCANCODE_W, true, raw_keyboard)));
+    CHECK(c.state("forward").active);
+    c.process(convert(key_event(SDL_SCANCODE_W, false, 0)));
+    CHECK_FALSE(c.state("forward").active);
+    CHECK(c.state("forward").released);
+}
+
+// Windows' default message loop posts every key under SDL_GLOBAL_KEYBOARD_ID
+// (src/video/windows/SDL_windowsevents.c:1594-1596), while its hotplug check adds and removes keyboards under their
+// raw input handles (src/video/windows/SDL_windowsevents.c:1058-1090). SDL posts the removal without releasing any
+// key (src/events/SDL_keyboard.c:150-170).
+TEST_CASE("Removing any keyboard releases every key") {
+    constexpr SDL_KeyboardID removed = 0x2002b;
+    i::Context c({{"forward", i::ActionType::button, {{{i::ControlKind::key, SDL_SCANCODE_W}}}}});
+    c.process(convert(key_event(SDL_SCANCODE_W, true, 0)));
+    CHECK(c.state("forward").active);
+    SDL_Event event{};
+    event.type = SDL_EVENT_KEYBOARD_REMOVED;
+    event.kdevice.which = removed;
+    const auto disconnect = convert(event);
+    CHECK(disconnect.type == i::EventType::disconnect);
+    CHECK(disconnect.source.kind == i::ControlKind::key);
+    CHECK(disconnect.source.device == 0u);
+    c.process(disconnect);
+    CHECK_FALSE(c.state("forward").active);
+    CHECK(c.state("forward").released);
+    CHECK_FALSE(c.state("forward").canceled);
+}
+
+// SDL posts gamepad axis motion through the gamepad's mapping (src/joystick/SDL_gamepad.c:4395-4409). When a new
+// mapping applies to an open gamepad, SDL loads it without releasing any control and posts the remapping
+// (src/joystick/SDL_gamepad.c:685-690, :1990-2025 and :458-470).
+TEST_CASE("Gamepad axes reach -1 and 1 exactly, and remapping or removing the gamepad disconnects it") {
     i::Context c({{"stick", i::ActionType::axis, {{{i::ControlKind::gamepad_axis, SDL_GAMEPAD_AXIS_LEFTX}}}}});
     SDL_Event e{};
     e.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
@@ -52,12 +125,19 @@ TEST_CASE("Gamepad axes reach -1 and 1 exactly, and removing the gamepad disconn
     c.process(convert(e));
     CHECK(c.state("stick").value.x == 1);
     e = {};
-    e.type = SDL_EVENT_GAMEPAD_REMOVED;
+    e.type = SDL_EVENT_GAMEPAD_REMAPPED;
     e.gdevice.which = 12;
     c.process(convert(e));
     CHECK(c.state("stick").value.x == 0);
+    e.type = SDL_EVENT_GAMEPAD_REMOVED;
+    const auto removed = convert(e);
+    CHECK(removed.type == i::EventType::disconnect);
+    CHECK(removed.source.kind == i::ControlKind::gamepad_button);
+    CHECK(removed.source.device == 12u);
 }
 
+// SDL posts button presses from the global mouse outside relative mode (src/events/SDL_mouse.c:991-1003); the touch
+// events it emulates as mouse buttons carry SDL_TOUCH_MOUSEID.
 TEST_CASE("Mouse buttons convert, except touch-emulated ones") {
     SDL_Event e{};
     e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
@@ -83,7 +163,9 @@ TEST_CASE("Text input is not an action input, and a zero target window is reject
 }
 
 // The highest code of each documented ControlKind range converts. One past it, as an unusual device can
-// report, is dropped rather than thrown, so the application's event pump keeps running.
+// report, is dropped rather than thrown, so the application's event pump keeps running. SDL 3.4 itself posts
+// gamepad buttons and axes only below SDL_GAMEPAD_BUTTON_COUNT and SDL_GAMEPAD_AXIS_COUNT, so these gamepad codes
+// stand for a later SDL whose headers the converter also accepts.
 TEST_CASE("Codes beyond each control kind's range are dropped") {
     constexpr int highest_key = 511;
     constexpr Uint8 highest_mouse_button = 32;
@@ -121,30 +203,29 @@ TEST_CASE("Codes beyond each control kind's range are dropped") {
     CHECK_FALSE(converts(axis));
 }
 
-TEST_CASE("Converted SDL keys drive a chord per keyboard through removal and focus changes") {
+// Keys arrive under per-keyboard IDs, as Windows raw keyboard input posts them
+// (src/video/windows/SDL_windowsevents.c:735-794), and SDL merges them into one state per scancode
+// (src/events/SDL_keyboard.c:548-567). SDL posts the removal of keyboard 4 without releasing keys
+// (src/events/SDL_keyboard.c:150-170), so keyboard 3's keys stay held in SDL and their next key-ups are posted. The
+// focus loss is one SDL posts when focus moves to another of the application's windows, which resets no keys
+// (src/events/SDL_keyboard.c:348-356); S is released there, so its key-up carries the other window's ID.
+TEST_CASE("Converted SDL keys drive a chord across keyboards through removal and focus changes") {
     i::Binding save{{i::ControlKind::key, SDL_SCANCODE_S}};
     save.modifiers = {{i::ControlKind::key, SDL_SCANCODE_LCTRL}};
     i::Context shortcuts({{"save", i::ActionType::button, {save}}});
     const auto key = [&](SDL_Scancode code, bool down, SDL_KeyboardID device) {
-        SDL_Event event{};
-        event.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-        event.key.windowID = window;
-        event.key.which = device;
-        event.key.scancode = code;
-        shortcuts.process(convert(event));
+        shortcuts.process(convert(key_event(code, down, device)));
     };
     key(SDL_SCANCODE_S, true, 3);
     CHECK_FALSE(shortcuts.state("save").active); // The shortcut needs its modifier.
     key(SDL_SCANCODE_LCTRL, true, 4);
-    CHECK_FALSE(shortcuts.state("save").active); // Separate keyboards do not combine.
-    key(SDL_SCANCODE_LCTRL, true, 3);
-    CHECK(shortcuts.state("save").pressed); // The modifier activates an already held primary.
+    CHECK(shortcuts.state("save").pressed); // SDL's keyboards share one key state, so they combine.
     shortcuts.begin_frame();
-    key(SDL_SCANCODE_LCTRL, false, 3);
+    key(SDL_SCANCODE_LCTRL, false, 4);
     CHECK(shortcuts.state("save").released);
     CHECK_FALSE(shortcuts.state("save").canceled);
-    key(SDL_SCANCODE_S, true, 4);
-    // The second keyboard completes the chord, and both edges stay latched.
+    key(SDL_SCANCODE_LCTRL, true, 3);
+    // Keyboard 3's modifier completes the chord again, and both edges stay latched.
     CHECK(shortcuts.state("save").active);
     CHECK(shortcuts.state("save").pressed);
     CHECK(shortcuts.state("save").released);
@@ -153,23 +234,30 @@ TEST_CASE("Converted SDL keys drive a chord per keyboard through removal and foc
     event.type = SDL_EVENT_KEYBOARD_REMOVED;
     event.kdevice.which = 4;
     shortcuts.process(convert(event));
-    CHECK_FALSE(shortcuts.state("save").active); // Removing that keyboard releases its chord.
+    // Removing any keyboard releases every key, including keyboard 3's.
+    CHECK_FALSE(shortcuts.state("save").active);
     CHECK(shortcuts.state("save").released);
+    CHECK_FALSE(shortcuts.state("save").canceled);
+    key(SDL_SCANCODE_S, false, 3);
+    key(SDL_SCANCODE_LCTRL, false, 3);
     key(SDL_SCANCODE_LCTRL, true, 3);
-    CHECK(shortcuts.state("save").active); // The other keyboard kept its primary.
-    event = {};
-    event.type = SDL_EVENT_WINDOW_FOCUS_LOST;
-    event.window.windowID = window;
-    shortcuts.process(convert(event));
+    key(SDL_SCANCODE_S, true, 3);
+    CHECK(shortcuts.state("save").active); // Keyboard 3's keys count again once pressed again.
+    shortcuts.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_LOST)));
     CHECK(shortcuts.state("save").canceled);
     CHECK_FALSE(shortcuts.state("save").pressed);
-    event.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
-    shortcuts.process(convert(event));
+    auto elsewhere = key_event(SDL_SCANCODE_S, false, 3);
+    elsewhere.key.windowID = window + 1;
+    CHECK_FALSE(i::from_sdl(elsewhere, window));
+    shortcuts.process(convert(window_event(SDL_EVENT_WINDOW_FOCUS_GAINED)));
     shortcuts.begin_frame();
     key(SDL_SCANCODE_S, true, 3);
     CHECK_FALSE(shortcuts.state("save").active); // Regaining focus replays no held modifier.
 }
 
+// SDL reports a mouse button's `which` as 0 outside relative mode and as the mouse instance inside it
+// (src/events/SDL_mouse.c:991-1003), and posts a mouse's removal without releasing its buttons
+// (src/events/SDL_mouse.c:357-392).
 TEST_CASE("Mouse buttons report on SDL's global mouse, keeping presses paired across relative mode") {
     i::Context look({{"look", i::ActionType::button, {{{i::ControlKind::mouse_button, SDL_BUTTON_RIGHT}}}}});
     const auto button = [&](bool down, SDL_MouseID which) {
@@ -182,7 +270,6 @@ TEST_CASE("Mouse buttons report on SDL's global mouse, keeping presses paired ac
         look.process(converted);
         return converted.source.device;
     };
-    // SDL reports `which` as 0 outside relative mode and as the mouse instance inside it.
     button(true, 0);
     CHECK(look.state("look").active);
     button(false, 5);

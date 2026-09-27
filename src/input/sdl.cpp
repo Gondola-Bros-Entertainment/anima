@@ -12,6 +12,11 @@ namespace {
 // inside it, and toggling the mode sends no releases, so one physical button can arrive under two IDs.
 // Reporting every mouse button on SDL's global mouse (ID 0) keeps each press and release paired.
 constexpr std::uint32_t global_mouse = 0;
+// SDL keeps one pressed state per scancode for all keyboards: a second keyboard's press of a held key arrives as
+// a repeat, and the release of a released key is dropped. SDL also releases keys under its global keyboard (ID 0)
+// when it resets them, though their presses can carry a keyboard's own ID. Reporting every key on the global
+// keyboard keeps each press and release paired, as SDL's own key state does.
+constexpr std::uint32_t global_keyboard = 0;
 } // namespace
 std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
     if (!window)
@@ -24,7 +29,7 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
         if (e.key.windowID == window && !e.key.repeat && e.key.scancode > SDL_SCANCODE_UNKNOWN &&
             static_cast<unsigned>(e.key.scancode) <= limits::key_code)
             result = Event{EventType::control,
-                           {ControlKind::key, static_cast<std::uint16_t>(e.key.scancode), e.key.which},
+                           {ControlKind::key, static_cast<std::uint16_t>(e.key.scancode), global_keyboard},
                            e.type == SDL_EVENT_KEY_DOWN ? 1.F : 0.F};
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -56,7 +61,8 @@ std::optional<Event> from_sdl(const SDL_Event &e, std::uint32_t window) {
         result = Event{EventType::disconnect, {ControlKind::gamepad_button, 0, e.gdevice.which}, 0};
         break;
     case SDL_EVENT_KEYBOARD_REMOVED:
-        result = Event{EventType::disconnect, {ControlKind::key, 0, e.kdevice.which}, 0};
+        // SDL releases no keys when a keyboard is removed, and every key is held on the global keyboard.
+        result = Event{EventType::disconnect, {ControlKind::key, 0, global_keyboard}, 0};
         break;
     case SDL_EVENT_MOUSE_REMOVED:
         // SDL releases no buttons when a mouse is removed, and every button is held on the global mouse.

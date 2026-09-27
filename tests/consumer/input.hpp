@@ -96,5 +96,18 @@ inline void consume_input() {
     actions.process(*i::from_sdl(event, 1));
     if (!actions.state("save").released || actions.state("save").canceled)
         throw std::runtime_error("Independent SDL Ctrl release failed to release the chord");
+    // SDL keeps one key state for all keyboards, so keyboard 4's Ctrl completes keyboard 3's chord, and removing
+    // any keyboard releases every key, since SDL sends no key releases for it.
+    event.type = SDL_EVENT_KEY_DOWN;
+    event.key.which = 4;
+    actions.process(*i::from_sdl(event, 1));
+    if (!actions.state("save").active)
+        throw std::runtime_error("Independent SDL keyboards did not share their key state");
+    event = {};
+    event.type = SDL_EVENT_KEYBOARD_REMOVED;
+    event.kdevice.which = 4;
+    actions.process(*i::from_sdl(event, 1));
+    if (actions.state("save").active || actions.state("save").canceled)
+        throw std::runtime_error("Independent SDL keyboard removal did not release its keys");
 #endif
 }
