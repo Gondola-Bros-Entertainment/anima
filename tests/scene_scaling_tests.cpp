@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -20,6 +21,21 @@ template <class Operation> std::size_t allocated_by(Operation &&operation) {
     operation();
     counting_allocations = false;
     return counted_allocation_bytes;
+}
+
+// A one-triangle mesh with one node.
+std::shared_ptr<const anima::Mesh> triangle() {
+    anima::Asset source;
+    source.nodes.resize(1);
+    anima::SourcePrimitive primitive;
+    for (const auto corner : {anima::Vec3{0, 0, 0}, anima::Vec3{1, 0, 0}, anima::Vec3{0, 1, 0}}) {
+        anima::SourceVertex vertex;
+        vertex.position = corner;
+        vertex.normal = {0, 0, 1};
+        primitive.vertices.push_back(vertex);
+    }
+    source.primitives.push_back(primitive);
+    return anima::Mesh::compile(source);
 }
 
 struct Tag {
@@ -80,4 +96,27 @@ TEST_CASE("An update allocates nothing for objects and components without hooks"
     // transform and tag.
     const auto small = sparse_update_bytes(16), large = sparse_update_bytes(4096);
     CHECK(large <= small);
+}
+
+TEST_CASE("Moving rendered objects and hierarchies allocates nothing after a move as large") {
+    const auto mesh = triangle();
+    anima::Scene scene;
+    auto root = scene.create("Root", mesh);
+    std::vector<anima::GameObject> children;
+    for (unsigned i = 0; i < 64; ++i) {
+        children.push_back(scene.create({}, mesh));
+        children.back().set_parent(root);
+    }
+    root.set_position({1, 0, 0}); // The largest move, which sizes the scene's working storage.
+    const auto bytes = allocated_by([&] {
+        for (unsigned i = 2; i < 10; ++i) {
+            root.set_position({static_cast<float>(i), 0, 0});
+            for (auto &child : children)
+                child.set_position({static_cast<float>(i), static_cast<float>(i), 0});
+        }
+    });
+    CHECK(bytes == 0);
+    // The moves were published: the last child's triangle starts at (9, 9).
+    CHECK(children.back().renderer().bounds().minimum.x > 8.9F);
+    CHECK(children.back().renderer().bounds().minimum.y > 8.9F);
 }
