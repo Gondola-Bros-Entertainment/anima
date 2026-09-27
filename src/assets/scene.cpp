@@ -196,6 +196,7 @@ void Scene::invalidate() noexcept {
     lifetime_->scene = nullptr;
     keys_.clear();
     active_.clear();
+    removed_instances_ = 0;
     object_count_ = 0;
     for (auto &entry : slots_)
         for (auto &[type, record] : entry.components) {
@@ -357,9 +358,10 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
     auto &entry = slot(id);
     require(mesh || !initial_pose, "An initial pose requires a mesh");
     if (!mesh) {
+        if (entry.value.asset)
+            retire_instance(entry);
         entry.value = {};
         entry.pose.reset();
-        std::erase(active_, id);
         detach_component(id, typeid(MeshRenderer));
         return;
     }
@@ -385,6 +387,7 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
             throw;
         }
         renderer->attached = true;
+        entry.instance = active_.size() - 1;
     }
     entry.value = std::move(next);
     entry.value.active = entry.active_hierarchy;
@@ -415,6 +418,30 @@ void Scene::unlink_child(std::size_t child) noexcept {
         slots_[entry.next_sibling].previous_sibling = entry.previous_sibling;
     entry.previous_sibling = entry.next_sibling = no_slot;
 }
+void Scene::retire_instance(Slot &entry) noexcept {
+    active_[entry.instance] = Id{};
+    entry.instance = no_slot;
+    // Compacting once half the entries are null keeps removal amortized constant time and the
+    // list at most twice the renderer count, even when instances() is never called.
+    if (++removed_instances_ > active_.size() / 2)
+        compact_instances();
+}
+void Scene::compact_instances() const noexcept {
+    // Keeps the order renderers were added, as erasing each one in place did.
+    std::size_t kept = 0;
+    for (const auto id : active_)
+        if (id != Id{}) {
+            slots_[id.slot].instance = kept;
+            active_[kept++] = id;
+        }
+    active_.erase(active_.begin() + static_cast<std::ptrdiff_t>(kept), active_.end());
+    removed_instances_ = 0;
+}
+std::span<const Scene::Id> Scene::instances() const {
+    if (removed_instances_)
+        compact_instances();
+    return active_;
+}
 void Scene::release_slot(std::size_t index) noexcept {
     free_slots_.push_back(index); // Within the capacity reserved when the slot was created.
     std::push_heap(free_slots_.begin(), free_slots_.end(), std::greater<>{});
@@ -437,6 +464,8 @@ void Scene::remove(Id id) {
         const auto parent = entry.parent;
         if (parent)
             unlink_child(current);
+        if (entry.value.asset)
+            retire_instance(entry);
         entry.value = {};
         entry.name.clear();
         keys_.erase(entry.key);
@@ -465,7 +494,6 @@ void Scene::remove(Id id) {
             break;
         current = parent->slot;
     }
-    std::erase_if(active_, [this](Id candidate) { return !contains(candidate); });
     const bool was_updating = std::exchange(updating_, true);
     while (retired) {
         auto next = std::move(retired->retired_next);
@@ -704,7 +732,7 @@ void Scene::set_primitive_visible(Id id, std::size_t primitive, bool visible) {
 }
 RenderBounds Scene::bounds() const {
     RenderBounds result;
-    for (auto id : active_) {
+    for (auto id : instances()) {
         const auto &value = instance(id);
         if (!value.visible || !value.active)
             continue;
@@ -718,7 +746,8 @@ RenderBounds Scene::bounds() const {
 }
 MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     std::size_t corners = 0;
-    for (auto id : active_) {
+    const auto objects = instances();
+    for (auto id : objects) {
         const auto size = instance(id).asset->indices().size();
         require(size <= std::numeric_limits<std::size_t>::max() - corners, "Snapshot vertex overflow");
         corners += size;
@@ -727,7 +756,7 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     MeshSnapshot result;
     result.vertices.reserve(corners);
     RenderBounds bounds;
-    for (auto id : active_) {
+    for (auto id : objects) {
         const auto &value = instance(id);
         const auto &asset = *value.asset;
         const auto &description = *asset.materials();

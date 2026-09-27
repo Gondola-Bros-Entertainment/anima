@@ -197,7 +197,7 @@ class Scene {
     [[nodiscard]] const Instance &instance(Id id) const;
     /// Objects that have renderers, including hidden ones and those on inactive objects. Borrowed
     /// until the scene next changes.
-    [[nodiscard]] std::span<const Id> instances() const { return active_; }
+    [[nodiscard]] std::span<const Id> instances() const;
     /// Union of the bounds of visible primitives of visible renderers on active objects; invalid
     /// when there are none.
     [[nodiscard]] RenderBounds bounds() const;
@@ -236,6 +236,8 @@ class Scene {
         // Children in attachment order, linked through slot indices; no_slot ends a list.
         std::size_t first_child = no_slot, last_child = no_slot;
         std::size_t previous_sibling = no_slot, next_sibling = no_slot;
+        // Position in active_ while the object has a renderer; compact_instances() moves it.
+        mutable std::size_t instance = no_slot;
         std::optional<Pose> pose;
         std::map<std::type_index, std::shared_ptr<detail::ComponentRecord>> components;
     };
@@ -243,6 +245,8 @@ class Scene {
     void link_child(std::size_t parent, std::size_t child) noexcept;
     void unlink_child(std::size_t child) noexcept;
     void release_slot(std::size_t index) noexcept;
+    void retire_instance(Slot &entry) noexcept;
+    void compact_instances() const noexcept;
     Slot &slot(Id id);
     GameObject create_with_key(ObjectKey key, std::string name, std::shared_ptr<const Mesh> mesh);
     const Slot &slot(Id id) const;
@@ -266,7 +270,10 @@ class Scene {
     std::vector<Slot> slots_;
     // Min-heap of reusable slots. Its capacity covers every slot, so removal never allocates.
     std::vector<std::size_t> free_slots_;
-    std::vector<Id> active_;
+    // Objects with renderers in the order they were added. A removed renderer leaves a null Id
+    // until compact_instances(), which instances() runs first and removal runs once half are null.
+    mutable std::vector<Id> active_;
+    mutable std::size_t removed_instances_{};
     bool updating_{};
     std::size_t constructing_{};
 };
