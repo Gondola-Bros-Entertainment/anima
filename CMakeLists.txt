@@ -443,14 +443,15 @@ if(ANIMA_BUILD_DESKTOP)
             target_link_libraries(anima_check PRIVATE anima_viewer)
             anima_target_defaults(anima_check)
             anima_copy_sdl_runtime(anima_check)
-            # Each rejection passes only with its own message, so a crash or another failure does not.
-            add_test(NAME desktop_no_scripted_mode COMMAND anima --smoke)
-            set_tests_properties(desktop_no_scripted_mode PROPERTIES
-                PASS_REGULAR_EXPRESSION "Anima: Unknown option: --smoke")
+            # Each rejection passes only with exit status 1 and its own message, so a crash or a success does not.
+            set(anima_expect_rejection "${CMAKE_CURRENT_SOURCE_DIR}/tests/desktop/expect_rejection.cmake")
+            add_test(NAME desktop_no_scripted_mode COMMAND "${CMAKE_COMMAND}"
+                "-DCOMMAND=$<TARGET_FILE:anima>$<SEMICOLON>--smoke" "-DMESSAGE=Anima: Unknown option: --smoke"
+                -P "${anima_expect_rejection}")
             add_test(NAME desktop_help COMMAND anima --help)
-            add_test(NAME desktop_invalid_frames COMMAND anima --frames 0)
-            set_tests_properties(desktop_invalid_frames PROPERTIES
-                PASS_REGULAR_EXPRESSION "Anima: Expected an integer between 1 and 1000000")
+            add_test(NAME desktop_invalid_frames COMMAND "${CMAKE_COMMAND}"
+                "-DCOMMAND=$<TARGET_FILE:anima>$<SEMICOLON>--frames$<SEMICOLON>0"
+                "-DMESSAGE=Anima: Expected an integer between 1 and 1000000" -P "${anima_expect_rejection}")
             # --timeout leaves software drivers such as lavapipe time for every frame.
             anima_add_gpu_check(viewer_smoke anima_check --smoke --timeout 300 --output "${anima_gpu_checks}/viewer_smoke")
             anima_add_gpu_check(viewer_smoke_fallback anima_check --smoke --no-present-fences --timeout 300
