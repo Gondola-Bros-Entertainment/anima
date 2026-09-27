@@ -38,8 +38,8 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
             }
         if (!node || name.empty())
             throw std::invalid_argument("Unknown or unnamed actor socket");
-        // frame is a rigid model-space bind frame. null uses the joint's
-        // bind position with actor-forward orientation, useful for a pelvis.
+        // frame is a rigid model-space bind frame. null uses the joint's bind
+        // position with the model's axes, for a socket that ignores the joint's rotation.
         const auto frame = socket.at("frame").is_null()
                                ? anima::matrix(anima::Transform{anima::point(rest.world[*node], {})})
                                : presentation_data::matrix(socket.at("frame"), true);

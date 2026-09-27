@@ -283,11 +283,12 @@ TEST_CASE("A phase track maps phase to clip time") {
 TEST_CASE("Interaction alignment puts the follower's anchor on the leader's moving attachment") {
     // Deliberately different node counts and clip timings: no shared skeleton
     // is required between an interaction's participants.
-    Pose mount, rider;
-    mount.world.resize(3, identity());
-    rider.world.resize(7, identity());
-    rider.world[5] = translated({0, 1, 0});
-    const PoseFrame seat{2, translated({0, .12F, 0})}, pelvis{5, identity()}, rein{1, translated({.1F, 0, .2F})};
+    Pose leader, follower;
+    leader.world.resize(3, identity());
+    follower.world.resize(7, identity());
+    follower.world[5] = translated({0, 1, 0});
+    const PoseFrame attachment{2, translated({0, .12F, 0})}, anchor{5, identity()},
+        marker{1, translated({.1F, 0, .2F})};
     for (unsigned i = 0; i < 40; ++i) {
         CAPTURE(i);
         Transform moving;
@@ -296,15 +297,15 @@ TEST_CASE("Interaction alignment puts the follower's anchor on the leader's movi
         Transform back;
         back.translation = {0, 1.2F + std::sin(i * .15F) * .1F, 0};
         back.scale = {1.3F, .8F, 1.1F};
-        mount.world[2] = matrix(back);
-        mount.world[1] = translated({0, 1.5F, .5F});
-        const auto mount_world = matrix(moving);
-        const auto rider_world = align_interaction(mount_world, mount, seat, rider, pelvis);
-        const auto placed = rider_world * pose_frame(rider, pelvis);
-        const auto target = mount_world * pose_frame(mount, seat);
+        leader.world[2] = matrix(back);
+        leader.world[1] = translated({0, 1.5F, .5F});
+        const auto leader_world = matrix(moving);
+        const auto follower_world = align_interaction(leader_world, leader, attachment, follower, anchor);
+        const auto placed = follower_world * pose_frame(follower, anchor);
+        const auto target = leader_world * pose_frame(leader, attachment);
         CHECK(length(at(placed) - at(target)) == Near{0, tolerance});
-        CHECK(length(Vec3{rider_world[0], rider_world[1], rider_world[2]}) == Near{1, tolerance}); // Unscaled.
-        const auto contact = interaction_contact(rider_world, mount_world, mount, rein);
-        CHECK(difference(rider_world * contact, mount_world * pose_frame(mount, rein)) < tolerance);
+        CHECK(length(Vec3{follower_world[0], follower_world[1], follower_world[2]}) == Near{1, tolerance}); // Unscaled.
+        const auto contact = interaction_contact(follower_world, leader_world, leader, marker);
+        CHECK(difference(follower_world * contact, leader_world * pose_frame(leader, marker)) < tolerance);
     }
 }

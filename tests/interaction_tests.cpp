@@ -20,35 +20,35 @@ float error(const Mat4 &a, const Mat4 &b) {
         result = std::max(result, std::abs(a[i] - b[i]));
     return result;
 }
-// A rider attached to a vehicle, and a passenger attached to the rider.
-struct Ride {
-    std::shared_ptr<Asset> rider = std::make_shared<Asset>(), vehicle = std::make_shared<Asset>(),
-                           passenger = std::make_shared<Asset>();
-    std::vector<InteractionRole> roles{{"rider", rider}, {"vehicle", vehicle}, {"passenger", passenger}};
-    std::vector<InteractionAttachment> attachments{{"passenger", "rider", {0}, {6}}, {"rider", "vehicle", {5}, {2}}};
-    Ride() {
-        rider->nodes.resize(7);
-        vehicle->nodes.resize(3);
-        passenger->nodes.resize(2);
+// A chain of three roles: middle attached to base, and top attached to middle.
+struct Chain {
+    std::shared_ptr<Asset> middle = std::make_shared<Asset>(), base = std::make_shared<Asset>(),
+                           top = std::make_shared<Asset>();
+    std::vector<InteractionRole> roles{{"middle", middle}, {"base", base}, {"top", top}};
+    std::vector<InteractionAttachment> attachments{{"top", "middle", {0}, {6}}, {"middle", "base", {5}, {2}}};
+    Chain() {
+        middle->nodes.resize(7);
+        base->nodes.resize(3);
+        top->nodes.resize(2);
     }
     // Every role's rest pose, in role order, at the origin.
     [[nodiscard]] std::vector<InteractionFrame> frames() const {
-        return {{sample_pose(*rider)}, {sample_pose(*vehicle)}, {sample_pose(*passenger)}};
+        return {{sample_pose(*middle)}, {sample_pose(*base)}, {sample_pose(*top)}};
     }
 };
 } // namespace
 
-TEST_CASE("Attachments follow moving sockets through entry, ride and exit, without depending on earlier frames") {
-    const Ride ride;
-    const InteractionBindings bindings(ride.roles, ride.attachments);
-    const ActionTimeline timeline({{"enter", .5, false, {}}, {"ride", .8, true, {}}, {"exit", .5, false, {}}});
+TEST_CASE("Attachments follow moving sockets while attaching, holding and detaching, independent of earlier frames") {
+    const Chain chain;
+    const InteractionBindings bindings(chain.roles, chain.attachments);
+    const ActionTimeline timeline({{"attach", .5, false, {}}, {"hold", .8, true, {}}, {"detach", .5, false, {}}});
     const auto evaluate = [&](double time) {
         CAPTURE(time);
         const auto clock = timeline.sample(time, 2.1);
         const auto weight = static_cast<float>(clock.phase == 0   ? clock.progress
                                                : clock.phase == 1 ? 1
                                                                   : 1 - clock.progress);
-        auto frames = ride.frames();
+        auto frames = chain.frames();
         frames[0].pose.world[5] = matrix(Transform{{0, 1, 0}});
         frames[0].pose.world[6] = matrix(Transform{{0, 1.3F, -.2F}});
         frames[1].pose.world[2] =
@@ -60,7 +60,7 @@ TEST_CASE("Attachments follow moving sockets through entry, ride and exit, witho
         frames[2].world = matrix(Transform{{1, 0, 0}});
         const std::array<InteractionPlacement, 2> placements{{{weight}, {weight}}};
         const auto result = bindings.sample(frames, placements);
-        // Attachments move placements only: no participant's anatomy, and not the driving vehicle.
+        // Attachments move placements only: no participant's pose, and not the base role's placement.
         for (std::size_t i = 0; i < result.size(); ++i) {
             CAPTURE(i);
             CHECK(result[i].pose.world == frames[i].pose.world);
@@ -72,11 +72,11 @@ TEST_CASE("Attachments follow moving sockets through entry, ride and exit, witho
             CHECK(result[2].world == frames[2].world);
         }
         if (weight == 1)
-            for (const auto &attachment : ride.attachments) {
+            for (const auto &attachment : chain.attachments) {
                 CAPTURE(attachment.child);
                 const auto &child = result[bindings.role(attachment.child)];
                 const auto &parent = result[bindings.role(attachment.parent)];
-                // The child's socket stays on the moving parent socket, and the scaled seat does not scale the rider.
+                // The child's socket stays on the moving parent socket, and a scaled parent socket does not scale it.
                 CHECK(error(child.world * interaction_socket(child.pose, attachment.child_socket),
                             parent.world * interaction_socket(parent.pose, attachment.parent_socket)) < tolerance);
                 CHECK(std::abs(length(Vec3{child.world[0], child.world[1], child.world[2]}) - 1) < tolerance);
@@ -93,16 +93,15 @@ TEST_CASE("Attachments follow moving sockets through entry, ride and exit, witho
 }
 
 TEST_CASE("Invalid attachment graphs, weights and placements are rejected") {
-    const Ride ride;
-    CHECK_THROWS_WITH_AS(
-        InteractionBindings(ride.roles, {{"rider", "vehicle", {5}, {2}}, {"vehicle", "rider", {2}, {5}}}),
-        "Cyclic interaction placement ownership", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(InteractionBindings(ride.roles, {{"rider", "missing", {5}, {2}}}),
+    const Chain chain;
+    CHECK_THROWS_WITH_AS(InteractionBindings(chain.roles, {{"middle", "base", {5}, {2}}, {"base", "middle", {2}, {5}}}),
+                         "Cyclic interaction placement ownership", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(InteractionBindings(chain.roles, {{"middle", "missing", {5}, {2}}}),
                          "Unknown interaction role: missing", std::out_of_range);
-    CHECK_THROWS_WITH_AS(InteractionBindings(ride.roles, {{"rider", "vehicle", {99}, {2}}}),
+    CHECK_THROWS_WITH_AS(InteractionBindings(chain.roles, {{"middle", "base", {99}, {2}}}),
                          "Unknown interaction socket node", std::invalid_argument);
-    const InteractionBindings bindings(ride.roles, ride.attachments);
-    auto frames = ride.frames();
+    const InteractionBindings bindings(chain.roles, chain.attachments);
+    auto frames = chain.frames();
     const std::array<InteractionPlacement, 2> released{{{0}, {0}}};
     auto invalid = released;
     invalid[0].weight = std::numeric_limits<float>::quiet_NaN();

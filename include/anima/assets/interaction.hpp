@@ -84,8 +84,8 @@ struct PoseFrame {
         frame.rotation = affine_rotation(value);
         return matrix(frame);
     };
-    // A large mount or a scaled seat joint must not resize its rider. Transfer
-    // the attachment's position and rotation, retaining the follower's anatomy.
+    // A large leader or a scaled attachment joint must not resize the follower. Transfer
+    // only the attachment's position and rotation, so the follower keeps its own proportions.
     return rigid(leader_world * pose_frame(leader, attachment)) * inverse(rigid(pose_frame(follower, anchor)));
 }
 /// Another participant's animated @p marker in this actor's model space, for a contact solve.
