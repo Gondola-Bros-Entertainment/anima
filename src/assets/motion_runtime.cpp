@@ -190,8 +190,6 @@ struct MotionRuntime::Impl {
             skeleton.at("bind_signature") != manifest.bind_signature ||
             skeleton.at("joint_count") != manifest.joint_count)
             throw std::invalid_argument("Motion rig/skin contract mismatch");
-        if (!asset.animations.empty() || !manifest.clips.empty())
-            throw std::invalid_argument("Production body models must not contain animation clips");
         const auto &parents = definition.at("parents");
         if (!parents.is_object() || parents.size() != manifest.joint_count)
             throw std::invalid_argument("Evaluation joint count mismatch");
