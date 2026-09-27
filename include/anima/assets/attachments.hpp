@@ -273,8 +273,8 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const P
 /// Checks that the items of @p attachments can be carried together; call it before adding a
 /// prepared set to a scene.
 ///
-/// For every base clip, the carry layers of the roles must not overlap (see
-/// MotionRuntime::validate_carries). With @p exclusive_primary, no two roles may share a primary
+/// For every base clip, the layer clips of the roles' handling profiles must not overlap (see
+/// MotionRuntime::validate_layers). With @p exclusive_primary, no two roles may share a primary
 /// socket node; pose layers and contact chains always need unique ownership. Each support contact
 /// chain must end at its declared socket's node, overlap no other contact chain and move no
 /// role's primary socket. Throws `std::out_of_range` for an unknown chain or socket.

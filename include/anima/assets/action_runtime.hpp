@@ -59,7 +59,7 @@ struct ActionWeight {
 };
 /// One pose layer of an action phase.
 struct ActionLayer {
-    /// Base clip or handling layer of the motion to sample.
+    /// Base clip or layer clip of the motion to sample.
     std::string clip;
     /// Motion mask that the layer affects; empty for a full-body layer, which must be the phase's
     /// first layer and an override.
@@ -142,7 +142,7 @@ class ActionRuntime {
     /// and `interval`, and optional `mask`, `mode` (`"override"`, the default, or `"additive"`),
     /// `weight` and `reference` (`clip` and `at`), which additive layers need and overrides must
     /// not have. Intervals are two numbers in [0, 1]; weight curves are as in weight(). Masks must
-    /// exist in @p motion, and a handling layer's clip must use its declared mask.
+    /// exist in @p motion, and a layer that samples a layer clip must use that clip's mask.
     ///
     /// Clips and contact chains must also exist in @p motion. Throws also for a null @p motion.
     ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document);

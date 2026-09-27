@@ -231,7 +231,7 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
         "accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
         {"bufferView":1,"componentType":5126,"count":2,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":2,"type":"VEC4"}],"animations":[)" +
             animation("drift", 0, 1, "translation") + "," + animation("signal", 1, 2, "rotation") + "," +
-            animation("carry.port", 1, 2, "rotation") + "," + animation("carry.starboard", 4, 2, "rotation") + "]}",
+            animation("layer.port", 1, 2, "rotation") + "," + animation("layer.starboard", 4, 2, "rotation") + "]}",
         motion);
     const auto quoted = [&](unsigned n) { return '"' + result.names[n] + '"'; };
     const auto signature = std::string(64, 'a');
@@ -253,8 +253,8 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
         "},\"masks\":{\"port\":[" + quoted(1) + "],\"starboard\":[" + quoted(4) +
         "]},\"chains\":{\"starboard\":{\"joints\":[" + quoted(4) + "," + quoted(5) + "," + quoted(6) +
         "],\"minimum_angle\":0,\"maximum_angle\":3.13}}}," +
-        R"("clips":[{"name":"drift","loop":true,"reference_speed":0.2,"events":[]},{"name":"signal","loop":false,"events":[]}],"layers":{"carry.port":)" +
-        ownership("port", 1) + ",\"carry.starboard\":" + ownership("starboard", 4) + "}}";
+        R"("clips":[{"name":"drift","loop":true,"reference_speed":0.2,"events":[]},{"name":"signal","loop":false,"events":[]}],"layers":{"layer.port":)" +
+        ownership("port", 1) + ",\"layer.starboard\":" + ownership("starboard", 4) + "}}";
     text_file(directory / "motion.json", result.contract);
     text_file(directory / "actor.asset.json",
               R"({"schema_version":2,"units":"meters","asset_id":"consumer.actor","model":"actor.glb","skeleton":)" +
@@ -278,7 +278,7 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
                      "},\"starboard\":{\"node\":" + quoted(6) + ",\"local\":" + unit + "}}}";
     result.catalog =
         R"({"schema_version":2,"units":"meters","empty_handling":"free","defaults":{"instrument":"probe","light":"beacon"},"handling":[
-        {"id":"free","socket":"","carry":""},{"id":"port","socket":"port","carry":"carry.port"},{"id":"starboard","socket":"starboard","carry":"carry.starboard"}],
+        {"id":"free","socket":"","carry":""},{"id":"port","socket":"port","carry":"layer.port"},{"id":"starboard","socket":"starboard","carry":"layer.starboard"}],
         "visuals":[{"id":"instrument","model":"instrument.glb","primary_grip":)" +
         unit + ",\"markers\":{\"tip\":" + unit + "},\"primary_node\":" + quoted(0) +
         ",\"marker_nodes\":{\"tip\":" + quoted(3) + R"(},"animation_tracks":{"pulse":"extend"}}],"items":[
@@ -438,12 +438,12 @@ inline void run() {
         }
         shell.reset();
         check(fitted.resident_assets().empty(), "Unused fitted mesh remained resident");
-        const std::array<std::string_view, 2> carries{"carry.port", "carry.starboard"};
-        const auto carried = motion->compose_loadout("drift", .5, carries);
-        check(carried.world[0] == baseline.world[0], "Attachments replaced root locomotion");
+        const std::array<std::string_view, 2> layer_clips{"layer.port", "layer.starboard"};
+        const auto carried = motion->compose_layers("drift", .5, layer_clips);
+        check(carried.world[0] == baseline.world[0], "Layer clips replaced root locomotion");
         rejects([&] {
-            const std::array<std::string_view, 2> overlap{"carry.port", "carry.port"};
-            motion->validate_carries(overlap);
+            const std::array<std::string_view, 2> overlap{"layer.port", "layer.port"};
+            motion->validate_layers(overlap);
         });
         auto wrong = actor.manifest;
         wrong.bind_signature = std::string(64, 'b');
@@ -544,7 +544,7 @@ inline void run() {
         rejects_as<std::out_of_range>([&] { (void)runtime.definition("absent"); }, "Unknown action: absent");
         rejects_as<std::out_of_range>([&] { (void)motion->clip("absent"); }, "Missing animation: absent");
         rejects_as<std::out_of_range>([&] { (void)motion->metadata("absent"); }, "Unknown base motion/action: absent");
-        rejects_as<std::out_of_range>([&] { (void)motion->layer_mask("absent"); }, "Unknown handling layer: absent");
+        rejects_as<std::out_of_range>([&] { (void)motion->layer_mask("absent"); }, "Unknown motion layer: absent");
         rejects_as<std::out_of_range>([&] { (void)motion->contact_end_node("absent"); },
                                       "Unknown motion chain: absent");
         MotionLayer unknown_layer;

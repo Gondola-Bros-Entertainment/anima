@@ -428,12 +428,12 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
                                    bool exclusive_primary) {
     for (const auto &[clip, metadata] : runtime.clips()) {
         (void)metadata;
-        std::vector<std::string_view> carries;
+        std::vector<std::string_view> layers;
         for (const auto &[role, item] : attachments.roles) {
             (void)role;
-            carries.push_back(library.motion(item.item_id).layer(clip));
+            layers.push_back(library.motion(item.item_id).layer(clip));
         }
-        runtime.validate_carries(carries);
+        runtime.validate_layers(layers);
     }
     std::set<std::size_t> nodes;
     std::set<std::string> chains;
