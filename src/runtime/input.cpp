@@ -21,58 +21,86 @@ void control(Control c) {
 ControlKind device_class(ControlKind value) {
     return value == ControlKind::gamepad_axis ? ControlKind::gamepad_button : value;
 }
+constexpr DeviceIdentity no_identity{};
+// Recorded control values, keyed by each control's latest event source, identity included, with at most one entry
+// per kind, code and device.
+using Values = std::map<Control, float>;
 // The device classes, each named by its first control kind.
 constexpr std::array device_classes{ControlKind::key, ControlKind::mouse_button, ControlKind::gamepad_button};
-// The device @p binding selects in class @p group: an explicit ID on its control or a modifier of that class, which
-// validation keeps consistent, or any_device.
-std::uint32_t selected_device(const Binding &binding, ControlKind group) {
-    auto selected = device_class(binding.control.kind) == group ? binding.control.device : any_device;
-    for (auto modifier : binding.modifiers)
-        if (device_class(modifier.kind) == group && modifier.device != any_device)
-            selected = modifier.device;
-    return selected;
+// What a binding requires of the device it reads in one class: an explicit ID or any_device, and an identity or none,
+// each taken from its control or a modifier of that class, which validation keeps consistent.
+struct Selection {
+    std::uint32_t device = any_device;
+    DeviceIdentity identity{};
+    [[nodiscard]] bool admits(const Control &recorded) const {
+        return (device == any_device || recorded.device == device) &&
+               (identity == no_identity || recorded.identity == identity);
+    }
+};
+Selection selection(const Binding &binding, ControlKind group) {
+    Selection result;
+    const auto take = [&](const Control &selector) {
+        if (device_class(selector.kind) != group)
+            return;
+        if (selector.device != any_device)
+            result.device = selector.device;
+        if (selector.identity != no_identity)
+            result.identity = selector.identity;
+    };
+    take(binding.control);
+    for (const auto &modifier : binding.modifiers)
+        take(modifier);
+    return result;
 }
-// Whether every modifier of @p binding in class @p group is recorded on @p device.
-bool held_on(const std::map<Control, float> &values, const Binding &binding, ControlKind group, std::uint32_t device) {
-    for (auto modifier : binding.modifiers) {
+// The entry of @p recorded_values that records @p control's kind and code on @p device, whatever identity its event
+// carried, or its end.
+template <class Recorded> auto entry(Recorded &recorded_values, Control control, std::uint32_t device) {
+    control.device = device;
+    control.identity = no_identity;
+    const auto it = recorded_values.lower_bound(control);
+    return it != recorded_values.end() && it->first.kind == control.kind && it->first.code == control.code &&
+                   it->first.device == device
+               ? it
+               : recorded_values.end();
+}
+// Whether every modifier of @p binding in class @p group is recorded on @p device and admitted by @p required.
+bool held_on(const Values &values, const Binding &binding, ControlKind group, std::uint32_t device,
+             const Selection &required) {
+    for (const auto &modifier : binding.modifiers) {
         if (device_class(modifier.kind) != group)
             continue;
-        modifier.device = device;
-        if (!values.contains(modifier))
+        const auto it = entry(values, modifier, device);
+        if (it == values.end() || !required.admits(it->first))
             return false;
     }
     return true;
 }
 // Whether every modifier of @p binding outside its bound control's class is held, those of each class together on
 // one device that class selects.
-bool other_modifiers_held(const std::map<Control, float> &values, const Binding &binding) {
+bool other_modifiers_held(const Values &values, const Binding &binding) {
     for (auto group : device_classes) {
         const auto first = std::ranges::find_if(
             binding.modifiers, [group](Control modifier) { return device_class(modifier.kind) == group; });
         if (group == device_class(binding.control.kind) || first == binding.modifiers.end())
             continue;
-        if (const auto selected = selected_device(binding, group); selected != any_device) {
-            if (!held_on(values, binding, group, selected))
+        const auto required = selection(binding, group);
+        if (required.device != any_device) {
+            if (!held_on(values, binding, group, required.device, required))
                 return false;
             continue;
         }
         auto candidate = *first;
         candidate.device = 0;
+        candidate.identity = no_identity;
         bool accepted = false;
         for (auto it = values.lower_bound(candidate);
              !accepted && it != values.end() && it->first.kind == candidate.kind && it->first.code == candidate.code;
              ++it)
-            accepted = held_on(values, binding, group, it->first.device);
+            accepted = held_on(values, binding, group, it->first.device, required);
         if (!accepted)
             return false;
     }
     return true;
-}
-// Whether every modifier of @p binding is held: those of its bound control's class on @p device, which must be one
-// that class selects, and the others as other_modifiers_held() requires.
-bool modifiers_held(const std::map<Control, float> &values, const Binding &binding, std::uint32_t device) {
-    return held_on(values, binding, device_class(binding.control.kind), device) &&
-           other_modifiers_held(values, binding);
 }
 // Whether @p outer requires every modifier of @p inner and more, compared by kind and code.
 bool extends(const Binding &outer, const Binding &inner) {
@@ -83,16 +111,19 @@ bool extends(const Binding &outer, const Binding &inner) {
                });
            });
 }
-// Whether a binding of @p map outranks @p binding on @p device: it reads the same bound control, extends the
-// binding's modifiers, selects @p device for that control and holds all its modifiers there.
-bool outranked(const Map &map, const std::map<Control, float> &values, const Binding &binding, std::uint32_t device) {
+// Whether a binding of @p map outranks @p binding on the device of @p bound, the record of its bound control: one
+// that reads the same bound control, extends the binding's modifiers, admits that record and holds all its
+// modifiers there.
+bool outranked(const Map &map, const Values &values, const Binding &binding, const Control &bound) {
     for (const auto &action : map)
         for (const auto &other : action.bindings) {
             if (other.control.kind != binding.control.kind || other.control.code != binding.control.code ||
                 !extends(other, binding))
                 continue;
-            const auto selected = selected_device(other, device_class(other.control.kind));
-            if ((selected == any_device || selected == device) && modifiers_held(values, other, device))
+            const auto group = device_class(other.control.kind);
+            const auto required = selection(other, group);
+            if (required.admits(bound) && held_on(values, other, group, bound.device, required) &&
+                other_modifiers_held(values, other))
                 return true;
         }
     return false;
@@ -100,23 +131,24 @@ bool outranked(const Map &map, const std::map<Control, float> &values, const Bin
 void compatible(Control first, Control second) {
     if (first.kind == second.kind && first.code == second.code)
         throw std::invalid_argument("Repeated input chord control");
-    if (device_class(first.kind) == device_class(second.kind) && first.device != any_device &&
-        second.device != any_device && first.device != second.device)
+    if (device_class(first.kind) == device_class(second.kind) &&
+        ((first.device != any_device && second.device != any_device && first.device != second.device) ||
+         (first.identity != no_identity && second.identity != no_identity && first.identity != second.identity)))
         throw std::invalid_argument("Input chord device selectors conflict");
 }
-bool observes(const Binding &binding, Control source) {
-    const auto same_device = [source](Control selector) {
-        return device_class(selector.kind) != device_class(source.kind) || selector.device == any_device ||
-               selector.device == source.device;
+bool observes(const Binding &binding, const Control &source) {
+    const auto same_device = [&source](const Control &selector) {
+        return device_class(selector.kind) != device_class(source.kind) ||
+               ((selector.device == any_device || selector.device == source.device) &&
+                (selector.identity == no_identity || selector.identity == source.identity));
     };
-    const auto matches = [source](Control selector) {
-        return selector.kind == source.kind && selector.code == source.code &&
-               (selector.device == any_device || selector.device == source.device);
+    const auto matches = [&](const Control &selector) {
+        return selector.kind == source.kind && selector.code == source.code && same_device(selector);
     };
     if (!same_device(binding.control))
         return false;
     bool matched = matches(binding.control);
-    for (auto modifier : binding.modifiers) {
+    for (const auto &modifier : binding.modifiers) {
         if (!same_device(modifier))
             return false;
         matched |= matches(modifier);
@@ -238,16 +270,18 @@ float Context::read(const Binding &binding) const {
     if (!other_modifiers_held(values_, binding))
         return 0;
     const auto primary_class = device_class(binding.control.kind);
-    const auto selected = selected_device(binding, primary_class);
+    const auto required = selection(binding, primary_class);
     auto control = binding.control;
-    control.device = selected == any_device ? 0 : selected;
+    control.device = required.device == any_device ? 0 : required.device;
+    control.identity = no_identity;
     float value{};
     for (auto it = values_.lower_bound(control);
          it != values_.end() && it->first.kind == control.kind && it->first.code == control.code &&
-         (selected == any_device || it->first.device == selected);
+         (required.device == any_device || it->first.device == required.device);
          ++it)
-        if (std::abs(it->second) > std::abs(value) && held_on(values_, binding, primary_class, it->first.device) &&
-            !outranked(map_, values_, binding, it->first.device))
+        if (std::abs(it->second) > std::abs(value) && required.admits(it->first) &&
+            held_on(values_, binding, primary_class, it->first.device, required) &&
+            !outranked(map_, values_, binding, it->first))
             value = it->second;
     return value; // Greatest eligible magnitude; ties choose the lowest device ID.
 }
@@ -299,18 +333,28 @@ void Context::process(const Event &e) {
     }
     if (!enabled_ || !focused_)
         return;
-    bool observed = false;
-    for (const auto &a : map_)
-        for (const auto &b : a.bindings)
-            observed |= observes(b, e.source);
-    if (!observed)
-        return;
-    if (e.value == 0)
-        values_.erase(e.source);
+    // A recorded control is released or updated whatever identity the event carries, so a release that arrives
+    // without the identity of the press still releases it.
+    const auto previous = entry(values_, e.source, e.source.device);
+    if (e.value == 0) {
+        if (previous == values_.end())
+            return;
+        values_.erase(previous);
+    } else if (previous != values_.end() && previous->first == e.source)
+        previous->second = e.value;
     else {
-        if (!values_.contains(e.source) && values_.size() == limits::active_controls)
-            throw std::length_error("Input context exceeds 1024 active physical controls");
-        values_.insert_or_assign(e.source, e.value);
+        if (previous == values_.end()) {
+            bool observed = false;
+            for (const auto &a : map_)
+                for (const auto &b : a.bindings)
+                    observed |= observes(b, e.source);
+            if (!observed)
+                return;
+            if (values_.size() == limits::active_controls)
+                throw std::length_error("Input context exceeds 1024 active physical controls");
+        } else
+            values_.erase(previous);
+        values_.emplace(e.source, e.value);
     }
     evaluate();
 }

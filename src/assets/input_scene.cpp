@@ -5,7 +5,8 @@
 namespace anima::input {
 namespace {
 using Json = nlohmann::json;
-constexpr unsigned document_version = 2;
+constexpr unsigned document_version = 3;
+constexpr std::string_view hex_digits = "0123456789abcdef";
 unsigned integer(const Json &v, std::uint64_t maximum) {
     if (!v.is_number_integer() || v.get<std::int64_t>() < 0 || v.get<std::uint64_t>() > maximum)
         throw std::invalid_argument("Invalid input configuration integer");
@@ -16,10 +17,46 @@ float number(const Json &v) {
         throw std::invalid_argument("Invalid input configuration number");
     return detail::json_float(v);
 }
-Control control_value(const Json &value) {
+// @p identity as 32 lowercase hexadecimal digits, first byte first, or null for none.
+Json encode_identity(const DeviceIdentity &identity) {
+    if (identity == DeviceIdentity{})
+        return nullptr;
+    std::string text;
+    for (const std::size_t byte : identity) {
+        text += hex_digits[byte >> 4];
+        text += hex_digits[byte & 0xF];
+    }
+    return text;
+}
+DeviceIdentity decode_identity(const Json &value) {
+    DeviceIdentity identity{};
+    if (value.is_null())
+        return identity;
+    const auto *text = value.get_ptr<const std::string *>();
+    if (!text || text->size() != 2 * identity.size())
+        throw std::invalid_argument("Invalid input device identity");
+    for (std::size_t index = 0; index < text->size(); ++index) {
+        const auto digit = hex_digits.find((*text)[index]);
+        if (digit == std::string_view::npos)
+            throw std::invalid_argument("Invalid input device identity");
+        auto &byte = identity[index / 2];
+        byte = static_cast<std::uint8_t>((byte << 4) | digit);
+    }
+    if (identity == DeviceIdentity{})
+        throw std::invalid_argument("Invalid input device identity");
+    return identity;
+}
+Json encode_control(const Control &control) {
+    if (control.device != any_device)
+        throw std::invalid_argument("Input configuration cannot persist a device ID");
+    return {{"kind", static_cast<int>(control.kind)},
+            {"code", control.code},
+            {"identity", encode_identity(control.identity)}};
+}
+Control decode_control(const Json &value) {
     return {static_cast<ControlKind>(integer(value.at("kind"), static_cast<unsigned>(ControlKind::gamepad_axis))),
-            static_cast<std::uint16_t>(integer(value.at("code"), limits::key_code)),
-            integer(value.at("device"), UINT32_MAX)};
+            static_cast<std::uint16_t>(integer(value.at("code"), limits::key_code)), any_device,
+            decode_identity(value.at("identity"))};
 }
 } // namespace
 std::string serialize_map(const Map &map) {
@@ -29,16 +66,14 @@ std::string serialize_map(const Map &map) {
         Json bindings = Json::array();
         for (const auto &b : a.bindings) {
             auto modifiers = Json::array();
-            for (auto modifier : b.modifiers)
-                modifiers.push_back(
-                    {{"kind", static_cast<int>(modifier.kind)}, {"code", modifier.code}, {"device", modifier.device}});
-            bindings.push_back({{"kind", static_cast<int>(b.control.kind)},
-                                {"code", b.control.code},
-                                {"device", b.control.device},
-                                {"channel", static_cast<int>(b.channel)},
-                                {"scale", b.scale},
-                                {"deadzone", b.deadzone},
-                                {"modifiers", modifiers}});
+            for (const auto &modifier : b.modifiers)
+                modifiers.push_back(encode_control(modifier));
+            auto binding = encode_control(b.control);
+            binding["channel"] = static_cast<int>(b.channel);
+            binding["scale"] = b.scale;
+            binding["deadzone"] = b.deadzone;
+            binding["modifiers"] = modifiers;
+            bindings.push_back(binding);
         }
         actions.push_back(
             {{"name", a.name}, {"type", static_cast<int>(a.type)}, {"threshold", a.threshold}, {"bindings", bindings}});
@@ -66,18 +101,18 @@ Map decode_map(std::string_view data) {
                       {},
                       number(a.at("threshold"))};
         for (const auto &b : a.at("bindings")) {
-            detail::json_fields(b, {"kind", "code", "device", "channel", "scale", "deadzone", "modifiers"});
+            detail::json_fields(b, {"kind", "code", "identity", "channel", "scale", "deadzone", "modifiers"});
             const auto &modifiers = b.at("modifiers");
             if (!modifiers.is_array() || modifiers.size() > limits::modifiers_per_binding)
                 throw std::invalid_argument("Invalid input modifier count");
-            Binding binding{control_value(b),
+            Binding binding{decode_control(b),
                             static_cast<Channel>(integer(b.at("channel"), static_cast<unsigned>(Channel::y))),
                             number(b.at("scale")),
                             number(b.at("deadzone")),
                             {}};
             for (const auto &modifier : modifiers) {
-                detail::json_fields(modifier, {"kind", "code", "device"});
-                binding.modifiers.push_back(control_value(modifier));
+                detail::json_fields(modifier, {"kind", "code", "identity"});
+                binding.modifiers.push_back(decode_control(modifier));
             }
             action.bindings.push_back(std::move(binding));
         }
@@ -92,7 +127,7 @@ Map deserialize_map(std::string_view data) {
 }
 void add_component_codec(ComponentCodecs &codecs) {
     codecs.add<ActionInput>(
-        "anima.action-input.v2",
+        "anima.action-input.v3",
         [](const ActionInput &input, const ObjectReferences &) {
             return serialize_map(Map(input.context().actions().begin(), input.context().actions().end()));
         },

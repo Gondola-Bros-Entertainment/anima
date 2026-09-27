@@ -35,6 +35,22 @@ i::Map chord_map(std::uint32_t device = i::any_device) {
     binding.modifiers = {{i::ControlKind::key, 224, device}};
     return {{"chord", i::ActionType::button, {binding}}};
 }
+// A gamepad GUID in the layout SDL builds (USB bus, vendor 0x045e, product 0x028e, version 0x0114), and its
+// text in configuration documents.
+constexpr i::DeviceIdentity authored_pad{0x03, 0x00, 0x00, 0x00, 0x5e, 0x04, 0x00, 0x00,
+                                         0x8e, 0x02, 0x00, 0x00, 0x14, 0x01, 0x00, 0x00};
+constexpr auto authored_pad_text = "030000005e0400008e02000014010000";
+constexpr auto persisted_device_id = "Input configuration cannot persist a device ID";
+constexpr auto invalid_identity = "Invalid input device identity";
+// Gamepad button 0 with button 9 as its modifier, on a gamepad reporting @p pad.
+i::Map pad_chord_map(const i::DeviceIdentity &pad) {
+    i::Binding binding{{i::ControlKind::gamepad_button, 0, i::any_device, pad}};
+    binding.modifiers = {{i::ControlKind::gamepad_button, 9, i::any_device, pad}};
+    return {{"chord", i::ActionType::button, {binding}}};
+}
+i::Event pad_event(std::uint16_t button, std::uint32_t device, const i::DeviceIdentity &pad, float value = 1) {
+    return {i::EventType::control, {i::ControlKind::gamepad_button, button, device, pad}, value};
+}
 i::Map key_map() { return {{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}}; }
 i::Map gamepad_map() { return {{"activate", i::ActionType::button, {{{i::ControlKind::gamepad_button, 0}}}}}; }
 // invalid_component_payloads(valid, field), each with the error of a decoder whose first required field is
@@ -56,19 +72,22 @@ std::vector<std::pair<std::string, std::string>> invalid_payloads(std::string_vi
 }
 } // namespace
 
-TEST_CASE("Chord configuration round-trips, and only version 2 documents load") {
-    const auto map = chord_map(7);
+TEST_CASE("Chord configuration round-trips by identity, and only version 3 documents load") {
+    const auto map = pad_chord_map(authored_pad);
     const auto document = i::serialize_map(map);
+    // Identities are stored as the text SDL_GUIDToString writes, and no identity as null.
+    CHECK(document.find(std::string("\"identity\":\"") + authored_pad_text + "\"") != std::string::npos);
+    CHECK(i::serialize_map(chord_map()).find("\"identity\":null") != std::string::npos);
     const auto restored = i::deserialize_map(document);
-    // The round trip keeps the device selectors and modifiers.
+    // The round trip keeps the identity selectors and modifiers.
     CHECK(restored[0].bindings[0].control == map[0].bindings[0].control);
     CHECK(restored[0].bindings[0].modifiers == map[0].bindings[0].modifiers);
     CHECK(i::serialize_map(restored) == document);
-    CHECK(i::deserialize_map(R"({"version":2,"actions":[]})").empty());
+    CHECK(i::deserialize_map(R"({"version":3,"actions":[]})").empty());
     const std::array<std::pair<std::string_view, const char *>, 5> versions{{
-        {"1", invalid_envelope},
-        {"3", invalid_integer},
-        {"2.0", invalid_integer},
+        {"2", invalid_envelope},
+        {"4", invalid_integer},
+        {"3.0", invalid_integer},
         {"-1", invalid_integer},
         {"true", invalid_integer},
     }};
@@ -83,11 +102,62 @@ TEST_CASE("Chord configuration round-trips, and only version 2 documents load") 
     }
 }
 
+TEST_CASE("Device IDs, which name a device only while it is connected, are never persisted") {
+    CHECK_THROWS_WITH_AS(i::serialize_map(chord_map(7)), persisted_device_id, std::invalid_argument);
+    auto modifier_only = chord_map();
+    modifier_only[0].bindings[0].modifiers[0].device = 7;
+    CHECK_THROWS_WITH_AS(i::serialize_map(modifier_only), persisted_device_id, std::invalid_argument);
+    // Capturing a component whose bindings select a device ID fails the same way.
+    Scene source;
+    auto object = source.create("session binding");
+    object.add_component<i::ActionInput>(chord_map(7));
+    ComponentCodecs codecs;
+    i::add_component_codec(codecs);
+    CHECK_THROWS_WITH_AS(Prefab::capture(object, codecs), persisted_device_id, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(serialize_scene(source, {}, codecs), persisted_device_id, std::invalid_argument);
+    // A document cannot name one either.
+    CHECK_THROWS_WITH_AS(
+        i::deserialize_map(
+            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+        "Missing JSON field: identity", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        i::deserialize_map(
+            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+        "Unknown JSON field: device", std::invalid_argument);
+}
+
+TEST_CASE("Serialized identities are null or 32 lowercase hexadecimal digits, not all zeros") {
+    const auto with_identity = [](std::string_view value) {
+        return R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":2,"code":0,"identity":)" +
+               std::string(value) + R"(,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})";
+    };
+    CHECK(i::deserialize_map(with_identity("null"))[0].bindings[0].control.identity == i::DeviceIdentity{});
+    const auto parsed = i::deserialize_map(with_identity(std::string("\"") + authored_pad_text + "\""));
+    CHECK(parsed[0].bindings[0].control.identity == authored_pad);
+    CHECK(parsed[0].bindings[0].control.device == i::any_device);
+    const std::array<std::string_view, 9> invalids{
+        R"("030000005E0400008E02000014010000")",  // Uppercase digits.
+        R"("030000005e0400008e0200001401000")",   // 31 digits.
+        R"("030000005e0400008e020000140100000")", // 33 digits.
+        R"("030000005e0400008e0200001401000g")",  // Not hexadecimal.
+        R"("00000000000000000000000000000000")",  // All zeros, which means none.
+        R"("")",
+        "7",
+        "true",
+        R"(["030000005e0400008e02000014010000"])",
+    };
+    for (const auto invalid : invalids) {
+        CAPTURE(invalid);
+        CHECK_THROWS_WITH_AS(i::deserialize_map(with_identity(invalid)), invalid_identity, std::invalid_argument);
+    }
+}
+
 TEST_CASE("Serialized modifiers must be a list of up to four valid, distinct and compatible controls") {
     const std::string prefix =
-        R"({"version":2,"actions":[{"name":"chord","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"channel":0,"scale":1,"deadzone":0)";
+        R"({"version":3,"actions":[{"name":"chord","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"identity":")" +
+        std::string(authored_pad_text) + R"(","channel":0,"scale":1,"deadzone":0)";
     const std::string suffix = "}]}]}";
-    const std::string modifier = R"({"kind":0,"code":224,"device":7})";
+    const std::string modifier = R"({"kind":0,"code":224,"identity":null})";
     const auto with_modifiers = [&](std::string_view value) {
         return prefix + ",\"modifiers\":" + std::string(value) + suffix;
     };
@@ -105,12 +175,14 @@ TEST_CASE("Serialized modifiers must be a list of up to four valid, distinct and
         CHECK_THROWS_WITH_AS(i::deserialize_map(with_modifiers("[" + invalid.first + "]")), invalid.second.c_str(),
                              std::invalid_argument);
     }
-    const std::array<std::pair<std::string_view, const char *>, 5> modifiers{{
-        {R"({"kind":3,"code":0,"device":7})", "Input chord modifiers must be digital"},
-        {R"({"kind":0,"code":224,"device":8})", "Input chord device selectors conflict"},
-        {R"({"kind":0,"code":4,"device":7})", "Repeated input chord control"},
-        {R"({"kind":0,"code":512,"device":7})", invalid_integer},
-        {R"({"kind":0,"code":224,"device":4294967296})", invalid_integer},
+    const std::array<std::pair<std::string_view, const char *>, 6> modifiers{{
+        {R"({"kind":3,"code":0,"identity":null})", "Input chord modifiers must be digital"},
+        {R"({"kind":0,"code":224,"identity":"0300000000000000ffff000000000000"})",
+         "Input chord device selectors conflict"},
+        {R"({"kind":0,"code":4,"identity":null})", "Repeated input chord control"},
+        {R"({"kind":0,"code":512,"identity":null})", invalid_integer},
+        {R"({"kind":0,"code":224,"identity":7})", invalid_identity},
+        {R"({"kind":0,"code":224,"device":7,"identity":null})", "Unknown JSON field: device"},
     }};
     for (const auto &invalid : modifiers) {
         CAPTURE(invalid.first);
@@ -120,14 +192,17 @@ TEST_CASE("Serialized modifiers must be a list of up to four valid, distinct and
 }
 
 TEST_CASE("Configuration beyond 1 MiB is rejected in both directions") {
-    CHECK_THROWS_WITH_AS(i::deserialize_map(std::string(1024 * 1024, ' ') + i::serialize_map(chord_map(7))),
-                         "JSON document exceeds byte limit", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        i::deserialize_map(std::string(1024 * 1024, ' ') + i::serialize_map(pad_chord_map(authored_pad))),
+        "JSON document exceeds byte limit", std::invalid_argument);
     // A valid in-memory map can exceed the wire bound once all modifiers are encoded.
-    i::Binding wide{{i::ControlKind::gamepad_axis, 15, UINT32_MAX - 1}, i::Channel::x, 16, .999999F};
-    wide.modifiers = {{i::ControlKind::gamepad_button, 60, UINT32_MAX - 1},
-                      {i::ControlKind::gamepad_button, 61, UINT32_MAX - 1},
-                      {i::ControlKind::gamepad_button, 62, UINT32_MAX - 1},
-                      {i::ControlKind::gamepad_button, 63, UINT32_MAX - 1}};
+    i::DeviceIdentity widest{};
+    widest.fill(0xff);
+    i::Binding wide{{i::ControlKind::gamepad_axis, 15, i::any_device, widest}, i::Channel::x, 16, .999999F};
+    wide.modifiers = {{i::ControlKind::gamepad_button, 60, i::any_device, widest},
+                      {i::ControlKind::gamepad_button, 61, i::any_device, widest},
+                      {i::ControlKind::gamepad_button, 62, i::any_device, widest},
+                      {i::ControlKind::gamepad_button, 63, i::any_device, widest}};
     i::Map large;
     for (unsigned action = 0; action < 128; ++action)
         large.push_back({"action" + std::to_string(action), i::ActionType::axis, std::vector<i::Binding>(32, wide)});
@@ -135,17 +210,19 @@ TEST_CASE("Configuration beyond 1 MiB is rejected in both directions") {
     CHECK_THROWS_WITH_AS(i::serialize_map(large), "Input configuration exceeds byte limit", std::invalid_argument);
 }
 
-TEST_CASE("Persisted chords keep their authored devices but restore no runtime state") {
+TEST_CASE("Persisted chords keep their identity and follow it to each connected device, restoring no runtime state") {
+    constexpr i::DeviceIdentity other_pad{0x05, 0x00, 0x00, 0x00, 0x4c, 0x05, 0x00, 0x00,
+                                          0xe6, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00};
     Scene source;
     auto object = source.create("authored chord");
-    auto input = object.add_component<i::ActionInput>(chord_map(7));
-    input->context().process(key_event(4, 7));
-    input->context().process(key_event(224, 7));
+    auto input = object.add_component<i::ActionInput>(pad_chord_map(authored_pad));
+    input->context().process(pad_event(0, 7, authored_pad));
+    input->context().process(pad_event(9, 7, authored_pad));
     CHECK(input->context().state("chord").pressed);
     ComponentCodecs source_codecs;
     i::add_component_codec(source_codecs);
     const auto prefab = Prefab::capture(object, source_codecs);
-    CHECK(prefab.nodes()[0].components[0].type == "anima.action-input.v2");
+    CHECK(prefab.nodes()[0].components[0].type == "anima.action-input.v3");
     input->context().set_focused(false);
     input->context().set_enabled(false);
     const auto scene_document = serialize_scene(source, {}, source_codecs);
@@ -159,7 +236,7 @@ TEST_CASE("Persisted chords keep their authored devices but restore no runtime s
                         .instantiate(destination, identity(), destination_codecs);
     auto loaded = load_scene(scene_document, {}, destination_codecs);
     // The prefab instance, then the loaded scene's component: each restores the configuration, including the
-    // authored device selection, into an enabled and focused context without recorded input.
+    // authored identity, into an enabled and focused context without recorded input.
     std::array restored{instance.get_component<i::ActionInput>(), loaded->components<i::ActionInput>().front()};
     for (std::size_t index = 0; index < restored.size(); ++index) {
         CAPTURE(index);
@@ -168,25 +245,33 @@ TEST_CASE("Persisted chords keep their authored devices but restore no runtime s
         CHECK(context.focused());
         CHECK_FALSE(context.state("chord").active);
         CHECK_FALSE(context.state("chord").pressed);
-        CHECK(context.actions()[0].bindings[0].modifiers[0].device == 7u);
-        context.process(key_event(4, 8));
-        context.process(key_event(224, 8));
-        context.process(key_event(4, 7));
-        CHECK_FALSE(context.state("chord").active); // Keyboard 8's modifier does not complete keyboard 7's chord.
-        context.process(key_event(224, 7));
+        CHECK(context.actions()[0].bindings[0].modifiers[0].identity == authored_pad);
+        CHECK(context.actions()[0].bindings[0].modifiers[0].device == i::any_device);
+        context.process(pad_event(0, 3, other_pad));
+        context.process(pad_event(9, 3, other_pad));
+        CHECK_FALSE(context.state("chord").active); // A gamepad reporting another identity does not match.
+        // The authored gamepad matches under the ID it has in this session, and again under a new ID after
+        // reconnecting.
+        context.process(pad_event(0, 12, authored_pad));
+        context.process(pad_event(9, 12, authored_pad));
         CHECK(context.state("chord").pressed);
+        context.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, 12}});
+        CHECK_FALSE(context.state("chord").active);
+        context.process(pad_event(0, 13, authored_pad));
+        context.process(pad_event(9, 13, authored_pad));
+        CHECK(context.state("chord").active);
     }
 }
 
 TEST_CASE("Input components of an old type or with a malformed payload are rejected without leaking objects") {
     Scene source;
     auto object = source.create();
-    object.add_component<i::ActionInput>(chord_map(7));
+    object.add_component<i::ActionInput>(pad_chord_map(authored_pad));
     ComponentCodecs codecs;
     i::add_component_codec(codecs);
     const auto prefab = Prefab::capture(object, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
-    nodes[0].components[0].type = "anima.action-input.v1";
+    nodes[0].components[0].type = "anima.action-input.v2";
     CHECK_THROWS_WITH_AS(Prefab(nodes, codecs), unknown_component, std::invalid_argument);
     nodes[0] = prefab.nodes()[0];
     nodes.push_back(nodes[0]);
@@ -408,15 +493,15 @@ TEST_CASE("Input drivers are rejected during component construction, scheduling,
     i::dispatch(scenes, up);
 }
 
-TEST_CASE("Maps round-trip, and other versions, unknown fields and out-of-range devices are rejected") {
+TEST_CASE("Maps round-trip, and other versions, unknown fields and out-of-range codes are rejected") {
     const auto map = key_map();
     CHECK(i::serialize_map(i::deserialize_map(i::serialize_map(map))) == i::serialize_map(map));
     CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":1,"actions":[]})"), invalid_envelope, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":2,"actions":[],"unknown":0})"), "Unknown JSON field: unknown",
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":3,"actions":[],"unknown":0})"), "Unknown JSON field: unknown",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         i::deserialize_map(
-            R"({"version":2,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":4294967296,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":512,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
         invalid_integer, std::invalid_argument);
 }
 

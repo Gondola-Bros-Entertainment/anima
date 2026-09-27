@@ -40,7 +40,36 @@ inline void consume_input() {
     precedence.process({i::EventType::control, {i::ControlKind::key, 224, 0}, 1});
     if (!precedence.state("save").active || precedence.state("back").active || precedence.state("back").canceled)
         throw std::runtime_error("Independent input chord did not outrank the plain binding of its primary");
+    // A binding that selects a gamepad by identity follows it to the new ID it has after reconnecting.
+    i::DeviceIdentity pad{};
+    pad[0] = 3;
+    i::Binding jump{{i::ControlKind::gamepad_button, 0}};
+    jump.control.identity = pad;
+    i::Context identified({{"jump", i::ActionType::button, {jump}}});
+    identified.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 7, pad}, 1});
+    identified.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, 7}});
+    identified.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 8}, 1});
+    if (identified.state("jump").active)
+        throw std::runtime_error("Independent input identity matched a gamepad that reported none");
+    identified.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 9, pad}, 1});
+    if (!identified.state("jump").active)
+        throw std::runtime_error("Independent input identity did not follow its reconnected gamepad");
 #ifdef CONSUMER_ASSETS
+    // Documents persist a binding's device identity, which matches its gamepad under a new ID, and never an ID.
+    i::Context reloaded(i::deserialize_map(i::serialize_map({{"jump", i::ActionType::button, {jump}}})));
+    reloaded.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 11, pad}, 1});
+    if (!reloaded.state("jump").active)
+        throw std::runtime_error("Independent persisted identity did not match its gamepad");
+    auto session_jump = jump;
+    session_jump.control.device = 11;
+    bool rejected = false;
+    try {
+        (void)i::serialize_map({{"jump", i::ActionType::button, {session_jump}}});
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("Independent input configuration persisted a device ID");
     anima::SceneSet scenes;
     auto persistent = scenes.create("persistent"), level = scenes.create("level");
     auto object = persistent->create("independent action input");

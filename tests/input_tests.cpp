@@ -33,6 +33,16 @@ i::Binding chord(i::Control primary, std::vector<i::Control> modifiers) {
 i::Event event(i::ControlKind kind, unsigned code, unsigned device, float value = 1) {
     return {i::EventType::control, {kind, static_cast<std::uint16_t>(code), device}, value};
 }
+// A device identity whose first byte is @p model and whose other bytes are zero.
+i::DeviceIdentity model_identity(std::uint8_t model) {
+    i::DeviceIdentity result{};
+    result[0] = model;
+    return result;
+}
+i::Event reported(i::ControlKind kind, unsigned code, unsigned device, const i::DeviceIdentity &identity,
+                  float value = 1) {
+    return {i::EventType::control, {kind, static_cast<std::uint16_t>(code), device, identity}, value};
+}
 i::Map movement_map() {
     return {{"trigger", i::ActionType::button, {{{i::ControlKind::key, 4}}}},
             {"move",
@@ -402,6 +412,88 @@ TEST_CASE("A fixed modifier selector limits a wildcard chord axis to its gamepad
     paired.process(event(i::ControlKind::gamepad_axis, 0, 7, .75F));
     paired.process(event(i::ControlKind::gamepad_button, 0, 7));
     CHECK(paired.state("steer").value.x == .75F);
+}
+
+TEST_CASE("A binding's identity selects the devices reporting it, under whatever IDs they have") {
+    const auto pad = model_identity(1), other_pad = model_identity(2);
+    i::Binding jump{{i::ControlKind::gamepad_button, 0}};
+    jump.control.identity = pad;
+    i::Binding steer{{i::ControlKind::gamepad_axis, 0}};
+    steer.control.identity = pad;
+    i::Context identified({{"jump", i::ActionType::button, {jump}}, {"steer", i::ActionType::axis, {steer}}});
+    identified.process(reported(i::ControlKind::gamepad_button, 0, 4, other_pad));
+    CHECK_FALSE(identified.state("jump").active); // A device reporting another identity does not match,
+    identified.process(event(i::ControlKind::gamepad_button, 0, 5));
+    CHECK_FALSE(identified.state("jump").active); // nor does one reporting none.
+    identified.process(reported(i::ControlKind::gamepad_button, 0, 6, pad));
+    CHECK(identified.state("jump").pressed);
+    identified.begin_frame();
+    identified.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, 6}});
+    CHECK(identified.state("jump").released);
+    identified.process(reported(i::ControlKind::gamepad_button, 0, 9, pad));
+    CHECK(identified.state("jump").pressed); // The reconnected device matches under its new ID.
+    identified.process(event(i::ControlKind::gamepad_button, 0, 9, 0));
+    CHECK_FALSE(identified.state("jump").active); // A release without the identity still releases the press.
+    // Identical devices share an identity, and the binding chooses among them as a wildcard does.
+    identified.process(reported(i::ControlKind::gamepad_axis, 0, 3, pad, .4F));
+    identified.process(reported(i::ControlKind::gamepad_axis, 0, 7, other_pad, .9F));
+    identified.process(reported(i::ControlKind::gamepad_axis, 0, 8, pad, -.6F));
+    CHECK(identified.state("steer").value.x == -.6F);
+    identified.process(reported(i::ControlKind::gamepad_axis, 0, 8, pad, .4F));
+    CHECK(identified.state("steer").value.x == .4F);
+    // An update reporting another identity replaces the record, which the binding then rejects.
+    identified.process(reported(i::ControlKind::gamepad_axis, 0, 3, other_pad, .4F));
+    identified.process(reported(i::ControlKind::gamepad_axis, 0, 8, other_pad, .4F));
+    CHECK(identified.state("steer").value.x == 0);
+}
+
+TEST_CASE("An identity on any control of a class selects that class's device, and identities must agree") {
+    const auto pad = model_identity(1), other_pad = model_identity(2), keyboard = model_identity(3),
+               mouse = model_identity(4);
+    auto aim = chord({i::ControlKind::gamepad_axis, 0}, {{i::ControlKind::gamepad_button, 9}});
+    aim.modifiers[0].identity = pad;
+    i::Context layers(
+        {{"steer", i::ActionType::axis, {{{i::ControlKind::gamepad_axis, 0}}}}, {"aim", i::ActionType::axis, {aim}}});
+    layers.process(reported(i::ControlKind::gamepad_axis, 0, 3, other_pad, .75F));
+    layers.process(reported(i::ControlKind::gamepad_button, 9, 3, other_pad));
+    // The modifier's identity also applies to the stick, so gamepad 3 neither aims nor outranks its steering.
+    CHECK(layers.state("aim").value.x == 0);
+    CHECK(layers.state("steer").value.x == .75F);
+    layers.process(reported(i::ControlKind::gamepad_axis, 0, 4, pad, -.5F));
+    CHECK(layers.state("aim").value.x == 0); // Gamepad 4 has not pressed the modifier yet.
+    layers.process(reported(i::ControlKind::gamepad_button, 9, 4, pad));
+    CHECK(layers.state("aim").value.x == -.5F);
+    CHECK(layers.state("steer").value.x == .75F); // Gamepad 4's stick now aims; gamepad 3's still steers.
+
+    // An explicit ID and an identity both apply, and each class takes its own identity.
+    i::Binding pinned{{i::ControlKind::mouse_button, 1, 2, mouse}};
+    pinned.modifiers = {{i::ControlKind::key, 224, i::any_device, keyboard}};
+    i::Context mixed({{"pinned", i::ActionType::button, {pinned}}});
+    mixed.process(reported(i::ControlKind::key, 224, 0, keyboard));
+    mixed.process(reported(i::ControlKind::mouse_button, 1, 2, pad));
+    CHECK_FALSE(mixed.state("pinned").active);
+    mixed.process(reported(i::ControlKind::mouse_button, 1, 1, mouse));
+    CHECK_FALSE(mixed.state("pinned").active);
+    mixed.process(reported(i::ControlKind::mouse_button, 1, 2, mouse));
+    CHECK(mixed.state("pinned").active);
+
+    auto conflicting = aim;
+    conflicting.control.identity = other_pad;
+    CHECK_THROWS_WITH_AS(i::Context({{"aim", i::ActionType::axis, {conflicting}}}), conflict, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(layers.rebind("aim", {conflicting}), conflict, std::invalid_argument);
+    CHECK(layers.state("aim").value.x == -.5F); // The rejected rebind changed nothing.
+}
+
+TEST_CASE("Events whose identity no binding accepts are not recorded") {
+    const auto pad = model_identity(1), other_pad = model_identity(2);
+    i::Binding jump{{i::ControlKind::gamepad_button, 0}};
+    jump.control.identity = pad;
+    i::Context identified({{"jump", i::ActionType::button, {jump}}});
+    // More gamepads than a context records; the binding observes none of them.
+    for (unsigned device = 0; device < control_capacity + 1; ++device)
+        identified.process(reported(i::ControlKind::gamepad_button, 0, device, other_pad));
+    identified.process(reported(i::ControlKind::gamepad_button, 0, control_capacity + 1, pad));
+    CHECK(identified.state("jump").pressed);
 }
 
 TEST_CASE("Invalid chords are rejected by construction and rebinding without changing the context") {
