@@ -2,6 +2,7 @@
 #include <anima/assets/scene_budget.hpp>
 #include <anima/mesh.hpp>
 #include <compare>
+#include <cstdint>
 #include <map>
 #include <span>
 #include <typeindex>
@@ -221,6 +222,7 @@ class Scene {
     friend struct detail::SceneDriver;
     void invalidate() noexcept;
     void release() noexcept;
+    static constexpr std::size_t no_slot = SIZE_MAX;
     struct Slot {
         Instance value;
         std::uint64_t generation = 1;
@@ -231,10 +233,15 @@ class Scene {
         Mat4 world = identity();
         Mat4 local = identity();
         std::optional<Id> parent;
-        std::vector<Id> children;
+        // Children in attachment order, linked through slot indices; no_slot ends a list.
+        std::size_t first_child = no_slot, last_child = no_slot;
+        std::size_t previous_sibling = no_slot, next_sibling = no_slot;
         std::optional<Pose> pose;
         std::map<std::type_index, std::shared_ptr<detail::ComponentRecord>> components;
     };
+    Id id_at(std::size_t index) const noexcept { return {owner_, slots_[index].generation, index}; }
+    void link_child(std::size_t parent, std::size_t child) noexcept;
+    void unlink_child(std::size_t child) noexcept;
     Slot &slot(Id id);
     GameObject create_with_key(ObjectKey key, std::string name, std::shared_ptr<const Mesh> mesh);
     const Slot &slot(Id id) const;
@@ -314,6 +321,9 @@ class GameObject {
     /// Makes this object a child of @p parent, keeping the matrix that @p mode selects. Throws
     /// `std::invalid_argument` when @p parent belongs to another scene or is this object or one of
     /// its descendants.
+    ///
+    /// The work is proportional to this object's subtree, whatever the depth or child count of
+    /// either parent.
     void set_parent(GameObject parent, ReparentMode mode = ReparentMode::keep_world);
     /// Makes this object a root, keeping the matrix that @p mode selects; no inverse is needed.
     void clear_parent(ReparentMode mode = ReparentMode::keep_world);

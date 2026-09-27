@@ -379,23 +379,48 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
     component(id, typeid(MeshRenderer))->enabled = true;
     entry.pose = std::move(next_pose);
 }
+void Scene::link_child(std::size_t parent, std::size_t child) noexcept {
+    auto &owner = slots_[parent];
+    auto &entry = slots_[child];
+    entry.previous_sibling = owner.last_child;
+    entry.next_sibling = no_slot;
+    if (owner.last_child == no_slot)
+        owner.first_child = child;
+    else
+        slots_[owner.last_child].next_sibling = child;
+    owner.last_child = child;
+}
+void Scene::unlink_child(std::size_t child) noexcept {
+    auto &entry = slots_[child];
+    auto &owner = slots_[entry.parent->slot];
+    if (entry.previous_sibling == no_slot)
+        owner.first_child = entry.next_sibling;
+    else
+        slots_[entry.previous_sibling].next_sibling = entry.next_sibling;
+    if (entry.next_sibling == no_slot)
+        owner.last_child = entry.previous_sibling;
+    else
+        slots_[entry.next_sibling].previous_sibling = entry.previous_sibling;
+    entry.previous_sibling = entry.next_sibling = no_slot;
+}
 void Scene::remove(Id id) {
     auto &root = slot(id);
     if (root.parent)
-        std::erase(slot(*root.parent).children, id);
+        unlink_child(id.slot);
     root.parent.reset();
     std::shared_ptr<detail::ComponentRecord> retired;
-    // Leaf-first traversal uses existing links, with no allocation or recursion.
-    auto current = id;
+    // Leaf-first traversal uses existing links, with no allocation or recursion. Each object is
+    // its parent's last child when it is reached, so unlinking it takes constant time.
+    auto current = id.slot;
     for (;;) {
-        auto &entry = slot(current);
-        if (!entry.children.empty()) {
-            current = entry.children.back();
+        auto &entry = slots_[current];
+        if (entry.last_child != no_slot) {
+            current = entry.last_child;
             continue;
         }
         const auto parent = entry.parent;
         if (parent)
-            slot(*parent).children.pop_back();
+            unlink_child(current);
         entry.value = {};
         entry.name.clear();
         keys_.erase(entry.key);
@@ -413,14 +438,14 @@ void Scene::remove(Id id) {
         }
         entry.components.clear();
         entry.alive = false;
-        next_free_slot_ = std::min(next_free_slot_, current.slot);
+        next_free_slot_ = std::min(next_free_slot_, current);
         entry.active_self = entry.active_hierarchy = true;
         --object_count_;
         if (entry.generation != UINT64_MAX)
             ++entry.generation;
         if (!parent)
             break;
-        current = *parent;
+        current = parent->slot;
     }
     std::erase_if(active_, [this](Id candidate) { return !contains(candidate); });
     const bool was_updating = std::exchange(updating_, true);
@@ -455,7 +480,7 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
     affine(local);
     affine(world);
     // Most animated objects are leaves or keep their placement between samples.
-    if (entry.children.empty() || world == entry.world) {
+    if (entry.first_child == no_slot || world == entry.world) {
         if (entry.value.asset && (replacement || world != entry.world))
             pose(entry.value, replacement ? *replacement : entry.pose ? *entry.pose : entry.value.asset->rest_, world);
     } else {
@@ -480,8 +505,8 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
                                                   : source.value.asset->rest_,
                      placed);
             }
-            for (auto child : source.children)
-                updates.push_back({child, placed * slot(child).local, {}});
+            for (auto child = source.first_child; child != no_slot; child = slots_[child].next_sibling)
+                updates.push_back({id_at(child), placed * slots_[child].local, {}});
         }
         // Publish only after every descendant palette/bound has been validated.
         for (auto &update : updates) {
@@ -500,31 +525,36 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
 void Scene::reparent(Id id, std::optional<Id> parent, ReparentMode mode) {
     auto &entry = slot(id);
     require(mode == ReparentMode::keep_world || mode == ReparentMode::keep_local, "Invalid reparent mode");
-    for (auto ancestor = parent; ancestor; ancestor = slot(*ancestor).parent)
-        require(*ancestor != id, "GameObject parenting would create a cycle");
+    constexpr auto cycle = "GameObject parenting would create a cycle";
+    require(parent != id, cycle);
     if (entry.parent == parent)
         return;
-    const auto affected = subtree(id);
+    // Only a parent inside the moved subtree closes a cycle, so a leaf needs no search, and a
+    // subtree is searched once instead of walking every ancestor of the new parent.
+    const bool leaf = entry.first_child == no_slot;
+    std::vector<Id> affected;
+    if (!leaf) {
+        affected = subtree(id);
+        require(!parent || std::find(affected.begin(), affected.end(), *parent) == affected.end(), cycle);
+    }
     const auto parent_world = parent ? slot(*parent).world : identity();
     const auto local =
         mode == ReparentMode::keep_world ? (parent ? inverse(parent_world) * entry.world : entry.world) : entry.local;
     const auto world = mode == ReparentMode::keep_world ? entry.world : parent_world * local;
-    if (parent)
-        slot(*parent).children.reserve(slot(*parent).children.size() + 1);
     update_transform(id, local, world);
+    // Relinking cannot fail, so the accepted transform and the new links are published together.
     if (entry.parent)
-        std::erase(slot(*entry.parent).children, id);
+        unlink_child(id.slot);
     entry.parent = parent;
     if (parent)
-        slot(*parent).children.push_back(id);
-    refresh_activation(affected);
+        link_child(parent->slot, id.slot);
+    refresh_activation(leaf ? std::span<const Id>(&id, 1) : std::span<const Id>(affected));
 }
 std::vector<Scene::Id> Scene::subtree(Id id) const {
     std::vector<Id> result{id};
-    for (std::size_t i = 0; i < result.size(); ++i) {
-        const auto &children = slot(result[i]).children;
-        result.insert(result.end(), children.begin(), children.end());
-    }
+    for (std::size_t i = 0; i < result.size(); ++i)
+        for (auto child = slots_[result[i].slot].first_child; child != no_slot; child = slots_[child].next_sibling)
+            result.push_back(id_at(child));
     return result;
 }
 void Scene::refresh_activation(std::span<const Id> objects) noexcept {
@@ -583,8 +613,8 @@ std::optional<GameObject> GameObject::parent() const {
 std::vector<GameObject> GameObject::children() const {
     auto &owner = scene();
     std::vector<GameObject> result;
-    for (auto child : owner.slot(id_).children)
-        result.push_back(owner.object(child));
+    for (auto child = owner.slot(id_).first_child; child != Scene::no_slot; child = owner.slots_[child].next_sibling)
+        result.push_back(GameObject(owner.lifetime_, owner.id_at(child)));
     return result;
 }
 void GameObject::set_parent(GameObject parent, ReparentMode mode) {
