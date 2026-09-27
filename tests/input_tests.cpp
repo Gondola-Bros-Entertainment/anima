@@ -155,16 +155,13 @@ TEST_CASE("A control beyond the recorded-control capacity is rejected without be
     CHECK_FALSE(capacity.state("held").active); // The rejected gamepad was never recorded.
 }
 
-TEST_CASE("A chord's modifiers gate its primary in either order without consuming it") {
+TEST_CASE("A chord's modifiers gate its primary in either order") {
     const auto binding = chord({i::ControlKind::key, 4}, {{i::ControlKind::key, 224}});
-    i::Context context(
-        {{"chord", i::ActionType::button, {binding}}, {"plain", i::ActionType::button, {{{i::ControlKind::key, 4}}}}});
+    i::Context context({{"chord", i::ActionType::button, {binding}}});
     context.process(key(4, true));
     CHECK_FALSE(context.state("chord").active); // The primary alone does not complete the chord.
     context.process(key(224, true));
     CHECK(context.state("chord").pressed); // A modifier pressed after the primary completes it.
-    CHECK(context.state("plain").pressed); // The chord does not consume its primary.
-    CHECK(context.state("plain").active);
     context.begin_frame();
     context.process(key(224, false));
     auto state = context.state("chord");
@@ -222,6 +219,101 @@ TEST_CASE("A chord's modifiers gate its primary in either order without consumin
     CHECK(context.state("chord").pressed);
     CHECK(copy.state("chord").active); // The copy keeps its own bindings.
     CHECK(copy.actions()[0].bindings[0].modifiers[0].code == 224);
+}
+
+TEST_CASE("A held chord outranks bindings of its primary that require only some of its modifiers") {
+    constexpr unsigned s = 22, ctrl = 224, shift = 225;
+    const i::Binding back{{i::ControlKind::key, s}};
+    const auto save = chord({i::ControlKind::key, s}, {{i::ControlKind::key, ctrl}});
+    const auto shout = chord({i::ControlKind::key, s}, {{i::ControlKind::key, shift}});
+    const auto save_as = chord({i::ControlKind::key, s}, {{i::ControlKind::key, ctrl}, {i::ControlKind::key, shift}});
+    i::Context shortcuts({{"back", i::ActionType::button, {back}},
+                          {"save", i::ActionType::button, {save}},
+                          {"quick_save", i::ActionType::button, {save}},
+                          {"shout", i::ActionType::button, {shout}},
+                          {"save_as", i::ActionType::button, {save_as}},
+                          {"crouch", i::ActionType::button, {{{i::ControlKind::key, ctrl}}}}});
+    shortcuts.process(key(s, true));
+    CHECK(shortcuts.state("back").pressed);
+    shortcuts.begin_frame();
+    shortcuts.process(key(ctrl, true));
+    // Ctrl+S outranks S, so holding Ctrl releases the plain binding without canceling it.
+    CHECK(shortcuts.state("save").pressed);
+    CHECK_FALSE(shortcuts.state("back").active);
+    CHECK(shortcuts.state("back").released);
+    CHECK_FALSE(shortcuts.state("back").canceled);
+    CHECK(shortcuts.state("quick_save").active); // Equal modifier sets apply together.
+    CHECK(shortcuts.state("crouch").active);     // No modifier is consumed.
+    shortcuts.process(key(shift, true));
+    // Ctrl+Shift+S outranks both Ctrl+S and Shift+S.
+    CHECK(shortcuts.state("save_as").pressed);
+    CHECK_FALSE(shortcuts.state("save").active);
+    CHECK_FALSE(shortcuts.state("quick_save").active);
+    CHECK_FALSE(shortcuts.state("shout").active);
+    CHECK(shortcuts.state("crouch").active);
+    shortcuts.process(key(ctrl, false));
+    // Shift+S takes over, and still outranks S.
+    CHECK_FALSE(shortcuts.state("save_as").active);
+    CHECK(shortcuts.state("shout").pressed);
+    CHECK_FALSE(shortcuts.state("back").active);
+    shortcuts.begin_frame();
+    shortcuts.process(key(shift, false));
+    CHECK(shortcuts.state("shout").released);
+    CHECK(shortcuts.state("back").pressed); // Releasing the last modifier restores the plain binding.
+
+    // Without Ctrl+Shift+S, the partly shared chords Ctrl+S and Shift+S outrank S but not each other.
+    i::Context partial({{"back", i::ActionType::button, {back}},
+                        {"save", i::ActionType::button, {save}},
+                        {"shout", i::ActionType::button, {shout}}});
+    partial.process(key(ctrl, true));
+    partial.process(key(shift, true));
+    partial.process(key(s, true));
+    CHECK(partial.state("save").active);
+    CHECK(partial.state("shout").active);
+    CHECK_FALSE(partial.state("back").active);
+}
+
+TEST_CASE("Chord precedence applies per device and per context, across device classes") {
+    i::Context keyboards(
+        {{"back", i::ActionType::button, {{{i::ControlKind::key, 22}}}},
+         {"save", i::ActionType::button, {chord({i::ControlKind::key, 22}, {{i::ControlKind::key, 224}})}}});
+    keyboards.process(key(224, true, 1));
+    keyboards.process(key(22, true, 2));
+    // Keyboard 1's Ctrl neither completes nor outranks keyboard 2's S.
+    CHECK(keyboards.state("back").active);
+    CHECK_FALSE(keyboards.state("save").active);
+    keyboards.process(key(22, true, 1));
+    CHECK(keyboards.state("save").active);
+    CHECK(keyboards.state("back").active); // Keyboard 2's S still drives the plain binding.
+    keyboards.process(key(22, false, 2));
+    CHECK_FALSE(keyboards.state("back").active); // Keyboard 1's S is outranked.
+    i::Context separate({{"back", i::ActionType::button, {{{i::ControlKind::key, 22}}}}});
+    separate.process(key(22, true, 1));
+    CHECK(separate.state("back").active); // Chords of another context outrank nothing here.
+
+    // A shoulder button switches its own gamepad's stick from steering to aiming.
+    const auto aim = chord({i::ControlKind::gamepad_axis, 0}, {{i::ControlKind::gamepad_button, 9}});
+    i::Context layers(
+        {{"steer", i::ActionType::axis, {{{i::ControlKind::gamepad_axis, 0}}}}, {"aim", i::ActionType::axis, {aim}}});
+    layers.process(event(i::ControlKind::gamepad_axis, 0, 5, .75F));
+    layers.process(event(i::ControlKind::gamepad_button, 9, 6));
+    CHECK(layers.state("steer").value.x == .75F); // Gamepad 6's shoulder does not outrank gamepad 5's stick.
+    CHECK(layers.state("aim").value.x == 0);
+    layers.process(event(i::ControlKind::gamepad_button, 9, 5));
+    CHECK(layers.state("steer").value.x == 0);
+    CHECK(layers.state("aim").value.x == .75F);
+    layers.process(event(i::ControlKind::gamepad_button, 9, 5, 0));
+    CHECK(layers.state("steer").value.x == .75F);
+
+    // A keyboard modifier outranks the unmodified binding of a mouse button.
+    i::Context mixed(
+        {{"fire", i::ActionType::button, {{{i::ControlKind::mouse_button, 1}}}},
+         {"inspect", i::ActionType::button, {chord({i::ControlKind::mouse_button, 1}, {{i::ControlKind::key, 224}})}}});
+    mixed.process(event(i::ControlKind::mouse_button, 1, 0));
+    CHECK(mixed.state("fire").active);
+    mixed.process(key(224, true, 3));
+    CHECK(mixed.state("inspect").active);
+    CHECK_FALSE(mixed.state("fire").active);
 }
 
 TEST_CASE("A chord takes its primary and modifiers from one keyboard") {
