@@ -301,25 +301,26 @@ inline void run() {
               "A matrix-authored motion node lost its placement in transfer");
         check(std::abs(baseline.world[0][12] - .1F) < 1e-6F, "Independent motion did not drive the actor");
         const auto fit_item = [&](std::string_view id, std::string_view model) {
-            return std::string(R"({"id":")") + std::string(id) +
-                   R"(","slot":"surface","fits":{"consumer.profile":{"model":")" + std::string(model) +
-                   R"(","skeleton":"consumer.rig","bind_signature":")" + actor.manifest.bind_signature + R"("}}})";
+            return std::string(R"({"id":")") + std::string(id) + R"(","fits":{"consumer.profile":{"model":")" +
+                   std::string(model) + R"(","skeleton":"consumer.rig","bind_signature":")" +
+                   actor.manifest.bind_signature + R"("}}})";
         };
-        const auto fits = std::string(R"({"version":1,"items":[)") + fit_item("shell", "actor.glb") + "," +
+        const auto fits = std::string(R"({"version":2,"items":[)") + fit_item("shell", "actor.glb") + "," +
                           fit_item("shell.alt", "actor.glb") + "," + fit_item("shell.broken", "missing.glb") + "]}";
         FittedLibrary fitted(actor.actor.asset, actor.manifest, "consumer.profile", fits);
         auto shell = fitted.load("shell");
-        check(shell == fitted.load("shell") && shell->slot == "surface" && fitted.resident_assets().size() == 1,
-              "Independent fitted mesh slot/cache failed");
+        check(shell == fitted.load("shell") && shell == fitted.load("shell.alt") &&
+                  fitted.resident_assets().size() == 1,
+              "Independent fitted mesh cache failed");
         const auto fit_pose = shell->pose(baseline);
         for (const auto &[fit, owner] : shell->joints)
             check(fit_pose.world.at(fit) == baseline.world.at(owner), "Fitted mesh lost its owner pose");
         auto animated_fit = std::make_shared<Asset>(*shell->source);
         animated_fit->animations.emplace_back();
-        rejects([&] { FittedAsset invalid("surface", *actor.actor.asset, animated_fit); });
+        rejects([&] { FittedAsset invalid(*actor.actor.asset, animated_fit); });
         auto wrong_fit = std::make_shared<Asset>(*shell->source);
         wrong_fit->skins.front().inverse_bind.front()[12] += .1F;
-        rejects([&] { FittedAsset invalid("surface", *actor.actor.asset, wrong_fit); });
+        rejects([&] { FittedAsset invalid(*actor.actor.asset, wrong_fit); });
         auto wrong_manifest = actor.manifest;
         wrong_manifest.bind_signature = std::string(64, 'b');
         rejects([&] { FittedLibrary invalid(actor.actor.asset, wrong_manifest, "consumer.profile", fits); });

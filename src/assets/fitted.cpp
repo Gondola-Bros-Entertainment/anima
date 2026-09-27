@@ -13,15 +13,14 @@ struct FittedLibrary::State {
     std::shared_ptr<const anima::Asset> body;
     std::filesystem::path directory;
     std::mutex mutex;
-    std::map<std::pair<std::filesystem::path, std::string>, std::weak_ptr<const FittedAsset>> models;
+    std::map<std::filesystem::path, std::weak_ptr<const FittedAsset>> models;
     State(std::shared_ptr<const anima::Asset> b, std::filesystem::path d)
         : body(std::move(b)), directory(std::move(d)) {}
 };
-FittedAsset::FittedAsset(std::string_view slot_, const anima::Asset &body, std::shared_ptr<const anima::Asset> fitted)
-    : slot(slot_), source(std::move(fitted)),
-      joints(source ? anima::compatible_skin(body, *source)
-                    : throw std::invalid_argument("Fitted asset requires a source")) {
-    if (slot.empty() || !source->animations.empty())
+FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::Asset> fitted)
+    : source(std::move(fitted)), joints(source ? anima::compatible_skin(body, *source)
+                                               : throw std::invalid_argument("Fitted asset requires a source")) {
+    if (!source->animations.empty())
         throw std::invalid_argument("Fitted models follow the body pose and cannot own motion");
     render = anima::Mesh::compile(*source);
 }
@@ -42,16 +41,17 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
         throw std::invalid_argument("Fitted library requires a body");
     const auto catalog = parse(document);
     constexpr std::size_t maximum_catalog_items = 65'536;
+    // The one fitted catalog version this reader accepts.
+    constexpr int catalog_version = 2;
     anima::detail::json_step([&] {
         anima::detail::json_fields(catalog, {"version", "items"});
-        if (catalog.at("version") != 1 || !catalog.at("items").is_array() ||
+        if (catalog.at("version") != catalog_version || !catalog.at("items").is_array() ||
             catalog.at("items").size() > maximum_catalog_items)
             throw std::invalid_argument("Invalid fitted catalog");
         std::set<std::string> ids;
         for (const auto &item : catalog.at("items")) {
-            anima::detail::json_fields(item, {"id", "slot", "fits"});
+            anima::detail::json_fields(item, {"id", "fits"});
             const auto id = text(item.at("id"));
-            const auto slot = text(item.at("slot"));
             if (!ids.insert(id).second || !item.at("fits").is_object() || item.at("fits").empty())
                 throw std::invalid_argument("Invalid/duplicate fitted item");
             known_ids_.insert(id);
@@ -66,7 +66,7 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
                     continue;
                 if (fit.at("skeleton") != manifest.skeleton_id || fit.at("bind_signature") != manifest.bind_signature)
                     throw std::invalid_argument("Fitted model belongs to a different body bind");
-                definitions_.emplace(id, FittedDefinition{id, std::string(slot), path});
+                definitions_.emplace(id, FittedDefinition{id, path});
             }
         }
     });
@@ -78,13 +78,11 @@ std::shared_ptr<const FittedAsset> FittedLibrary::load(std::string_view id) cons
     const auto &definition = presentation_data::lookup(definitions_, id);
     const auto path = std::filesystem::weakly_canonical(state_->directory / definition.model);
     const std::scoped_lock lock(state_->mutex);
-    // Slot semantics belong to the item record as well as the source mesh.
-    const auto key = std::make_pair(path, definition.slot);
-    if (const auto found = state_->models.find(key); found != state_->models.end())
+    if (const auto found = state_->models.find(path); found != state_->models.end())
         if (auto result = found->second.lock())
             return result;
-    auto result = std::make_shared<FittedAsset>(definition.slot, *state_->body, anima::load_asset(path));
-    state_->models[key] = result;
+    auto result = std::make_shared<FittedAsset>(*state_->body, anima::load_asset(path));
+    state_->models[path] = result;
     return result;
 }
 std::vector<std::shared_ptr<const anima::Mesh>> FittedLibrary::resident_assets() const {
