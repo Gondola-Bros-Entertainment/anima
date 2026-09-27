@@ -14,19 +14,13 @@ const Json *optional(const Json &object, const std::string &key) {
     return value == object.end() ? nullptr : &*value;
 }
 std::string text(const Json &object, const std::string &key) { return object.at(key).get<std::string>(); }
-std::string optional_text(const Json &object, const std::string &key) {
-    const auto *value = optional(object, key);
-    return value ? value->get<std::string>() : "";
-}
-bool optional_bool(const Json &object, const std::string &key) {
-    const auto *value = optional(object, key);
-    return value && value->get<bool>();
-}
 double number(const Json &value) {
     if (!value.is_number())
         throw std::runtime_error("Manifest JSON requires a number");
     return value.get<double>();
 }
+// The one manifest version read_manifest accepts.
+constexpr int schema_version = 2;
 constexpr std::streamoff maximum_manifest_bytes = 1024 * 1024;
 constexpr int maximum_manifest_depth = 32;
 // A bind signature is 64 lowercase hexadecimal digits.
@@ -58,8 +52,8 @@ Manifest load_manifest(const std::filesystem::path &path) {
     }
     Manifest result;
     result.directory = std::filesystem::absolute(path).parent_path();
-    if (number(json.at("schema_version")) != 1 || text(json, "units") != "meters")
-        throw std::runtime_error("Manifest requires schema_version 1 and meter units");
+    if (number(json.at("schema_version")) != schema_version || text(json, "units") != "meters")
+        throw std::runtime_error("Manifest requires schema_version 2 and meter units");
     result.asset_id = text(json, "asset_id");
     result.model = text(json, "model");
     filename(result.model);
@@ -78,7 +72,7 @@ Manifest load_manifest(const std::filesystem::path &path) {
         !std::all_of(result.bind_signature.begin(), result.bind_signature.end(),
                      [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
         throw std::runtime_error("Manifest needs a skeleton ID and hexadecimal bind signature");
-    std::set<std::string> clips, items;
+    std::set<std::string> clips;
     for (const auto &item : json.at("clips").get_ref<const Json::array_t &>()) {
         ClipMetadata clip;
         clip.name = text(item, "name");
@@ -100,20 +94,6 @@ Manifest load_manifest(const std::filesystem::path &path) {
         std::stable_sort(clip.events.begin(), clip.events.end(),
                          [](const auto &a, const auto &b) { return a.time < b.time; });
         result.clips.push_back(std::move(clip));
-    }
-    for (const auto &item : json.at("equipment").get_ref<const Json::array_t &>()) {
-        EquipmentMetadata value{text(item, "id"),
-                                text(item, "slot"),
-                                optional_text(item, "model"),
-                                optional_text(item, "mesh"),
-                                optional_text(item, "skeleton"),
-                                optional_text(item, "socket"),
-                                optional_bool(item, "included")};
-        if (!items.insert(value.id).second)
-            throw std::runtime_error("Duplicate equipment ID: " + value.id);
-        if (!value.model.empty())
-            filename(value.model);
-        result.equipment.push_back(std::move(value));
     }
     return result;
 }

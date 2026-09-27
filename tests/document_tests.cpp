@@ -24,7 +24,7 @@ constexpr auto invalid_utf8 = "\xff"; // A lone continuation byte is never valid
 constexpr auto wrong_type = "[json.exception.type_error.302]";
 constexpr auto missing_key = "[json.exception.out_of_range.403]";
 constexpr auto valid_manifest =
-    R"({"schema_version":1,"units":"meters","asset_id":"body","model":"body.glb","skeleton":{"id":"rig","joint_count":1,"bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"clips":[{"name":"idle","loop":false}],"equipment":[]})";
+    R"({"schema_version":2,"units":"meters","asset_id":"body","model":"body.glb","skeleton":{"id":"rig","joint_count":1,"bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"clips":[{"name":"idle","loop":false}]})";
 struct Tag {};
 
 // Writes @p json to a manifest file that is removed when the object is destroyed.

@@ -257,8 +257,8 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
         ownership("port", 1) + ",\"carry.starboard\":" + ownership("starboard", 4) + "}}";
     text_file(directory / "motion.json", result.contract);
     text_file(directory / "actor.asset.json",
-              R"({"schema_version":1,"units":"meters","asset_id":"consumer.actor","model":"actor.glb","skeleton":)" +
-                  skeleton + R"(,"clips":[],"equipment":[],"motion_contract":"motion.json"})");
+              R"({"schema_version":2,"units":"meters","asset_id":"consumer.actor","model":"actor.glb","skeleton":)" +
+                  skeleton + R"(,"clips":[],"motion_contract":"motion.json"})");
     text_file(
         directory / "actor.profile.json",
         R"({"version":1,"id":"consumer.profile","manifest":"actor.asset.json","capabilities":["can.signal"],"sockets":{"port":{"node":)" +
