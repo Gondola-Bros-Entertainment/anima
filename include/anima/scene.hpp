@@ -204,9 +204,10 @@ class Scene {
     /// and reference checks; rendering never uses it.
     ///
     /// Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
-    /// included but marked invisible and left out of the snapshot bounds. Throws SceneCapacityError
-    /// when the expanded vertices exceed @p budget, and `std::runtime_error` when a vertex transform
-    /// is singular.
+    /// included but marked invisible and left out of the snapshot bounds. Normals follow normal(), and
+    /// corners follow MeshSnapshot::vertices. Throws SceneCapacityError when the expanded vertices
+    /// exceed @p budget, and `std::invalid_argument` when their count or the combined material or
+    /// texture indices overflow.
     [[nodiscard]] MeshSnapshot snapshot(SceneGeometryBudget budget = {}) const;
 
   private:
