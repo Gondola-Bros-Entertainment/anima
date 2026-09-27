@@ -3,8 +3,10 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -66,6 +68,41 @@ TEST_CASE("Objects append in slot order, and recreated objects fill holes first-
     }
     CHECK(scene.create().id().slot == 256);
     CHECK(scene.size() == 257);
+}
+
+TEST_CASE("Creation reuses the lowest free slot through interleaved creation and subtree removal") {
+    Scene scene;
+    std::vector<GameObject> live;
+    std::set<std::size_t> vacant; // The free slots, as a model of the scene's reuse order.
+    std::size_t created_slots = 0;
+    std::uint32_t sequence = 12345;
+    const auto below = [&](std::size_t bound) {
+        sequence = sequence * 1664525U + 1013904223U; // A fixed linear congruential sequence.
+        return static_cast<std::size_t>(sequence >> 8) % bound;
+    };
+    for (unsigned round = 0; round < 2000; ++round) {
+        CAPTURE(round);
+        if (live.empty() || below(4) < 2) {
+            const auto expected = vacant.empty() ? created_slots++ : vacant.extract(vacant.begin()).value();
+            auto object = scene.create();
+            CHECK(object.id().slot == expected);
+            // Attach half of them, so removal frees whole subtrees.
+            if (!live.empty() && below(2))
+                object.set_parent(live[below(live.size())], ReparentMode::keep_local);
+            live.push_back(object);
+        } else {
+            auto removed = live[below(live.size())];
+            removed.destroy();
+            std::erase_if(live, [&](const GameObject &object) {
+                if (object.valid())
+                    return false;
+                vacant.insert(object.id().slot);
+                return true;
+            });
+        }
+    }
+    CHECK(scene.size() == live.size());
+    CHECK(created_slots > live.size()); // Some slots were free at the end, so both paths ran.
 }
 
 TEST_CASE("Cleanup callbacks see a fully retired subtree, and objects they create reuse its first slots") {

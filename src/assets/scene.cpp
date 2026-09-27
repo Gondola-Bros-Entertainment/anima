@@ -1,5 +1,6 @@
 #include "mesh_limits.hpp"
 #include "winding.hpp"
+#include <algorithm>
 #include <anima/assets/scene_validation.hpp>
 #include <anima/scene.hpp>
 #include <atomic>
@@ -8,6 +9,7 @@
 #include <climits>
 #include <cstdio>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <set>
 #include <unordered_map>
@@ -213,7 +215,7 @@ void Scene::release() noexcept {
         entry.components.clear();
     }
     slots_.clear();
-    next_free_slot_ = 0;
+    free_slots_.clear();
     while (retired) {
         auto next = std::move(retired->retired_next);
         retired->disable();
@@ -295,16 +297,26 @@ GameObject Scene::create_with_key(ObjectKey key, std::string name, std::shared_p
     if (!lifetime_->scene)
         throw std::logic_error("Cannot create objects during scene teardown");
     require(key.value && !keys_.contains(key), "Duplicate or null scene object key");
-    std::size_t index = next_free_slot_;
-    while (index < slots_.size() && (slots_[index].alive || slots_[index].generation == UINT64_MAX))
-        ++index;
-    if (index == slots_.size())
+    std::size_t index = slots_.size();
+    if (free_slots_.empty()) {
         slots_.emplace_back();
+        try {
+            // Grows only when slots_ reallocates, so reserving stays amortized constant time.
+            free_slots_.reserve(slots_.capacity());
+        } catch (...) {
+            slots_.pop_back();
+            throw;
+        }
+    } else {
+        // The lowest free slot, which a scan from the first slot would find.
+        std::pop_heap(free_slots_.begin(), free_slots_.end(), std::greater<>{});
+        index = free_slots_.back();
+        free_slots_.pop_back();
+    }
     auto &entry = slots_[index];
     entry.name = std::move(name);
     entry.key = key;
     entry.alive = true;
-    next_free_slot_ = index + 1;
     ++object_count_;
     const Id id{owner_, entry.generation, index};
     try {
@@ -403,6 +415,10 @@ void Scene::unlink_child(std::size_t child) noexcept {
         slots_[entry.next_sibling].previous_sibling = entry.previous_sibling;
     entry.previous_sibling = entry.next_sibling = no_slot;
 }
+void Scene::release_slot(std::size_t index) noexcept {
+    free_slots_.push_back(index); // Within the capacity reserved when the slot was created.
+    std::push_heap(free_slots_.begin(), free_slots_.end(), std::greater<>{});
+}
 void Scene::remove(Id id) {
     auto &root = slot(id);
     if (root.parent)
@@ -438,11 +454,13 @@ void Scene::remove(Id id) {
         }
         entry.components.clear();
         entry.alive = false;
-        next_free_slot_ = std::min(next_free_slot_, current);
         entry.active_self = entry.active_hierarchy = true;
         --object_count_;
         if (entry.generation != UINT64_MAX)
             ++entry.generation;
+        // A slot whose generation is exhausted is never reused, so no stale Id can match it.
+        if (entry.generation != UINT64_MAX)
+            release_slot(current);
         if (!parent)
             break;
         current = parent->slot;

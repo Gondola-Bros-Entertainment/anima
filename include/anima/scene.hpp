@@ -242,6 +242,7 @@ class Scene {
     Id id_at(std::size_t index) const noexcept { return {owner_, slots_[index].generation, index}; }
     void link_child(std::size_t parent, std::size_t child) noexcept;
     void unlink_child(std::size_t child) noexcept;
+    void release_slot(std::size_t index) noexcept;
     Slot &slot(Id id);
     GameObject create_with_key(ObjectKey key, std::string name, std::shared_ptr<const Mesh> mesh);
     const Slot &slot(Id id) const;
@@ -263,7 +264,8 @@ class Scene {
     std::uint64_t next_key_ = 1; // Zero means exhausted; never wrap/reuse a retired key.
     std::map<ObjectKey, Id> keys_;
     std::vector<Slot> slots_;
-    std::size_t next_free_slot_{}; // Lower bound for the first reusable slot.
+    // Min-heap of reusable slots. Its capacity covers every slot, so removal never allocates.
+    std::vector<std::size_t> free_slots_;
     std::vector<Id> active_;
     bool updating_{};
     std::size_t constructing_{};
