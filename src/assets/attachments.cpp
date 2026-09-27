@@ -456,12 +456,12 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
         (void)role;
     }
 }
-std::string validate_attachment_action(const ActionRuntime &runtime, const AttachmentLibrary &library,
-                                       const AttachmentSet &attachments, std::string_view action) {
+void validate_attachment_action(const ActionRuntime &runtime, const AttachmentLibrary &library,
+                                const AttachmentSet &attachments, std::string_view action) {
     std::map<std::string, std::string, std::less<>> roles;
     for (const auto &[role, item] : attachments.roles)
         roles.emplace(role, library.motion(item.item_id).id);
-    const auto handling = runtime.loadout_handling(action, roles, library.catalog.empty_handling);
+    runtime.validate_roles(action, roles);
     for (const auto &phase : runtime.definition(action).phases)
         for (const auto &prop : phase.props) {
             const auto found = attachments.roles.find(prop.role);
@@ -471,6 +471,5 @@ std::string validate_attachment_action(const ActionRuntime &runtime, const Attac
             if (prop.required && !bound)
                 throw std::invalid_argument("Action requires an unavailable attachment role/track");
         }
-    return handling;
 }
 } // namespace anima

@@ -12,8 +12,8 @@
 /// @file
 /// Presentation clocks for actions: named timed and held phases with cues.
 ///
-/// Part of the `anima::assets` target. The caller supplies authoritative elapsed and release
-/// times in seconds; a timeline never decides whether an action is allowed or applies gameplay
+/// Part of the `anima::assets` target. The caller supplies elapsed and release times in seconds
+/// from its own clock; a timeline never decides whether an action may run or applies its
 /// effects. Failures throw `std::invalid_argument` unless stated.
 
 namespace anima {

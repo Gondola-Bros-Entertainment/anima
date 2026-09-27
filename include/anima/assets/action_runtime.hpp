@@ -13,7 +13,7 @@
 /// stated. An action id argument that the runtime lacks throws `std::out_of_range`.
 
 namespace anima {
-/// One evaluation of an action instance, on the caller's authoritative clock.
+/// One evaluation of an action instance, on the caller's clock.
 struct ActionRequest {
     /// Action id.
     std::string action;
@@ -83,7 +83,8 @@ struct ActionPropTrack {
     std::string track;
     /// Normalized track progress, each in [0, 1], mapped linearly over the phase.
     std::array<double, 2> interval{0, 1};
-    /// Whether the action requires the role to carry the track; see validate_attachment_action.
+    /// Whether the action requires the role's visual to have the track; see
+    /// validate_attachment_action.
     bool required = true;
 };
 /// Layers, prop tracks and contact curves of one phase.
@@ -148,22 +149,14 @@ class ActionRuntime {
     ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document);
     /// Action @p id. Throws `std::out_of_range` for an unknown id.
     const ActionDefinition &definition(std::string_view id) const;
-    /// Checks the caller's timing and handling for action @p id.
+    /// Checks @p roles, which maps attachment roles to handling profiles, against the roles that
+    /// action @p id requires: each must be present with a profile the action accepts for it.
+    /// Roles the action does not require are ignored.
     ///
-    /// @p handling must be one of its profiles, @p fixed_duration positive and finite, and
-    /// @p windup present, finite and nonnegative exactly when the action is held. For a held
-    /// action, the timed phases before the held phase must total @p windup and all timed phases
-    /// @p fixed_duration, each within `1e-6` seconds.
-    void validate_timing(std::string_view id, std::string_view handling, std::optional<double> windup,
-                         double fixed_duration) const;
-    /// Handling profile that performs action @p id with @p roles, which maps each attachment role
-    /// to its handling profile.
-    ///
-    /// Every role the action requires must be present with an accepted profile. With no roles,
-    /// returns @p empty_handling when the action accepts it; otherwise returns the first accepted
-    /// profile in role-name order. Throws when no profile qualifies.
-    std::string loadout_handling(std::string_view id, const std::map<std::string, std::string, std::less<>> &roles,
-                                 std::string_view empty_handling) const;
+    /// The runtime does not choose the handling profile that performs the action; the caller
+    /// passes its choice to sample(). Throws `std::out_of_range` for an unknown action, and
+    /// `std::invalid_argument` naming the first unmet role in role-name order.
+    void validate_roles(std::string_view id, const std::map<std::string, std::string, std::less<>> &roles) const;
     /// Every action, by id.
     const Definitions &definitions() const;
     /// Playback rate for @p request: 1, or the action's duration divided by
@@ -177,8 +170,8 @@ class ActionRuntime {
     /// scale(). Each layer of the current phase then samples its clip at the interval position
     /// for the phase progress, weighted by its curve: full-body layers blend with
     /// MotionRuntime::blend and masked layers apply through MotionRuntime::evaluate. Prop track
-    /// progress and contact weights are reported for the same progress. Throws also when
-    /// @p handling is not one of the action's profiles.
+    /// progress and contact weights are reported for the same progress. @p handling is the
+    /// caller's choice among ActionDefinition::handling; throws also when it is not one of them.
     ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
     /// Decodes a JSON weight curve: 2 to 32 [phase, weight] pairs, both in [0, 1], with phases
     /// strictly increasing from 0 to 1.

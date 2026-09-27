@@ -514,7 +514,7 @@ inline void run() {
             {"id":"release","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[0.5,1]}],"cues":[{"id":"signal.emit","at":0}]},
             {"id":"recover","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[1,0]}]}]}]})";
         ActionRuntime runtime(motion, actions);
-        runtime.validate_timing("signal", "port", .2, .6);
+        runtime.validate_roles("signal", {{"probe", "port"}, {"beacon", "starboard"}});
         ActionSetCatalog choices(
             R"({"version":1,"sets":{"operator":{"use":[{"action":"signal","requires":["can.signal"]}]}}})", runtime);
         check(choices.resolve("operator", "use", actor.capabilities) == "signal",
@@ -522,7 +522,8 @@ inline void run() {
         rejects([&] {
             resolve_action(std::array{ActionVariant{"a", {"x"}}, ActionVariant{"b", {"y"}}}, Capabilities{"x", "y"});
         });
-        const auto handling = validate_attachment_action(runtime, library, attachments, "signal");
+        validate_attachment_action(runtime, library, attachments, "signal");
+        const std::string handling = "port"; // This consumer's choice among the action's profiles.
         const auto holding = runtime.sample(carried, {"signal", 1, .7, {}, {}}, handling);
         check(holding.clock.phase == 1 && holding.pose.world[0] == carried.world[0],
               "Held action changed base motion or failed to sustain");
