@@ -9,9 +9,11 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
-// Files that glTF 2.0 allows, which the importer must accept, each built in memory.
+// Files that glTF 2.0 allows, each built in memory: ones the importer must accept, and ones beyond its documented
+// limits.
 namespace {
 using namespace anima;
 
@@ -29,12 +31,21 @@ constexpr std::array<std::uint8_t, 70> fallback_png{
     0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xdf, 0xe0, 0xf0, 0x1f, 0x00, 0x07, 0x00, 0x02, 0xbf,
     0x2b, 0xd7, 0xc7, 0xe2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
 constexpr std::array<std::uint8_t, 4> fallback_texel{255, 128, 64, 255};
+// Import limits that load_asset documents.
+constexpr std::size_t import_texture_limit = 4096, import_image_limit = 4096;
+// The largest square image within the pixel limit, and how many of them fill the 1 GiB decoded limit.
+constexpr std::uint32_t largest_image_edge = 4096;
+constexpr std::size_t largest_images_in_byte_limit = 16;
 
 void append(std::vector<std::byte> &bytes, std::uint32_t value) {
     for (unsigned shift = 0; shift < 32; shift += 8)
         bytes.push_back(static_cast<std::byte>((value >> shift) & 0xff));
 }
 void append(std::vector<std::byte> &bytes, float value) { append(bytes, std::bit_cast<std::uint32_t>(value)); }
+void append_big_endian(std::vector<std::byte> &bytes, std::uint32_t value) {
+    for (unsigned shift = 32; shift > 0; shift -= 8)
+        bytes.push_back(static_cast<std::byte>((value >> (shift - 8)) & 0xff));
+}
 
 // Binary glTF container: a header, the JSON chunk padded with spaces and the BIN chunk padded with zeros.
 std::vector<std::byte> glb(std::string json, std::vector<std::byte> bin) {
@@ -123,6 +134,65 @@ std::vector<std::byte> textured(const std::string &extension, const std::string 
                              R"(,"images":[{"bufferView":2,"mimeType":"image/png"},{"bufferView":3,"mimeType":")" +
                              mime + R"("}],"textures":[)" + texture + "]}";
     return glb(json, std::move(bin));
+}
+
+// An 8-bit RGBA PNG of @p width x @p height texels without image data: the signature, an IHDR chunk and an IEND
+// chunk, with zero CRCs, which stb_image skips. Its header reads as a valid image, but decoding it fails before
+// allocating any pixels.
+std::vector<std::byte> png_header(std::uint32_t width, std::uint32_t height) {
+    constexpr std::uint32_t ihdr_bytes = 13;
+    constexpr std::uint8_t bit_depth = 8, rgba_color_type = 6;
+    std::vector<std::byte> bytes;
+    for (const auto b : std::to_array<std::uint8_t>({0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}))
+        bytes.push_back(std::byte{b});
+    append_big_endian(bytes, ihdr_bytes);
+    for (const char c : std::string_view{"IHDR"})
+        bytes.push_back(static_cast<std::byte>(c));
+    append_big_endian(bytes, width);
+    append_big_endian(bytes, height);
+    // Bit depth, color type, then default compression, filtering and interlacing.
+    for (const auto b : std::to_array<std::uint8_t>({bit_depth, rgba_color_type, 0, 0, 0}))
+        bytes.push_back(std::byte{b});
+    append_big_endian(bytes, 0); // CRC
+    append_big_endian(bytes, 0); // IEND length
+    for (const char c : std::string_view{"IEND"})
+        bytes.push_back(static_cast<std::byte>(c));
+    append_big_endian(bytes, 0); // CRC
+    return bytes;
+}
+
+// A triangle with one embedded image per entry of @p encoded, then one glTF image per entry of @p image_sources,
+// reading the encoded image that the entry names, and @p textures textures: texture i samples image i modulo
+// the image count.
+std::vector<std::byte> textured_triangle(const std::vector<std::vector<std::byte>> &encoded,
+                                         const std::vector<std::size_t> &image_sources, std::size_t textures) {
+    constexpr std::size_t first_image_view = 2; // After triangle_json's two views.
+    auto bin = triangle({});
+    std::string views;
+    for (const auto &image : encoded) {
+        views += view(bin.size(), image.size());
+        bin.insert(bin.end(), image.begin(), image.end());
+    }
+    std::string images;
+    for (const auto source : image_sources)
+        images += std::string(images.empty() ? "" : ",") + R"({"bufferView":)" +
+                  std::to_string(first_image_view + source) + R"(,"mimeType":"image/png"})";
+    std::string texture_list;
+    for (std::size_t i = 0; i < textures; ++i)
+        texture_list += std::string(texture_list.empty() ? "" : ",") + R"({"source":)" +
+                        std::to_string(i % image_sources.size()) + "}";
+    const std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],)" +
+                             triangle_json(bin.size(), views) + R"(,"images":[)" + images + R"(],"textures":[)" +
+                             texture_list + "]}";
+    return glb(json, std::move(bin));
+}
+// fallback_png as bytes.
+std::vector<std::byte> png_bytes() {
+    std::vector<std::byte> bytes;
+    for (const auto b : fallback_png)
+        bytes.push_back(static_cast<std::byte>(b));
+    return bytes;
 }
 
 // A triangle with UVs whose material samples texture 0 as base color and as normal map, and three textures of
@@ -224,4 +294,38 @@ TEST_CASE("Textures made from one image share its decoded pixels, and meshes sha
     REQUIRE(mesh->materials()->textures.size() == asset->textures.size());
     for (const auto &texture : mesh->materials()->textures)
         CHECK(texture.image == image);
+}
+
+TEST_CASE("Import limits the number of textures and images") {
+    const std::vector<std::vector<std::byte>> encoded{png_bytes()};
+    // At the limit, every texture shares the one image.
+    const auto shared = load_asset(textured_triangle(encoded, {0}, import_texture_limit));
+    REQUIRE(shared->textures.size() == import_texture_limit);
+    CHECK(std::ranges::all_of(shared->textures,
+                              [&](const Texture &texture) { return texture.image == shared->textures[0].image; }));
+    CHECK_THROWS_WITH_AS(load_asset(textured_triangle(encoded, {0}, import_texture_limit + 1)),
+                         "GLB exceeds import texture limit", std::runtime_error);
+    // Images count whether or not a texture uses them.
+    const std::vector<std::size_t> images(import_image_limit, 0);
+    CHECK(load_asset(textured_triangle(encoded, images, 1))->textures.size() == 1u);
+    auto too_many = images;
+    too_many.push_back(0);
+    CHECK_THROWS_WITH_AS(load_asset(textured_triangle(encoded, too_many, 1)), "GLB exceeds import image limit",
+                         std::runtime_error);
+}
+
+TEST_CASE("Import limits the decoded bytes of its images before decoding any, counting a shared image once") {
+    // The largest images are header-only PNGs, so images within the byte limit reach the decoder, which rejects
+    // them.
+    const std::vector<std::vector<std::byte>> encoded{png_header(largest_image_edge, largest_image_edge), png_bytes()};
+    // Sixteen of them decode to 1 GiB exactly, even though two textures use each.
+    const std::vector<std::size_t> at_limit(largest_images_in_byte_limit, 0);
+    CHECK_THROWS_WITH_AS(load_asset(textured_triangle(encoded, at_limit, 2 * at_limit.size())),
+                         "PNG/JPEG decode failed", std::runtime_error);
+    // A further 1x1 image exceeds the limit. It is measured last, so the limit applies before the first image
+    // is decoded.
+    auto over_limit = at_limit;
+    over_limit.push_back(1);
+    CHECK_THROWS_WITH_AS(load_asset(textured_triangle(encoded, over_limit, over_limit.size())),
+                         "Decoded images exceed import byte limit", std::runtime_error);
 }
