@@ -22,11 +22,10 @@ namespace {
 constexpr double tolerance = 1e-5; // Absolute error allowed in poses, times and quaternion norms.
 constexpr auto preview_test = "An exported manifest previews every declared clip";
 constexpr auto valid_manifest =
-    R"({"schema_version":1,"units":"meters","asset_id":"two-joint-body","model":"body.glb",)"
+    R"({"schema_version":2,"units":"meters","asset_id":"two-joint-body","model":"body.glb",)"
     R"("skeleton":{"id":"humanoid","joint_count":2,)"
     R"("bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},)"
-    R"("clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"swing\uD83D\uDDE1"}]}],)"
-    R"("equipment":[]})";
+    R"("clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"swing\uD83D\uDDE1"}]}]})";
 constexpr auto speed_range = "Clip reference speed must be finite and positive";
 constexpr auto invalid_blend = "Pose blend requires matching local poses and a weight in [0,1]";
 
@@ -159,7 +158,7 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
                          "Manifest model must be a filename beside the manifest: folder\\body.glb", std::runtime_error);
 
     CHECK_THROWS_WITH_AS(
-        file.read(changed(valid_manifest, "\"schema_version\":1", "\"schema_version\":1,\"schema_version\":1")),
+        file.read(changed(valid_manifest, "\"schema_version\":2", "\"schema_version\":2,\"schema_version\":2")),
         "Invalid manifest JSON: Duplicate JSON document field", std::runtime_error);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "0.53", "1e999")),
                          "Invalid manifest JSON: [json.exception.out_of_range.406] number overflow parsing '1e999'",
@@ -174,7 +173,7 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
                          "followed by U+DC00..U+DFFF; last read: '\"swing\\uD83D\"'",
                          std::runtime_error);
     CHECK_THROWS_WITH_AS(file.read(std::string(valid_manifest) + "false"),
-                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 333: "
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 318: "
                          "syntax error while parsing value - unexpected false literal; expected end of input",
                          std::runtime_error);
     // The JSON library quotes the ill-formed byte as it read it.
@@ -184,12 +183,13 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
                          "'\"invalid-\xC0'",
                          std::runtime_error);
     CHECK_THROWS_WITH_AS(
-        file.read(changed(valid_manifest, "\"equipment\":[]",
-                          "\"equipment\":[],\"nested\":" + std::string(34, '[') + "0" + std::string(34, ']'))),
+        file.read(changed(valid_manifest, "\"clips\":[",
+                          "\"nested\":" + std::string(34, '[') + "0" + std::string(34, ']') + ",\"clips\":[")),
         "Invalid manifest JSON: JSON document exceeds nesting limit", std::runtime_error);
 
-    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"schema_version\":1", "\"schema_version\":2")),
-                         "Manifest requires schema_version 1 and meter units", std::runtime_error);
+    // Version 1 manifests, which also listed equipment, have no compatibility reader.
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"schema_version\":2", "\"schema_version\":1")),
+                         "Manifest requires schema_version 2 and meter units", std::runtime_error);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":2.5")),
                          "Invalid manifest joint count", std::runtime_error);
     CHECK_THROWS_WITH_AS(

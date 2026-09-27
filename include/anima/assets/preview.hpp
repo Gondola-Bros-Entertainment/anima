@@ -6,19 +6,6 @@
 /// of the `anima::assets` target.
 
 namespace anima {
-/// One `equipment` entry of a manifest. Anima checks only that ids are unique and that #model is
-/// a filename; the other fields are caller data.
-struct EquipmentMetadata {
-    /// Unique within the manifest.
-    std::string id;
-    std::string slot;
-    /// Optional model filename beside the manifest.
-    std::string model;
-    std::string mesh;
-    std::string skeleton;
-    std::string socket;
-    bool included{};
-};
 /// A character asset manifest; see read_manifest.
 struct Manifest {
     /// Absolute directory of the manifest file; #model and #motion_contract resolve against it.
@@ -34,19 +21,17 @@ struct Manifest {
     std::size_t joint_count{};
     /// Playback metadata for the model's clips; validate_manifest requires one per clip.
     std::vector<ClipMetadata> clips;
-    std::vector<EquipmentMetadata> equipment;
     /// Optional motion contract filename, read by MotionRuntime::load.
     std::string motion_contract;
 };
 /// Reads the manifest file at @p path: JSON of 1 byte to 1 MiB with at most 32 nesting levels.
 ///
-/// Requires `schema_version` 1, `units` `"meters"`, `asset_id`, `model`, `skeleton` (`id`,
-/// `bind_signature` and an integer `joint_count`), `clips` and `equipment`, and accepts a
-/// `motion_contract`. Filenames must name files beside the manifest, without directories. Each
-/// clip has a unique `name`, `loop`, an optional positive finite `reference_speed` and optional
-/// `events` of `time_seconds` (at least 0) and a nonempty `event` name, sorted by time. Each
-/// equipment entry has a unique `id`, a `slot` and optional `model`, `mesh`, `skeleton`, `socket`
-/// and `included`. Duplicate fields are rejected and unknown fields ignored.
+/// Requires `schema_version` 2, `units` `"meters"`, `asset_id`, `model`, `skeleton` (`id`,
+/// `bind_signature` and an integer `joint_count`) and `clips`, and accepts a `motion_contract`.
+/// Filenames must name files beside the manifest, without directories. Each clip has a unique
+/// `name`, `loop`, an optional positive finite `reference_speed` and optional `events` of
+/// `time_seconds` (at least 0) and a nonempty `event` name, sorted by time. Duplicate fields are
+/// rejected and unknown fields ignored.
 ///
 /// Throws `std::runtime_error` for an unreadable file or invalid content, including missing fields
 /// and fields of the wrong JSON type.
