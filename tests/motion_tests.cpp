@@ -1,4 +1,5 @@
 #include "near.hpp"
+#include <anima/assets/attachments.hpp>
 #include <anima/assets/motion_runtime.hpp>
 #include <doctest/doctest.h>
 
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -19,6 +21,7 @@ constexpr float pose_tolerance = 1e-5F; // Absolute error allowed in sampled mat
 constexpr std::size_t rig_joints = 5;
 // A bind signature is opaque to MotionRuntime; the contract only has to repeat the manifest's.
 const std::string rig_signature(64, 'a');
+constexpr auto identity_frame = "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]";
 
 // A directory in the temporary directory, removed on destruction.
 struct TempDirectory {
@@ -106,7 +109,29 @@ void write_motion(const std::filesystem::path &file) {
               binary);
 }
 
-// A limb model bound to its motion: the motion GLB on disk, the manifest and the contract that names it.
+// A one-triangle static model for attachment visuals.
+void write_prop(const std::filesystem::path &file) {
+    std::vector<char> binary;
+    for (const float number : {0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F})
+        append_f32(binary, number);
+    write_glb(file, R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+        "nodes":[{"name":"prop","mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+        "buffers":[{"byteLength":36}],"bufferViews":[{"buffer":0,"byteLength":36}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]})",
+              binary);
+}
+
+// An attachment catalog whose one item is held at the grip socket and layers the limb.
+std::string attachment_catalog() {
+    return std::string(R"({"schema_version":2,"units":"meters","empty_handling":"free","defaults":{},
+        "handling":[{"id":"free","socket":"","carry":""},{"id":"grip","socket":"grip","carry":"layer.limb"}],
+        "visuals":[{"id":"prop","model":"prop.glb","primary_grip":)") +
+           identity_frame + R"(,"markers":{}}],
+        "items":[{"id":"prop","category":"test","visual":"prop","handling":"grip"}]})";
+}
+
+// A limb model bound to its motion: the motion GLB on disk, the manifest and the contract that names it, and
+// a prop model with a grip socket at the end of the limb.
 struct MotionFixture {
     TempDirectory directory;
     std::shared_ptr<const Asset> body = std::make_shared<const Asset>(limb_model());
@@ -120,8 +145,10 @@ struct MotionFixture {
         "clips":[{"name":"base","loop":true,"events":[]}],
         "layers":{"layer.limb":{"mask":"limb","owned_joints":["end","middle","upper"],"context_joints":["root"]},
                   "layer.side":{"mask":"side","owned_joints":["side"],"context_joints":["root"]}}})";
+    std::map<std::string, AttachmentSocket, std::less<>> sockets{{"grip", {3, identity()}}};
     MotionFixture() {
         write_motion(directory.path / "motion.glb");
+        write_prop(directory.path / "prop.glb");
         manifest.directory = directory.path;
         manifest.asset_id = "test.body";
         manifest.model = "body.glb";
@@ -152,4 +179,41 @@ TEST_CASE("A motion contract binds to a model that carries clips of its own, and
     const auto sampled = runtime.sample("base", .5);
     CHECK(sampled.world[0][12] == Near{0, pose_tolerance});
     CHECK(sampled.world[0][14] == Near{.5, pose_tolerance});
+}
+
+TEST_CASE("Evaluation applies as many layers, offsets and contacts as the caller supplies") {
+    const MotionFixture fixture;
+    const auto runtime = fixture.runtime();
+    const auto base = runtime.sample("base", 0);
+    MotionLayer layer;
+    layer.clip = "layer.limb";
+    layer.mask = "limb";
+    layer.time = .5;
+    layer.weight = .5F;
+    Transform step;
+    step.translation = {.01F, 0, 0};
+    MotionContact contact;
+    contact.chain = "limb";
+    contact.target = point(base.world[3], {});
+    contact.pole = {0, 0, 2};
+    MotionControls controls;
+    controls.layers.assign(9, layer);
+    controls.offsets.assign(33, {.joint = "side", .delta = matrix(step)});
+    controls.contacts.assign(9, contact);
+    const auto evaluated = runtime.evaluate(base, controls);
+    CHECK(evaluated.contacts.size() == 9);
+    // The layers leave the side joint alone, so the offsets move it 33 steps from its rest position.
+    CHECK(evaluated.pose.world[4][12] == Near{.83, pose_tolerance});
+}
+
+TEST_CASE("An attachment set prepares as many roles as the caller names") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    std::map<std::string, std::string, std::less<>> desired;
+    for (unsigned i = 0; i < 9; ++i)
+        desired.emplace("role." + std::to_string(i), "prop");
+    const auto prepared = AttachmentSet::prepare(library, fixture.sockets, desired);
+    CHECK(prepared.roles.size() == 9);
+    CHECK(prepared.matches(desired));
+    CHECK(library.resident_assets().size() == 1); // Every role shares the one loaded model.
 }

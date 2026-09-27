@@ -230,8 +230,8 @@ struct AttachmentSet {
     /// Whether the set holds exactly @p desired, a map from role to item id.
     bool matches(const std::map<std::string, std::string, std::less<>> &desired) const;
     /// Loads the items of @p desired, a map from role to item id, and binds them to @p sockets,
-    /// without touching any scene. Throws for more than 8 roles, an empty role or item id, or an
-    /// unknown item or socket, and as AttachmentLibrary::load does.
+    /// without touching any scene. There is no fixed limit on the number of roles. Throws for an
+    /// empty role or item id, or an unknown item or socket, and as AttachmentLibrary::load does.
     static AttachmentSet prepare(const AttachmentLibrary &library,
                                  const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
                                  const std::map<std::string, std::string, std::less<>> &desired);
