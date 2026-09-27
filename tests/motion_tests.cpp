@@ -110,27 +110,37 @@ void write_motion(const std::filesystem::path &file) {
               binary);
 }
 
-// A one-triangle static model for attachment visuals.
-void write_prop(const std::filesystem::path &file) {
+// A one-triangle model for attachment visuals; an @p animated one has a clip that moves it.
+void write_prop(const std::filesystem::path &file, bool animated) {
     std::vector<char> binary;
-    for (const float number : {0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F})
+    for (const float number : {0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 0.F, 0.F, 1.F})
         append_f32(binary, number);
-    write_glb(file, R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+    write_glb(file,
+              std::string(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
         "nodes":[{"name":"prop","mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
-        "buffers":[{"byteLength":36}],"bufferViews":[{"buffer":0,"byteLength":36}],
-        "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]})",
+        "buffers":[{"byteLength":68}],
+        "bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":8},
+                       {"buffer":0,"byteOffset":44,"byteLength":24}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+                     {"bufferView":1,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
+                     {"bufferView":2,"componentType":5126,"count":2,"type":"VEC3"}])") +
+                  (animated ? R"(,"animations":[{"name":"turn","samplers":[{"input":1,"output":2}],
+                         "channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]})"
+                            : "}"),
               binary);
 }
 
 // An attachment catalog of two items held at the grip socket. Both layer the limb, except that the prop's
-// grip profile layers the side joint over the base clip instead.
+// grip profile layers the side joint over the base clip instead. The spinner visual's model is animated but
+// declares no tracks, so it cannot load.
 std::string attachment_catalog() {
     return std::string(R"({"schema_version":3,"units":"meters","empty_handling":"free",
         "handling":[{"id":"free","socket":"","layer":""},
                     {"id":"grip","socket":"grip","layer":"layer.limb","layer_overrides":{"base":"layer.side"}},
                     {"id":"brace","socket":"grip","layer":"layer.limb"}],
         "visuals":[{"id":"prop","model":"prop.glb","primary_grip":)") +
-           identity_frame + R"(,"markers":{}}],
+           identity_frame + R"(,"markers":{}},{"id":"spinner","model":"spinner.glb","primary_grip":)" + identity_frame +
+           R"(,"markers":{}}],
         "items":[{"id":"prop","visual":"prop","handling":"grip"},{"id":"brace","visual":"prop","handling":"brace"}]})";
 }
 // @p text with its first @p from replaced by @p to; the text must contain @p from.
@@ -168,7 +178,8 @@ struct MotionFixture {
     std::map<std::string, AttachmentSocket, std::less<>> sockets{{"grip", {3, identity()}}};
     MotionFixture() {
         write_motion(directory.path / "motion.glb");
-        write_prop(directory.path / "prop.glb");
+        write_prop(directory.path / "prop.glb", false);
+        write_prop(directory.path / "spinner.glb", true);
         manifest.directory = directory.path;
         manifest.asset_id = "test.body";
         manifest.model = "body.glb";
@@ -317,4 +328,48 @@ TEST_CASE("An attachment catalog accepts only version 3 and none of the removed 
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"base":""})")),
                          "Empty presentation identity/reference", std::invalid_argument);
+}
+
+TEST_CASE("An attachment instance replaces its item in a scene") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    Scene scene;
+    AttachmentInstance held;
+    CHECK(held.replace(scene, library, fixture.sockets, "prop"));
+    REQUIRE(held.instance);
+    const auto first = *held.instance;
+    CHECK(scene.contains(first));
+    CHECK_FALSE(held.replace(scene, library, fixture.sockets, "prop")); // Already attached.
+    CHECK(held.replace(scene, library, fixture.sockets, "brace"));
+    CHECK(held.item_id == "brace");
+    CHECK_FALSE(scene.contains(first));
+    CHECK_THROWS_WITH_AS(held.replace(scene, library, fixture.sockets, "absent"),
+                         "Missing presentation reference: absent", std::out_of_range);
+    CHECK(held.item_id == "brace"); // A failed replacement keeps the attached item.
+    CHECK(held.replace(scene, library, fixture.sockets, ""));
+    CHECK_FALSE(held.instance);
+    CHECK(scene.instances().empty());
+}
+
+TEST_CASE("Attachment tracks and markers report invalid requests") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    CHECK_THROWS_WITH_AS(library.load("spinner"), "Animated attachment model needs declared tracks",
+                         std::invalid_argument);
+    const auto prop = library.load("prop");
+    const auto &visual = library.visual("prop");
+    CHECK_THROWS_WITH_AS(sample_attachment_pose(*prop, visual, "spin", 2), "Invalid attachment track progress",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(sample_attachment_pose(*prop, visual, "spin", .5),
+                         "Attachment visual lacks required track: spin", std::invalid_argument);
+    CHECK(sample_attachment_pose(*prop, visual, "spin", .5, false).world.size() == 1); // An optional track rests.
+    AttachmentVisual following;
+    following.markers.emplace("tip", identity());
+    following.marker_nodes.emplace("tip", "prop");
+    CHECK_THROWS_WITH_AS(attachment_marker(following, nullptr, nullptr, "tip"),
+                         "Animated attachment marker requires the sampled prop pose", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode_attachment_catalog(replaced(attachment_catalog(), R"("handling":"grip")", R"("handling":"free")"),
+                                  fixture.directory.path),
+        "Attachment items require a handling profile with a socket", std::invalid_argument);
 }
