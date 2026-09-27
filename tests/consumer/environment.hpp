@@ -26,7 +26,9 @@ inline std::shared_ptr<const anima::Asset> fixture(bool sloped = false) {
     canopy.texture = 0;
     canopy.alpha_mode = anima::AlphaMode::mask;
     asset->materials.push_back(canopy);
-    anima::Texture alpha{2, 2, {255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 255}, {}};
+    anima::Texture alpha{std::make_shared<anima::Image>(anima::Image{
+                             2, 2, {255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 255}}),
+                         {}};
     alpha.sampler.mag = alpha.sampler.min = anima::Filter::nearest;
     alpha.sampler.mipmapped = false;
     asset->textures.push_back(alpha);

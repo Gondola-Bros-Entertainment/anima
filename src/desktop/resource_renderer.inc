@@ -157,8 +157,9 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
     vkGetPhysicalDeviceProperties(physical, &properties);
     if (!asset->vertices().empty() && asset->vertices().size() - 1 > properties.limits.maxDrawIndexedIndexValue)
         throw std::invalid_argument("Resource index exceeds device indexed-draw range");
-    for (const auto &image : asset->materials()->textures)
-        if (image.width > properties.limits.maxImageDimension2D || image.height > properties.limits.maxImageDimension2D)
+    for (const auto &texture : asset->materials()->textures)
+        if (texture.image->width > properties.limits.maxImageDimension2D ||
+            texture.image->height > properties.limits.maxImageDimension2D)
             throw std::invalid_argument("Resource texture exceeds device image dimensions");
     if (vertices && indices) {
         value->vertices =

@@ -7,17 +7,18 @@ namespace foliage_test {
 inline std::shared_ptr<const anima::Asset> fixture() {
     auto asset = std::make_shared<anima::Asset>();
     asset->nodes.resize(1);
-    anima::Texture texture{256, 256, std::vector<std::uint8_t>(256 * 256 * 4), {}};
-    texture.sampler.mag = texture.sampler.min = texture.sampler.mip = anima::Filter::nearest;
+    anima::Image image{256, 256, std::vector<std::uint8_t>(256 * 256 * 4)};
     constexpr unsigned opaque_per_block[]{0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 4, 4};
     for (unsigned y = 0; y < 256; ++y)
         for (unsigned x = 0; x < 256; ++x) {
             const auto block = (y % 8 / 2) * 4 + x % 8 / 2;
             const bool visible = (y % 2) * 2 + x % 2 < opaque_per_block[block];
             const auto offset = (y * 256 + x) * 4;
-            texture.rgba[offset] = texture.rgba[offset + 2] = 255;
-            texture.rgba[offset + 1] = texture.rgba[offset + 3] = visible ? 255 : 0;
+            image.rgba[offset] = image.rgba[offset + 2] = 255;
+            image.rgba[offset + 1] = image.rgba[offset + 3] = visible ? 255 : 0;
         }
+    anima::Texture texture{std::make_shared<anima::Image>(std::move(image)), {}};
+    texture.sampler.mag = texture.sampler.min = texture.sampler.mip = anima::Filter::nearest;
     asset->textures.push_back(std::move(texture));
     anima::Material mask;
     mask.texture = 0;

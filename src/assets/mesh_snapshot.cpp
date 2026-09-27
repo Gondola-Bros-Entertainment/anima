@@ -89,7 +89,7 @@ const cgltf_accessor *attribute(const cgltf_primitive &primitive, cgltf_attribut
     }
     return nullptr;
 }
-Texture decode(const cgltf_image *image) {
+std::shared_ptr<const Image> decode(const cgltf_image *image) {
     require(image && image->buffer_view && !image->uri, "Only embedded PNG/JPEG images are supported");
     const auto *view = image->buffer_view;
     require(view->size <= maximum_source_bytes, "Embedded image exceeds import byte limit");
@@ -104,10 +104,9 @@ Texture decode(const cgltf_image *image) {
     std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels{
         stbi_load_from_memory(encoded, static_cast<int>(view->size), &width, &height, &channels, 4), stbi_image_free};
     require(bool(pixels), "PNG/JPEG decode failed");
-    return {static_cast<std::uint32_t>(width),
-            static_cast<std::uint32_t>(height),
-            {pixels.get(), pixels.get() + std::size_t(width) * height * 4},
-            {}};
+    return std::make_shared<Image>(Image{static_cast<std::uint32_t>(width),
+                                         static_cast<std::uint32_t>(height),
+                                         {pixels.get(), pixels.get() + std::size_t(width) * height * 4}});
 }
 Sampler sampler(const cgltf_sampler *source) {
     Sampler result;
@@ -239,19 +238,20 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         }
         asset->skins.push_back(std::move(value));
     }
-    std::unordered_map<const cgltf_image *, Texture> decoded;
+    // Each image is decoded once, and every texture made from it shares the pixels.
+    std::unordered_map<const cgltf_image *, std::shared_ptr<const Image>> decoded;
+    asset->textures.reserve(data->textures_count);
     for (std::size_t i = 0; i < data->textures_count; ++i) {
         const auto &texture = data->textures[i];
         // A Basis or WebP source is optional unless its extension is required, which is rejected above;
         // the texture's standard PNG or JPEG source then serves as the fallback.
         require(texture.image, "Texture needs a PNG or JPEG source");
-        if (!decoded.contains(texture.image))
-            decoded.emplace(texture.image, decode(texture.image));
-        auto value = decoded.at(texture.image);
-        value.sampler = sampler(texture.sampler);
-        asset->textures.push_back(std::move(value));
+        auto &image = decoded[texture.image];
+        if (!image)
+            image = decode(texture.image);
+        asset->textures.push_back({image, sampler(texture.sampler)});
     }
-    // A source texture used as both colour and data needs distinct GPU encodings.
+    // A source texture used as both colour and data needs distinct GPU encodings; the copy shares its image.
     std::map<std::pair<std::size_t, TextureEncoding>, int> texture_views;
     std::vector<bool> texture_used(data->textures_count);
     const auto texture_index = [&](const cgltf_texture_view &view, TextureEncoding encoding) {

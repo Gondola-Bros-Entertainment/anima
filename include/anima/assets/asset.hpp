@@ -18,7 +18,8 @@
 /// decoders are private. Coordinates follow glTF: right-handed and +Y up, in the file's units
 /// (meters in glTF). Rotations are XYZW quaternions, local transforms compose as `T * R * S`,
 /// matrices are column-major and times are in seconds. Imported assets are shared as
-/// `std::shared_ptr<const Asset>` and own all their data.
+/// `std::shared_ptr<const Asset>` and own all their data; decoded images are shared through
+/// Texture::image.
 
 namespace anima {
 /// One glTF node.
@@ -115,8 +116,15 @@ struct Sampler {
     /// is `NEAREST` or `LINEAR`.
     bool mipmapped = true;
 };
-/// Decoded RGBA8 image with its sampler and encoding.
-struct Texture {
+/// Decoded RGBA8 pixels, which textures share by identity.
+///
+/// Textures hold an image through `std::shared_ptr<const Image>`, and the pointer is its identity:
+/// copying a Texture, an Asset or a MeshSnapshot, or compiling a Mesh, shares the pixels instead of
+/// copying them, and the image lives until its last holder releases it. Pixels must not change
+/// once a Texture refers to them, even through another pointer to the same Image: meshes compiled
+/// from the texture read them without synchronization, from any thread. Make a new Image to
+/// change them.
+struct Image {
     /// Width in texels.
     std::uint32_t width{};
     /// Height in texels.
@@ -124,6 +132,13 @@ struct Texture {
     /// `width * height * 4` bytes of 8-bit RGBA, row by row, starting at texture coordinate
     /// `v = 0`.
     std::vector<std::uint8_t> rgba;
+};
+/// A shared decoded image with its sampler and encoding.
+struct Texture {
+    /// The pixels, shared with every texture that uses the same image. Textures that share an
+    /// image may sample and encode it differently. Validation rejects a null image as it rejects a
+    /// zero dimension.
+    std::shared_ptr<const Image> image;
     Sampler sampler;
     /// The importer sets TextureEncoding::srgb for base-color and emissive maps and
     /// TextureEncoding::linear for the others.
@@ -141,12 +156,13 @@ struct MipLevel {
 /// Mip chain of a base-color texture, as texture_mips(const Texture &) builds it. Throws
 /// `std::invalid_argument` unless @p texture uses TextureEncoding::srgb.
 [[nodiscard]] std::vector<MipLevel> base_color_mips(const Texture &texture);
-/// Full mip chain of @p texture, from a copy of its texels down to 1x1.
+/// Full mip chain of @p texture, from a copy of its image's texels down to 1x1.
 ///
 /// Each level halves both dimensions, rounding down to at least 1, and box-filters every source
 /// texel, including odd edges. RGB is averaged in the texture's encoding: sRGB color in linear
 /// light, data maps as stored; alpha is averaged as stored. Throws `std::invalid_argument` for a
-/// zero dimension, a byte count other than `width * height * 4` or an invalid encoding.
+/// null image, a zero dimension, a byte count other than `width * height * 4` or an invalid
+/// encoding.
 [[nodiscard]] std::vector<MipLevel> texture_mips(const Texture &texture);
 /// Options for texture_mips(const Texture &, TextureMipOptions).
 struct TextureMipOptions {
@@ -241,7 +257,8 @@ struct Asset {
     /// One per glTF material, then `glTF default` when a primitive has no material.
     std::vector<Material> materials;
     /// One per glTF texture, then a copy of each texture used both as color and as data, so that
-    /// each entry has one encoding.
+    /// each entry has one encoding. Textures made from one glTF image, copies included, share one
+    /// Image.
     std::vector<Texture> textures;
     std::vector<Animation> animations;
     /// Number of mesh-bearing nodes in the selected scene.
@@ -265,10 +282,11 @@ struct Pose {
 /// is opened and @p bytes is not retained.
 ///
 /// The file needs exactly one embedded buffer and may embed PNG or JPEG images of at most 8192
-/// texels per edge and 16,777,216 texels. Limits: 4096 nodes, 4096 materials, 1 to 512 joints per
-/// skin, 2,000,000 elements per accessor, 2,000,000 expanded vertices in total and a node depth of
-/// 256. Geometry comes from the default scene, else the first scene, else every root node; it
-/// must be triangle lists, reach no node twice and contain at least one triangle. Skinned
+/// texels per edge and 16,777,216 texels. Each image that a texture uses is decoded once, into an
+/// Image that every texture made from it shares. Limits: 4096 nodes, 4096 materials, 1 to 512
+/// joints per skin, 2,000,000 elements per accessor, 2,000,000 expanded vertices in total and a
+/// node depth of 256. Geometry comes from the default scene, else the first scene, else every root
+/// node; it must be triangle lists, reach no node twice and contain at least one triangle. Skinned
 /// primitives need `JOINTS_0` and `WEIGHTS_0`; further joint sets are rejected. Clips animate
 /// translation, rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix nodes;
 /// channels without a target node are ignored, and a clip whose keys all sit at time 0 is a pose

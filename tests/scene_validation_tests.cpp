@@ -4,8 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -26,7 +28,8 @@ anima::MeshSnapshot fixture() {
     scene.primitives[0].material_index = 0;
     scene.primitives[1].material_index = 1;
     scene.material_data = {{"a", {1, 1, 1}, 0}, {"b", {1, 1, 1}, 1}};
-    scene.textures = {{2, 1, std::vector<std::uint8_t>(8, 255), {}}, {1, 1, std::vector<std::uint8_t>(4, 255), {}}};
+    scene.textures = {{std::make_shared<anima::Image>(anima::Image{2, 1, std::vector<std::uint8_t>(8, 255)}), {}},
+                      {std::make_shared<anima::Image>(anima::Image{1, 1, std::vector<std::uint8_t>(4, 255)}), {}}};
     return scene;
 }
 // The fixture after @p edit.
@@ -34,6 +37,14 @@ template <class Edit> anima::MeshSnapshot edited(Edit edit) {
     auto scene = fixture();
     edit(scene);
     return scene;
+}
+// The fixture with texture 0 replaced by a copy of its image after @p edit.
+template <class Edit> anima::MeshSnapshot edited_image(Edit edit) {
+    return edited([&](anima::MeshSnapshot &scene) {
+        auto image = *scene.textures[0].image;
+        edit(image);
+        scene.textures[0].image = std::make_shared<anima::Image>(std::move(image));
+    });
 }
 } // namespace
 
@@ -113,14 +124,15 @@ TEST_CASE("Material factors outside [0, 1] are rejected") {
 }
 
 TEST_CASE("Textures must match their dimensions and use known sampler values") {
-    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([](auto &s) { s.textures[0].width = 0; })), texture_dimensions,
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([](auto &s) { s.textures[0].image.reset(); })),
+                         texture_dimensions, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited_image([](auto &i) { i.width = 0; })), texture_dimensions,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([](auto &s) { s.textures[0].height = 0; })), texture_dimensions,
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited_image([](auto &i) { i.height = 0; })), texture_dimensions,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(
-        anima::validate_scene(edited([](auto &s) { s.textures[0].width = s.textures[0].height = UINT32_MAX; })),
-        texture_dimensions, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([](auto &s) { s.textures[0].rgba.pop_back(); })),
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited_image([](auto &i) { i.width = i.height = UINT32_MAX; })),
+                         texture_dimensions, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited_image([](auto &i) { i.rgba.pop_back(); })),
                          "MeshSnapshot texture byte count does not match dimensions", std::invalid_argument);
     const auto unknown_filter = static_cast<anima::Filter>(99);
     const auto unknown_wrap = static_cast<anima::Wrap>(99);

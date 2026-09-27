@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,6 +34,9 @@ constexpr auto texture_byte_mismatch = "MeshSnapshot texture byte count does not
 constexpr auto invalid_parent = "Invalid node parent";
 constexpr auto invalid_vertex = "Invalid render vertex";
 
+// A texture over new pixels, with the default sampler and sRGB encoding.
+Texture texture_of(Image image) { return {std::make_shared<Image>(std::move(image)), {}}; }
+
 SourcePrimitive triangle(int material) {
     SourcePrimitive primitive;
     primitive.material = material;
@@ -54,10 +58,9 @@ Asset static_source(std::initializer_list<int> materials) {
     source.materials[0].name = "textured";
     source.materials[0].texture = 0;
     source.materials[1].name = "plain";
-    source.textures.push_back({authored_edge,
-                               authored_edge,
-                               std::vector<std::uint8_t>(authored_edge * authored_edge * rgba_channels, opaque),
-                               {}});
+    source.textures.push_back(
+        texture_of({authored_edge, authored_edge,
+                    std::vector<std::uint8_t>(authored_edge * authored_edge * rgba_channels, opaque)}));
     for (const auto material : materials)
         source.primitives.push_back(triangle(material));
     return source;
@@ -73,17 +76,17 @@ Texture cutout() {
     constexpr std::array<unsigned, blocks_per_row * blocks_per_row> opaque_per_block{0, 0, 0, 0, 1, 1, 1, 1,
                                                                                      1, 1, 1, 2, 2, 3, 4, 4};
     constexpr std::uint8_t transparent = 0;
-    Texture texture{cutout_edge, cutout_edge, std::vector<std::uint8_t>(cutout_edge * cutout_edge * rgba_channels), {}};
+    Image image{cutout_edge, cutout_edge, std::vector<std::uint8_t>(cutout_edge * cutout_edge * rgba_channels)};
     for (std::uint32_t block = 0; block < opaque_per_block.size(); ++block)
         for (std::uint32_t texel = 0; texel < block_edge * block_edge; ++texel) {
             const auto x = block % blocks_per_row * block_edge + texel % block_edge;
             const auto y = block / blocks_per_row * block_edge + texel / block_edge;
             const auto offset = (y * cutout_edge + x) * rgba_channels;
             const auto visible = texel < opaque_per_block[block] ? opaque : transparent;
-            texture.rgba[offset] = texture.rgba[offset + 2] = opaque;
-            texture.rgba[offset + 1] = texture.rgba[offset + 3] = visible;
+            image.rgba[offset] = image.rgba[offset + 2] = opaque;
+            image.rgba[offset + 1] = image.rgba[offset + 3] = visible;
         }
-    return texture;
+    return texture_of(std::move(image));
 }
 Material masked(const char *name, float cutoff, float alpha = 1) {
     Material material;
@@ -138,7 +141,7 @@ TEST_CASE("A texture limit alone leaves static geometry unsplit") {
         const auto &material = snapshot.material_data.at(mesh.draws()[i].material);
         CHECK(material.name == source.materials.at(source.primitives[i].material).name);
         if (material.texture >= 0)
-            CHECK(snapshot.textures.at(material.texture).width == reduced_edge);
+            CHECK(snapshot.textures.at(material.texture).image->width == reduced_edge);
     }
 }
 
@@ -208,7 +211,7 @@ TEST_CASE("Shrunk textures keep the alpha coverage that each material's upload p
                 const auto index = static_cast<std::size_t>(found - source.materials.begin());
                 const auto check = [&](int texture, std::size_t binding) {
                     CAPTURE(binding);
-                    const auto &shrunk = snapshot.textures.at(texture);
+                    const auto &shrunk = *snapshot.textures.at(texture).image;
                     const auto expected = planned(index, binding);
                     CHECK(shrunk.width == expected.width);
                     CHECK(shrunk.height == expected.height);
@@ -235,7 +238,39 @@ TEST_CASE("A texture within the limit keeps its texels once for every cutoff") {
     REQUIRE(meshes.size() == 1);
     const auto &textures = meshes.front()->materials()->textures;
     REQUIRE(textures.size() == 1);
-    CHECK(textures.front().rgba == source.textures.front().rgba);
+    CHECK(textures.front().image == source.textures.front().image);
+}
+
+TEST_CASE("Compiled meshes and static pieces share their source's images") {
+    auto source = static_source({0, 1, 0});
+    // Texture 1 samples texture 0's image with another filter, for material 1.
+    source.textures.push_back(source.textures[0]);
+    source.textures[1].sampler.mag = Filter::nearest;
+    source.materials[1].texture = 1;
+    const auto &authored = source.textures[0].image;
+    const auto whole = Mesh::compile(source);
+    for (const auto &texture : whole->materials()->textures)
+        CHECK(texture.image == authored);
+    // One triangle per piece, so the three pieces alternate between the two textures.
+    const auto pieces = Mesh::compile_static(source, {.max_vertices = triangle_corners});
+    REQUIRE(pieces.size() == source.primitives.size());
+    for (const auto &piece : pieces) {
+        REQUIRE(piece->materials()->textures.size() == 1);
+        CHECK(piece->materials()->textures[0].image == authored);
+    }
+    // The image shrinks once, for every piece and for both textures, which share it and its encoding.
+    const auto shrunk =
+        Mesh::compile_static(source, {.max_vertices = triangle_corners, .max_texture_edge = reduced_edge});
+    REQUIRE(shrunk.size() == source.primitives.size());
+    REQUIRE(shrunk[0]->materials()->textures.size() == 1);
+    const auto &reduced = shrunk[0]->materials()->textures[0].image;
+    CHECK(reduced != authored);
+    CHECK(reduced->width == reduced_edge);
+    for (const auto &piece : shrunk) {
+        REQUIRE(piece->materials()->textures.size() == 1);
+        CHECK(piece->materials()->textures[0].image == reduced);
+    }
+    CHECK(shrunk[1]->materials()->textures[0].sampler.mag == Filter::nearest);
 }
 
 TEST_CASE("Static splitting rejects an out-of-range material index as compile() does") {
@@ -255,10 +290,12 @@ TEST_CASE("Static splitting rejects an invalid material as compile() does, used 
 
 TEST_CASE("Static splitting rejects a malformed texture as compile() does, used or not") {
     auto truncated = static_source({0, 1});
-    truncated.textures[0].rgba.pop_back(); // Material 0's texture is larger than the texture limit.
+    auto pixels = *truncated.textures[0].image; // Material 0's texture is larger than the texture limit.
+    pixels.rgba.pop_back();
+    truncated.textures[0].image = std::make_shared<Image>(std::move(pixels));
     rejects_like_compile<std::invalid_argument>(truncated, texture_byte_mismatch);
     auto unused = static_source({0, 1});
-    unused.textures.push_back({1, 1, {}, {}}); // No material samples it, and it has no texels.
+    unused.textures.push_back(texture_of({1, 1, {}})); // No material samples it, and it has no texels.
     rejects_like_compile<std::invalid_argument>(unused, texture_byte_mismatch);
 }
 

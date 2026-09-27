@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using namespace anima;
@@ -20,22 +22,24 @@ std::size_t covered(const MipLevel &level, float cutoff) {
         count += float(level.rgba[i]) / 255 >= cutoff;
     return count;
 }
+// A texture over new pixels, with the default sampler and sRGB encoding.
+Texture texture_of(Image image) { return {std::make_shared<Image>(std::move(image)), {}}; }
 // An 8x8 cutout of opaque white leaves on transparent magenta; its 2x2 blocks hold 0 to 4 leaf texels, 22 in all.
 Texture cutout() {
-    Texture texture{8, 8, std::vector<std::uint8_t>(8 * 8 * 4), {}};
+    Image image{8, 8, std::vector<std::uint8_t>(8 * 8 * 4)};
     constexpr unsigned opaque_per_block[]{0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 4, 4};
     for (unsigned block = 0; block < 16; ++block)
         for (unsigned texel = 0; texel < 4; ++texel) {
             const auto x = block % 4 * 2 + texel % 2, y = block / 4 * 2 + texel / 2;
             const auto offset = (y * 8 + x) * 4;
             const bool visible = texel < opaque_per_block[block];
-            texture.rgba[offset] = texture.rgba[offset + 2] = 255;
-            texture.rgba[offset + 1] = visible ? 255 : 0;
-            texture.rgba[offset + 3] = visible ? 255 : 0;
+            image.rgba[offset] = image.rgba[offset + 2] = 255;
+            image.rgba[offset + 1] = visible ? 255 : 0;
+            image.rgba[offset + 3] = visible ? 255 : 0;
         }
-    return texture;
+    return texture_of(std::move(image));
 }
-Texture black_and_white() { return {2, 1, {0, 0, 0, 255, 255, 255, 255, 255}, {}}; }
+Texture black_and_white() { return texture_of({2, 1, {0, 0, 0, 255, 255, 255, 255, 255}}); }
 // Masks on the cutout: one, an equivalent one at half alpha with half the cutoff, one with another cutoff, and
 // an opaque material that also emits the cutout.
 std::array<Material, 4> materials() {
@@ -63,10 +67,10 @@ std::array<Texture, 2> textures() {
 
 TEST_CASE("Alpha coverage correction keeps the base level and restores each mip's cutout") {
     const auto source = cutout();
-    const auto original = source.rgba;
+    const auto original = source.image->rgba;
     const auto plain = texture_mips(source);
     const auto masked = texture_mips(source, {.alpha_coverage_cutoff = cutout_cutoff});
-    CHECK(source.rgba == original);
+    CHECK(source.image->rgba == original);
     CHECK(masked.front().rgba == original);
     // Filtering alone thins the cutout; correction restores the nearest attainable coverage.
     CHECK(covered(masked.front(), cutout_cutoff) == 22);
@@ -92,17 +96,18 @@ TEST_CASE("Alpha coverage correction keeps the base level and restores each mip'
 TEST_CASE("Coverage correction keeps as much alpha as the cutoff allows") {
     // One visible texel out of four: the 1x1 mip must be below the cutoff,
     // but retain as much alpha as possible for interpolation with its parent.
-    const Texture sparse{2, 2, {255, 255, 255, 127, 255, 255, 255, 127, 255, 255, 255, 127, 255, 255, 255, 255}, {}};
+    const auto sparse =
+        texture_of({2, 2, {255, 255, 255, 127, 255, 255, 255, 127, 255, 255, 255, 127, 255, 255, 255, 255}});
     CHECK(texture_mips(sparse, {.alpha_coverage_cutoff = .5F}).back().rgba[3] == 127);
 }
 
 TEST_CASE("Uniform alpha keeps its coverage at every level") {
     for (const auto alpha : {std::uint8_t{0}, std::uint8_t{255}}) {
         CAPTURE(alpha);
-        auto solid = cutout();
-        for (std::size_t i = 3; i < solid.rgba.size(); i += 4)
-            solid.rgba[i] = alpha;
-        for (const auto &mip : texture_mips(solid, {.alpha_coverage_cutoff = 1.F})) {
+        auto pixels = *cutout().image;
+        for (std::size_t i = 3; i < pixels.rgba.size(); i += 4)
+            pixels.rgba[i] = alpha;
+        for (const auto &mip : texture_mips(texture_of(std::move(pixels)), {.alpha_coverage_cutoff = 1.F})) {
             CAPTURE(mip.width);
             CHECK(covered(mip, 1.F) == (alpha ? mip.width * mip.height : 0U));
         }
@@ -110,7 +115,7 @@ TEST_CASE("Uniform alpha keeps its coverage at every level") {
 }
 
 TEST_CASE("An odd edge texel is filtered, and colour is weighted by alpha") {
-    const Texture odd{3, 1, {255, 0, 255, 0, 255, 0, 255, 0, 0, 255, 0, 255}, {}};
+    const auto odd = texture_of({3, 1, {255, 0, 255, 0, 255, 0, 255, 0, 0, 255, 0, 255}});
     const auto tail = texture_mips(odd, {.alpha_coverage_cutoff = .5F}).back();
     REQUIRE(tail.width == 1);
     REQUIRE(tail.height == 1);
@@ -133,11 +138,12 @@ TEST_CASE("Invalid mip inputs are rejected") {
         CHECK_THROWS_WITH_AS(texture_mips(source, {.alpha_coverage_cutoff = cutoff}),
                              "Alpha coverage cutoff must be finite and in (0, 1]", std::invalid_argument);
     }
-    CHECK_THROWS_WITH_AS(texture_mips(Texture{}), invalid_texture, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(texture_mips(Texture{}), invalid_texture, std::invalid_argument); // No image.
+    CHECK_THROWS_WITH_AS(texture_mips(texture_of({})), invalid_texture, std::invalid_argument);
     // 2^31 x 2^31 texels of 4 bytes wrap size_t to 0, the empty byte count, so only the overflow check rejects them.
-    Texture oversized;
-    oversized.width = oversized.height = std::uint32_t{1} << 31;
-    CHECK_THROWS_WITH_AS(texture_mips(oversized), invalid_texture, std::invalid_argument);
+    constexpr auto wrapping_edge = std::uint32_t{1} << 31;
+    CHECK_THROWS_WITH_AS(texture_mips(texture_of({wrapping_edge, wrapping_edge, {}})), invalid_texture,
+                         std::invalid_argument);
 }
 
 TEST_CASE("A material texture plan shares mips between equivalent cutoffs and isolates conflicting ones") {
@@ -199,6 +205,6 @@ TEST_CASE("Mesh preparation filters each planned image as the plan asks") {
     const MeshPreparation unfiltered(Mesh::compile(upload_source));
     REQUIRE(unfiltered.images().size() == 2);
     REQUIRE(unfiltered.images()[1].size() == 1);
-    CHECK(unfiltered.images()[1][0].rgba == no_mips.rgba);
+    CHECK(unfiltered.images()[1][0].rgba == no_mips.image->rgba);
     CHECK_THROWS_WITH_AS(MeshPreparation(nullptr), "Cannot prepare a null render asset", std::invalid_argument);
 }

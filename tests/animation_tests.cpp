@@ -11,6 +11,7 @@
 #include <fstream>
 #include <limits>
 #include <locale>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -421,12 +422,12 @@ TEST_CASE("A fitted model that does not match the body's rig is rejected with it
 }
 
 TEST_CASE("Base-color mipmaps average in linear light and keep odd edges") {
-    const Texture checker{2, 1, {0, 0, 0, 255, 255, 255, 255, 255}, {}};
+    const Texture checker{std::make_shared<Image>(Image{2, 1, {0, 0, 0, 255, 255, 255, 255, 255}}), {}};
     const auto mips = base_color_mips(checker);
     REQUIRE(mips.size() == 2);
     CHECK(mips[1].rgba[0] == 188); // Averaged in encoded sRGB, this would be 128.
     CHECK(mips[1].rgba[3] == 255);
-    const Texture odd{3, 1, {0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255}, {}};
+    const Texture odd{std::make_shared<Image>(Image{3, 1, {0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255}}), {}};
     CHECK(base_color_mips(odd).back().rgba[0] == 213);
 }
 

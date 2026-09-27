@@ -41,7 +41,9 @@ inline std::shared_ptr<const anima::Asset> fixture() {
     asset->nodes.resize(2);
     asset->skins.push_back({{0, 1}, {anima::identity(), anima::identity()}});
     asset->materials.push_back({"test surface", {.5F, .7F, .9F}, 0});
-    asset->textures.push_back({2, 2, {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255}, {}});
+    asset->textures.push_back({std::make_shared<anima::Image>(anima::Image{
+                                   2, 2, {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255}}),
+                               {}});
     anima::SourcePrimitive primitive;
     primitive.skin = 0;
     primitive.material = 0;
@@ -348,8 +350,7 @@ inline int run(int argc, char **argv) {
                 texture.sampler.mipmapped = false;
                 break;
             case 6:
-                texture.width = texture.height = 4;
-                texture.rgba.resize(64, 255);
+                texture.image = std::make_shared<anima::Image>(anima::Image{4, 4, std::vector<std::uint8_t>(64, 255)});
                 break;
             }
             const auto id = source->add(anima::Mesh::compile(variant));

@@ -1082,13 +1082,14 @@ struct VulkanRenderer::Impl {
         target.textures.resize(plan.images.size());
         std::uint32_t total_mips = 0;
         for (std::size_t i = 0; i < target.textures.size(); ++i) {
-            const Texture white{1, 1, {255, 255, 255, 255}, {}};
+            const Texture white{std::make_shared<anima::Image>(anima::Image{1, 1, {255, 255, 255, 255}}), {}};
             const auto &planned = plan.images[i];
             const auto &source = planned.source < 0 ? white : target.source->textures[planned.source];
+            const auto &pixels = *source.image;
             const auto generated_mips = prepared ? std::vector<MipLevel>{}
                                         : source.sampler.mipmapped
                                             ? texture_mips(source, planned.mips)
-                                            : std::vector<MipLevel>{{source.width, source.height, source.rgba}};
+                                            : std::vector<MipLevel>{{pixels.width, pixels.height, pixels.rgba}};
             const auto &mips = prepared ? prepared->images().at(i) : generated_mips;
             total_mips += static_cast<std::uint32_t>(mips.size());
             auto &texture = target.textures[i];
@@ -1096,7 +1097,7 @@ struct VulkanRenderer::Impl {
             image.imageType = VK_IMAGE_TYPE_2D;
             image.format =
                 source.encoding == TextureEncoding::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-            image.extent = {source.width, source.height, 1};
+            image.extent = {pixels.width, pixels.height, 1};
             image.mipLevels = static_cast<std::uint32_t>(mips.size());
             image.arrayLayers = 1;
             image.samples = VK_SAMPLE_COUNT_1_BIT;

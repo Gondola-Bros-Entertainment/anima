@@ -62,7 +62,8 @@ std::shared_ptr<anima::Asset> asset() {
     auto bind = anima::identity();
     bind[13] = -1;
     source->skins.push_back({{0, 1}, {anima::identity(), bind}});
-    source->textures = {{1, 1, {255, 0, 0, 255}, {}}, {1, 1, {0, 255, 0, 255}, {}}};
+    source->textures = {{std::make_shared<anima::Image>(anima::Image{1, 1, {255, 0, 0, 255}}), {}},
+                        {std::make_shared<anima::Image>(anima::Image{1, 1, {0, 255, 0, 255}}), {}}};
     source->materials = {{"hair", {0, 0, 0}, 1}, {"clothes", {.5F, 1, .25F}, -1}, {"iris", {1, .25F, .5F}, 0}};
     source->materials[1].metallic = .8F;
     source->materials[1].roughness = .27F;

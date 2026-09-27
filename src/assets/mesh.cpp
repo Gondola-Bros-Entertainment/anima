@@ -4,8 +4,10 @@
 #include <anima/scene.hpp>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace anima {
@@ -39,28 +41,32 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
         detail::validate_surfaces(source.materials, source.textures);
         std::vector<SourcePrimitive> pending;
         const auto oversized = [&](const Texture &texture) {
-            return texture_edge && std::max(texture.width, texture.height) > texture_edge;
+            return texture_edge && std::max(texture.image->width, texture.image->height) > texture_edge;
         };
         // A texture and the alpha-coverage cutoff of one of its uses. An oversized texture shrinks once per
         // cutoff its uses need, so each shrunk level keeps the coverage that its upload's mips preserve.
         using TextureUse = std::pair<int, std::optional<float>>;
-        std::map<TextureUse, Texture> shrunk;
+        // Mips depend only on the image, the encoding and the cutoff, so textures that share an image and an
+        // encoding also share each shrunk image. Keys hold the shared pointer, which orders by identity.
+        using ShrunkImage = std::tuple<std::shared_ptr<const Image>, TextureEncoding, std::optional<float>>;
+        std::map<ShrunkImage, std::shared_ptr<const Image>> shrunk;
         const auto fitted = [&](const TextureUse &use) {
-            const auto &authored = source.textures.at(use.first);
-            if (!oversized(authored))
-                return authored;
-            if (const auto found = shrunk.find(use); found != shrunk.end())
-                return found->second;
-            auto mips = texture_mips(authored, {.alpha_coverage_cutoff = use.second});
-            const auto found = std::find_if(mips.begin(), mips.end(),
-                                            [&](const auto &m) { return std::max(m.width, m.height) <= texture_edge; });
-            auto texture = authored;
-            if (found != mips.end()) {
-                texture.width = found->width;
-                texture.height = found->height;
-                texture.rgba = std::move(found->rgba);
+            auto texture = source.textures.at(use.first);
+            if (!oversized(texture))
+                return texture;
+            auto &image = shrunk[{texture.image, texture.encoding, use.second}];
+            if (!image) {
+                auto mips = texture_mips(texture, {.alpha_coverage_cutoff = use.second});
+                const auto found = std::find_if(mips.begin(), mips.end(), [&](const auto &m) {
+                    return std::max(m.width, m.height) <= texture_edge;
+                });
+                if (found == mips.end())
+                    image = texture.image;
+                else
+                    image = std::make_shared<Image>(Image{found->width, found->height, std::move(found->rgba)});
             }
-            return shrunk.emplace(use, std::move(texture)).first->second;
+            texture.image = image;
+            return texture;
         };
         std::size_t vertices = 0;
         const auto flush = [&] {

@@ -398,26 +398,33 @@ inline void run() {
             "Static mesh preparation ignored its caller's geometry limit");
     rejects([&] { (void)Mesh::compile_static(static_asset, {2, 0}); });
     rejects([&] { (void)Mesh::compile_static(*asset, {3, 0}); });
+    // Both textures share one image: texture 0 reads it as data, texture 1 as color.
     Asset textured = static_asset;
+    const auto pixels = std::make_shared<Image>(Image{4, 4, std::vector<std::uint8_t>(4 * 4 * 4, 255)});
     textured.textures.resize(2);
     for (auto &texture : textured.textures) {
-        texture.width = texture.height = 4;
-        texture.rgba.resize(4 * 4 * 4, 255);
+        texture.image = pixels;
         texture.sampler.u = Wrap::mirror;
     }
     textured.materials[0].texture = 1;
     textured.materials[0].normal_texture = 0;
     textured.textures[0].encoding = TextureEncoding::linear;
     const auto reduced = Mesh::compile_static(textured, {3, 2});
+    require(reduced.size() == 2, "Static resource preparation ignored its caller's geometry limit");
+    const auto &first = *reduced.front()->materials();
     for (const auto &part : reduced) {
         const auto &materials = *part->materials();
         const auto &material = materials.material_data[0];
-        require(materials.textures.at(material.texture).width == 2 &&
-                    materials.textures.at(material.texture).sampler.u == Wrap::mirror &&
+        const auto &color = materials.textures.at(material.texture);
+        require(color.image->width == 2 && color.sampler.u == Wrap::mirror &&
                     materials.textures.at(material.normal_texture).encoding == TextureEncoding::linear,
                 "Static resource preparation lost material, sampler or encoding identity");
+        require(color.image == first.textures.at(first.material_data[0].texture).image &&
+                    materials.textures.at(material.normal_texture).image ==
+                        first.textures.at(first.material_data[0].normal_texture).image,
+                "Static pieces did not share their shrunk images");
     }
-    require(textured.textures[0].width == 4 && textured.materials[0].texture == 1,
+    require(textured.textures[0].image == pixels && pixels->width == 4 && textured.materials[0].texture == 1,
             "Static preparation mutated its source");
     for (std::size_t i = 0; i < pieces.size(); ++i) {
         Scene part;
