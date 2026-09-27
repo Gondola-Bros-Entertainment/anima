@@ -32,10 +32,12 @@ constexpr std::array<std::uint8_t, 70> fallback_png{
     0x2b, 0xd7, 0xc7, 0xe2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
 constexpr std::array<std::uint8_t, 4> fallback_texel{255, 128, 64, 255};
 // Import limits that load_asset documents.
-constexpr std::size_t import_texture_limit = 4096, import_image_limit = 4096;
+constexpr std::size_t import_texture_limit = 4096, import_image_limit = 4096, import_key_limit = 8'000'000;
 // The largest square image within the pixel limit, and how many of them fill the 1 GiB decoded limit.
 constexpr std::uint32_t largest_image_edge = 4096;
 constexpr std::size_t largest_images_in_byte_limit = 16;
+// Keys in the longest clip that motion_clips() builds.
+constexpr std::size_t keys_per_long_clip = 10'000;
 
 void append(std::vector<std::byte> &bytes, std::uint32_t value) {
     for (unsigned shift = 0; shift < 32; shift += 8)
@@ -195,6 +197,59 @@ std::vector<std::byte> png_bytes() {
     return bytes;
 }
 
+// A motion file with node 0, node 1 authored as a matrix, and one clip per entry of @p clip_keys, whose single
+// channel animates node 0's translation with that many keys, at most keys_per_long_clip. Clips with the same key
+// count share one pair of accessors, and every accessor reads the same key data. With @p first_targets_matrix,
+// the first clip targets node 1 instead, which the importer rejects when it reads that clip, before copying any
+// keys. With @p ignored_channel, the second clip also has a channel without a target node that reads the longest
+// accessors.
+std::vector<std::byte> motion_clips(const std::vector<std::size_t> &clip_keys, bool first_targets_matrix,
+                                    bool ignored_channel = false) {
+    constexpr std::size_t time_bytes = sizeof(float), value_bytes = 3 * sizeof(float);
+    std::vector<std::byte> bin;
+    for (std::size_t key = 0; key < keys_per_long_clip; ++key)
+        append(bin, static_cast<float>(key));
+    bin.resize(bin.size() + keys_per_long_clip * value_bytes); // Zero translations.
+    // One pair of time and value accessors per distinct key count, over the same two buffer views.
+    std::vector<std::size_t> counts;
+    std::string accessors;
+    for (const auto keys : clip_keys) {
+        if (std::ranges::find(counts, keys) != counts.end())
+            continue;
+        counts.push_back(keys);
+        accessors += std::string(accessors.empty() ? "" : ",") +
+                     R"({"bufferView":0,"componentType":5126,"type":"SCALAR","min":[0],"count":)" +
+                     std::to_string(keys) + R"(,"max":[)" + std::to_string(keys - 1) + R"(]},
+                     {"bufferView":1,"componentType":5126,"type":"VEC3","count":)" +
+                     std::to_string(keys) + "}";
+    }
+    std::string animations;
+    for (std::size_t i = 0; i < clip_keys.size(); ++i) {
+        const auto pair = 2 * static_cast<std::size_t>(std::ranges::find(counts, clip_keys[i]) - counts.begin());
+        std::string samplers = R"({"input":)" + std::to_string(pair) + R"(,"output":)" + std::to_string(pair + 1) + "}";
+        const auto node = i == 0 && first_targets_matrix ? 1 : 0;
+        std::string channels =
+            R"({"sampler":0,"target":{"node":)" + std::to_string(node) + R"(,"path":"translation"}})";
+        if (i == 1 && ignored_channel) {
+            const auto longest =
+                2 * static_cast<std::size_t>(std::ranges::find(counts, keys_per_long_clip) - counts.begin());
+            samplers += R"(,{"input":)" + std::to_string(longest) + R"(,"output":)" + std::to_string(longest + 1) + "}";
+            channels += R"(,{"sampler":1,"target":{"path":"translation"}})";
+        }
+        animations += std::string(animations.empty() ? "" : ",") + R"({"samplers":[)" + samplers + R"(],"channels":[)" +
+                      channels + "]}";
+    }
+    const std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+      "nodes":[{"name":"root"},{"name":"fixed","matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],
+      "buffers":[{"byteLength":)" +
+                             std::to_string(bin.size()) + R"(}],"bufferViews":[{"buffer":0,"byteLength":)" +
+                             std::to_string(keys_per_long_clip * time_bytes) + R"(},{"buffer":0,"byteOffset":)" +
+                             std::to_string(keys_per_long_clip * time_bytes) + R"(,"byteLength":)" +
+                             std::to_string(keys_per_long_clip * value_bytes) + R"(}],"accessors":[)" + accessors +
+                             R"(],"animations":[)" + animations + "]}";
+    return glb(json, std::move(bin));
+}
+
 // A triangle with UVs whose material samples texture 0 as base color and as normal map, and three textures of
 // one PNG image, the second with nearest magnification.
 std::vector<std::byte> shared_image() {
@@ -328,4 +383,26 @@ TEST_CASE("Import limits the decoded bytes of its images before decoding any, co
     over_limit.push_back(1);
     CHECK_THROWS_WITH_AS(load_asset(textured_triangle(encoded, over_limit, over_limit.size())),
                          "Decoded images exceed import byte limit", std::runtime_error);
+}
+
+TEST_CASE("Import limits the animation keys of every channel together, before reading any") {
+    // A valid file: each channel copies the keys it reads, including those of accessors that others share.
+    const auto valid = load_motion_asset(motion_clips({keys_per_long_clip, keys_per_long_clip, 1}, false));
+    REQUIRE(valid->animations.size() == 3u);
+    CHECK(valid->animations[0].channels.at(0).times.size() == keys_per_long_clip);
+    CHECK(valid->animations[1].channels.at(0).times.size() == keys_per_long_clip);
+    CHECK(valid->animations[2].channels.at(0).times.size() == 1u);
+    // One key on the matrix node, then clips that share accessors, reaching the limit exactly. The limit admits
+    // them, and the matrix node fails the first clip. The ignored channel counts no keys.
+    std::vector<std::size_t> at_limit{1};
+    at_limit.resize(import_key_limit / keys_per_long_clip, keys_per_long_clip);
+    at_limit.push_back(keys_per_long_clip - 1);
+    CHECK_THROWS_WITH_AS(load_motion_asset(motion_clips(at_limit, true, true)), "Animation cannot target a matrix node",
+                         std::runtime_error);
+    // One more key exceeds the limit, which applies before the first clip is read, in both importers.
+    auto over_limit = at_limit;
+    ++over_limit.back();
+    constexpr auto too_many_keys = "Animation keys exceed import limit";
+    CHECK_THROWS_WITH_AS(load_motion_asset(motion_clips(over_limit, true)), too_many_keys, std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_asset(motion_clips(over_limit, true)), too_many_keys, std::runtime_error);
 }

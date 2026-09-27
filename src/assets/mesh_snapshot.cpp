@@ -29,6 +29,8 @@ constexpr std::size_t maximum_decoded_bytes = std::size_t{1} << 30;
 constexpr std::size_t maximum_nodes = 4096, maximum_materials = 4096;
 constexpr std::size_t maximum_textures = 4096, maximum_images = 4096;
 constexpr std::size_t maximum_accessor_elements = 2'000'000, maximum_expanded_vertices = 2'000'000;
+// Keys over every channel of every clip: 192 MB at 24 bytes a key, as much as expanded vertices take at 96 bytes.
+constexpr std::size_t maximum_animation_keys = 8'000'000;
 constexpr unsigned maximum_hierarchy_depth = 256;
 // A skinned vertex whose joint weights sum to this or less is unweighted.
 constexpr float minimum_skin_weight_sum = 1e-6F;
@@ -226,6 +228,18 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                     "Accessor exceeds buffer view bounds");
         }
     }
+    // Each channel copies its keys, and channels can share accessors, so bound the keys of every channel together
+    // before reading any. glTF 2.0 ignores a channel without a target node, so it reads none.
+    std::size_t animation_keys = 0;
+    for (std::size_t a = 0; a < data->animations_count; ++a)
+        for (std::size_t c = 0; c < data->animations[a].channels_count; ++c) {
+            const auto &channel = data->animations[a].channels[c];
+            if (!channel.target_node)
+                continue;
+            const auto keys = channel.sampler->input->count;
+            require(keys <= maximum_animation_keys - animation_keys, "Animation keys exceed import limit");
+            animation_keys += keys;
+        }
     check(cgltf_load_buffers(&options, data.get(), nullptr), "Load embedded GLB buffer");
     check(cgltf_validate(data.get()), "Validate GLB structure/accessor bounds");
     // Bound hierarchy work before cgltf's parent-chain traversal.
@@ -520,6 +534,8 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
             value.interpolation =
                 s->interpolation == cgltf_interpolation_type_step ? Interpolation::step : Interpolation::linear;
             require(s->input->count == s->output->count && s->input->count > 0, "Mismatched animation samples");
+            value.times.reserve(s->input->count);
+            value.values.reserve(s->input->count);
             for (std::size_t k = 0; k < s->input->count; ++k) {
                 const auto time = double(read(s->input, k, cgltf_type_scalar)[0]);
                 require(time >= 0 && (value.times.empty() || time > value.times.back()),
