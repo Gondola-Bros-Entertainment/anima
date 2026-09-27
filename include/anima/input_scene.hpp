@@ -28,25 +28,32 @@ class ActionInput {
   private:
     Context context_;
 };
-/// Encodes @p map as a version 2 JSON configuration document.
+/// Encodes @p map as a version 3 JSON configuration document.
 ///
-/// The document is an object with exactly `version` (2) and `actions`. Each action has exactly
-/// `name`, `type`, `threshold` and `bindings`; each binding has exactly `kind`, `code`, `device`,
-/// `channel`, `scale`, `deadzone` and `modifiers` (an array, possibly empty); each modifier has
-/// exactly `kind`, `code` and `device`. `type`, `kind` and `channel` store enumerator values, and a
-/// wildcard `device` stores any_device (4294967295). Only configuration is stored, never recorded
-/// controls, focus, enablement or latches. Throws `std::invalid_argument` when
-/// validate(const Map &) rejects @p map or the document would exceed 1 MiB.
+/// The document is an object with exactly `version` (3) and `actions`. Each action has exactly
+/// `name`, `type`, `threshold` and `bindings`; each binding has exactly `kind`, `code`,
+/// `identity`, `channel`, `scale`, `deadzone` and `modifiers` (an array, possibly empty); each
+/// modifier has exactly `kind`, `code` and `identity`. `type`, `kind` and `channel` store
+/// enumerator values. `identity` stores a Control::identity as 32 lowercase hexadecimal digits,
+/// first byte first (the text `SDL_GUIDToString` writes for an SDL GUID), or null for none. A
+/// device ID names a device only while it is connected, so documents store none: every control
+/// and modifier loads with any_device, and a binding that must keep to one device selects it by
+/// identity. Only configuration is stored, never recorded controls, focus, enablement or latches.
+/// Throws `std::invalid_argument` when validate(const Map &) rejects @p map, a control or modifier
+/// selects a device ID, or the document would exceed 1 MiB.
 std::string serialize_map(const Map &map);
-/// Decodes a version 2 configuration document of at most 1 MiB; see serialize_map().
+/// Decodes a version 3 configuration document of at most 1 MiB; see serialize_map().
 ///
 /// Throws `std::invalid_argument` for malformed JSON, another version, unknown, missing or
-/// duplicate fields, wrong types, out-of-range values or a map that validate(const Map &) rejects.
+/// duplicate fields, wrong types, out-of-range values, an identity that is not 32 lowercase
+/// hexadecimal digits or is all zeros, or a map that validate(const Map &) rejects.
 Map deserialize_map(std::string_view data);
-/// Registers the `anima.action-input.v2` component codec, whose payload is the serialize_map()
-/// document of the component's actions. The scene or prefab stores component enablement; each
-/// restored component gets a new enabled, focused context with no recorded input. Throws
-/// `std::invalid_argument` when @p codecs already has a codec for ActionInput or that key.
+/// Registers the `anima.action-input.v3` component codec, whose payload is the serialize_map()
+/// document of the component's actions, so capturing a component whose bindings select a device ID
+/// throws `std::invalid_argument`. The scene or prefab stores component enablement; each restored
+/// component gets a new enabled, focused context with no recorded input, whose bindings match
+/// devices by identity as their events arrive. Throws `std::invalid_argument` when @p codecs
+/// already has a codec for ActionInput or that key.
 void add_component_codec(ComponentCodecs &codecs);
 /// Starts an input frame for every ActionInput of @p scene, including inactive ones: clears each
 /// context's latches (see Context::begin_frame), then applies the component's activity through

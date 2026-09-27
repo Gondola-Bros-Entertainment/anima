@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <compare>
 #include <cstdint>
 #include <map>
@@ -19,6 +20,10 @@
 namespace anima::input {
 /// Device selector matching every device of a control's class; valid in bindings, never in events.
 inline constexpr std::uint32_t any_device = UINT32_MAX;
+/// Stable identity of a device, such as the GUID SDL reports for a gamepad model, which survives
+/// reconnection and restarts where device IDs do not. All zeros means none. Identical devices can
+/// share one identity.
+using DeviceIdentity = std::array<std::uint8_t, 16>;
 /// Physical control type. Each kind belongs to a device class (keyboard, mouse or gamepad), and
 /// device IDs of one class are independent of the others.
 enum class ControlKind {
@@ -32,8 +37,13 @@ struct Control {
     ControlKind kind = ControlKind::key;
     /// Code within the ControlKind range.
     std::uint16_t code{};
-    /// Device ID within the control's class, or any_device in a binding.
+    /// Device ID within the control's class, or any_device in a binding. An ID names a device only
+    /// while the converter reports it, so a binding that must outlast reconnection or a restart
+    /// selects by #identity instead.
     std::uint32_t device = any_device;
+    /// In an event, the identity of the source device, or none when the converter reports none. In a
+    /// binding, the identity the selected device must report, or none to accept any device.
+    DeviceIdentity identity{};
     auto operator<=>(const Control &) const = default;
 };
 /// Action channel a binding drives.
@@ -47,10 +57,15 @@ enum class Channel {
 /// #deadzone to [0, 1] and multiplies by #scale. It contributes zero unless every modifier is held.
 ///
 /// Controls of one device class in a binding must come from one device. An explicit ID on the
-/// control or any modifier of that class selects it, and conflicting explicit IDs are invalid.
+/// control or any modifier of that class selects it, and an identity on any of them admits only
+/// controls whose latest event carried that identity; conflicting explicit IDs or identities are
+/// invalid.
 /// Wildcards select a device that satisfies every control of the class; for the bound control, the
-/// eligible device with the greatest magnitude wins, the lowest ID on ties. Each class selects its
-/// device independently, so a keyboard modifier can qualify a mouse button.
+/// eligible device with the greatest magnitude wins, the lowest ID on ties. A binding matches an
+/// identity through the events that carry it, so it follows its device to whatever ID the device
+/// has after reconnection or a restart, and chooses among identical devices sharing the identity as
+/// a wildcard does. Each class selects its device independently, so a keyboard modifier can qualify
+/// a mouse button.
 ///
 /// A binding outranks each binding of the same Context that reads the same bound control and
 /// requires a strict subset of its modifiers, compared by kind and code. On a device the outranking
@@ -122,8 +137,9 @@ enum class EventType {
 /// One input event, applied by Context::process.
 struct Event {
     EventType type = EventType::control;
-    /// The control that changed, or for a disconnect the device class (from the kind) and device.
-    /// Needs a concrete device ID; focus events ignore it.
+    /// The control that changed, with its device's identity when the converter knows one, or for a
+    /// disconnect the device class (from the kind) and device, ignoring the code and identity. Needs
+    /// a concrete device ID; focus events ignore it.
     Control source;
     /// Control events: 0 or 1 for keys and buttons, [-1, 1] for gamepad axes, 0 meaning released.
     /// Focus events: 1 gained or 0 lost. Disconnects ignore it.
@@ -161,9 +177,10 @@ class Context {
     ///
     /// A focus event calls set_focused(), even while disabled. A disconnect forgets the recorded
     /// controls of that device class and ID and reevaluates, so other devices keep their state. A
-    /// control event is ignored while disabled or unfocused; otherwise its value is recorded (zero
-    /// releases the control) and every action is reevaluated. Throws `std::length_error` when a
-    /// new control would exceed 1,024 recorded controls. A rejected event changes nothing.
+    /// control event is ignored while disabled or unfocused; otherwise its value and identity replace
+    /// the control's record on that device (zero releases the control, whatever either identity) and
+    /// every action is reevaluated. Throws `std::length_error` when a new control would exceed
+    /// 1,024 recorded controls. A rejected event changes nothing.
     void process(const Event &event);
     /// Disabling cancels the context and ignores control events until it is enabled again;
     /// enabling restores nothing.
