@@ -42,6 +42,7 @@
 #include "input.hpp"
 #include "navigation.hpp"
 #ifdef CONSUMER_DESKTOP
+#include "allocations.hpp"
 #include "culling.hpp"
 #include "environment.hpp"
 #include "foliage.hpp"
@@ -314,6 +315,8 @@ int main(int argc, char **argv) {
             return environment_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--foliage")
             return foliage_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--allocations")
+            return allocation_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--culling")
             return culling_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
