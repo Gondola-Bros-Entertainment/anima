@@ -170,6 +170,7 @@ inline int run(int argc, char **argv) {
     compare("far-plane");
     camera.target = center;
     require(SDL_SetWindowSize(window.get(), 600, 800), "Culling resize failed");
+    require(SDL_SyncWindow(window.get()), "Culling resize did not settle");
     renderer.request_resize();
     SDL_GetWindowSizeInPixels(window.get(), &width, &height);
     renderer.set_view(camera.matrix(float(width) / height));

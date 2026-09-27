@@ -120,6 +120,7 @@ inline int run(int argc, char **argv) {
     const float logical_scale = SDL_GetWindowDisplayScale(window.get()) / SDL_GetWindowPixelDensity(window.get());
     require(SDL_SetWindowSize(window.get(), int(640 * logical_scale), int(480 * logical_scale)),
             "UI initial sizing failed");
+    require(SDL_SyncWindow(window.get()), "UI initial sizing did not settle");
     anima::RendererOptions options;
     options.validation = true;
     options.disable_present_fences = argc > 4 && std::string_view(argv[4]) == "--no-present-fences";

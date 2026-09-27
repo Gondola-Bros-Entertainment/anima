@@ -389,6 +389,7 @@ inline int run(int argc, char **argv) {
         frame();
     }
     require(SDL_SetWindowSize(window.get(), 800, 600), "Resource resize failed");
+    require(SDL_SyncWindow(window.get()), "Resource resize did not settle");
     renderer.request_resize();
     capture("gpu-resized");
     renderer.set_scenes({reference_test::scene(reference)});
