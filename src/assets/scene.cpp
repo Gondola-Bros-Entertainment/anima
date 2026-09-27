@@ -300,7 +300,7 @@ GameObject Scene::create(std::string name, std::shared_ptr<const Mesh> mesh) {
 GameObject Scene::create_with_key(ObjectKey key, std::string name, std::shared_ptr<const Mesh> mesh) {
     if (!lifetime_->scene)
         throw std::logic_error("Cannot create objects during scene teardown");
-    require(key.value && !keys_.contains(key), "Duplicate or null scene object key");
+    require(key.value && !keys_.contains(key.value), "Duplicate or null scene object key");
     std::size_t index = slots_.size();
     if (free_slots_.empty()) {
         slots_.emplace_back();
@@ -324,7 +324,7 @@ GameObject Scene::create_with_key(ObjectKey key, std::string name, std::shared_p
     ++object_count_;
     const Id id{owner_, entry.generation, index};
     try {
-        keys_.emplace(key, id);
+        keys_.emplace(key.value, id);
         auto transform = std::make_shared<detail::ComponentRecord>(object(id), typeid(ObjectTransform), false);
         transform->value =
             std::make_unique<detail::ComponentBox<ObjectTransform>>(object(id), ObjectTransform(object(id)));
@@ -343,7 +343,7 @@ GameObject Scene::object(Id id) {
     return GameObject(lifetime_, id);
 }
 GameObject Scene::find(ObjectKey key) const noexcept {
-    const auto found = keys_.find(key);
+    const auto found = keys_.find(key.value);
     return found != keys_.end() && contains(found->second) ? GameObject(lifetime_, found->second) : GameObject{};
 }
 std::vector<GameObject> Scene::roots() {
@@ -471,7 +471,7 @@ void Scene::remove(Id id) {
             retire_instance(entry);
         entry.value = {};
         entry.name.clear();
-        keys_.erase(entry.key);
+        keys_.erase(entry.key.value);
         entry.key = {};
         entry.world = entry.local = identity();
         entry.parent.reset();
