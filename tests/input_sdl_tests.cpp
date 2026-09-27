@@ -218,6 +218,7 @@ TEST_CASE("Mouse buttons convert, except touch-emulated ones") {
     CHECK_FALSE(converts(e));
 }
 
+// A text event, as SDL_SendKeyboardText posts it (src/events/SDL_keyboard.c:782-784).
 TEST_CASE("Text input is not an action input, and a zero target window or a null GUID lookup is rejected") {
     SDL_Event e{};
     e.type = SDL_EVENT_TEXT_INPUT;
