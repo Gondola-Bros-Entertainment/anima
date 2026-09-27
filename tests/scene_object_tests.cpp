@@ -10,6 +10,15 @@
 
 namespace {
 using namespace anima;
+constexpr auto parenting_cycle = "GameObject parenting would create a cycle";
+
+// Runtime ids of @p objects, in order.
+std::vector<Scene::Id> ids_of(const std::vector<GameObject> &objects) {
+    std::vector<Scene::Id> result;
+    for (const auto &object : objects)
+        result.push_back(object.id());
+    return result;
+}
 
 struct CleanupState {
     Scene *scene{};
@@ -108,6 +117,73 @@ TEST_CASE("A failed creation publishes nothing, keeps its free slot and consumes
     CHECK(replacement.key().value == failed_key.value + 1);
     CHECK_FALSE(objects[1].valid());
     CHECK(scene.create().id().slot == 4);
+}
+
+TEST_CASE("Children keep their attachment order through removal, reparenting and slot reuse") {
+    Scene scene;
+    auto parent = scene.create("Parent"), other = scene.create("Other");
+    std::vector<GameObject> children;
+    for (unsigned i = 0; i < 5; ++i) {
+        children.push_back(scene.create());
+        children.back().set_parent(parent);
+    }
+    const auto expect = [&](const GameObject &owner, std::vector<GameObject> expected) {
+        CHECK(ids_of(owner.children()) == ids_of(expected));
+    };
+    expect(parent, children);
+    children[2].destroy(); // Middle.
+    expect(parent, {children[0], children[1], children[3], children[4]});
+    children[0].set_parent(other); // First.
+    children[4].clear_parent();    // Last.
+    expect(parent, {children[1], children[3]});
+    expect(other, {children[0]});
+    children[0].set_parent(parent); // Reattached children go last.
+    children[4].set_parent(parent);
+    expect(parent, {children[1], children[3], children[0], children[4]});
+    expect(other, {});
+    children[3].destroy();
+    children[1].destroy();
+    expect(parent, {children[0], children[4]});
+    auto reused = scene.create(); // Reuses the lowest destroyed child's slot without its links.
+    CHECK(reused.id().slot == children[1].id().slot);
+    CHECK(reused.children().empty());
+    CHECK_FALSE(reused.parent());
+    reused.set_parent(parent);
+    expect(parent, {children[0], children[4], reused});
+    parent.destroy();
+    CHECK(scene.size() == 1);
+    CHECK_FALSE(children[0].valid());
+    CHECK_FALSE(reused.valid());
+    expect(other, {});
+}
+
+TEST_CASE("Reparenting rejects a parent inside the moved subtree and changes nothing") {
+    Scene scene;
+    auto root = scene.create("Root"), branch = scene.create("Branch"), sibling = scene.create("Sibling");
+    branch.set_parent(root);
+    sibling.set_parent(root);
+    std::vector<GameObject> chain{branch};
+    for (unsigned i = 0; i < 64; ++i) {
+        auto next = scene.create();
+        next.set_parent(chain.back());
+        chain.push_back(next);
+    }
+    auto offshoot = scene.create("Offshoot");
+    offshoot.set_parent(chain[10]);
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        CAPTURE(i);
+        CHECK_THROWS_WITH_AS(branch.set_parent(chain[i]), parenting_cycle, std::invalid_argument);
+    }
+    CHECK_THROWS_WITH_AS(branch.set_parent(offshoot), parenting_cycle, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(root.set_parent(chain.back()), parenting_cycle, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(offshoot.set_parent(offshoot), parenting_cycle, std::invalid_argument);
+    CHECK(ids_of(root.children()) == ids_of({branch, sibling}));
+    CHECK(ids_of(chain[10].children()) == ids_of({chain[11], offshoot}));
+    CHECK_FALSE(root.parent());
+    branch.set_parent(sibling, ReparentMode::keep_local);
+    CHECK(ids_of(root.children()) == ids_of({sibling}));
+    CHECK(ids_of(sibling.children()) == ids_of({branch}));
+    CHECK(chain.back().parent()->id() == chain[chain.size() - 2].id());
 }
 
 TEST_CASE("The shared consumer scenario for objects, lifetime, terrain, mesh preparation and animation passes") {
