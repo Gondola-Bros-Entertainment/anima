@@ -17,7 +17,8 @@
 /// wrong JSON type, throw `std::invalid_argument` unless stated, as do documents that name a node,
 /// clip, item, visual, handling, socket or marker that does not exist. An argument naming one that
 /// does not exist throws `std::out_of_range`, and model load failures throw `std::runtime_error`.
-/// Item eligibility and gameplay rules belong to the caller.
+/// Which items are held and by which roles, which handling profile performs an action, item
+/// metadata such as categories, and gameplay rules belong to the caller.
 
 namespace anima {
 /// A support contact: while active, a motion chain moves a secondary body socket onto a prop

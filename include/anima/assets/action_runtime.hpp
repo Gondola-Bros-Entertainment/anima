@@ -11,6 +11,10 @@
 /// levels; duplicate and unknown fields are rejected. Invalid documents and arguments, including
 /// JSON syntax errors and values of the wrong JSON type, throw `std::invalid_argument` unless
 /// stated. An action id argument that the runtime lacks throws `std::out_of_range`.
+///
+/// The runtime checks what an action declares, its handling profiles and required roles, and
+/// evaluates it on the caller's clock. The caller chooses the action and the profile that performs
+/// it, and owns any rule that relates the action's phases to its own timing.
 
 namespace anima {
 /// One evaluation of an action instance, on the caller's clock.

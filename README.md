@@ -84,10 +84,17 @@ Anima supplies reusable mechanisms; applications supply content, rules and polic
 | Scene and component documents with explicit resource resolvers | Save slots, progression, migrations and network authority |
 | Meshes, materials, lighting, visibility and rendering | Art direction, world layout, quality settings and gameplay effects |
 | Terrain queries, collision bodies, contacts, rays and sweeps | Movement, support rules, damage and collision response |
-| Pose blending, timelines, attachments and animation evaluation | Action selection and gameplay outcomes |
+| Pose evaluation, masked layers, contacts, action timelines, attachment placement and fitted meshes | Clip, action and handling choice, timing rules, item metadata and gameplay outcomes |
 | Audio mixing, input state and navigation queries | Sound selection, action responses, destinations and movement authority |
 | UI documents, layout, rendering and events | Screens, game data, commands and navigation |
 | Import and resource lifetime | Production assets, content recipes and deployment |
+
+The animation documents Anima reads, from model manifests and motion contracts to
+action, attachment and fitted catalogs, hold only what the engine evaluates, under
+names the application defines. Content such as equipment lists, slots, categories
+and review groupings, and rules such as which held item performs an action or how
+presentation timing must match gameplay timing, stay in the application's own data
+and code.
 
 A `Scene` owns `GameObject`s with transforms and native C++ components, a `Prefab`
 builds independent object assemblies through the same APIs, and a `SceneSet` owns
