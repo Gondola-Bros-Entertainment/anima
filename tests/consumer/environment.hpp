@@ -269,6 +269,41 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, const std::filesyst
                            "The original cube's front face or its ground is not sunlit, or its shadow is missing");
     if (!matched || mismatch > mismatch_limit)
         throw std::runtime_error("Mirrored draws shade differently: " + report.str());
+
+    // The CPU reference draws the scene's snapshot through identity matrices, so the mirrored cube and tile shade
+    // as they do directly only when the snapshot keeps each triangle's winding against its normals.
+    renderer.set_scenes({reference_test::scene(scene->snapshot())});
+    capture("mirrored-reference");
+    const auto reference = read_capture(output / "mirrored-reference.ppm");
+    resource_test::require(reference.width == image.width && reference.height == image.height,
+                           "The reference capture's size differs from the direct capture's");
+    std::ostringstream reference_report;
+    bool reference_matched = true;
+    for (const auto &sample : samples)
+        for (const bool mirrored_side : {false, true}) {
+            const auto pixel =
+                project(view, mirrored_side ? sample.mirrored : sample.original, image.width, image.height);
+            const auto direct = window_mean(image, pixel, window_radius);
+            const auto through_reference = window_mean(reference, pixel, window_radius);
+            reference_report << sample.name << (mirrored_side ? " mirrored:" : " original:");
+            for (std::size_t c = 0; c < rgb_channels; ++c) {
+                reference_report << ' ' << std::lround(direct[c]) << '/' << std::lround(through_reference[c]);
+                reference_matched = reference_matched && std::abs(direct[c] - through_reference[c]) <= face_tolerance;
+            }
+            reference_report << "; ";
+        }
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < image.rgb.size(); i += rgb_channels)
+        for (std::size_t c = 0; c < rgb_channels; ++c)
+            if (std::abs(int(image.rgb[i + c]) - int(reference.rgb[i + c])) > symmetry_tolerance) {
+                ++differing;
+                break;
+            }
+    const auto differing_fraction = double(differing) / (double(image.width) * image.height);
+    reference_report << "pixels beyond " << symmetry_tolerance << " levels: " << differing_fraction * 100 << "%";
+    std::cout << "MIRRORED REFERENCE direct/reference " << reference_report.str() << '\n';
+    if (!reference_matched || differing_fraction > mismatch_limit)
+        throw std::runtime_error("The CPU reference shades mirrored draws differently: " + reference_report.str());
 }
 // A box scaled to zero along Z shades as the square it collapses to, like an ordinary square facing +Z at the
 // mirror position. The sun and the camera lie in the plane x = 0 between them and nothing casts shadows, so only
