@@ -63,8 +63,10 @@ struct MotionContact {
     /// Optional model-space orientation for the chain's end joint.
     std::optional<anima::Quat> end_rotation;
 };
-/// Controls for MotionRuntime::evaluate: at most 8 layers, 32 offsets and 8 contacts, applied in
-/// that order.
+/// Controls for MotionRuntime::evaluate, applied in the order layers, offsets, contacts.
+///
+/// The counts are the caller's: evaluation has no fixed limit, and its work grows linearly with
+/// them, each layer sampling one or two clips and each contact solving one chain over the rig.
 struct MotionControls {
     std::vector<MotionLayer> layers;
     std::vector<JointOffset> offsets;
@@ -161,10 +163,9 @@ class MotionRuntime {
     /// Applies @p controls to @p source: each layer, then each offset, then each contact, solved on
     /// the result so far.
     ///
-    /// Empty controls return @p source unchanged; otherwise the pose is world-only. Throws beyond
-    /// the MotionControls limits, for an invalid weight, a handling layer on another mask or an
-    /// override with a reference clip, and `std::out_of_range` for an unknown clip, mask, chain or
-    /// joint.
+    /// Empty controls return @p source unchanged; otherwise the pose is world-only. Throws for an
+    /// invalid weight, a handling layer on another mask or an override with a reference clip, and
+    /// `std::out_of_range` for an unknown clip, mask, chain or joint.
     MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 
   private:
