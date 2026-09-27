@@ -62,6 +62,18 @@ if(ANIMA_BUILD_TESTS)
     # Cast asserted expressions to void so [[nodiscard]] calls can be checked for exceptions.
     target_compile_definitions(anima_test_main PUBLIC DOCTEST_CONFIG_VOID_CAST_EXPRESSIONS)
     anima_target_defaults(anima_test_main)
+
+    # GPU checks open a window and create a Vulkan device, so CTest runs them one at a time. Each exits with 77,
+    # which CTest reports as skipped, when no display or Vulkan device is available, unless ANIMA_REQUIRE_GPU is
+    # set to a value other than 0. A failed comparison writes the images it compared into the check's directory
+    # under gpu-checks, and a validation message or a nonzero validation count fails the check.
+    set(anima_gpu_checks "${CMAKE_CURRENT_BINARY_DIR}/gpu-checks")
+    function(anima_add_gpu_check name)
+        add_test(NAME gpu_${name} COMMAND ${ARGN})
+        set_tests_properties(gpu_${name} PROPERTIES
+            LABELS gpu SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu TIMEOUT 900 ENVIRONMENT VK_LAYER_VALIDATE_SYNC=1
+            FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];validation_(warnings|errors)=[1-9]")
+    endfunction()
 endif()
 
 add_library(anima_core STATIC
@@ -422,6 +434,33 @@ if(ANIMA_BUILD_DESKTOP)
             add_test(NAME desktop_invalid_frames COMMAND anima --frames 0)
             set_tests_properties(desktop_invalid_frames PROPERTIES
                 PASS_REGULAR_EXPRESSION "Anima: Expected an integer between 1 and 1000000")
+            # --timeout leaves software drivers such as lavapipe time for every frame.
+            anima_add_gpu_check(viewer_smoke anima_check --smoke --timeout 300 --output "${anima_gpu_checks}/viewer_smoke")
+            anima_add_gpu_check(viewer_smoke_fallback anima_check --smoke --no-present-fences --timeout 300
+                --output "${anima_gpu_checks}/viewer_smoke_fallback")
+            anima_add_gpu_check(viewer_empty
+                anima_check --empty --validation --frames 3 --timeout 300 --output "${anima_gpu_checks}/viewer_empty")
+            foreach(stage IN ITEMS instance surface device resources swapchain)
+                anima_add_gpu_check(viewer_fail_after_${stage} anima_check --validation --frames 1 --fail-after ${stage})
+                set_tests_properties(gpu_viewer_fail_after_${stage} PROPERTIES
+                    PASS_REGULAR_EXPRESSION "Injected initialization failure after ${stage}")
+            endforeach()
+            if(ANIMA_BUILD_ASSETS)
+                anima_add_gpu_check(viewer_preview
+                    anima_check --preview --timeout 300 --output "${anima_gpu_checks}/viewer_preview")
+                if(ANIMA_TEST_MANIFEST)
+                    anima_add_gpu_check(viewer_preview_manifest anima_check --preview --manifest "${ANIMA_TEST_MANIFEST}"
+                        --timeout 300 --output "${anima_gpu_checks}/viewer_preview_manifest")
+                endif()
+                if(ANIMA_TEST_GLB)
+                    anima_add_gpu_check(viewer_asset anima_check --smoke --asset "${ANIMA_TEST_GLB}" --timeout 300
+                        --output "${anima_gpu_checks}/viewer_asset")
+                    anima_add_gpu_check(viewer_asset_fail_after_resources
+                        anima_check --validation --frames 1 --asset "${ANIMA_TEST_GLB}" --fail-after resources)
+                    set_tests_properties(gpu_viewer_asset_fail_after_resources PROPERTIES
+                        PASS_REGULAR_EXPRESSION "Injected initialization failure after resources")
+                endif()
+            endif()
         endif()
     endif()
 endif()
@@ -552,4 +591,72 @@ if(ANIMA_BUILD_TESTS)
             set_tests_properties(consumer_${mode} PROPERTIES ENVIRONMENT "SDL_AUDIO_DRIVER=dummy" TIMEOUT 20)
         endif()
     endforeach()
+    # GPU checks of the desktop and UI consumers; see anima_add_gpu_check.
+    set(anima_consumer_gpu_checks)
+    if("desktop" IN_LIST anima_consumer_modes)
+        set(desktop "${anima_consumer_executable_dir}/consumer_desktop${CMAKE_EXECUTABLE_SUFFIX}")
+        set(desktop_checks instances)
+        anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
+        foreach(check_mode IN ITEMS culling foliage environment resources material-sampling pbr surface-maps)
+            string(REPLACE "-" "_" check "${check_mode}")
+            anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
+            list(APPEND desktop_checks ${check})
+        endforeach()
+        foreach(stage IN ITEMS upload-timeout device-lost)
+            string(REPLACE "-" "_" stage_id "${stage}")
+            anima_add_gpu_check(desktop_resources_${stage_id}
+                "${desktop}" --resources "${anima_gpu_checks}/desktop_resources_${stage_id}" --fatal ${stage})
+            anima_add_gpu_check(desktop_resources_prepare_${stage_id} "${desktop}" --resources
+                "${anima_gpu_checks}/desktop_resources_prepare_${stage_id}" --prepare-fatal ${stage})
+            list(APPEND desktop_checks resources_${stage_id} resources_prepare_${stage_id})
+        endforeach()
+        foreach(fences IN ITEMS present fallback)
+            set(replace replace)
+            set(replace_options)
+            if(fences STREQUAL "fallback")
+                set(replace replace_fallback)
+                set(replace_options --no-present-fences)
+            endif()
+            anima_add_gpu_check(desktop_${replace}
+                "${desktop}" --replace "${anima_gpu_checks}/desktop_${replace}" ${replace_options})
+            # Replacing scenes must not recreate the swapchain between these markers, which only the log shows.
+            set_property(TEST gpu_desktop_${replace} APPEND PROPERTY
+                FAIL_REGULAR_EXPRESSION "STABLE_SWAPCHAIN_BEGIN.*Swapchain [0-9].*STABLE_SWAPCHAIN_END")
+            list(APPEND desktop_checks ${replace})
+            foreach(stage IN ITEMS upload-timeout device-lost)
+                string(REPLACE "-" "_" stage_id "${stage}")
+                anima_add_gpu_check(desktop_${replace}_${stage_id} "${desktop}" --replace
+                    "${anima_gpu_checks}/desktop_${replace}_${stage_id}" ${replace_options} --fatal ${stage})
+                list(APPEND desktop_checks ${replace}_${stage_id})
+            endforeach()
+            if(ANIMA_TEST_GLB)
+                anima_add_gpu_check(desktop_${replace}_asset "${desktop}" --replace
+                    "${anima_gpu_checks}/desktop_${replace}_asset" ${replace_options} --asset "${ANIMA_TEST_GLB}")
+                set_property(TEST gpu_desktop_${replace}_asset APPEND PROPERTY
+                    FAIL_REGULAR_EXPRESSION "STABLE_SWAPCHAIN_BEGIN.*Swapchain [0-9].*STABLE_SWAPCHAIN_END")
+                list(APPEND desktop_checks ${replace}_asset)
+            endif()
+        endforeach()
+        if(ANIMA_TEST_GLB)
+            anima_add_gpu_check(desktop_instances_asset
+                "${desktop}" "${anima_gpu_checks}/desktop_instances_asset" "${ANIMA_TEST_GLB}")
+            foreach(check_mode IN ITEMS culling resources)
+                anima_add_gpu_check(desktop_${check_mode}_asset "${desktop}" --${check_mode}
+                    "${anima_gpu_checks}/desktop_${check_mode}_asset" --asset "${ANIMA_TEST_GLB}")
+            endforeach()
+            list(APPEND desktop_checks instances_asset culling_asset resources_asset)
+        endif()
+        list(TRANSFORM desktop_checks PREPEND gpu_desktop_)
+        list(APPEND anima_consumer_gpu_checks ${desktop_checks})
+    endif()
+    if("ui" IN_LIST anima_consumer_modes)
+        set(ui "${anima_consumer_executable_dir}/consumer_ui${CMAKE_EXECUTABLE_SUFFIX}")
+        set(ui_assets "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/assets")
+        anima_add_gpu_check(ui "${ui}" --ui "${anima_gpu_checks}/ui" "${ui_assets}")
+        anima_add_gpu_check(ui_fallback "${ui}" --ui "${anima_gpu_checks}/ui_fallback" "${ui_assets}" --no-present-fences)
+        list(APPEND anima_consumer_gpu_checks gpu_ui gpu_ui_fallback)
+    endif()
+    if(anima_consumer_gpu_checks)
+        set_tests_properties(${anima_consumer_gpu_checks} PROPERTIES FIXTURES_REQUIRED consumer_build)
+    endif()
 endif()

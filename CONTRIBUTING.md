@@ -55,13 +55,25 @@ MSVC debug options that ASan cannot use.
 
 ### GPU and device checks
 
-CTest never creates a Vulkan device. For renderer or UI changes, run `anima_check`,
-`consumer_ui --ui` or the matching `consumer_desktop` mode (`--culling`,
-`--environment`, `--foliage`, `--resources` or `--replace`), each with an output
-directory, on a display with Vulkan validation. Each exits non-zero when a check fails or a
-validation message appears. With several Vulkan drivers installed, choose one with
-`VK_DRIVER_FILES`. In the pull request, report the device and driver used and any
-platform left untested.
+CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
+drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic scenes
+through the public API. Each check opens a window, requires Khronos validation,
+compares its frames in memory, and fails on a pixel mismatch or any validation
+message. The checks run one at a time:
+
+```sh
+ctest --preset full -L gpu
+```
+
+A failed comparison writes the images it compared, as PNG files, into the check's
+directory under `gpu-checks` in the build tree; a passing check writes no image.
+Without a display or a Vulkan device, each check exits with 77, which CTest reports
+as skipped; set `ANIMA_REQUIRE_GPU=1` to make that a failure. With several Vulkan
+drivers installed, choose one with `VK_DRIVER_FILES`. `ctest -L gpu -N -V` shows
+each check's command, which also runs on its own.
+
+For renderer or UI changes, run the label on a GPU, and report the device and driver
+used, and any platform left untested, in the pull request.
 
 Audio tests use SDL's dummy driver, so they produce no sound and measure no
 latency. Physical input devices, text input methods and display scaling also need
@@ -89,7 +101,7 @@ in its notes under [third_party](third_party/README.md). To update one:
    license changed, and any patch it carries; RmlUi's patch must still apply.
 3. Read the upstream release notes for API and behavior changes.
 4. Run the `full` workflow and the CI presets that fetch the dependency
-   (`ci-full-release` and `ci-sanitizers`), and the GPU checks when SDL or RmlUi
+   (`ci-full-release` and `ci-sanitizers`), and the `gpu` label when SDL or RmlUi
    changes.
 
 Vendored headers under `third_party` are replaced whole at the new revision: update

@@ -267,11 +267,11 @@ jobs:
       - name: Build
         run: cmake --build --preset "$PRESET"
       # The test preset reports failures' output and fails when a step selects no tests; each step adds its
-      # selection and time limit.
+      # selection and time limit. The gpu label needs a display and a Vulkan driver, which these legs do not set up.
       - name: Test runtime and CLI
         run: >-
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-          --timeout 600 --label-exclude consumer
+          --timeout 600 --label-exclude 'consumer|gpu'
       - name: Check isolated consumer configurations
         run: >-
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
