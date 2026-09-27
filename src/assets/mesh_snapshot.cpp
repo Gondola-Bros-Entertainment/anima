@@ -24,11 +24,16 @@ namespace {
 constexpr std::size_t maximum_source_bytes = 64 * 1024 * 1024;
 constexpr int maximum_image_edge = 8192;
 constexpr std::size_t maximum_image_pixels = 16 * 1024 * 1024;
+// Decoded bytes of every image that a texture uses, each counted once: 16 images at the pixel limit.
+constexpr std::size_t maximum_decoded_bytes = std::size_t{1} << 30;
 constexpr std::size_t maximum_nodes = 4096, maximum_materials = 4096;
+constexpr std::size_t maximum_textures = 4096, maximum_images = 4096;
 constexpr std::size_t maximum_accessor_elements = 2'000'000, maximum_expanded_vertices = 2'000'000;
 constexpr unsigned maximum_hierarchy_depth = 256;
 // A skinned vertex whose joint weights sum to this or less is unweighted.
 constexpr float minimum_skin_weight_sum = 1e-6F;
+// Images decode to 8-bit RGBA.
+constexpr int rgba_channels = 4;
 
 void require(bool condition, const char *message) {
     if (!condition)
@@ -89,24 +94,42 @@ const cgltf_accessor *attribute(const cgltf_primitive &primitive, cgltf_attribut
     }
     return nullptr;
 }
-std::shared_ptr<const Image> decode(const cgltf_image *image) {
+// An embedded image's encoded bytes and the dimensions that its header declares.
+struct EncodedImage {
+    const std::uint8_t *bytes{};
+    int size{};
+    int width{};
+    int height{};
+    // Bytes of the image decoded to RGBA.
+    std::size_t decoded_bytes() const { return std::size_t(width) * std::size_t(height) * rgba_channels; }
+};
+// Reads @p image's header, without decoding it, and checks the limits of one image.
+EncodedImage measure(const cgltf_image *image) {
     require(image && image->buffer_view && !image->uri, "Only embedded PNG/JPEG images are supported");
     const auto *view = image->buffer_view;
     require(view->size <= maximum_source_bytes, "Embedded image exceeds import byte limit");
-    const auto *encoded = cgltf_buffer_view_data(view);
-    require(encoded, "Missing embedded image data");
-    int width = 0, height = 0, channels = 0;
-    require(stbi_info_from_memory(encoded, static_cast<int>(view->size), &width, &height, &channels),
+    EncodedImage result;
+    result.bytes = cgltf_buffer_view_data(view);
+    require(result.bytes, "Missing embedded image data");
+    result.size = static_cast<int>(view->size);
+    int channels = 0;
+    require(stbi_info_from_memory(result.bytes, result.size, &result.width, &result.height, &channels),
             "Invalid embedded image");
-    require(width > 0 && height > 0 && width <= maximum_image_edge && height <= maximum_image_edge &&
-                std::size_t(width) * height <= maximum_image_pixels,
+    require(result.width > 0 && result.height > 0 && result.width <= maximum_image_edge &&
+                result.height <= maximum_image_edge &&
+                std::size_t(result.width) * result.height <= maximum_image_pixels,
             "Decoded image exceeds import dimensions or pixel limit");
+    return result;
+}
+std::shared_ptr<const Image> decode(const EncodedImage &image) {
+    int width = 0, height = 0, channels = 0;
     std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels{
-        stbi_load_from_memory(encoded, static_cast<int>(view->size), &width, &height, &channels, 4), stbi_image_free};
-    require(bool(pixels), "PNG/JPEG decode failed");
+        stbi_load_from_memory(image.bytes, image.size, &width, &height, &channels, rgba_channels), stbi_image_free};
+    // The import's byte limit counted the dimensions from the header, so the pixels must have them too.
+    require(pixels && width == image.width && height == image.height, "PNG/JPEG decode failed");
     return std::make_shared<Image>(Image{static_cast<std::uint32_t>(width),
                                          static_cast<std::uint32_t>(height),
-                                         {pixels.get(), pixels.get() + std::size_t(width) * height * 4}});
+                                         {pixels.get(), pixels.get() + image.decoded_bytes()}});
 }
 Sampler sampler(const cgltf_sampler *source) {
     Sampler result;
@@ -181,6 +204,8 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                 "Required glTF extension is unsupported");
     require(data->nodes_count <= maximum_nodes && data->materials_count <= maximum_materials,
             "GLB exceeds import node/material limit");
+    require(data->textures_count <= maximum_textures, "GLB exceeds import texture limit");
+    require(data->images_count <= maximum_images, "GLB exceeds import image limit");
     require(data->buffers_count == 1 && !data->buffers[0].uri, "Only a single embedded GLB buffer is supported");
     for (std::size_t i = 0; i < data->buffer_views_count; ++i) {
         const auto &view = data->buffer_views[i];
@@ -238,18 +263,34 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         }
         asset->skins.push_back(std::move(value));
     }
-    // Each image is decoded once, and every texture made from it shares the pixels.
-    std::unordered_map<const cgltf_image *, std::shared_ptr<const Image>> decoded;
+    // Each image that a texture uses, measured from its header and bounded in total before any is decoded, and
+    // decoded once; every texture made from it shares the pixels.
+    struct TextureImage {
+        EncodedImage encoded;
+        std::shared_ptr<const Image> decoded;
+    };
+    std::unordered_map<const cgltf_image *, TextureImage> images;
+    std::size_t total_decoded_bytes = 0;
+    for (std::size_t i = 0; i < data->textures_count; ++i) {
+        const auto *image = data->textures[i].image;
+        // A Basis or WebP source is optional unless its extension is required, which is rejected above;
+        // the texture's standard PNG or JPEG source then serves as the fallback.
+        require(image, "Texture needs a PNG or JPEG source");
+        if (images.contains(image))
+            continue;
+        const auto encoded = measure(image);
+        require(encoded.decoded_bytes() <= maximum_decoded_bytes - total_decoded_bytes,
+                "Decoded images exceed import byte limit");
+        total_decoded_bytes += encoded.decoded_bytes();
+        images.emplace(image, TextureImage{encoded, nullptr});
+    }
     asset->textures.reserve(data->textures_count);
     for (std::size_t i = 0; i < data->textures_count; ++i) {
         const auto &texture = data->textures[i];
-        // A Basis or WebP source is optional unless its extension is required, which is rejected above;
-        // the texture's standard PNG or JPEG source then serves as the fallback.
-        require(texture.image, "Texture needs a PNG or JPEG source");
-        auto &image = decoded[texture.image];
-        if (!image)
-            image = decode(texture.image);
-        asset->textures.push_back({image, sampler(texture.sampler)});
+        auto &image = images.at(texture.image);
+        if (!image.decoded)
+            image.decoded = decode(image.encoded);
+        asset->textures.push_back({image.decoded, sampler(texture.sampler)});
     }
     // A source texture used as both colour and data needs distinct GPU encodings; the copy shares its image.
     std::map<std::pair<std::size_t, TextureEncoding>, int> texture_views;

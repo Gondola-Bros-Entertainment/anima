@@ -283,24 +283,26 @@ struct Pose {
 ///
 /// The file needs exactly one embedded buffer and may embed PNG or JPEG images of at most 8192
 /// texels per edge and 16,777,216 texels. Each image that a texture uses is decoded once, into an
-/// Image that every texture made from it shares. Limits: 4096 nodes, 4096 materials, 1 to 512
-/// joints per skin, 2,000,000 elements per accessor, 2,000,000 expanded vertices in total and a
-/// node depth of 256. Geometry comes from the default scene, else the first scene, else every root
-/// node; it must be triangle lists, reach no node twice and contain at least one triangle. Skinned
-/// primitives need `JOINTS_0` and `WEIGHTS_0`; further joint sets are rejected. Clips animate
-/// translation, rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix nodes;
-/// channels without a target node are ignored, and a clip whose keys all sit at time 0 is a pose
-/// of zero duration.
+/// Image that every texture made from it shares, and together those images may decode to at most
+/// 1 GiB (268,435,456 texels), which is checked from their headers before any is decoded. Limits:
+/// 4096 nodes, 4096 materials, 4096 textures before the copies that give a texture a second
+/// encoding, 4096 images, 1 to 512 joints per skin, 2,000,000 elements per accessor, 2,000,000
+/// expanded vertices in total and a node depth of 256. Geometry comes from the default scene, else
+/// the first scene, else every root node; it must be triangle lists, reach no node twice and
+/// contain at least one triangle. Skinned primitives need `JOINTS_0` and `WEIGHTS_0`; further
+/// joint sets are rejected. Clips animate translation, rotation or scale with `LINEAR` or `STEP`
+/// keys and cannot target matrix nodes; channels without a target node are ignored, and a clip
+/// whose keys all sit at time 0 is a pose of zero duration.
 ///
 /// `KHR_materials_unlit` is the only extension that may be required. A texture with an optional
 /// Basis or WebP source uses its PNG or JPEG source instead, and needs one. External files,
 /// sparse accessors, compressed geometry, texture transforms, `BLEND` materials, maps on
 /// different UV sets, morph targets and GPU instancing are rejected.
 ///
-/// Throws `std::runtime_error` for unsupported or malformed content; `std::invalid_argument` for
-/// material values that validate_material rejects, including metallic or roughness factors outside
-/// [0, 1]; and anima::MathError, a `std::invalid_argument`, for a rotation that cannot be
-/// normalized.
+/// Throws `std::runtime_error` for unsupported or malformed content, including content beyond
+/// these limits; `std::invalid_argument` for material values that validate_material rejects,
+/// including metallic or roughness factors outside [0, 1]; and anima::MathError, a
+/// `std::invalid_argument`, for a rotation that cannot be normalized.
 [[nodiscard]] std::shared_ptr<const Asset> load_asset(std::span<const std::byte> bytes);
 /// Imports a GLB holding only nodes and clips, for motion bound to a separate model through
 /// MotionRuntime. As load_asset(std::span<const std::byte>), except that the file needs at least
