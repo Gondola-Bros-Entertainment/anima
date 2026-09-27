@@ -17,22 +17,20 @@ static_assert(sizeof(UiPushConstants) ==
                   sizeof(float) * (std::tuple_size_v<UiMat4> + std::tuple_size_v<UiVec2> + std::tuple_size_v<UiVec2>),
               "UI push constants must match the size of ui.vert's View block");
 struct UiBuffer {
-    VkDevice device{};
+    VmaAllocator allocator{};
     VkBuffer buffer{};
-    VkDeviceMemory memory{};
+    VmaAllocation allocation{};
+    // Mapped until the buffer is destroyed.
     void *mapping{};
     VkDeviceSize capacity{};
     ~UiBuffer() {
-        if (mapping)
-            vkUnmapMemory(device, memory);
         if (buffer)
-            vkDestroyBuffer(device, buffer, nullptr);
-        if (memory)
-            vkFreeMemory(device, memory, nullptr);
+            vmaDestroyBuffer(allocator, buffer, allocation);
     }
 };
 struct UiImage {
     VkDevice device{};
+    VmaAllocator allocator{};
     GpuTexture texture;
     VkDescriptorPool pool{};
     VkDescriptorSet descriptor{};
@@ -44,9 +42,7 @@ struct UiImage {
         if (texture.view)
             vkDestroyImageView(device, texture.view, nullptr);
         if (texture.image)
-            vkDestroyImage(device, texture.image, nullptr);
-        if (texture.memory)
-            vkFreeMemory(device, texture.memory, nullptr);
+            vmaDestroyImage(allocator, texture.image, texture.allocation);
     }
 };
 using UiTexturePtr = std::shared_ptr<const detail::UiTexture>;
@@ -91,9 +87,11 @@ void upload_ui_texture(const UiTexturePtr &source) {
         throw std::invalid_argument("Invalid UI texture dimensions/bytes");
     auto candidate = std::make_unique<UiImage>();
     candidate->device = device;
+    candidate->allocator = allocator;
     // This guard outlives every submitted upload, and unwinds before candidate.
     UploadBatch upload;
     upload.device = device;
+    upload.allocator = allocator;
     upload.fatal = &fatal;
     upload.errors = &errors;
     upload.create(graphics_family);
@@ -106,14 +104,7 @@ void upload_ui_texture(const UiTexturePtr &source) {
     image.samples = VK_SAMPLE_COUNT_1_BIT;
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
     image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    check(vkCreateImage(device, &image, nullptr, &texture.image), "Create UI texture");
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(device, texture.image, &requirements);
-    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    check(vkAllocateMemory(device, &allocation, nullptr, &texture.memory), "Allocate UI texture memory");
-    check(vkBindImageMemory(device, texture.image, texture.memory, 0), "Bind UI texture");
+    texture.allocation_bytes = create_image(image, texture.image, texture.allocation, "Create UI texture");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = texture.image;
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -129,21 +120,11 @@ void upload_ui_texture(const UiTexturePtr &source) {
     VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     buffer.size = source->rgba.size();
     buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    check(vkCreateBuffer(device, &buffer, nullptr, &upload.staging_buffer), "Create UI staging");
-    vkGetBufferMemoryRequirements(device, upload.staging_buffer, &requirements);
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-    check(vkAllocateMemory(device, &allocation, nullptr, &upload.staging_memory), "Allocate UI staging");
-    check(vkBindBufferMemory(device, upload.staging_buffer, upload.staging_memory, 0), "Bind UI staging");
-    void *mapping{};
-    check(vkMapMemory(device, upload.staging_memory, 0, VK_WHOLE_SIZE, 0, &mapping), "Map UI staging");
-    std::memcpy(mapping, source->rgba.data(), source->rgba.size());
-    VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-    range.memory = upload.staging_memory;
-    range.size = VK_WHOLE_SIZE;
-    const auto flushed = vkFlushMappedMemoryRanges(device, 1, &range);
-    vkUnmapMemory(device, upload.staging_memory);
-    check(flushed, "Flush UI staging");
+    std::memcpy(create_buffer(buffer, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, upload.staging_buffer,
+                              upload.staging_allocation, "Create UI staging")
+                    .pMappedData,
+                source->rgba.data(), source->rgba.size());
+    check(vmaFlushAllocation(allocator, upload.staging_allocation, 0, VK_WHOLE_SIZE), "Flush UI staging");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(upload.command, &begin), "Begin UI upload");
@@ -211,27 +192,18 @@ void prepare_ui(const detail::UiFrame &frame) {
     const auto bytes = VkDeviceSize(frame.vertices.size()) * sizeof(detail::UiVertex);
     if (!ui_buffer || ui_buffer->capacity < bytes) {
         auto candidate = std::make_unique<UiBuffer>();
-        candidate->device = device;
+        candidate->allocator = allocator;
         candidate->capacity = bytes;
         VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         info.size = bytes;
         info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        check(vkCreateBuffer(device, &info, nullptr, &candidate->buffer), "Create UI vertex buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device, candidate->buffer, &requirements);
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        check(vkAllocateMemory(device, &allocation, nullptr, &candidate->memory), "Allocate UI vertices");
-        check(vkBindBufferMemory(device, candidate->buffer, candidate->memory, 0), "Bind UI vertices");
-        check(vkMapMemory(device, candidate->memory, 0, VK_WHOLE_SIZE, 0, &candidate->mapping), "Map UI vertices");
+        candidate->mapping = create_buffer(info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, candidate->buffer,
+                                           candidate->allocation, "Create UI vertex buffer")
+                                 .pMappedData;
         ui_buffer.swap(candidate);
     }
     std::memcpy(ui_buffer->mapping, frame.vertices.data(), static_cast<std::size_t>(bytes));
-    VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-    range.memory = ui_buffer->memory;
-    range.size = VK_WHOLE_SIZE;
-    check(vkFlushMappedMemoryRanges(device, 1, &range), "Flush UI vertices");
+    check(vmaFlushAllocation(allocator, ui_buffer->allocation, 0, VK_WHOLE_SIZE), "Flush UI vertices");
     for (const auto &batch : frame.batches)
         upload_ui_texture(batch.texture ? batch.texture : ui_white);
 }

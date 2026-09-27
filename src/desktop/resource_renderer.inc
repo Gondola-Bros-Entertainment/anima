@@ -48,30 +48,19 @@ ResourceStats resources{};
 std::unique_ptr<ResourceBuffer> resource_buffer(VkDeviceSize bytes, VkBufferUsageFlags usage,
                                                 VkMemoryPropertyFlags properties) {
     auto value = std::make_unique<ResourceBuffer>();
-    value->device = device;
+    value->allocator = allocator;
     value->bytes = bytes;
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = bytes;
     info.usage = usage;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check(vkCreateBuffer(device, &info, nullptr, &value->buffer), "Create resource buffer");
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device, value->buffer, &requirements);
-    value->allocation_bytes = requirements.size;
-    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, properties);
-    check(vkAllocateMemory(device, &allocation, nullptr, &value->memory), "Allocate resource buffer");
-    check(vkBindBufferMemory(device, value->buffer, value->memory, 0), "Bind resource buffer");
-    if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-        check(vkMapMemory(device, value->memory, 0, VK_WHOLE_SIZE, 0, &value->mapping), "Map resource buffer");
+    const auto allocated = create_buffer(info, properties, value->buffer, value->allocation, "Create resource buffer");
+    value->allocation_bytes = allocated.size;
+    value->mapping = allocated.pMappedData;
     return value;
 }
 void flush_resource(ResourceBuffer &buffer) {
-    VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-    range.memory = buffer.memory;
-    range.size = VK_WHOLE_SIZE;
-    check(vkFlushMappedMemoryRanges(device, 1, &range), "Flush resource buffer");
+    check(vmaFlushAllocation(allocator, buffer.allocation, 0, VK_WHOLE_SIZE), "Flush resource buffer");
 }
 void upload_resource_buffer(ResourceBuffer &destination, const void *data, VkAccessFlags access) {
     auto staging =
@@ -81,6 +70,7 @@ void upload_resource_buffer(ResourceBuffer &destination, const void *data, VkAcc
     // UploadBatch retires submitted work before staging or the candidate can unwind.
     UploadBatch upload;
     upload.device = device;
+    upload.allocator = allocator;
     upload.fatal = &fatal;
     upload.errors = &errors;
     upload.create(graphics_family);
@@ -152,6 +142,7 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
     const auto vertices = asset->vertices().size_bytes(), indices = asset->indices().size_bytes();
     value->materials = std::make_unique<GpuMaterials>();
     value->materials->device = device;
+    value->materials->allocator = allocator;
     value->materials->source = asset->materials();
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
@@ -172,6 +163,7 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         inject_scene(failure, RendererFailureStage::index, false);
         UploadBatch upload;
         upload.device = device;
+        upload.allocator = allocator;
         upload.fatal = &fatal;
         upload.errors = &errors;
         upload.create(graphics_family);

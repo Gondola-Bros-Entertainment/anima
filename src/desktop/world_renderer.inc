@@ -2,6 +2,7 @@
 static constexpr VkFormat world_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 struct WorldTarget {
     VkDevice device{};
+    VmaAllocator allocator{};
     GpuTexture color;
     VkFramebuffer framebuffer{};
     VkDescriptorPool pool{};
@@ -16,9 +17,7 @@ struct WorldTarget {
         if (color.view)
             vkDestroyImageView(device, color.view, nullptr);
         if (color.image)
-            vkDestroyImage(device, color.image, nullptr);
-        if (color.memory)
-            vkFreeMemory(device, color.memory, nullptr);
+            vmaDestroyImage(allocator, color.image, color.allocation);
     }
 };
 std::unique_ptr<WorldTarget> world_target;
@@ -58,15 +57,7 @@ void create_world_image(GpuTexture &target) {
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
     image.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check(vkCreateImage(device, &image, nullptr, &target.image), "Create linear world image");
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(device, target.image, &requirements);
-    target.allocation_bytes = requirements.size;
-    VkMemoryAllocateInfo memory{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    memory.allocationSize = requirements.size;
-    memory.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    check(vkAllocateMemory(device, &memory, nullptr, &target.memory), "Allocate linear world image");
-    check(vkBindImageMemory(device, target.image, target.memory, 0), "Bind linear world image");
+    target.allocation_bytes = create_image(image, target.image, target.allocation, "Create linear world image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = target.image;
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -116,6 +107,7 @@ void create_world_targets() {
     present_pass = create_display_pass();
     auto next = std::make_unique<WorldTarget>();
     next->device = device;
+    next->allocator = allocator;
     create_world_image(next->color);
     const VkImageView views[]{next->color.view, depth_view};
     VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};

@@ -12,8 +12,9 @@ language runtime dependency.
 | [nlohmann/json 3.12.0](https://github.com/nlohmann/json/tree/v3.12.0) | `v3.12.0` (unmodified single header) | `nlohmann/json.hpp`, `nlohmann/LICENSE.MIT` (MIT); private document parser |
 | [stb_image 2.30](https://github.com/nothings/stb/tree/2c980bb59875b0d32144a71867fbdebb2f77cd20) | `2c980bb59875b0d32144a71867fbdebb2f77cd20` | `stb/stb_image.h`, `stb/LICENSE` (MIT or public domain; Anima uses MIT) |
 | [doctest 2.5.3](https://github.com/doctest/doctest/tree/2d0a9359a60c51affe2a9bebb1be1dca47868151) | `2d0a9359a60c51affe2a9bebb1be1dca47868151` (`v2.5.3` tag) | `doctest/doctest/doctest.h`, `doctest/LICENSE.txt` (MIT); test runner only, never linked into engine targets |
+| [Vulkan Memory Allocator 3.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tree/3aa921224c154a0d2c43912bc88e1c42ce1f7607) | `3aa921224c154a0d2c43912bc88e1c42ce1f7607` (`v3.4.0` tag) | `vma/vk_mem_alloc.h`, `vma/LICENSE.txt` (MIT); private to `anima::desktop`, which compiles its implementation once |
 
-The cgltf, JSON and doctest files are unmodified. stb_image carries two local size-safety
+The cgltf, JSON, doctest and Vulkan Memory Allocator files are unmodified. stb_image carries two local size-safety
 changes: 16-bit channel conversion uses its checked allocation helper, and 8-bit
 PNG row copying reuses the validated row byte count. The upstream revision and
 license remain unchanged; the checksum below identifies the patched header.
@@ -33,6 +34,8 @@ f619925f80ef862497aaf8e8155ef218fa6a2190055129523ca3df9119a9ba95  cgltf/LICENSE
 bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63  stb/LICENSE
 cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421  doctest/doctest/doctest.h
 0fe0b331fa1513dcce8604ff1fa925f32d1cea17d8aeb1c2471fad40d291adc5  doctest/LICENSE.txt
+8487b7995ad3b263eb73bc5b9a77d71aa69b6bef5d58a715c02d2663afd81f1a  vma/vk_mem_alloc.h
+52df2c03d6cfc9ffec13c9d3626c530fc9ce0cbe41d5ea3d10cd46edeb1aeb38  vma/LICENSE.txt
 ```
 
 ## Optional dependencies

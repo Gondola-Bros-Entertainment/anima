@@ -396,9 +396,11 @@ if(ANIMA_BUILD_DESKTOP)
         list(APPEND shader_outputs "${output}")
     endforeach()
 
-    add_library(anima_desktop STATIC src/desktop/vulkan_renderer.cpp ${shader_outputs})
+    add_library(anima_desktop STATIC src/desktop/vulkan_renderer.cpp src/desktop/memory_allocator.cpp ${shader_outputs})
     add_library(anima::desktop ALIAS anima_desktop)
     target_include_directories(anima_desktop PUBLIC include PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    # Vulkan Memory Allocator is private to the renderer; see third_party/README.md.
+    target_include_directories(anima_desktop SYSTEM PRIVATE third_party/vma)
     target_link_libraries(anima_desktop PUBLIC SDL3::SDL3 anima::core PRIVATE Vulkan::Vulkan)
     if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_desktop PUBLIC anima::assets)
