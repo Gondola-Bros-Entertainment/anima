@@ -52,9 +52,12 @@ class Camera {
 ///
 /// Any number of views and cameras may exist, but view_matrix needs exactly one active view. The
 /// link addresses whichever Camera its object has when the view is resolved: removing that
-/// component makes resolution fail until a Camera is attached again, while destroying the object or
-/// unloading its scene breaks the link for good; nothing looks the object up by name or key. A null
-/// link can be persisted but cannot produce a view.
+/// component makes resolution fail until a Camera is attached again, while destroying the object
+/// breaks the link for good; resolution never looks the object up by name or key. When the
+/// object's scene leaves a SceneSet, SceneSet::replace rebinds the link to the replacement's object
+/// with the same key and SceneSet::unload sets it to null, given codecs from
+/// add_camera_component_codecs; otherwise the link expires with the scene. A null link can be
+/// persisted but cannot produce a view.
 struct CameraView {
     /// Null link; GameObject::add_component does not pass the owning object here.
     CameraView() = default;
@@ -90,7 +93,8 @@ struct CameraView {
 /// ObjectReferences as a decimal string, `"0"` for null. Decoding throws `std::invalid_argument` for
 /// malformed JSON, payloads over 64 KiB or nested deeper than 16, duplicate, missing or unknown
 /// fields, and invalid settings. A view whose target lacks an active Camera still loads;
-/// view_matrix rejects it. Registration throws `std::invalid_argument` when either type or key is
-/// already registered.
+/// view_matrix rejects it. The view codec reports CameraView::camera as a link, so SceneSet::replace
+/// and SceneSet::unload repair it (see ComponentCodecs::add). Registration throws
+/// `std::invalid_argument` when either type or key is already registered.
 void add_camera_component_codecs(ComponentCodecs &codecs);
 } // namespace anima

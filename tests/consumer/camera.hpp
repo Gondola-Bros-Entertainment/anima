@@ -32,5 +32,19 @@ inline void run() {
     level = scenes.replace(level, document, {}, codecs);
     if (selected_eye.valid() || before != anima::view_matrix(scenes, 1))
         throw std::runtime_error("Camera scene replacement retained handles or changed its view");
+
+    anima::SceneSet linked;
+    auto cameras = linked.create("cameras"), views = linked.create("views");
+    auto lens = cameras->create("lens");
+    lens.add_component<anima::Camera>();
+    lens.set_position({0, 1, 4});
+    views->create("remote view").add_component<anima::CameraView>()->camera = lens;
+    const auto remote = anima::view_matrix(linked, 1);
+    cameras = linked.replace(cameras, anima::serialize_scene(cameras.get(), {}, codecs), {}, codecs);
+    if (lens.valid() || remote != anima::view_matrix(linked, 1))
+        throw std::runtime_error("Camera replacement lost the view in another member");
+    const auto cleared = linked.unload(cameras, codecs);
+    if (cleared.size() != 1 || views->components<anima::CameraView>().front()->camera.valid())
+        throw std::runtime_error("Camera unload did not clear the view in another member");
 }
 } // namespace camera_consumer
