@@ -27,10 +27,10 @@ struct FittedAsset {
     /// Binds @p fitted to @p body. Throws for a null model, an empty slot or a model with clips,
     /// and `std::runtime_error` when compatible_skin rejects the pair.
     FittedAsset(std::string_view slot, const Asset &body, std::shared_ptr<const Asset> fitted);
-    /// World-only pose of #render that copies each mapped joint's world matrix from @p character, a
-    /// pose of the body; other nodes keep their rest matrices. Throws `std::out_of_range` when
-    /// @p character lacks a mapped joint.
-    Pose pose(const Pose &character) const;
+    /// World-only pose of #render that copies each mapped joint's world matrix from @p body, a pose
+    /// of the body model; other nodes keep their rest matrices. Throws `std::out_of_range` when
+    /// @p body lacks a mapped joint.
+    Pose pose(const Pose &body) const;
 };
 /// One catalog item that fits the library's body.
 struct FittedDefinition {
@@ -87,14 +87,14 @@ class FittedLibrary {
     std::map<std::string, FittedDefinition, std::less<>> definitions_;
     std::set<std::string, std::less<>> known_ids_;
 };
-/// Owns the fitted objects worn by one body object.
+/// Owns the fitted objects that follow one body object.
 ///
 /// replace() and sync() need the body and its scene; destruction is safe after either expires.
 /// Attached as a component, on_late_update syncs after every on_update hook of the frame, such as
 /// an Animator's.
 class FittedSet {
   public:
-    /// One worn item.
+    /// One active item.
     struct Instance {
         /// Item id.
         std::string item;
@@ -110,11 +110,11 @@ class FittedSet {
     ~FittedSet();
     FittedSet(const FittedSet &) = delete;
     FittedSet &operator=(const FittedSet &) = delete;
-    /// Makes @p items the worn set.
+    /// Makes @p items the active set.
     ///
     /// Retained items keep their objects; new objects become children of the body with its
     /// current pose, placement and visibility. Every new item loads before the scene changes, and a
-    /// failure leaves the worn set unchanged. Throws when the body's mesh or an item object's mesh
+    /// failure leaves the active set unchanged. Throws when the body's mesh or an item object's mesh
     /// was replaced, `std::out_of_range` when the body or an item object no longer exists, and as
     /// FittedLibrary::load does.
     void replace(const std::set<std::string, std::less<>> &items);
@@ -125,7 +125,7 @@ class FittedSet {
     void sync();
     /// Component hook: runs sync().
     void on_late_update(double) { sync(); }
-    /// Worn items.
+    /// Active items.
     const std::vector<Instance> &instances() const { return instances_; }
 
   private:

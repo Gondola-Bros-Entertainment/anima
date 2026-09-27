@@ -109,51 +109,48 @@ std::string ancestors(const Asset &asset, std::size_t node) {
     return result;
 }
 } // namespace
-std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &character, const Asset &equipment) {
-    if (character.skins.size() != 1 || equipment.skins.size() != 1)
-        throw std::runtime_error("Equipment preview requires one skin per character/item");
-    const auto &base = character.skins[0];
-    const auto &gear = equipment.skins[0];
-    if (base.joints.size() != gear.joints.size())
-        throw std::runtime_error(
-            "Equipment joint count differs from the target body; export fitted equipment against its rig");
-    std::map<std::string, std::size_t> base_names;
-    std::set<std::string> gear_names;
-    for (std::size_t i = 0; i < base.joints.size(); ++i)
-        if (!base_names.emplace(character.nodes.at(base.joints[i]).name, i).second)
-            throw std::runtime_error("Duplicate character joint name");
-    const auto base_pose = sample_pose(character), gear_pose = sample_pose(equipment);
+std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &body, const Asset &fitted) {
+    if (body.skins.size() != 1 || fitted.skins.size() != 1)
+        throw std::runtime_error("Fitted skin check requires one skin in the body and in the fitted model");
+    const auto &body_skin = body.skins[0];
+    const auto &fitted_skin = fitted.skins[0];
+    if (body_skin.joints.size() != fitted_skin.joints.size())
+        throw std::runtime_error("Fitted joint count differs from the body; export the fitted model against its rig");
+    std::map<std::string, std::size_t> body_names;
+    std::set<std::string> fitted_names;
+    for (std::size_t i = 0; i < body_skin.joints.size(); ++i)
+        if (!body_names.emplace(body.nodes.at(body_skin.joints[i]).name, i).second)
+            throw std::runtime_error("Duplicate body joint name");
+    const auto body_pose = sample_pose(body), fitted_pose = sample_pose(fitted);
     std::vector<std::pair<std::size_t, std::size_t>> mapping;
-    for (std::size_t i = 0; i < gear.joints.size(); ++i) {
-        const auto node = gear.joints[i];
-        const auto &name = equipment.nodes.at(node).name;
-        if (!gear_names.insert(name).second)
-            throw std::runtime_error("Duplicate equipment joint: " + name);
-        const auto found = base_names.find(name);
-        if (found == base_names.end())
-            throw std::runtime_error("Equipment joint missing from target body: " + name);
-        const auto base_node = base.joints[found->second];
-        if (ancestors(character, base_node) != ancestors(equipment, node))
-            throw std::runtime_error("Equipment hierarchy mismatch at " + name +
-                                     "; export against the target body's rig");
-        const auto bind_error = difference(base.inverse_bind.at(found->second), gear.inverse_bind.at(i));
+    for (std::size_t i = 0; i < fitted_skin.joints.size(); ++i) {
+        const auto node = fitted_skin.joints[i];
+        const auto &name = fitted.nodes.at(node).name;
+        if (!fitted_names.insert(name).second)
+            throw std::runtime_error("Duplicate fitted joint: " + name);
+        const auto found = body_names.find(name);
+        if (found == body_names.end())
+            throw std::runtime_error("Fitted joint missing from the body: " + name);
+        const auto body_node = body_skin.joints[found->second];
+        if (ancestors(body, body_node) != ancestors(fitted, node))
+            throw std::runtime_error("Fitted hierarchy mismatch at " + name + "; export against the body's rig");
+        const auto bind_error = difference(body_skin.inverse_bind.at(found->second), fitted_skin.inverse_bind.at(i));
         if (bind_error > skin_match_tolerance)
-            throw std::runtime_error("Equipment inverse-bind mismatch at " + name + " (max error " +
-                                     std::to_string(bind_error) + "); refit/export for this body profile");
-        if (difference(base_pose.world.at(base_node), gear_pose.world.at(node)) > skin_match_tolerance)
-            throw std::runtime_error("Equipment rest-pose mismatch at " + name +
-                                     "; use the target body's rest transforms");
-        mapping.emplace_back(node, base_node);
+            throw std::runtime_error("Fitted inverse-bind mismatch at " + name + " (max error " +
+                                     std::to_string(bind_error) + "); export the fitted model for this body");
+        if (difference(body_pose.world.at(body_node), fitted_pose.world.at(node)) > skin_match_tolerance)
+            throw std::runtime_error("Fitted rest-pose mismatch at " + name + "; use the body's rest transforms");
+        mapping.emplace_back(node, body_node);
     }
-    for (const auto &primitive : equipment.primitives)
+    for (const auto &primitive : fitted.primitives)
         if (primitive.skin != 0)
-            throw std::runtime_error("Equipment contains an unskinned mesh; bind it to the target rig");
+            throw std::runtime_error("Fitted model contains an unskinned mesh; bind it to the body's rig");
     return mapping;
 }
 AssetPreview::AssetPreview(const std::filesystem::path &manifest) : manifest_(read_manifest(manifest)) {
-    character_ = load_asset(manifest_.directory / manifest_.model);
-    validate_manifest(manifest_, *character_);
-    animator_ = scene_->create(manifest_.asset_id, Mesh::compile(*character_)).add_component<Animator>(character_);
+    model_ = load_asset(manifest_.directory / manifest_.model);
+    validate_manifest(manifest_, *model_);
+    animator_ = scene_->create(manifest_.asset_id, Mesh::compile(*model_)).add_component<Animator>(model_);
     if (manifest_.clips.empty())
         bind_pose();
     else

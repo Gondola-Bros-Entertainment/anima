@@ -2,11 +2,11 @@
 #include <anima/animation.hpp>
 
 /// @file
-/// Character asset manifests, skin compatibility checks and a manifest-driven model viewer. Part
-/// of the `anima::assets` target.
+/// Model asset manifests, skin compatibility checks and a manifest-driven model viewer. Part of
+/// the `anima::assets` target.
 
 namespace anima {
-/// A character asset manifest; see read_manifest.
+/// A model asset manifest; see read_manifest.
 struct Manifest {
     /// Absolute directory of the manifest file; #model and #motion_contract resolve against it.
     std::filesystem::path directory;
@@ -40,16 +40,15 @@ struct Manifest {
 /// the manifest, each manifest clip naming exactly one of them, events inside their clips and
 /// positive finite reference speeds. Throws `std::runtime_error` otherwise.
 void validate_manifest(const Manifest &manifest, const Asset &asset);
-/// Pairs each joint node of @p equipment's skin with the @p character joint node of the same
-/// name, as (equipment node, character node) in @p equipment's joint order.
+/// Pairs each joint node of @p fitted's skin with the @p body joint node of the same name, as
+/// (fitted node, body node) in @p fitted's joint order, so that @p fitted can copy @p body's pose.
 ///
 /// Both assets need exactly one skin, with equal joint counts and unique joint names. Matching
 /// joints need the same ancestor names and inverse bind and rest world matrices within `1e-4`, and
-/// every @p equipment primitive must use the skin. Throws `std::runtime_error` otherwise.
-[[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &character,
-                                                                               const Asset &equipment);
-/// Model viewer driven by a manifest: owns a Scene with one object that an Animator poses.
-/// Equipment assembly belongs to applications.
+/// every @p fitted primitive must use the skin. Throws `std::runtime_error` otherwise.
+[[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &body, const Asset &fitted);
+/// Model viewer driven by a manifest: owns a Scene with one object that an Animator poses. It
+/// shows the model alone; applications assemble attachments and fitted meshes.
 class AssetPreview {
   public:
     /// Loads the manifest at @p manifest and its model, then plays the first manifest clip, or
@@ -88,7 +87,7 @@ class AssetPreview {
 
   private:
     Manifest manifest_;
-    std::shared_ptr<const Asset> character_;
+    std::shared_ptr<const Asset> model_;
     std::shared_ptr<Scene> scene_ = std::make_shared<Scene>();
     ComponentRef<Animator> animator_;
     bool bind_{};

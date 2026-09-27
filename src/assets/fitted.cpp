@@ -6,7 +6,7 @@ static std::filesystem::path relative_model(const std::string &name) {
     const std::filesystem::path result = name;
     if (result.is_absolute() || result.extension() != ".glb" ||
         std::any_of(result.begin(), result.end(), [](const auto &component) { return component == ".."; }))
-        throw std::invalid_argument("Garment model must be a relative .glb path without '..'");
+        throw std::invalid_argument("Fitted model must be a relative .glb path without '..'");
     return result;
 }
 struct FittedLibrary::State {
@@ -22,13 +22,13 @@ FittedAsset::FittedAsset(std::string_view slot_, const anima::Asset &body, std::
       joints(source ? anima::compatible_skin(body, *source)
                     : throw std::invalid_argument("Fitted asset requires a source")) {
     if (slot.empty() || !source->animations.empty())
-        throw std::invalid_argument("Fitted garments reuse the body pose and cannot own motion");
+        throw std::invalid_argument("Fitted models follow the body pose and cannot own motion");
     render = anima::Mesh::compile(*source);
 }
-anima::Pose FittedAsset::pose(const anima::Pose &character) const {
+anima::Pose FittedAsset::pose(const anima::Pose &body) const {
     auto result = render->rest_pose();
-    for (const auto &[gear, body] : joints)
-        result.world.at(gear) = character.world.at(body);
+    for (const auto &[fitted_node, body_node] : joints)
+        result.world.at(fitted_node) = body.world.at(body_node);
     // Only world matrices are consumed by the renderer. Do not expose stale
     // local transforms as if they described the copied body pose.
     result.local.clear();
@@ -46,26 +46,26 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
         anima::detail::json_fields(catalog, {"version", "items"});
         if (catalog.at("version") != 1 || !catalog.at("items").is_array() ||
             catalog.at("items").size() > maximum_catalog_items)
-            throw std::invalid_argument("Invalid garment catalog");
+            throw std::invalid_argument("Invalid fitted catalog");
         std::set<std::string> ids;
         for (const auto &item : catalog.at("items")) {
             anima::detail::json_fields(item, {"id", "slot", "fits"});
             const auto id = text(item.at("id"));
             const auto slot = text(item.at("slot"));
             if (!ids.insert(id).second || !item.at("fits").is_object() || item.at("fits").empty())
-                throw std::invalid_argument("Invalid/duplicate garment definition");
+                throw std::invalid_argument("Invalid/duplicate fitted item");
             known_ids_.insert(id);
             for (const auto &[body_id, fit] : item.at("fits").items()) {
                 if (body_id.empty())
-                    throw std::invalid_argument("Empty garment body identity");
+                    throw std::invalid_argument("Empty fitted body profile");
                 anima::detail::json_fields(fit, {"model", "skeleton", "bind_signature"});
                 const auto path = relative_model(text(fit.at("model")));
                 if (text(fit.at("skeleton")).empty() || text(fit.at("bind_signature")).empty())
-                    throw std::invalid_argument("Missing garment fit identity");
+                    throw std::invalid_argument("Missing fitted skeleton or bind signature");
                 if (body_id != profile)
                     continue;
                 if (fit.at("skeleton") != manifest.skeleton_id || fit.at("bind_signature") != manifest.bind_signature)
-                    throw std::invalid_argument("Garment fit belongs to a different body bind");
+                    throw std::invalid_argument("Fitted model belongs to a different body bind");
                 definitions_.emplace(id, FittedDefinition{id, std::string(slot), path});
             }
         }

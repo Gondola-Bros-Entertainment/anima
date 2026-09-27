@@ -194,7 +194,7 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
                          "Invalid manifest joint count", std::runtime_error);
     CHECK_THROWS_WITH_AS(
         validate_manifest(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":3")), asset),
-        "Character skin does not match manifest joint count", std::runtime_error);
+        "Model skin does not match manifest joint count", std::runtime_error);
     CHECK_THROWS_WITH_AS(validate_manifest(file.read(changed(valid_manifest, "0.53", "1.1")), asset),
                          "Preview event outside clip: test", std::runtime_error);
     CHECK_THROWS_WITH_AS(
@@ -384,7 +384,7 @@ TEST_CASE("Looping playback crosses events in every loop and at the loop boundar
     CHECK(player.advance(.01).empty());
 }
 
-TEST_CASE("Equipment binds to the body's joints by name") {
+TEST_CASE("A fitted model binds to the body's joints by name") {
     const auto asset = fixture();
     CHECK(compatible_skin(asset, asset).size() == 2);
     // Joint indices may be ordered differently.
@@ -394,31 +394,29 @@ TEST_CASE("Equipment binds to the body's joints by name") {
     CHECK(compatible_skin(asset, reordered).size() == 2);
 }
 
-TEST_CASE("Equipment that does not match the body's rig is rejected with its reason") {
+TEST_CASE("A fitted model that does not match the body's rig is rejected with its reason") {
     const auto asset = fixture();
-    auto equipment = asset;
-    equipment.primitives[0].skin = -1;
-    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
-                         "Equipment contains an unskinned mesh; bind it to the target rig", std::runtime_error);
-    equipment = asset;
-    equipment.skins[0].inverse_bind[1][12] = .1F;
-    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
-                         "Equipment inverse-bind mismatch at hand (max error 0.100000); refit/export for this body "
-                         "profile",
+    auto fitted = asset;
+    fitted.primitives[0].skin = -1;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted),
+                         "Fitted model contains an unskinned mesh; bind it to the body's rig", std::runtime_error);
+    fitted = asset;
+    fitted.skins[0].inverse_bind[1][12] = .1F;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted),
+                         "Fitted inverse-bind mismatch at hand (max error 0.100000); export the fitted model for this "
+                         "body",
                          std::runtime_error);
-    equipment = asset;
-    equipment.nodes[1].parent = -1;
-    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
-                         "Equipment hierarchy mismatch at hand; export against the target body's rig",
-                         std::runtime_error);
-    equipment = asset;
-    equipment.nodes[1].rest.translation.y = 2;
-    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment),
-                         "Equipment rest-pose mismatch at hand; use the target body's rest transforms",
-                         std::runtime_error);
-    equipment = asset;
-    equipment.nodes[1].name = "another_hand";
-    CHECK_THROWS_WITH_AS(compatible_skin(asset, equipment), "Equipment joint missing from target body: another_hand",
+    fitted = asset;
+    fitted.nodes[1].parent = -1;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted),
+                         "Fitted hierarchy mismatch at hand; export against the body's rig", std::runtime_error);
+    fitted = asset;
+    fitted.nodes[1].rest.translation.y = 2;
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted),
+                         "Fitted rest-pose mismatch at hand; use the body's rest transforms", std::runtime_error);
+    fitted = asset;
+    fitted.nodes[1].name = "another_hand";
+    CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted), "Fitted joint missing from the body: another_hand",
                          std::runtime_error);
 }
 

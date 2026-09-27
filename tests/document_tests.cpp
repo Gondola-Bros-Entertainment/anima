@@ -90,15 +90,15 @@ TEST_CASE("Manifest fields that are missing or of the wrong JSON type are reject
     REQUIRE_THROWS_WITH_AS((void)read_manifest(missing.path), doctest::Contains(missing_key), std::runtime_error);
 }
 
-TEST_CASE("A garment model path must be a relative .glb path without '..'") {
+TEST_CASE("A fitted model path must be a relative .glb path without '..'") {
     const auto body = std::make_shared<const Asset>();
     const auto catalog = R"({"version":1,"items":[{"id":"shirt","slot":"torso","fits":{"profile":)"
                          R"({"model":"../shirt.glb","skeleton":"s","bind_signature":"b"}}}]})";
     REQUIRE_THROWS_WITH_AS(FittedLibrary(body, Manifest{}, "profile", catalog),
-                           "Garment model must be a relative .glb path without '..'", std::invalid_argument);
+                           "Fitted model must be a relative .glb path without '..'", std::invalid_argument);
 }
 
-TEST_CASE("A garment catalog field of the wrong JSON type is rejected as std::invalid_argument") {
+TEST_CASE("A fitted catalog field of the wrong JSON type is rejected as std::invalid_argument") {
     const auto body = std::make_shared<const Asset>();
     const auto catalog = R"({"version":1,"items":[{"id":5,"slot":"torso","fits":{}}]})";
     REQUIRE_THROWS_WITH_AS(FittedLibrary(body, Manifest{}, "profile", catalog), doctest::Contains(wrong_type),
