@@ -328,6 +328,8 @@ TEST_CASE("An attachment catalog accepts only version 3 and none of the removed 
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"base":""})")),
                          "Empty presentation identity/reference", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"":"layer.side"})")),
+                         "Empty layer override base clip", std::invalid_argument);
 }
 
 TEST_CASE("An attachment instance replaces its item in a scene") {

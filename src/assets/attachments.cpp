@@ -28,7 +28,7 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
                 throw std::invalid_argument("Layer overrides must map base clips to layer clips");
             for (const auto &[name, value] : entry.at("layer_overrides").items()) {
                 if (name.empty())
-                    throw std::invalid_argument("Empty layer override clip");
+                    throw std::invalid_argument("Empty layer override base clip");
                 motion.layer_overrides.emplace(name, text(value));
             }
         }
