@@ -79,13 +79,19 @@ inline void check_images(const gpu_check::Captures &images, float scale) {
     }
     images.require(at("mesh-ui", 400, 160) != at("empty-ui", 400, 160),
                    "The mesh does not show through the translucent element", {"mesh-ui", "empty-ui"});
-    for (const auto &[x, y, expected] :
-         {std::tuple{496, 246, gpu_check::Rgb{255, 0, 0}}, std::tuple{528, 246, gpu_check::Rgb{0, 255, 0}},
-          std::tuple{496, 278, gpu_check::Rgb{0, 0, 255}}, std::tuple{528, 278, over_clear}})
-        images.require(gpu_check::difference(at("empty-ui", x, y), expected) <= texel_tolerance,
-                       "The PNG texel at " + std::to_string(x) + ", " + std::to_string(y) + " is " +
-                           gpu_check::text(at("empty-ui", x, y)) + " instead of " + gpu_check::text(expected),
+    // The document draws the 2x2 image at 66dp from (480, 230), so each texel spans 33dp and its center is a pixel
+    // center at scale 1, where bilinear filtering returns the texel without its neighbors.
+    constexpr double image_left = 480, image_top = 230, texel_span = 33;
+    for (const auto &[column, row, expected] :
+         {std::tuple{0, 0, gpu_check::Rgb{255, 0, 0}}, std::tuple{1, 0, gpu_check::Rgb{0, 255, 0}},
+          std::tuple{0, 1, gpu_check::Rgb{0, 0, 255}}, std::tuple{1, 1, over_clear}}) {
+        const auto actual =
+            at("empty-ui", image_left + (column + .5) * texel_span, image_top + (row + .5) * texel_span);
+        images.require(gpu_check::difference(actual, expected) <= texel_tolerance,
+                       "The PNG texel in column " + std::to_string(column) + ", row " + std::to_string(row) + " is " +
+                           gpu_check::text(actual) + " instead of " + gpu_check::text(expected),
                        {"empty-ui"});
+    }
     // The font atlas draws actual glyphs, and the UTF-8 edit changes the input field.
     constexpr int bright_glyph = 200, edited_change = 30;
     constexpr double least_glyphs = 80, least_edits = 30;
