@@ -344,6 +344,7 @@ inline int run(int argc, char **argv) {
     std::cout << "STABLE_SWAPCHAIN_END\n";
     replace({a});
     require(SDL_SetWindowSize(window.get(), 760, 520), "Resize failed");
+    require(SDL_SyncWindow(window.get()), "Resize did not settle");
     renderer.request_resize();
     frame();
     capture("resized");
