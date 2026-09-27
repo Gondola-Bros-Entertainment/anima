@@ -13,6 +13,19 @@
 namespace anima {
 namespace detail {
 enum class ComponentPhase { frame, fixed, late };
+// Whether Scene calls any hook of T, as ComponentBox checks each one; only these are scheduled.
+template <class T>
+concept ScheduledComponent = requires(T &hooked_value, double hooked_seconds) {
+    { hooked_value.on_update(hooked_seconds) } -> std::same_as<void>;
+} || requires(T &hooked_value, double hooked_seconds) {
+    { hooked_value.on_late_update(hooked_seconds) } -> std::same_as<void>;
+} || requires(T &hooked_value, double hooked_seconds) {
+    { hooked_value.on_fixed_update(hooked_seconds) } -> std::same_as<void>;
+} || requires(T &hooked_value) {
+    { hooked_value.on_enable() } -> std::same_as<void>;
+} || requires(T &hooked_value) {
+    { hooked_value.on_disable() } -> std::same_as<void>;
+};
 struct ComponentValue {
     virtual ~ComponentValue() = default;
     virtual void *address() noexcept = 0;
@@ -77,11 +90,16 @@ template <class T> struct ComponentBox final : ComponentValue {
 };
 struct ComponentRecord {
     GameObject object;
+    std::type_index type;
     bool attached{}, enabled = true;
     bool lifecycle_active{}, enabling{};
+    // Whether the type has hooks, and the record's positions in its scene's lists while attached.
+    bool scheduled{};
+    std::size_t type_position{}, schedule_position{};
     std::unique_ptr<ComponentValue> value;
     std::shared_ptr<ComponentRecord> retired_next;
-    explicit ComponentRecord(GameObject owner) : object(std::move(owner)) {}
+    ComponentRecord(GameObject owner, std::type_index kind, bool hooks)
+        : object(std::move(owner)), type(kind), scheduled(hooks) {}
     void disable() noexcept {
         if (!lifecycle_active)
             return;
@@ -158,6 +176,7 @@ template <class T> class ComponentRef {
 
   private:
     friend class GameObject;
+    friend class Scene;
     explicit ComponentRef(const std::shared_ptr<detail::ComponentRecord> &record) : record_(record) {}
     std::shared_ptr<detail::ComponentRecord> lock() const {
         auto record = record_.lock();
@@ -178,7 +197,7 @@ template <class T, class... Args> ComponentRef<T> GameObject::add_component(Args
     } else {
         auto &owner = scene();
         const std::type_index type = typeid(T);
-        auto record = std::make_shared<detail::ComponentRecord>(*this);
+        auto record = std::make_shared<detail::ComponentRecord>(*this, type, detail::ScheduledComponent<T>);
         // Reserve the type before invoking user construction to reject recursive adds.
         if (!owner.slot(id_).components.emplace(type, record).second)
             throw std::logic_error("GameObject already has this component type");
@@ -192,7 +211,7 @@ template <class T, class... Args> ComponentRef<T> GameObject::add_component(Args
             if (!valid() || scene().component(id_, type) != record)
                 throw std::logic_error("Component owner or attachment was removed during construction");
             record->value = std::move(value);
-            record->attached = true;
+            scene().index_component(record);
         } catch (...) {
             if (valid() && scene().component(id_, type) == record)
                 scene().detach_component(id_, type);
@@ -219,14 +238,13 @@ template <class T> bool GameObject::remove_component() {
     }
 }
 template <class T> std::vector<ComponentRef<T>> Scene::components() {
-    std::vector<ComponentRef<T>> result;
-    for (std::size_t i = 0; i < slots_.size(); ++i)
-        if (slots_[i].alive) {
-            auto found = object({owner_, slots_[i].generation, i}).get_component<T>();
-            if (found)
-                result.push_back(found);
-        }
-    return result;
+    static_assert(std::same_as<T, std::remove_cvref_t<T>>, "Component type must be unqualified");
+    const auto listed_records = attached_components(typeid(T));
+    std::vector<ComponentRef<T>> typed_components;
+    typed_components.reserve(listed_records.size());
+    for (const auto &listed_record : listed_records)
+        typed_components.push_back(ComponentRef<T>(listed_record));
+    return typed_components;
 }
 
 /// Persisted state of one component.

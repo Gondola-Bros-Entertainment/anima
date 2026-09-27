@@ -1,8 +1,73 @@
 #include "../detail/json.hpp"
+#include <algorithm>
 #include <anima/components.hpp>
 #include <set>
 
 namespace anima {
+namespace {
+using Record = std::shared_ptr<detail::ComponentRecord>;
+using Position = std::size_t detail::ComponentRecord::*;
+// The order a scan of the slots visited records in: by slot, then by type within one object.
+bool scan_order(const Record &left, const Record &right) noexcept {
+    const auto left_slot = left->object.id().slot, right_slot = right->object.id().slot;
+    return left_slot != right_slot ? left_slot < right_slot : left->type < right->type;
+}
+} // namespace
+void Scene::index_component(const std::shared_ptr<detail::ComponentRecord> &record) {
+    auto &list = component_types_[record->type];
+    list.records.push_back(record);
+    if (record->scheduled)
+        try {
+            scheduled_.records.push_back(record);
+        } catch (...) {
+            list.records.pop_back();
+            throw;
+        }
+    const auto place = [&](ComponentList &target, Position position) {
+        const auto count = target.records.size();
+        (*record).*position = count - 1;
+        if (count > 1 && !scan_order(target.records[count - 2], record))
+            target.ordered = false;
+    };
+    place(list, &detail::ComponentRecord::type_position);
+    if (record->scheduled)
+        place(scheduled_, &detail::ComponentRecord::schedule_position);
+    record->attached = true;
+}
+void Scene::unindex_component(detail::ComponentRecord &record) noexcept {
+    // The caller still owns the record, so overwriting its entry destroys nothing.
+    const auto take = [&](ComponentList &target, Position position) {
+        auto &records = target.records;
+        const auto index = record.*position;
+        if (index + 1 != records.size()) {
+            records[index] = std::move(records.back());
+            (*records[index]).*position = index;
+            target.ordered = false;
+        }
+        records.pop_back();
+    };
+    take(component_types_.find(record.type)->second, &detail::ComponentRecord::type_position);
+    if (record.scheduled)
+        take(scheduled_, &detail::ComponentRecord::schedule_position);
+}
+std::span<const std::shared_ptr<detail::ComponentRecord>> Scene::ordered(ComponentList &list, bool scheduled) noexcept {
+    // Sorting once after changes keeps queries and updates in the order a slot scan produced.
+    if (!list.ordered) {
+        std::sort(list.records.begin(), list.records.end(), scan_order);
+        const Position position =
+            scheduled ? &detail::ComponentRecord::schedule_position : &detail::ComponentRecord::type_position;
+        for (std::size_t i = 0; i < list.records.size(); ++i)
+            (*list.records[i]).*position = i;
+        list.ordered = true;
+    }
+    return list.records;
+}
+std::span<const std::shared_ptr<detail::ComponentRecord>> Scene::attached_components(std::type_index type) {
+    const auto found = component_types_.find(type);
+    if (found == component_types_.end())
+        return {};
+    return ordered(found->second, false);
+}
 std::shared_ptr<detail::ComponentRecord> Scene::component(Id id, std::type_index type) const {
     const auto &components = slot(id).components;
     const auto found = components.find(type);
@@ -14,6 +79,8 @@ bool Scene::detach_component(Id id, std::type_index type) {
     if (found == components.end())
         return false;
     auto record = std::move(found->second);
+    if (record->attached)
+        unindex_component(*record);
     record->attached = false;
     components.erase(found);
     const bool was_updating = std::exchange(updating_, true);
@@ -40,15 +107,15 @@ void Scene::run_components(std::span<Scene *const> scenes, double seconds, bool 
         std::shared_ptr<detail::ComponentRecord> record;
         bool eligible;
     };
-    std::vector<Participant> snapshot;
+    // Only components with hooks can do anything here, so they alone are listed and snapshotted.
+    std::size_t scheduled = 0;
     for (const auto *scene : scenes)
-        for (const auto &entry : scene->slots_)
-            if (entry.alive)
-                for (const auto &[type, record] : entry.components) {
-                    (void)type;
-                    if (record->attached)
-                        snapshot.push_back({record, record->enabled && entry.active_hierarchy});
-                }
+        scheduled += scene->scheduled_.records.size();
+    std::vector<Participant> snapshot;
+    snapshot.reserve(scheduled);
+    for (auto *scene : scenes)
+        for (const auto &record : ordered(scene->scheduled_, true))
+            snapshot.push_back({record, record->enabled && scene->slots_[record->object.id().slot].active_hierarchy});
     for (auto *scene : scenes)
         scene->updating_ = true;
     try {
