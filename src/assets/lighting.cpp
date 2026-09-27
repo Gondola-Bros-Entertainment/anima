@@ -170,6 +170,10 @@ void add_lighting_component_codecs(ComponentCodecs &codecs) {
             auto environment = object.add_component<SceneEnvironment>(settings(j.at("settings")));
             environment->sun = sun;
             environment->fill = fill;
+        },
+        [](SceneEnvironment &environment, ObjectLinks &links) {
+            links.add(environment.sun);
+            links.add(environment.fill);
         });
     codecs = std::move(pending);
 }

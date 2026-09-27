@@ -280,13 +280,51 @@ TEST_CASE("Lighting resolution requires one active environment with live lights 
     (void)light(b.get());
     CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
     selected->fill = sun;
-    scenes.unload(a);
+    // Without the lighting codecs nothing repairs the links.
+    CHECK(scenes.unload(a).empty());
     a = scenes.create("a");
     (void)light(a.get());
     CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
     scenes.clear();
     CHECK_FALSE(selected.valid());
     CHECK_THROWS_WITH_AS(lighting_environment(scenes), no_environment, std::invalid_argument);
+}
+
+TEST_CASE("An environment in one member follows its lights through a replacement and is cleared by an unload") {
+    ComponentCodecs codecs;
+    add_lighting_component_codecs(codecs);
+    SceneSet scenes;
+    auto settings = scenes.create("settings"), lights = scenes.create("lights");
+    auto sun = light(lights.get(), {3, 2, 1});
+    auto selected = environment(settings.get(), sun, sun);
+    const auto accepted = lighting_environment(scenes);
+    const auto sun_key = sun.key();
+    lights = scenes.replace(lights, serialize_scene(lights.get(), {}, codecs), {}, codecs);
+    CHECK_FALSE(sun.valid());
+    CHECK(selected->sun.id() == lights->find(sun_key).id());
+    CHECK(selected->fill.id() == lights->find(sun_key).id());
+    CHECK(same(accepted, lighting_environment(scenes)));
+    // A replacement without the light's key fails and keeps both links.
+    Scene vacant;
+    CHECK_THROWS_WITH_AS((void)scenes.replace(lights, serialize_scene(vacant, {}), {}, codecs),
+                         "Replacement lacks a linked object key", std::invalid_argument);
+    CHECK(same(accepted, lighting_environment(scenes)));
+    // The environment's own member reloads from a set document; its links resolve by address.
+    settings = scenes.replace(settings, scenes.serialize({}, codecs), {}, codecs);
+    CHECK_FALSE(selected.valid());
+    selected = settings->components<SceneEnvironment>().front();
+    CHECK(selected->sun.id() == lights->find(sun_key).id());
+    CHECK(same(accepted, lighting_environment(scenes)));
+    const auto cleared = scenes.unload(lights, codecs);
+    REQUIRE(cleared.size() == 2);
+    for (const auto &link : cleared) {
+        CHECK(link.owner.id() == selected.object().id());
+        CHECK(link.component == "anima.scene-environment.v1");
+        CHECK(link.target == SceneAddress{"lights", sun_key});
+    }
+    CHECK(selected->sun.id() == Scene::Id{});
+    CHECK(selected->fill.id() == Scene::Id{});
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
 }
 
 TEST_CASE("Lighting does not resolve from component hooks or construction") {

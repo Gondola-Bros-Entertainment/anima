@@ -233,13 +233,50 @@ TEST_CASE("View resolution requires one active view of a live camera with an act
     selected->camera = {};
     CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
     selected->camera = eye;
-    set.unload(a);
+    // Without the camera codecs nothing repairs the link.
+    CHECK(set.unload(a).empty());
     a = set.create("a");
     (void)camera(a.get());
     CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
     set.clear();
     CHECK_FALSE(selected.valid());
     CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
+}
+
+TEST_CASE("A view in one member follows its camera through a replacement and is cleared by an unload") {
+    ComponentCodecs codecs;
+    add_camera_component_codecs(codecs);
+    SceneSet set;
+    auto views = set.create("views"), cameras = set.create("cameras");
+    auto eye = camera(cameras.get());
+    eye.set_position({3, 0, 0});
+    auto selected = view(views.get(), eye);
+    const auto accepted = view_matrix(set, 1);
+    const auto eye_key = eye.key();
+    const auto document = serialize_scene(cameras.get(), {}, codecs);
+    cameras = set.replace(cameras, document, {}, codecs);
+    CHECK_FALSE(eye.valid());
+    CHECK(selected->camera.id() == cameras->find(eye_key).id());
+    CHECK(same(accepted, view_matrix(set, 1)));
+    // A replacement without the camera's key fails and keeps the link.
+    Scene vacant;
+    CHECK_THROWS_WITH_AS((void)set.replace(cameras, serialize_scene(vacant, {}), {}, codecs),
+                         "Replacement lacks a linked object key", std::invalid_argument);
+    CHECK(same(accepted, view_matrix(set, 1)));
+    // The view's own member reloads from a set document; its link resolves by address.
+    const auto saved = set.serialize({}, codecs);
+    views = set.replace(views, saved, {}, codecs);
+    CHECK_FALSE(selected.valid());
+    selected = views->components<CameraView>().front();
+    CHECK(selected->camera.id() == cameras->find(eye_key).id());
+    CHECK(same(accepted, view_matrix(set, 1)));
+    const auto cleared = set.unload(cameras, codecs);
+    REQUIRE(cleared.size() == 1);
+    CHECK(cleared[0].owner.id() == selected.object().id());
+    CHECK(cleared[0].component == "anima.camera-view.v1");
+    CHECK(cleared[0].target == SceneAddress{"cameras", eye_key});
+    CHECK(selected->camera.id() == Scene::Id{});
+    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
 }
 
 TEST_CASE("Views do not resolve from component hooks or construction") {

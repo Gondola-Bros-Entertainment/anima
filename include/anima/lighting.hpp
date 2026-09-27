@@ -42,9 +42,11 @@ class DirectionalLightComponent {
 ///
 /// lighting_environment() requires exactly one active SceneEnvironment among its scenes. The links are
 /// GameObject handles: removing the light component makes resolution fail until one is added to the same
-/// object again, and destroying the object or unloading or replacing its scene invalidates the link for good,
-/// even if a later object has the same name or key. Shadow region centers are world coordinates; moving
-/// this object does not move them.
+/// object again, and destroying the object invalidates the link for good, even if a later object has the same
+/// name or key. When a link's scene leaves a SceneSet, SceneSet::replace rebinds it to the replacement's
+/// object with the same key and SceneSet::unload sets it to null, given codecs from
+/// add_lighting_component_codecs; otherwise it expires with the scene. Shadow region centers are world
+/// coordinates; moving this object does not move them.
 class SceneEnvironment {
   public:
     /// Throws `std::invalid_argument` for invalid @p settings; see configure().
@@ -97,6 +99,8 @@ class SceneEnvironment {
 /// integer from 1 to 4,294,967,295), `constant_bias` and `slope_bias`. Numbers must be finite, and payloads
 /// are at most 64 KiB. Unknown, missing or duplicate fields, wrong types and invalid values are rejected. The
 /// scene or prefab stores transforms and enabled state. A missing or inactive light is not a decoding error;
-/// lighting_environment() rejects it later.
+/// lighting_environment() rejects it later. The scene-environment codec reports SceneEnvironment::sun and
+/// SceneEnvironment::fill as links, so SceneSet::replace and SceneSet::unload repair them (see
+/// ComponentCodecs::add).
 void add_lighting_component_codecs(ComponentCodecs &codecs);
 } // namespace anima
