@@ -113,7 +113,7 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
         anima::detail::json_fields(entry, {"id", "visual", "handling"});
         AttachmentDefinition item{text(entry.at("id")), text(entry.at("visual")), text(entry.at("handling"))};
         if (lookup(result.motions, item.handling).socket.empty())
-            throw std::invalid_argument("Attachment items require a held handling profile");
+            throw std::invalid_argument("Attachment items require a handling profile with a socket");
         (void)lookup(result.visuals, item.visual);
         for (const auto &contact : lookup(result.motions, item.handling).support_contacts)
             (void)lookup(lookup(result.visuals, item.visual).markers, contact.marker);
@@ -193,7 +193,7 @@ std::vector<std::shared_ptr<const anima::Mesh>> AttachmentLibrary::resident_asse
 }
 void AttachmentLibrary::validate(const anima::Asset &source, const AttachmentVisual &visual) {
     if (!source.animations.empty() && visual.animation_tracks.empty())
-        throw std::invalid_argument("Animated equipment needs declared semantic tracks");
+        throw std::invalid_argument("Animated attachment model needs declared tracks");
     // A model that lacks a node or clip its visual names, or has several, fails to load.
     try {
         if (!visual.primary_node.empty())
@@ -221,13 +221,13 @@ anima::Mat4 attachment_placement(const anima::Pose &pose, const AttachmentBindin
 anima::Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual, std::string_view track,
                                    double progress, bool required) {
     if (!std::isfinite(progress) || progress < 0 || progress > 1)
-        throw std::invalid_argument("Invalid equipment track progress");
+        throw std::invalid_argument("Invalid attachment track progress");
     if (track.empty())
         return asset.render->rest_pose();
     const auto found = visual.animation_tracks.find(track);
     if (found == visual.animation_tracks.end()) {
         if (required)
-            throw std::invalid_argument("Equipment lacks required action track: " + std::string(track));
+            throw std::invalid_argument("Attachment visual lacks required track: " + std::string(track));
         return asset.render->rest_pose();
     }
     const auto &animation = anima::find_animation(*asset.source, found->second);
@@ -248,12 +248,12 @@ anima::Mat4 attachment_marker(const AttachmentVisual &visual, const anima::Asset
     if (found == visual.marker_nodes.end())
         return local;
     if (!asset || !pose)
-        throw std::invalid_argument("Animated equipment marker requires the sampled prop pose");
+        throw std::invalid_argument("Animated attachment marker requires the sampled prop pose");
     return anima::operator*(pose->world.at(anima::unique_node(*asset, found->second)), local);
 }
-bool AttachmentInstance::equip(anima::Scene &scene, const AttachmentLibrary &library,
-                               const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                               std::string_view id) {
+bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &library,
+                                 const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
+                                 std::string_view id) {
     if (item_id == id)
         return false;
     AttachmentInstance next;

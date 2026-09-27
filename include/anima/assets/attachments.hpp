@@ -204,8 +204,8 @@ struct AttachmentInstance {
     /// with attachment_placement. Returns false and changes nothing when @p id is already
     /// attached. Throws `std::out_of_range` for an unknown item or socket, and as
     /// AttachmentLibrary::load does; the old item stays attached when loading fails.
-    bool equip(Scene &scene, const AttachmentLibrary &library,
-               const std::map<std::string, AttachmentSocket, std::less<>> &sockets, std::string_view id);
+    bool replace(Scene &scene, const AttachmentLibrary &library,
+                 const std::map<std::string, AttachmentSocket, std::less<>> &sockets, std::string_view id);
 };
 /// Items attached for named roles.
 struct AttachmentSet {
