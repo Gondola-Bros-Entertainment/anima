@@ -67,8 +67,10 @@ jobs:
             libasound2-dev
       - name: Locate compiler cache
         run: echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
+      # As in CI, only runs on main save this cache; runs on other branches only restore it.
       - name: Restore compiler cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: compiler-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-v1-codeql-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
@@ -87,6 +89,12 @@ jobs:
         run: >-
           cmake --build build/codeql --target _deps/jolt-build/all _deps/box2d-build/all _deps/rmlui-build/all
           _deps/sdl3-build/all
+      - name: Save compiler cache
+        if: github.ref == 'refs/heads/main' && steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
