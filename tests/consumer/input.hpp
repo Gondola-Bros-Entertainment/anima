@@ -108,42 +108,60 @@ inline void consume_input() {
         throw std::runtime_error("Independent input scene unload retained an attachment");
 #endif
 #ifdef CONSUMER_INPUT_SDL
+    // Stands in for SDL_GetGamepadGUIDForID, since this consumer links no SDL library: every gamepad reports the
+    // GUID whose first byte is 3, the identity `jump` selects.
+    const auto gamepad_guid = +[](std::uint32_t) {
+        SDL_GUID guid{};
+        guid.data[0] = 3;
+        return guid;
+    };
     SDL_Event event{};
     event.type = SDL_EVENT_KEY_DOWN;
     event.key.windowID = 1;
     event.key.scancode = SDL_SCANCODE_SPACE;
     actions.begin_frame();
-    actions.process(*i::from_sdl(event, 1));
+    actions.process(*i::from_sdl(event, 1, gamepad_guid));
     if (!actions.state("interact").pressed)
         throw std::runtime_error("Independent SDL input converter failed");
     actions.cancel();
     actions.begin_frame();
     event.key.which = 3;
     event.key.scancode = SDL_SCANCODE_S;
-    actions.process(*i::from_sdl(event, 1));
+    actions.process(*i::from_sdl(event, 1, gamepad_guid));
     if (actions.state("save").active)
         throw std::runtime_error("Independent SDL chord activated without its modifier");
     event.key.scancode = SDL_SCANCODE_LCTRL;
-    actions.process(*i::from_sdl(event, 1));
+    actions.process(*i::from_sdl(event, 1, gamepad_guid));
     if (!actions.state("save").pressed)
         throw std::runtime_error("Independent SDL Ctrl+S events failed to activate the chord");
     actions.begin_frame();
     event.type = SDL_EVENT_KEY_UP;
-    actions.process(*i::from_sdl(event, 1));
+    actions.process(*i::from_sdl(event, 1, gamepad_guid));
     if (!actions.state("save").released || actions.state("save").canceled)
         throw std::runtime_error("Independent SDL Ctrl release failed to release the chord");
     // SDL keeps one key state for all keyboards, so keyboard 4's Ctrl completes keyboard 3's chord, and removing
     // any keyboard releases every key, since SDL sends no key releases for it.
     event.type = SDL_EVENT_KEY_DOWN;
     event.key.which = 4;
-    actions.process(*i::from_sdl(event, 1));
+    actions.process(*i::from_sdl(event, 1, gamepad_guid));
     if (!actions.state("save").active)
         throw std::runtime_error("Independent SDL keyboards did not share their key state");
     event = {};
     event.type = SDL_EVENT_KEYBOARD_REMOVED;
     event.kdevice.which = 4;
-    actions.process(*i::from_sdl(event, 1));
+    actions.process(*i::from_sdl(event, 1, gamepad_guid));
     if (actions.state("save").active || actions.state("save").canceled)
         throw std::runtime_error("Independent SDL keyboard removal did not release its keys");
+    // Gamepad events carry the GUID SDL reports, so a binding by identity matches whatever instance ID SDL assigns.
+    identified.process({i::EventType::disconnect, {i::ControlKind::gamepad_button, 0, 9}});
+    identified.begin_frame();
+    event = {};
+    event.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    event.gbutton.which = 21;
+    event.gbutton.button = SDL_GAMEPAD_BUTTON_SOUTH;
+    event.gbutton.down = true;
+    identified.process(*i::from_sdl(event, 1, gamepad_guid));
+    if (!identified.state("jump").pressed)
+        throw std::runtime_error("Independent SDL gamepad GUID did not reach its binding by identity");
 #endif
 }
