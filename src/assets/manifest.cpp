@@ -104,7 +104,7 @@ Manifest read_manifest(const std::filesystem::path &path) {
 }
 void validate_manifest(const Manifest &manifest, const Asset &asset) {
     if (asset.skins.size() != 1 || asset.skins[0].joints.size() != manifest.joint_count)
-        throw std::runtime_error("Character skin does not match manifest joint count");
+        throw std::runtime_error("Model skin does not match manifest joint count");
     if (manifest.clips.size() != asset.animations.size())
         throw std::runtime_error("Manifest clip list does not match GLB animations");
     for (const auto &metadata : manifest.clips) {

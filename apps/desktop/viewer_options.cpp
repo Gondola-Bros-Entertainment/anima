@@ -60,8 +60,7 @@ void validate_viewer_options(ViewerOptions &options) {
         throw std::invalid_argument("--empty cannot be combined with an asset or manifest");
     options.renderer.diagnostic_triangle = !options.empty;
     if (!options.asset.empty() && !options.manifest.empty())
-        throw std::invalid_argument(
-            "Use either --asset for static preview or --manifest for animated equipment preview");
+        throw std::invalid_argument("Use either --asset for static preview or --manifest for animated preview");
     if (options.manifest.empty() && (!options.clip.empty() || options.paused || options.pose_time))
         throw std::invalid_argument("Playback options require --manifest");
 }

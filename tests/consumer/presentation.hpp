@@ -324,8 +324,8 @@ inline void run() {
         wrong_manifest.bind_signature = std::string(64, 'b');
         rejects([&] { FittedLibrary invalid(actor.actor.asset, wrong_manifest, "consumer.profile", fits); });
         {
-            // A game-defined frame driver and native late follower compose without
-            // depending on the order of component types inside a phase.
+            // An application-defined frame driver and native late follower compose
+            // without depending on the order of component types inside a phase.
             struct PoseDriver {
                 GameObject owner;
                 Pose pose;
@@ -336,9 +336,9 @@ inline void run() {
             };
             Scene scene;
             auto body = scene.create("Component owner", actor.render);
-            auto clothing = body.add_component<FittedSet>(fitted);
-            clothing->replace({"shell"});
-            const auto child = clothing->instances().front().object;
+            auto follower = body.add_component<FittedSet>(fitted);
+            follower->replace({"shell"});
+            const auto child = follower->instances().front().object;
             (void)body.add_component<PoseDriver>(baseline);
             scene.update(.5);
             Scene reference;
@@ -349,7 +349,7 @@ inline void run() {
                       scene.instance(child.id()).palette == reference.instance(expected.id()).palette,
                   "Fitted component did not follow the final frame pose during late update");
             body.remove_component<FittedSet>();
-            check(!clothing && !child.valid() && body.children().empty() && scene.size() == 1,
+            check(!follower && !child.valid() && body.children().empty() && scene.size() == 1,
                   "Removing a fitted component left its scene-owned children alive");
         }
         {
@@ -366,7 +366,7 @@ inline void run() {
             reference.set_pose(expected, shell->pose(baseline), world);
             check(scene.size() == 2 && object.world_matrix() == world &&
                       scene.instance(object.id()).palette == reference.instance(expected).palette,
-                  "Equipping did not immediately inherit the current body pose and placement");
+                  "A new fitted object did not immediately inherit the current body pose and placement");
             set->replace({"shell"});
             check(set->instances().front().object.id() == object.id() && scene.size() == 2,
                   "Unchanged fitted membership recreated its object");
@@ -397,7 +397,7 @@ inline void run() {
             const auto replacement = set->instances().front().object;
             check(!object.valid() && !scene.instance(replacement.id()).visible &&
                       scene.instance(replacement.id()).palette == reference.instance(expected).palette,
-                  "Re-equipping a hidden actor exposed a fitted mesh or reset its pose");
+                  "Replacing items on a hidden body exposed a fitted mesh or reset its pose");
             world[12] = -2;
             scene.set_transform(body.id(), world);
             scene.set_visible(body.id(), true);
@@ -407,7 +407,7 @@ inline void run() {
                       scene.instance(replacement.id()).palette == reference.instance(expected).palette,
                   "Showing a fitted set failed to catch up to the current body transform");
             set->replace({});
-            check(!replacement.valid() && scene.size() == 3, "Unequipping leaked fitted objects");
+            check(!replacement.valid() && scene.size() == 3, "Clearing the fitted set leaked fitted objects");
             set->replace({"shell"});
             const auto last_fit = set->instances().front().object;
             scene.remove(body.id());
