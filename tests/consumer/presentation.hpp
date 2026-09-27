@@ -277,12 +277,12 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
                      "},\"sockets\":{\"port\":{\"node\":" + quoted(3) + ",\"local\":" + unit +
                      "},\"starboard\":{\"node\":" + quoted(6) + ",\"local\":" + unit + "}}}";
     result.catalog =
-        R"({"schema_version":2,"units":"meters","empty_handling":"free","defaults":{"instrument":"probe","light":"beacon"},"handling":[
-        {"id":"free","socket":"","carry":""},{"id":"port","socket":"port","carry":"layer.port"},{"id":"starboard","socket":"starboard","carry":"layer.starboard"}],
+        R"({"schema_version":3,"units":"meters","empty_handling":"free","handling":[
+        {"id":"free","socket":"","layer":""},{"id":"port","socket":"port","layer":"layer.port"},{"id":"starboard","socket":"starboard","layer":"layer.starboard"}],
         "visuals":[{"id":"instrument","model":"instrument.glb","primary_grip":)" +
         unit + ",\"markers\":{\"tip\":" + unit + "},\"primary_node\":" + quoted(0) +
         ",\"marker_nodes\":{\"tip\":" + quoted(3) + R"(},"animation_tracks":{"pulse":"extend"}}],"items":[
-        {"id":"probe","category":"instrument","visual":"instrument","handling":"port"},{"id":"beacon","category":"navigation","visual":"instrument","handling":"starboard"}]})";
+        {"id":"probe","visual":"instrument","handling":"port"},{"id":"beacon","visual":"instrument","handling":"starboard"}]})";
     return result;
 }
 inline void run() {

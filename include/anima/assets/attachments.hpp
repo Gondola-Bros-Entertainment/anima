@@ -29,38 +29,31 @@ struct AttachmentContact {
     std::string socket;
     /// Prop marker that #socket is placed on.
     std::string marker;
-    /// Authoring rationale; not interpreted.
-    std::string reason;
-    /// Character model-space pole for the chain, supplied by the handling profile.
+    /// Body model-space pole for the chain, supplied by the handling profile.
     anima::Vec3 pole{};
     /// Base clips during which the contact is active.
     std::set<std::string, std::less<>> clips;
     /// Actions during which the contact is active.
     std::set<std::string, std::less<>> actions;
 };
-/// A handling profile: how a held item is carried and supported.
+/// A handling profile: the socket, motion layer clips and support contacts with which an item is
+/// held.
 struct AttachmentHandling {
-    /// Carry layer that replaces AttachmentHandling::carry for one base clip.
-    struct CarryOverride {
-        /// Handling layer to use.
-        std::string layer;
-        /// Authoring rationale; not interpreted.
-        std::string reason;
-    };
     /// Unique, nonempty id.
     std::string id;
     /// Primary body socket; the empty handling has none, and items need one.
     std::string socket;
-    /// Default carry handling layer, or empty for none.
-    std::string carry;
-    /// Carry override per base clip name.
-    std::map<std::string, CarryOverride, std::less<>> carry_overrides;
+    /// Layer clip (see MotionRuntime::compose) applied over every base clip that #layer_overrides
+    /// does not name, or empty for none.
+    std::string layer;
+    /// Layer clip per base clip name, replacing #layer for that clip.
+    std::map<std::string, std::string, std::less<>> layer_overrides;
     /// Support contacts with distinct chains; 1 to 4 when the catalog declares any.
     std::vector<AttachmentContact> support_contacts;
-    /// Carry layer for base clip @p motion: its override, else #carry.
-    std::string_view layer(std::string_view motion) const {
-        const auto found = carry_overrides.find(motion);
-        return found == carry_overrides.end() ? std::string_view(carry) : std::string_view(found->second.layer);
+    /// Layer clip for base clip @p clip: its override, else #layer.
+    std::string_view layer_for(std::string_view clip) const {
+        const auto found = layer_overrides.find(clip);
+        return found == layer_overrides.end() ? std::string_view(layer) : std::string_view(found->second);
     }
 };
 /// A prop model with its grip and markers.
@@ -80,28 +73,21 @@ struct AttachmentVisual {
     /// Semantic track name to prop clip name.
     std::map<std::string, std::string, std::less<>> animation_tracks;
 };
-/// A catalog item: a visual carried with a handling profile.
+/// A catalog item: a visual held with a handling profile.
 struct AttachmentDefinition {
     std::string id;
     /// AttachmentVisual id.
     std::string visual;
     /// AttachmentHandling id; the profile must have a primary socket.
     std::string handling;
-    /// Review grouping; never selects gameplay behavior.
-    std::string category;
-    /// Action named by the item's optional `action_override`; stored, not interpreted.
-    std::string action;
-    /// Authoring rationale of the `action_override`.
-    std::string action_reason;
 };
 /// A decoded catalog; see decode_attachment_catalog.
 struct AttachmentCatalog {
     /// Directory that AttachmentVisual::model paths resolve against.
     std::filesystem::path directory;
-    /// Handling profile used with no attachments; it has no socket.
+    /// Handling profile of a role with no item, which AttachmentLibrary::motion returns for an
+    /// empty item id; it has no socket.
     std::string empty_handling;
-    /// Review columns: an empty entry for empty hands, then the default items in catalog order.
-    std::vector<std::string> defaults{std::string{}};
     /// Handling profiles by id.
     std::map<std::string, AttachmentHandling, std::less<>> motions;
     /// Visuals by id.
@@ -117,18 +103,18 @@ struct AttachmentSocket {
     anima::Mat4 local = anima::identity();
 };
 
-/// Decodes a catalog document (`schema_version` 2, `units` `"meters"`) whose models resolve
+/// Decodes a catalog document (`schema_version` 3, `units` `"meters"`) whose models resolve
 /// against @p directory.
 ///
-/// The document has `empty_handling`, `defaults`, and nonempty `handling`, `visuals` and `items`
-/// arrays. A handling entry has `id`, `socket`, `carry` and optional `carry_overrides` (base clip
-/// to `layer` and `reason`) and `support_contacts`: 1 to 4 entries of `chain`, `socket`, `marker`,
-/// `pole`, `clips`, `reason` and optional `actions`, each active for at least one clip or action.
-/// A visual has `id`, `model`, `primary_grip`, `markers` and optional `primary_node`,
-/// `marker_nodes` and `animation_tracks`. An item has `id`, `category`, `visual`, `handling` and
-/// optional `action_override` (`action` and `reason`); its visual must have every marker that its
-/// handling's contacts use. `defaults` maps review groups to unique item ids. Frames are 16
-/// column-major numbers.
+/// The document has `empty_handling` and nonempty `handling`, `visuals` and `items` arrays. A
+/// handling entry has `id`, `socket`, `layer` (a layer clip name, or empty) and optional
+/// `layer_overrides` (base clip name to nonempty layer clip name) and `support_contacts`: 1 to 4
+/// entries of `chain`, `socket`, `marker`, `pole`, `clips` and optional `actions`, each active for
+/// at least one clip or action. A visual has `id`, `model`, `primary_grip`, `markers` and optional
+/// `primary_node`, `marker_nodes` and `animation_tracks`. An item has `id`, `visual` and
+/// `handling`; its visual must have every marker that its handling's contacts use. Frames are 16
+/// column-major numbers. Layer clips and chains are checked against a MotionRuntime by
+/// validate_attachment_ownership, not here.
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory);
 /// Decodes the body sockets of @p body, the model of @p manifest.
 ///
@@ -207,8 +193,6 @@ Mat4 attachment_marker(const AttachmentVisual &visual, const Asset *asset, const
 struct AttachmentInstance {
     /// Scene instance, once added.
     std::optional<Scene::Id> instance;
-    /// Item category.
-    std::string category;
     /// Item id; empty when nothing is attached.
     std::string item_id;
     std::shared_ptr<const AttachmentAsset> asset;
@@ -270,14 +254,15 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const P
                                            const Asset *prop_asset = nullptr, const Pose *prop_pose = nullptr,
                                            std::string_view action = {},
                                            const std::map<std::string, float, std::less<>> *weights = nullptr);
-/// Checks that the items of @p attachments can be carried together; call it before adding a
-/// prepared set to a scene.
+/// Checks that the items of @p attachments can be held together; call it before adding a prepared
+/// set to a scene.
 ///
-/// For every base clip, the layer clips of the roles' handling profiles must not overlap (see
-/// MotionRuntime::validate_layers). With @p exclusive_primary, no two roles may share a primary
-/// socket node; pose layers and contact chains always need unique ownership. Each support contact
-/// chain must end at its declared socket's node, overlap no other contact chain and move no
-/// role's primary socket. Throws `std::out_of_range` for an unknown chain or socket.
+/// For every base clip, the layer clips that the roles' handling profiles apply to it (see
+/// AttachmentHandling::layer_for) must not overlap (see MotionRuntime::validate_layers). With
+/// @p exclusive_primary, no two roles may share a primary socket node; pose layers and contact
+/// chains always need unique ownership. Each support contact chain must end at its declared
+/// socket's node, overlap no other contact chain and move no role's primary socket. Throws
+/// `std::out_of_range` for an unknown chain or socket.
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
                                    const AttachmentSet &attachments,
                                    const std::map<std::string, AttachmentSocket, std::less<>> &sockets,

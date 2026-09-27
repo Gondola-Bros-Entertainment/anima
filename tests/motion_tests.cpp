@@ -122,13 +122,22 @@ void write_prop(const std::filesystem::path &file) {
               binary);
 }
 
-// An attachment catalog whose one item is held at the grip socket and layers the limb.
+// An attachment catalog of two items held at the grip socket. Both layer the limb, except that the prop's
+// grip profile layers the side joint over the base clip instead.
 std::string attachment_catalog() {
-    return std::string(R"({"schema_version":2,"units":"meters","empty_handling":"free","defaults":{},
-        "handling":[{"id":"free","socket":"","carry":""},{"id":"grip","socket":"grip","carry":"layer.limb"}],
+    return std::string(R"({"schema_version":3,"units":"meters","empty_handling":"free",
+        "handling":[{"id":"free","socket":"","layer":""},
+                    {"id":"grip","socket":"grip","layer":"layer.limb","layer_overrides":{"base":"layer.side"}},
+                    {"id":"brace","socket":"grip","layer":"layer.limb"}],
         "visuals":[{"id":"prop","model":"prop.glb","primary_grip":)") +
            identity_frame + R"(,"markers":{}}],
-        "items":[{"id":"prop","category":"test","visual":"prop","handling":"grip"}]})";
+        "items":[{"id":"prop","visual":"prop","handling":"grip"},{"id":"brace","visual":"prop","handling":"brace"}]})";
+}
+// @p text with its first @p from replaced by @p to; the text must contain @p from.
+std::string replaced(std::string text, std::string_view from, std::string_view to) {
+    const auto at = text.find(from);
+    REQUIRE(at != std::string::npos);
+    return text.replace(at, from.size(), to);
 }
 
 // Two actions on the limb. reach needs a tool role held with the grip profile and may be performed with
@@ -276,4 +285,36 @@ TEST_CASE("Actions check the roles they require, and the caller chooses the hand
     }
     CHECK_THROWS_WITH_AS(actions.sample(base, {"reach", 1, .25, {}, {}}, "other"),
                          "Action is incompatible with this handling profile", std::invalid_argument);
+}
+
+TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership checks the chosen clips") {
+    const MotionFixture fixture;
+    const auto runtime = fixture.runtime();
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    const auto &grip = library.catalog.motions.at("grip");
+    CHECK(grip.layer_for("base") == "layer.side");
+    CHECK(grip.layer_for("other") == "layer.limb");
+    CHECK(library.motion("").layer_for("base").empty()); // The empty handling layers nothing.
+    // Over the base clip the prop layers the side joint and the brace the limb, so they can be held together.
+    const auto disjoint = AttachmentSet::prepare(library, fixture.sockets, {{"first", "prop"}, {"second", "brace"}});
+    CHECK_NOTHROW(validate_attachment_ownership(runtime, library, disjoint, fixture.sockets, false));
+    const auto doubled = AttachmentSet::prepare(library, fixture.sockets, {{"first", "prop"}, {"second", "prop"}});
+    CHECK_THROWS_WITH_AS(validate_attachment_ownership(runtime, library, doubled, fixture.sockets, false),
+                         "Motion layers have overlapping joint ownership", std::invalid_argument);
+}
+
+TEST_CASE("An attachment catalog accepts only version 3 and none of the removed fields") {
+    const MotionFixture fixture;
+    const auto catalog = attachment_catalog();
+    const auto decode = [&](const std::string &text) { (void)decode_attachment_catalog(text, fixture.directory.path); };
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("schema_version":3)", R"("schema_version":2)")),
+                         "Unsupported attachment catalog version or units", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("empty_handling")", R"("defaults":{},"empty_handling")")),
+                         "Unknown JSON field: defaults", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"id":"prop",)", R"({"id":"prop","category":"test",)")),
+                         "Unknown JSON field: category", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("layer":"")", R"("carry":"")")), "Missing JSON field: layer",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"base":""})")),
+                         "Empty presentation identity/reference", std::invalid_argument);
 }

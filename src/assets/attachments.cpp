@@ -3,12 +3,13 @@
 #include <anima/assets/attachments.hpp>
 namespace anima {
 namespace {
+// The one attachment catalog version decode_attachment_catalog accepts.
+constexpr int catalog_version = 3;
 AttachmentCatalog decode_catalog(std::string_view document, const std::filesystem::path &directory) {
     using namespace presentation_data;
     const auto json = presentation_data::parse(document);
-    anima::detail::json_fields(
-        json, {"schema_version", "units", "empty_handling", "defaults", "handling", "visuals", "items"});
-    if (json.at("schema_version") != 2 || json.at("units") != "meters")
+    anima::detail::json_fields(json, {"schema_version", "units", "empty_handling", "handling", "visuals", "items"});
+    if (json.at("schema_version") != catalog_version || json.at("units") != "meters")
         throw std::invalid_argument("Unsupported attachment catalog version or units");
     for (const auto name : {"handling", "visuals", "items"})
         if (!json.at(name).is_array() || json.at(name).empty())
@@ -17,20 +18,18 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
     result.directory = directory;
     result.empty_handling = text(json.at("empty_handling"));
     for (const auto &entry : json.at("handling")) {
-        anima::detail::json_fields(entry, {"id", "socket", "carry"}, {"carry_overrides", "support_contacts"});
+        anima::detail::json_fields(entry, {"id", "socket", "layer"}, {"layer_overrides", "support_contacts"});
         AttachmentHandling motion;
         motion.id = text(entry.at("id"));
         motion.socket = entry.at("socket").get<std::string>();
-        motion.carry = entry.at("carry").get<std::string>();
-        if (entry.contains("carry_overrides")) {
-            if (!entry.at("carry_overrides").is_object())
-                throw std::invalid_argument("Carry overrides must be named motions");
-            for (const auto &[name, value] : entry.at("carry_overrides").items()) {
-                anima::detail::json_fields(value, {"layer", "reason"});
+        motion.layer = entry.at("layer").get<std::string>();
+        if (entry.contains("layer_overrides")) {
+            if (!entry.at("layer_overrides").is_object())
+                throw std::invalid_argument("Layer overrides must map base clips to layer clips");
+            for (const auto &[name, value] : entry.at("layer_overrides").items()) {
                 if (name.empty())
-                    throw std::invalid_argument("Empty carry override motion");
-                motion.carry_overrides.emplace(
-                    name, AttachmentHandling::CarryOverride{text(value.at("layer")), text(value.at("reason"))});
+                    throw std::invalid_argument("Empty layer override clip");
+                motion.layer_overrides.emplace(name, text(value));
             }
         }
         if (entry.contains("support_contacts")) {
@@ -39,13 +38,11 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
                 throw std::invalid_argument("Handling contacts require one to four explicit constraints");
             std::set<std::string> chains;
             for (const auto &value : contacts) {
-                anima::detail::json_fields(value, {"chain", "socket", "marker", "pole", "clips", "reason"},
-                                           {"actions"});
+                anima::detail::json_fields(value, {"chain", "socket", "marker", "pole", "clips"}, {"actions"});
                 AttachmentContact contact;
                 contact.chain = text(value.at("chain"));
                 contact.socket = text(value.at("socket"));
                 contact.marker = text(value.at("marker"));
-                contact.reason = text(value.at("reason"));
                 const auto pole = value.at("pole").get<std::array<float, 3>>();
                 if (std::any_of(pole.begin(), pole.end(), [](float x) { return !std::isfinite(x); }))
                     throw std::invalid_argument("Non-finite support contact pole");
@@ -113,41 +110,14 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
         insert(result.visuals, std::move(visual));
     }
     for (const auto &entry : json.at("items")) {
-        anima::detail::json_fields(entry, {"id", "category", "visual", "handling"}, {"action_override"});
-        AttachmentDefinition item{text(entry.at("id")),
-                                  text(entry.at("visual")),
-                                  text(entry.at("handling")),
-                                  text(entry.at("category")),
-                                  {},
-                                  {}};
+        anima::detail::json_fields(entry, {"id", "visual", "handling"});
+        AttachmentDefinition item{text(entry.at("id")), text(entry.at("visual")), text(entry.at("handling"))};
         if (lookup(result.motions, item.handling).socket.empty())
             throw std::invalid_argument("Attachment items require a held handling profile");
         (void)lookup(result.visuals, item.visual);
         for (const auto &contact : lookup(result.motions, item.handling).support_contacts)
             (void)lookup(lookup(result.visuals, item.visual).markers, contact.marker);
-        if (entry.contains("action_override")) {
-            anima::detail::json_fields(entry.at("action_override"), {"action", "reason"});
-            item.action = text(entry.at("action_override").at("action"));
-            item.action_reason = text(entry.at("action_override").at("reason"));
-        }
         insert(result.items, std::move(item));
-    }
-    if (!json.at("defaults").is_object())
-        throw std::invalid_argument("Review defaults must be named items");
-    std::set<std::string> review_items;
-    for (const auto &[name, value] : json.at("defaults").items()) {
-        if (name.empty())
-            throw std::invalid_argument("Empty review group");
-        const auto id = text(value);
-        (void)lookup(result.items, id);
-        if (!review_items.insert(id).second)
-            throw std::invalid_argument("Duplicate review item");
-    }
-    // Preserve authored item order; neither groups nor column ordinals drive gameplay.
-    for (const auto &item : json.at("items")) {
-        const auto id = text(item.at("id"));
-        if (review_items.contains(id))
-            result.defaults.push_back(id);
     }
     return result;
 }
@@ -290,7 +260,6 @@ bool AttachmentInstance::equip(anima::Scene &scene, const AttachmentLibrary &lib
     next.item_id = id;
     if (!id.empty()) {
         const auto &item = library.item(id);
-        next.category = item.category;
         next.binding =
             bind_attachment(presentation_data::lookup(sockets, library.motion(id).socket), library.visual(item.visual));
         next.asset = library.load(item.visual);
@@ -321,7 +290,6 @@ AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library,
         const auto &item = library.item(id);
         AttachmentInstance held;
         held.item_id = id;
-        held.category = item.category;
         held.binding =
             bind_attachment(presentation_data::lookup(sockets, library.motion(id).socket), library.visual(item.visual));
         held.asset = library.load(item.visual);
@@ -431,7 +399,7 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
         std::vector<std::string_view> layers;
         for (const auto &[role, item] : attachments.roles) {
             (void)role;
-            layers.push_back(library.motion(item.item_id).layer(clip));
+            layers.push_back(library.motion(item.item_id).layer_for(clip));
         }
         runtime.validate_layers(layers);
     }
