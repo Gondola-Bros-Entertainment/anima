@@ -10,23 +10,21 @@
 ///
 /// Part of the `anima::assets` target. Catalogs are UTF-8 JSON of at most 4 MiB and 64 nesting
 /// levels; duplicate and unknown fields are rejected. Failures, including JSON syntax errors and
-/// values of the wrong JSON type, throw `std::invalid_argument` unless stated. Slots are caller
-/// data: there is no slot or eligibility policy.
+/// values of the wrong JSON type, throw `std::invalid_argument` unless stated. Which items a body
+/// uses together is the caller's choice: there is no slot or eligibility policy.
 
 namespace anima {
 /// A fitted model bound to a body's skeleton; it shares the body's bind and never owns animation.
 struct FittedAsset {
-    /// Caller-defined slot; nonempty.
-    std::string slot;
     /// Imported fitted model.
     std::shared_ptr<const Asset> source;
     /// Mesh compiled from #source.
     std::shared_ptr<const Mesh> render;
     /// (fitted joint node, body joint node) pairs; see compatible_skin.
     std::vector<std::pair<std::size_t, std::size_t>> joints;
-    /// Binds @p fitted to @p body. Throws for a null model, an empty slot or a model with clips,
-    /// and `std::runtime_error` when compatible_skin rejects the pair.
-    FittedAsset(std::string_view slot, const Asset &body, std::shared_ptr<const Asset> fitted);
+    /// Binds @p fitted to @p body. Throws for a null model or a model with clips, and
+    /// `std::runtime_error` when compatible_skin rejects the pair.
+    FittedAsset(const Asset &body, std::shared_ptr<const Asset> fitted);
     /// World-only pose of #render that copies each mapped joint's world matrix from @p body, a pose
     /// of the body model; other nodes keep their rest matrices. Throws `std::out_of_range` when
     /// @p body lacks a mapped joint.
@@ -35,7 +33,6 @@ struct FittedAsset {
 /// One catalog item that fits the library's body.
 struct FittedDefinition {
     std::string id;
-    std::string slot;
     /// Relative `.glb` path without `..`, resolved against the body manifest's directory.
     std::filesystem::path model;
 };
@@ -50,11 +47,10 @@ class FittedLibrary {
     /// Decodes @p document for @p body, the model of @p manifest, keeping the items that fit body
     /// profile @p profile.
     ///
-    /// The document has `version` 1 and at most 65,536 `items`, each with a unique nonempty `id`, a
-    /// nonempty `slot` and a nonempty `fits` object, mapping nonempty body profiles to `model` (a
-    /// relative `.glb` path without `..`) and nonempty `skeleton` and `bind_signature`. The fit
-    /// for @p profile must match the manifest's skeleton and bind signature. Throws also for a
-    /// null @p body.
+    /// The document has `version` 2 and at most 65,536 `items`, each with a unique nonempty `id` and
+    /// a nonempty `fits` object, mapping nonempty body profiles to `model` (a relative `.glb` path
+    /// without `..`) and nonempty `skeleton` and `bind_signature`. The fit for @p profile must
+    /// match the manifest's skeleton and bind signature. Throws also for a null @p body.
     FittedLibrary(std::shared_ptr<const Asset> body, const Manifest &manifest, std::string_view profile,
                   std::string_view document);
     /// Whether no item fits this body.
@@ -74,7 +70,7 @@ class FittedLibrary {
     const auto &definitions() const { return definitions_; }
     /// Item @p id. Throws `std::out_of_range` unless it fits this body.
     const FittedDefinition &definition(std::string_view id) const;
-    /// Loads item @p id, sharing one FittedAsset per model file and slot while it is alive. Throws
+    /// Loads item @p id, sharing one FittedAsset per model file while it is alive. Throws
     /// `std::out_of_range` unless the item fits this body, and as load_asset and FittedAsset do.
     std::shared_ptr<const FittedAsset> load(std::string_view id) const;
     /// Meshes of loaded items that are still alive.

@@ -92,15 +92,32 @@ TEST_CASE("Manifest fields that are missing or of the wrong JSON type are reject
 
 TEST_CASE("A fitted model path must be a relative .glb path without '..'") {
     const auto body = std::make_shared<const Asset>();
-    const auto catalog = R"({"version":1,"items":[{"id":"shirt","slot":"torso","fits":{"profile":)"
-                         R"({"model":"../shirt.glb","skeleton":"s","bind_signature":"b"}}}]})";
+    const auto catalog = R"({"version":2,"items":[{"id":"cover","fits":{"profile":)"
+                         R"({"model":"../cover.glb","skeleton":"s","bind_signature":"b"}}}]})";
     REQUIRE_THROWS_WITH_AS(FittedLibrary(body, Manifest{}, "profile", catalog),
                            "Fitted model must be a relative .glb path without '..'", std::invalid_argument);
 }
 
 TEST_CASE("A fitted catalog field of the wrong JSON type is rejected as std::invalid_argument") {
     const auto body = std::make_shared<const Asset>();
-    const auto catalog = R"({"version":1,"items":[{"id":5,"slot":"torso","fits":{}}]})";
+    const auto catalog = R"({"version":2,"items":[{"id":5,"fits":{}}]})";
     REQUIRE_THROWS_WITH_AS(FittedLibrary(body, Manifest{}, "profile", catalog), doctest::Contains(wrong_type),
                            std::invalid_argument);
+}
+
+TEST_CASE("A fitted catalog is version 2, whose items have no slot") {
+    const auto body = std::make_shared<const Asset>();
+    Manifest manifest;
+    manifest.skeleton_id = "s";
+    manifest.bind_signature = "b";
+    const std::string fits = R"("fits":{"profile":{"model":"cover.glb","skeleton":"s","bind_signature":"b"}})";
+    const FittedLibrary library(body, manifest, "profile", R"({"version":2,"items":[{"id":"cover",)" + fits + "}]}");
+    REQUIRE(library.contains("cover"));
+    CHECK(library.definition("cover").model == "cover.glb");
+    CHECK_THROWS_WITH_AS(
+        FittedLibrary(body, manifest, "profile", R"({"version":1,"items":[{"id":"cover",)" + fits + "}]}"),
+        "Invalid fitted catalog", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        FittedLibrary(body, manifest, "profile", R"({"version":2,"items":[{"id":"cover","slot":"top",)" + fits + "}]}"),
+        "Unknown JSON field: slot", std::invalid_argument);
 }
