@@ -414,11 +414,14 @@ if(ANIMA_BUILD_DESKTOP)
             target_link_libraries(anima_check PRIVATE anima_viewer)
             anima_target_defaults(anima_check)
             anima_copy_sdl_runtime(anima_check)
+            # Each rejection passes only with its own message, so a crash or another failure does not.
             add_test(NAME desktop_no_scripted_mode COMMAND anima --smoke)
-            set_tests_properties(desktop_no_scripted_mode PROPERTIES WILL_FAIL TRUE)
+            set_tests_properties(desktop_no_scripted_mode PROPERTIES
+                PASS_REGULAR_EXPRESSION "Anima: Unknown option: --smoke")
             add_test(NAME desktop_help COMMAND anima --help)
             add_test(NAME desktop_invalid_frames COMMAND anima --frames 0)
-            set_tests_properties(desktop_invalid_frames PROPERTIES WILL_FAIL TRUE)
+            set_tests_properties(desktop_invalid_frames PROPERTIES
+                PASS_REGULAR_EXPRESSION "Anima: Expected an integer between 1 and 1000000")
         endif()
     endif()
 endif()
