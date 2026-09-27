@@ -321,8 +321,8 @@ TEST_CASE("An optional compressed texture source falls back to the PNG source") 
         CHECK(image.width == 1u);
         CHECK(image.height == 1u);
         CHECK(std::equal(fallback_texel.begin(), fallback_texel.end(), image.rgba.begin()));
-        CHECK_THROWS_AS(load_asset(textured(extension, R"({"extensions":{")" + extension + R"(":{"source":1}}})")),
-                        std::runtime_error);
+        CHECK_THROWS_WITH_AS(load_asset(textured(extension, R"({"extensions":{")" + extension + R"(":{"source":1}}})")),
+                             "Texture needs a PNG or JPEG source", std::runtime_error);
     }
 }
 
