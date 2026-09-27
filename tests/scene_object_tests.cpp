@@ -223,6 +223,48 @@ TEST_CASE("Reparenting rejects a parent inside the moved subtree and changes not
     CHECK(chain.back().parent()->id() == chain[chain.size() - 2].id());
 }
 
+TEST_CASE("Instances and snapshots keep the order renderers were added through removal and replacement") {
+    const auto mesh = Mesh::compile(*scene_objects_test::source());
+    Scene scene;
+    std::vector<GameObject> objects;
+    for (unsigned i = 0; i < 12; ++i) {
+        objects.push_back(scene.create({}, mesh));
+        objects.back().set_position({static_cast<float>(i), 0, 0}); // Identifies it in snapshots.
+    }
+    auto group = scene.create("Group");
+    objects[9].set_parent(group);
+    objects[10].set_parent(group);
+    const auto expect = [&](const std::vector<std::size_t> &order) {
+        std::vector<Scene::Id> expected;
+        for (auto index : order)
+            expected.push_back(objects[index].id());
+        const auto listed = scene.instances();
+        CHECK(std::vector<Scene::Id>(listed.begin(), listed.end()) == expected);
+        const auto snapshot = scene.snapshot();
+        REQUIRE(snapshot.primitives.size() == order.size());
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            CAPTURE(i);
+            CHECK(snapshot.primitives[i].node_world[12] == static_cast<float>(order[i]));
+        }
+    };
+    objects[2].destroy();
+    expect({0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11});
+    objects[4].remove_mesh();
+    expect({0, 1, 3, 5, 6, 7, 8, 9, 10, 11});
+    (void)objects[4].add_mesh(mesh); // A renderer added again goes last.
+    expect({0, 1, 3, 5, 6, 7, 8, 9, 10, 11, 4});
+    objects[0].renderer().set_mesh(mesh); // Replacing a mesh keeps its place.
+    expect({0, 1, 3, 5, 6, 7, 8, 9, 10, 11, 4});
+    group.destroy();
+    // Most of the rest, removed one at a time without reading instances() in between.
+    for (auto index : {1U, 3U, 5U, 6U, 7U})
+        objects[index].destroy();
+    expect({0, 8, 11, 4});
+    objects.push_back(scene.create({}, mesh)); // Reuses a slot but is added last.
+    objects.back().set_position({12, 0, 0});
+    expect({0, 8, 11, 4, 12});
+}
+
 TEST_CASE("The shared consumer scenario for objects, lifetime, terrain, mesh preparation and animation passes") {
     // It reports a failed check by throwing std::runtime_error, which fails this test case.
     scene_objects_test::run();
