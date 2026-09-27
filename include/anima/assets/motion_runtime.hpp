@@ -9,10 +9,10 @@
 /// layers, joint offsets and two-bone contacts.
 ///
 /// Part of the `anima::assets` target. The model and its motion are separate resources: the model
-/// GLB holds geometry and a skin but no clips, and the motion GLB (see load_motion_asset) holds
-/// nodes and clips only. A version 3 motion contract (a JSON document; see
-/// Manifest::motion_contract) declares the evaluation joints, masks, contact chains, base clips
-/// and handling layers.
+/// GLB holds geometry and a skin, and the motion GLB (see load_motion_asset) holds nodes and clips
+/// only; clips that the model carries itself are not used. A version 3 motion contract (a JSON
+/// document; see Manifest::motion_contract) declares the evaluation joints, masks, contact chains,
+/// base clips and handling layers.
 /// MotionRuntime checks node identity, ancestry and bind pose before transferring motion onto the
 /// model. Evaluated poses are presentation only; they never move a gameplay actor. Callers
 /// supply rig recipes, clip choice and gameplay rules.
@@ -105,9 +105,9 @@ class MotionRuntime {
     /// `reference_speed`. `layers` maps each handling layer to its `mask`, `owned_joints` and
     /// `context_joints`.
     ///
-    /// The model and manifest must have no clips. Each joint name must name one model node and one
-    /// motion node, and every motion node must match a uniquely named model node with the same
-    /// parent name and a rest world matrix within `1e-5`. A layer's `owned_joints` must list
+    /// Clips of the model and of the manifest are ignored. Each joint name must name one model
+    /// node and one motion node, and every motion node must match a uniquely named model node with
+    /// the same parent name and a rest world matrix within `1e-5`. A layer's `owned_joints` must list
     /// exactly its mask's joints and `context_joints` their parents outside the mask, and its clip
     /// may animate only those joints. Every motion clip must be exactly one base clip or layer,
     /// with at least one base clip.
