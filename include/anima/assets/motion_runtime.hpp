@@ -15,7 +15,7 @@
 /// base clips and layer clips.
 /// MotionRuntime checks node identity, ancestry and bind pose before transferring motion onto the
 /// model. Evaluated poses are presentation only; they never move a gameplay actor. Callers
-/// supply rig recipes, clip choice and gameplay rules.
+/// supply rig recipes, the clips and layers to evaluate, any per-call budget and gameplay rules.
 ///
 /// Contracts are UTF-8 JSON of at most 4 MiB and 64 nesting levels; duplicate and unknown fields
 /// are rejected at every level. Invalid contracts and arguments, including JSON syntax errors,
