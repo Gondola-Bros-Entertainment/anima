@@ -14,6 +14,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -124,6 +125,8 @@ struct VulkanRenderer::Impl {
     VkSurfaceKHR surface{};
     VkPhysicalDevice physical{};
     VkDevice device{};
+    // Suballocates every buffer and image, so allocations stay far below maxMemoryAllocationCount.
+    VmaAllocator allocator{};
     std::uint32_t graphics_family{}, present_family{};
     VkQueue graphics_queue{}, present_queue{};
     bool maintenance_instance{}, present_fences{}, resize = true, stopped = false, fatal = false;
@@ -147,7 +150,7 @@ struct VulkanRenderer::Impl {
     };
     struct GpuTexture {
         VkImage image{};
-        VkDeviceMemory memory{};
+        VmaAllocation allocation{};
         VkImageView view{};
         VkSampler sampler{};
         std::shared_ptr<GpuSampler> shared_sampler;
@@ -155,18 +158,15 @@ struct VulkanRenderer::Impl {
     };
 #ifdef ANIMA_HAS_ASSETS
     struct ResourceBuffer {
-        VkDevice device{};
+        VmaAllocator allocator{};
         VkBuffer buffer{};
-        VkDeviceMemory memory{};
+        VmaAllocation allocation{};
         VkDeviceSize bytes{}, allocation_bytes{};
+        // Host-visible buffers stay mapped until they are destroyed.
         void *mapping{};
         ~ResourceBuffer() {
-            if (mapping)
-                vkUnmapMemory(device, memory);
             if (buffer)
-                vkDestroyBuffer(device, buffer, nullptr);
-            if (memory)
-                vkFreeMemory(device, memory, nullptr);
+                vmaDestroyBuffer(allocator, buffer, allocation);
         }
     };
     using SamplerKey = std::tuple<Filter, Filter, Filter, Wrap, Wrap, bool, std::uint32_t>;
@@ -179,28 +179,25 @@ struct VulkanRenderer::Impl {
     };
     struct GpuMaterials {
         VkDevice device{};
+        VmaAllocator allocator{};
         std::shared_ptr<const MeshSnapshot> source;
         VkDescriptorPool texture_pool{};
         VkBuffer material_buffer{};
-        VkDeviceMemory material_memory{};
+        VmaAllocation material_allocation{};
         std::vector<VkDescriptorSet> material_sets;
         std::vector<GpuTexture> textures;
         ~GpuMaterials() {
             if (texture_pool)
                 vkDestroyDescriptorPool(device, texture_pool, nullptr);
             if (material_buffer)
-                vkDestroyBuffer(device, material_buffer, nullptr);
-            if (material_memory)
-                vkFreeMemory(device, material_memory, nullptr);
+                vmaDestroyBuffer(allocator, material_buffer, material_allocation);
             for (auto &texture : textures) {
                 if (texture.sampler && !texture.shared_sampler)
                     vkDestroySampler(device, texture.sampler, nullptr);
                 if (texture.view)
                     vkDestroyImageView(device, texture.view, nullptr);
                 if (texture.image)
-                    vkDestroyImage(device, texture.image, nullptr);
-                if (texture.memory)
-                    vkFreeMemory(device, texture.memory, nullptr);
+                    vmaDestroyImage(allocator, texture.image, texture.allocation);
             }
         }
         GpuMaterials() = default;
@@ -210,11 +207,12 @@ struct VulkanRenderer::Impl {
 #endif
     struct UploadBatch {
         VkDevice device{};
+        VmaAllocator allocator{};
         VkCommandPool pool{};
         VkCommandBuffer command{};
         VkFence fence{};
         VkBuffer staging_buffer{};
-        VkDeviceMemory staging_memory{};
+        VmaAllocation staging_allocation{};
         bool pending{};
         bool simulate_device_loss{}; // Validation hook, evaluated after real work retires.
         bool *fatal{};
@@ -234,11 +232,9 @@ struct VulkanRenderer::Impl {
         }
         void release_staging() noexcept {
             if (staging_buffer)
-                vkDestroyBuffer(device, staging_buffer, nullptr);
-            if (staging_memory)
-                vkFreeMemory(device, staging_memory, nullptr);
+                vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
             staging_buffer = VK_NULL_HANDLE;
-            staging_memory = VK_NULL_HANDLE;
+            staging_allocation = VK_NULL_HANDLE;
         }
         void wait() {
             check(vkWaitForFences(device, 1, &fence, VK_TRUE, fence_timeout), "Wait for texture upload");
@@ -286,7 +282,7 @@ struct VulkanRenderer::Impl {
     VkRenderPass render_pass{};
     VkPipeline pipeline{}, ui_pipeline{};
     VkImage depth_image{};
-    VkDeviceMemory depth_memory{};
+    VmaAllocation depth_allocation{};
     VkImageView depth_view{};
     VkFormat depth_format{};
     struct Image {
@@ -300,9 +296,8 @@ struct VulkanRenderer::Impl {
     };
     std::vector<Image> images;
     VkBuffer capture_buffer{};
-    VkDeviceMemory capture_memory{};
+    VmaAllocation capture_allocation{};
     void *capture_mapping{};
-    bool capture_coherent{};
     // Whether the pending request reads the frame into memory instead of options.capture, and the image read
     // back, held until take_capture().
     bool capture_to_memory{};
@@ -535,6 +530,12 @@ struct VulkanRenderer::Impl {
         if (present_fences)
             info.pNext = &maintenance;
         check(vkCreateDevice(physical, &info, nullptr, &device), "Create device");
+        VmaAllocatorCreateInfo allocator_info{};
+        allocator_info.vulkanApiVersion = VK_API_VERSION_1_1;
+        allocator_info.physicalDevice = physical;
+        allocator_info.device = device;
+        allocator_info.instance = instance;
+        check(vmaCreateAllocator(&allocator_info, &allocator), "Create memory allocator");
         vkGetDeviceQueue(device, graphics_family, 0, &graphics_queue);
         vkGetDeviceQueue(device, present_family, 0, &present_queue);
         std::cout << "Presentation retirement: "
@@ -977,13 +978,30 @@ struct VulkanRenderer::Impl {
         check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &output),
               "Create graphics pipeline");
     }
-    std::uint32_t memory_type(std::uint32_t bits, VkMemoryPropertyFlags required) const {
-        VkPhysicalDeviceMemoryProperties properties{};
-        vkGetPhysicalDeviceMemoryProperties(physical, &properties);
-        for (std::uint32_t i = 0; i < properties.memoryTypeCount; ++i)
-            if ((bits & (1U << i)) && (properties.memoryTypes[i].propertyFlags & required) == required)
-                return i;
-        throw std::runtime_error("No compatible Vulkan memory type");
+    // Creates @p info's image in device-local memory from the allocator, bound, and returns the size of its
+    // allocation. Throws `std::runtime_error` naming @p action when creation, allocation or binding fails.
+    VkDeviceSize create_image(const VkImageCreateInfo &info, VkImage &image, VmaAllocation &allocation,
+                              const char *action) const {
+        VmaAllocationCreateInfo placement{};
+        placement.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        VmaAllocationInfo allocated{};
+        check(vmaCreateImage(allocator, &info, &placement, &image, &allocation, &allocated), action);
+        return allocated.size;
+    }
+    // Creates @p info's buffer in memory with the @p required properties, preferring @p preferred ones, bound,
+    // and returns its allocation's size and, for host-visible memory, its mapping, which lasts until the buffer
+    // is destroyed. Throws `std::runtime_error` naming @p action when creation, allocation or binding fails.
+    VmaAllocationInfo create_buffer(const VkBufferCreateInfo &info, VkMemoryPropertyFlags required, VkBuffer &buffer,
+                                    VmaAllocation &allocation, const char *action,
+                                    VkMemoryPropertyFlags preferred = 0) const {
+        VmaAllocationCreateInfo placement{};
+        placement.requiredFlags = required;
+        placement.preferredFlags = preferred;
+        if (required & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+            placement.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo allocated{};
+        check(vmaCreateBuffer(allocator, &info, &placement, &buffer, &allocation, &allocated), action);
+        return allocated;
     }
     void create_depth() {
         depth_format = VK_FORMAT_UNDEFINED;
@@ -1007,17 +1025,10 @@ struct VulkanRenderer::Impl {
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
         image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        check(vkCreateImage(device, &image, nullptr, &depth_image), "Create depth image");
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(device, depth_image, &requirements);
+        [[maybe_unused]] const auto bytes = create_image(image, depth_image, depth_allocation, "Create depth image");
 #ifdef ANIMA_HAS_ASSETS
-        depth_allocation_bytes = requirements.size;
+        depth_allocation_bytes = bytes;
 #endif
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        check(vkAllocateMemory(device, &allocation, nullptr, &depth_memory), "Allocate depth memory");
-        check(vkBindImageMemory(device, depth_image, depth_memory, 0), "Bind depth memory");
         VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         view.image = depth_image;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -1103,15 +1114,7 @@ struct VulkanRenderer::Impl {
             image.tiling = VK_IMAGE_TILING_OPTIMAL;
             image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            check(vkCreateImage(device, &image, nullptr, &texture.image), "Create texture image");
-            VkMemoryRequirements requirements{};
-            vkGetImageMemoryRequirements(device, texture.image, &requirements);
-            VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-            allocation.allocationSize = requirements.size;
-            allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            texture.allocation_bytes = requirements.size;
-            check(vkAllocateMemory(device, &allocation, nullptr, &texture.memory), "Allocate texture memory");
-            check(vkBindImageMemory(device, texture.image, texture.memory, 0), "Bind texture memory");
+            texture.allocation_bytes = create_image(image, texture.image, texture.allocation, "Create texture image");
             if (i == 0)
                 inject_scene(failure, RendererFailureStage::texture, initial);
             VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -1129,27 +1132,16 @@ struct VulkanRenderer::Impl {
             buffer.size = size;
             buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            check(vkCreateBuffer(device, &buffer, nullptr, &upload.staging_buffer), "Create texture staging buffer");
-            vkGetBufferMemoryRequirements(device, upload.staging_buffer, &requirements);
-            allocation.allocationSize = requirements.size;
-            allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-            check(vkAllocateMemory(device, &allocation, nullptr, &upload.staging_memory),
-                  "Allocate texture staging memory");
-            check(vkBindBufferMemory(device, upload.staging_buffer, upload.staging_memory, 0),
-                  "Bind texture staging memory");
-            void *mapped = nullptr;
-            check(vkMapMemory(device, upload.staging_memory, 0, VK_WHOLE_SIZE, 0, &mapped), "Map texture staging");
+            auto *mapped =
+                static_cast<char *>(create_buffer(buffer, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, upload.staging_buffer,
+                                                  upload.staging_allocation, "Create texture staging buffer")
+                                        .pMappedData);
             std::size_t offset = 0;
             for (const auto &mip : mips) {
-                std::memcpy(static_cast<char *>(mapped) + offset, mip.rgba.data(), mip.rgba.size());
+                std::memcpy(mapped + offset, mip.rgba.data(), mip.rgba.size());
                 offset += mip.rgba.size();
             }
-            VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-            range.memory = upload.staging_memory;
-            range.size = VK_WHOLE_SIZE;
-            const auto flushed = vkFlushMappedMemoryRanges(device, 1, &range);
-            vkUnmapMemory(device, upload.staging_memory);
-            check(flushed, "Flush texture staging");
+            check(vmaFlushAllocation(allocator, upload.staging_allocation, 0, VK_WHOLE_SIZE), "Flush texture staging");
             check(vkResetCommandBuffer(upload.command, 0), "Reset texture upload command");
             VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1225,14 +1217,10 @@ struct VulkanRenderer::Impl {
         buffer_create.size = stride * count;
         buffer_create.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         buffer_create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        check(vkCreateBuffer(device, &buffer_create, nullptr, &target.material_buffer), "Create material buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device, target.material_buffer, &requirements);
-        VkMemoryAllocateInfo memory{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        memory.allocationSize = requirements.size;
-        memory.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        check(vkAllocateMemory(device, &memory, nullptr, &target.material_memory), "Allocate material memory");
-        check(vkBindBufferMemory(device, target.material_buffer, target.material_memory, 0), "Bind material memory");
+        void *const material_mapping =
+            create_buffer(buffer_create, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, target.material_buffer,
+                          target.material_allocation, "Create material buffer")
+                .pMappedData;
         std::vector<std::byte> uniforms(static_cast<std::size_t>(stride * count));
         for (std::uint32_t i = 0; i < count; ++i) {
             const Material fallback;
@@ -1263,15 +1251,8 @@ struct VulkanRenderer::Impl {
             writes[material_texture_count].pBufferInfo = &buffer_info;
             vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
-        void *mapped{};
-        check(vkMapMemory(device, target.material_memory, 0, VK_WHOLE_SIZE, 0, &mapped), "Map material memory");
-        std::memcpy(mapped, uniforms.data(), uniforms.size());
-        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-        range.memory = target.material_memory;
-        range.size = VK_WHOLE_SIZE;
-        const auto flushed = vkFlushMappedMemoryRanges(device, 1, &range);
-        vkUnmapMemory(device, target.material_memory);
-        check(flushed, "Flush material memory");
+        std::memcpy(material_mapping, uniforms.data(), uniforms.size());
+        check(vmaFlushAllocation(allocator, target.material_allocation, 0, VK_WHOLE_SIZE), "Flush material memory");
         inject_scene(failure, RendererFailureStage::descriptors, initial);
         std::cout << "GPU textures=" << target.textures.size() << ", mip_levels=" << total_mips
                   << ", material_descriptors=" << target.material_sets.size() << '\n';
@@ -1282,41 +1263,17 @@ struct VulkanRenderer::Impl {
         buffer.size = static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
         buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        check(vkCreateBuffer(device, &buffer, nullptr, &capture_buffer), "Create readback buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device, capture_buffer, &requirements);
-        VkPhysicalDeviceMemoryProperties memory{};
-        vkGetPhysicalDeviceMemoryProperties(physical, &memory);
-        std::uint32_t type = UINT32_MAX;
-        for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-            const auto flags = memory.memoryTypes[i].propertyFlags;
-            if ((requirements.memoryTypeBits & (1U << i)) && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-                type = i;
-                capture_coherent = flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-                if (capture_coherent)
-                    break;
-            }
-        }
-        if (type == UINT32_MAX)
-            throw std::runtime_error("No host-visible memory for capture");
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = type;
-        check(vkAllocateMemory(device, &allocation, nullptr, &capture_memory), "Allocate readback memory");
-        check(vkBindBufferMemory(device, capture_buffer, capture_memory, 0), "Bind readback memory");
-        check(vkMapMemory(device, capture_memory, 0, VK_WHOLE_SIZE, 0, &capture_mapping), "Map readback memory");
+        // Coherent memory is preferred; save_capture invalidates any other kind before reading it.
+        capture_mapping = create_buffer(buffer, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, capture_buffer, capture_allocation,
+                                        "Create readback buffer", VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                              .pMappedData;
     }
     void save_capture() {
         // Consume the request first, so a file that cannot be written is reported by one draw, not every draw.
         const auto path = std::exchange(options.capture, {});
         const bool to_memory = std::exchange(capture_to_memory, false);
         check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait for capture");
-        if (!capture_coherent) {
-            VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-            range.memory = capture_memory;
-            range.size = VK_WHOLE_SIZE;
-            check(vkInvalidateMappedMemoryRanges(device, 1, &range), "Invalidate readback memory");
-        }
+        check(vmaInvalidateAllocation(allocator, capture_allocation, 0, VK_WHOLE_SIZE), "Invalidate readback memory");
         const auto *bytes = static_cast<const std::uint8_t *>(capture_mapping);
         const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
         const auto count = static_cast<std::size_t>(extent.width) * extent.height;
@@ -1628,15 +1585,11 @@ struct VulkanRenderer::Impl {
         if (ui_pipeline)
             vkDestroyPipeline(device, ui_pipeline, nullptr);
         ui_pipeline = VK_NULL_HANDLE;
-        if (capture_mapping)
-            vkUnmapMemory(device, capture_memory);
-        capture_mapping = nullptr;
         if (capture_buffer)
-            vkDestroyBuffer(device, capture_buffer, nullptr);
+            vmaDestroyBuffer(allocator, capture_buffer, capture_allocation);
         capture_buffer = VK_NULL_HANDLE;
-        if (capture_memory)
-            vkFreeMemory(device, capture_memory, nullptr);
-        capture_memory = VK_NULL_HANDLE;
+        capture_allocation = VK_NULL_HANDLE;
+        capture_mapping = nullptr;
         for (auto &image : images) {
             if (image.framebuffer)
                 vkDestroyFramebuffer(device, image.framebuffer, nullptr);
@@ -1655,11 +1608,9 @@ struct VulkanRenderer::Impl {
             vkDestroyImageView(device, depth_view, nullptr);
         depth_view = VK_NULL_HANDLE;
         if (depth_image)
-            vkDestroyImage(device, depth_image, nullptr);
+            vmaDestroyImage(allocator, depth_image, depth_allocation);
         depth_image = VK_NULL_HANDLE;
-        if (depth_memory)
-            vkFreeMemory(device, depth_memory, nullptr);
-        depth_memory = VK_NULL_HANDLE;
+        depth_allocation = VK_NULL_HANDLE;
 #ifdef ANIMA_HAS_ASSETS
         if (resource_pipeline)
             vkDestroyPipeline(device, resource_pipeline, nullptr);
@@ -1768,6 +1719,9 @@ struct VulkanRenderer::Impl {
                 vkDestroyQueryPool(device, timing_queries, nullptr);
             if (command_pool)
                 vkDestroyCommandPool(device, command_pool, nullptr);
+            // Every buffer and image, and so every allocation, is destroyed by now.
+            if (allocator)
+                vmaDestroyAllocator(allocator);
             vkDestroyDevice(device, nullptr);
         }
         if (surface)

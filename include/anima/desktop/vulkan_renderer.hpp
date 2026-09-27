@@ -232,7 +232,9 @@ struct ResourceStats {
 /// fence. Transfers go through staging buffers, which are freed only after their upload completes.
 ///
 /// The GPU mesh cache is keyed by Mesh object: each cached Mesh owns one vertex buffer, one index buffer and
-/// its own material images, even when another Mesh has identical content. Once the previous frame finishes,
+/// its own material images, even when another Mesh has identical content. Buffers and images are suballocated
+/// from larger device memory blocks, so the device's `maxMemoryAllocationCount`, which Vulkan allows to be as
+/// low as 4096, does not bound how many Meshes can be cached. Once the previous frame finishes,
 /// draw() releases every cached Mesh that only the renderer still references; a draw() that returns early
 /// because the window is not drawable releases nothing. Selection, culling and visibility never evict, and
 /// there is no size budget.

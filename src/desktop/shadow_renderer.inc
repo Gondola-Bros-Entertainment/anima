@@ -2,6 +2,7 @@
 // consumers can move/resize either region without changing scene membership.
 struct ShadowTarget {
     VkDevice device{};
+    VmaAllocator allocator{};
     GpuTexture texture;
     VkFramebuffer framebuffer{};
     std::uint32_t size{};
@@ -13,9 +14,7 @@ struct ShadowTarget {
         if (texture.view)
             vkDestroyImageView(device, texture.view, nullptr);
         if (texture.image)
-            vkDestroyImage(device, texture.image, nullptr);
-        if (texture.memory)
-            vkFreeMemory(device, texture.memory, nullptr);
+            vmaDestroyImage(allocator, texture.image, texture.allocation);
     }
 };
 std::unique_ptr<ShadowTarget> shadow_target;
@@ -67,6 +66,7 @@ void ensure_shadow_target(std::unique_ptr<ShadowTarget> &target, const Direction
         return;
     auto next = std::make_unique<ShadowTarget>();
     next->device = device;
+    next->allocator = allocator;
     next->size = size;
     auto &texture = next->texture;
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -78,15 +78,7 @@ void ensure_shadow_target(std::unique_ptr<ShadowTarget> &target, const Direction
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
     image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check(vkCreateImage(device, &image, nullptr, &texture.image), "Create shadow image");
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(device, texture.image, &requirements);
-    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    texture.allocation_bytes = requirements.size;
-    check(vkAllocateMemory(device, &allocation, nullptr, &texture.memory), "Allocate shadow memory");
-    check(vkBindImageMemory(device, texture.image, texture.memory, 0), "Bind shadow memory");
+    texture.allocation_bytes = create_image(image, texture.image, texture.allocation, "Create shadow image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = texture.image;
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
