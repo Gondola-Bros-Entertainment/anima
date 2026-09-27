@@ -23,9 +23,9 @@ constexpr double tolerance = 1e-5; // Absolute error allowed in poses, times and
 constexpr auto preview_test = "An exported manifest previews every declared clip";
 constexpr auto valid_manifest =
     R"({"schema_version":2,"units":"meters","asset_id":"two-joint-body","model":"body.glb",)"
-    R"("skeleton":{"id":"humanoid","joint_count":2,)"
+    R"("skeleton":{"id":"test.rig","joint_count":2,)"
     R"("bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},)"
-    R"("clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"swing\uD83D\uDDE1"}]}]})";
+    R"("clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"pulse\uD83D\uDCA1"}]}]})";
 constexpr auto speed_range = "Clip reference speed must be finite and positive";
 constexpr auto invalid_blend = "Pose blend requires matching local poses and a weight in [0,1]";
 
@@ -112,7 +112,7 @@ TEST_CASE("A manifest keeps its body, clip policy, travel speed and events") {
     CHECK(manifest.joint_count == 2);
     REQUIRE(manifest.clips.size() == 1);
     CHECK_FALSE(manifest.clips[0].loop);
-    CHECK(manifest.clips[0].events.at(0).name == "swing\xF0\x9F\x97\xA1"); // The escaped surrogate pair.
+    CHECK(manifest.clips[0].events.at(0).name == "pulse\xF0\x9F\x92\xA1"); // The escaped surrogate pair.
     CHECK_FALSE(manifest.clips[0].reference_speed); // A clip without travel metadata has no implicit speed.
     const auto travel = file.read(changed(valid_manifest, "\"loop\":false", "\"loop\":false,\"reference_speed\":3.2"));
     REQUIRE_NOTHROW(validate_manifest(travel, asset));
@@ -167,10 +167,10 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
                          "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 278: "
                          "syntax error while parsing object - unexpected number literal; expected '}'",
                          std::runtime_error);
-    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, R"(\uD83D\uDDE1)", R"(\uD83D)")),
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, R"(\uD83D\uDCA1)", R"(\uD83D)")),
                          "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 302: "
                          "syntax error while parsing value - invalid string: surrogate U+D800..U+DBFF must be "
-                         "followed by U+DC00..U+DFFF; last read: '\"swing\\uD83D\"'",
+                         "followed by U+DC00..U+DFFF; last read: '\"pulse\\uD83D\"'",
                          std::runtime_error);
     CHECK_THROWS_WITH_AS(file.read(std::string(valid_manifest) + "false"),
                          "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 318: "
@@ -325,7 +325,7 @@ TEST_CASE("STEP sampling holds each key, and sampling clamps after the last key"
 TEST_CASE("Playback crosses each event once through pause, restart, seek and resume") {
     const auto asset = fixture();
     Playback player;
-    player.select(asset.animations[0], {"test", false, {{.53, "weapon_swing"}}});
+    player.select(asset.animations[0], {"test", false, {{.53, "marker"}}});
     CHECK(player.advance(.529).empty());
     CHECK(player.advance(.001).size() == 1);
     CHECK(player.advance(.001).empty());
@@ -353,7 +353,7 @@ TEST_CASE("A clip that does not loop accepts any finite step, and a looping step
     const auto asset = fixture();
     const auto &clip = asset.animations[0];
     Playback once;
-    once.select(clip, {"test", false, {{.53, "weapon_swing"}}});
+    once.select(clip, {"test", false, {{.53, "marker"}}});
     CHECK(once.advance(1e9).size() == 1);
     CHECK(once.finished());
     Playback looping;
@@ -366,7 +366,7 @@ TEST_CASE("Negative and nonfinite playback steps are rejected") {
     constexpr auto invalid_step = "Playback elapsed time must be finite and nonnegative";
     const auto asset = fixture();
     Playback player;
-    player.select(asset.animations[0], {"test", false, {{.53, "weapon_swing"}}});
+    player.select(asset.animations[0], {"test", false, {{.53, "marker"}}});
     CHECK_THROWS_WITH_AS(player.advance(-1), invalid_step, std::invalid_argument);
     CHECK_THROWS_WITH_AS(player.advance(std::numeric_limits<double>::infinity()), invalid_step, std::invalid_argument);
 }

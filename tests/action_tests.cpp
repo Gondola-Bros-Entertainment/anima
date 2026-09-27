@@ -14,17 +14,17 @@ constexpr auto invalid_phase = "Invalid/duplicate action phase or multiple held 
 constexpr auto invalid_weight = "Action weight requires a finite phase and 2..32 keys covering 0..1";
 constexpr auto invalid_keys = "Action weight keys must be ordered and normalized";
 
-// A wind-up, a held phase, a release and a recovery; each of the first three has a cue at its start.
-ActionTimeline shot() {
-    return ActionTimeline({{"windup", .2, false, {{"begin", 0}}},
+// A preparation, a held phase, a release and a settle; each of the first three has a cue at its start.
+ActionTimeline gesture() {
+    return ActionTimeline({{"prepare", .2, false, {{"begin", 0}}},
                            {"hold", .4, true, {{"sustain", 0}}},
-                           {"release", .3, false, {{"fire", 0}}},
-                           {"recover", .2, false, {}}});
+                           {"release", .3, false, {{"emit", 0}}},
+                           {"settle", .2, false, {}}});
 }
 } // namespace
 
 TEST_CASE("A timeline loops its held phase and retimes the phases after release") {
-    const auto timeline = shot();
+    const auto timeline = gesture();
     CHECK(timeline.sample(.1).phase == 0);
     const auto held = timeline.sample(.7);
     CHECK(held.phase == 1);
@@ -33,7 +33,7 @@ TEST_CASE("A timeline loops its held phase and retimes the phases after release"
     const auto released = timeline.sample(.9, .85);
     CHECK(released.phase == 2);
     CHECK(released.progress == Near{1. / 6, time_tolerance});
-    // A release during the wind-up finishes the wind-up and skips the hold.
+    // A release during preparation finishes preparing and skips the hold.
     CHECK(timeline.sample(.21, .1).phase == 2);
     CHECK(timeline.sample(1.36, .85).complete);
     const ActionTimeline held_last({{"hold", .3, true, {}}});
@@ -47,29 +47,29 @@ TEST_CASE("A timeline without a held phase has a fixed duration") {
 }
 
 TEST_CASE("A cue cursor reports each cue of an instance once") {
-    const auto timeline = shot();
+    const auto timeline = gesture();
     ActionCueCursor cursor;
-    CHECK(cursor.advance("shot", 1, timeline, 0).size() == 1);
-    CHECK(cursor.advance("shot", 1, timeline, .6).size() == 1); // The hold's cue.
-    CHECK(cursor.advance("shot", 1, timeline, .9, .85).at(0).id == "fire");
-    CHECK(cursor.advance("shot", 1, timeline, .9, .85).empty()); // A repeated frame.
+    CHECK(cursor.advance("gesture", 1, timeline, 0).size() == 1);
+    CHECK(cursor.advance("gesture", 1, timeline, .6).size() == 1); // The hold's cue.
+    CHECK(cursor.advance("gesture", 1, timeline, .9, .85).at(0).id == "emit");
+    CHECK(cursor.advance("gesture", 1, timeline, .9, .85).empty()); // A repeated frame.
     // A new instance starts at 0, so its first frame reports the cues it covers wherever it lands.
-    const auto first_frame = cursor.advance("shot", 2, timeline, .016);
+    const auto first_frame = cursor.advance("gesture", 2, timeline, .016);
     REQUIRE(first_frame.size() == 1);
     CHECK(first_frame[0].id == "begin");
-    CHECK(cursor.advance("shot", 3, timeline, .9, .85).size() == 3);
+    CHECK(cursor.advance("gesture", 3, timeline, .9, .85).size() == 3);
     // An observer that joins an instance under way seeks first, so history is not replayed.
-    cursor.seek("shot", 4, timeline, .9, .85);
-    CHECK(cursor.advance("shot", 4, timeline, .9, .85).empty());
-    CHECK(cursor.advance("shot", 4, timeline, .1).empty()); // A rewind.
+    cursor.seek("gesture", 4, timeline, .9, .85);
+    CHECK(cursor.advance("gesture", 4, timeline, .9, .85).empty());
+    CHECK(cursor.advance("gesture", 4, timeline, .1).empty()); // A rewind.
     cursor.reset();
-    cursor.seek("shot", 5, timeline, 4.);
-    CHECK(cursor.advance("shot", 5, timeline, 4.).empty()); // A long hold has no catch-up cues.
-    CHECK(cursor.advance("shot", 5, timeline, 4.1, 4.05).size() == 1);
+    cursor.seek("gesture", 5, timeline, 4.);
+    CHECK(cursor.advance("gesture", 5, timeline, 4.).empty()); // A long hold has no catch-up cues.
+    CHECK(cursor.advance("gesture", 5, timeline, 4.1, 4.05).size() == 1);
 }
 
 TEST_CASE("Invalid timelines and times are rejected") {
-    const auto timeline = shot();
+    const auto timeline = gesture();
     CHECK_THROWS_WITH_AS(timeline.sample(-1), invalid_time, std::invalid_argument);
     CHECK_THROWS_WITH_AS(timeline.sample(0, std::numeric_limits<double>::infinity()), invalid_time,
                          std::invalid_argument);

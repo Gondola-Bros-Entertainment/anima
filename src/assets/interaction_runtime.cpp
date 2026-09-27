@@ -38,8 +38,8 @@ struct InteractionRuntime::Impl {
             nlohmann::json action{{"id", id_}, {"handling", {id}}, {"phases", nlohmann::json::array()}};
             for (const auto &phase : document.at("phases")) {
                 const auto &layers = definition.at(phase.at("id").get<std::string>());
-                // Other prop roles are explicit interaction participants. They
-                // must not bypass the role graph through a hidden held-item path.
+                // A role has pose layers only: other participants are roles of the
+                // placement graph, never props that bypass it through an action.
                 anima::detail::json_fields(layers, {"layers"});
                 auto entry = phase;
                 entry["layers"] = layers.at("layers");
