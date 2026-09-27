@@ -51,6 +51,16 @@ enum class Channel {
 /// Wildcards select a device that satisfies every control of the class; for the bound control, the
 /// eligible device with the greatest magnitude wins, the lowest ID on ties. Each class selects its
 /// device independently, so a keyboard modifier can qualify a mouse button.
+///
+/// A binding outranks each binding of the same Context that reads the same bound control and
+/// requires a strict subset of its modifiers, compared by kind and code. On a device the outranking
+/// binding selects for the bound control, while it holds all its modifiers, the outranked binding
+/// reads zero from that device. With S bound to one action and Ctrl+S to another, holding Ctrl and
+/// S drives only the Ctrl+S action; a gamepad chord likewise takes a stick over from the stick's
+/// unmodified binding. Precedence follows held controls, not press order: pressing Ctrl while S is
+/// held releases the S binding without canceling it, and releasing Ctrl restores it. Bindings with
+/// equal or partly shared modifier sets apply together, and no modifier is consumed: a binding
+/// whose bound control is Ctrl still reads it.
 struct Binding {
     Control control;
     /// Channel::y requires ActionType::vector2.
@@ -61,7 +71,8 @@ struct Binding {
     float deadzone = 0;
     /// Up to four keys, mouse buttons or gamepad buttons that must all be held, pressed before or
     /// after the bound control. No kind and code may repeat within the binding, including the
-    /// bound control. Chords consume nothing: other bindings still see these controls.
+    /// bound control. Holding them outranks bindings of the same control that require only some
+    /// of them; see Binding.
     std::vector<Control> modifiers{};
 };
 /// How an action combines its bindings' contributions.

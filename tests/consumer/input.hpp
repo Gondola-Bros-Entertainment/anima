@@ -33,6 +33,13 @@ inline void consume_input() {
     actions.process({i::EventType::control, {i::ControlKind::key, 224, 3}, 0});
     if (!actions.state("save").released || actions.state("save").canceled)
         throw std::runtime_error("Independent input modifier release did not release its chord");
+    i::Context precedence({{"back", i::ActionType::button, {{{i::ControlKind::key, 22}}}}, map[1]});
+    precedence.process({i::EventType::control, {i::ControlKind::key, 22, 0}, 1});
+    if (!precedence.state("back").active)
+        throw std::runtime_error("Independent input plain binding failed to activate");
+    precedence.process({i::EventType::control, {i::ControlKind::key, 224, 0}, 1});
+    if (!precedence.state("save").active || precedence.state("back").active || precedence.state("back").canceled)
+        throw std::runtime_error("Independent input chord did not outrank the plain binding of its primary");
 #ifdef CONSUMER_ASSETS
     anima::SceneSet scenes;
     auto persistent = scenes.create("persistent"), level = scenes.create("level");
