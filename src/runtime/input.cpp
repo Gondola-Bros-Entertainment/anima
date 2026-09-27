@@ -343,18 +343,20 @@ void Context::process(const Event &e) {
     } else if (previous != values_.end() && previous->first == e.source)
         previous->second = e.value;
     else {
+        bool observed = false;
+        for (const auto &a : map_)
+            for (const auto &b : a.bindings)
+                observed |= observes(b, e.source);
         if (previous == values_.end()) {
-            bool observed = false;
-            for (const auto &a : map_)
-                for (const auto &b : a.bindings)
-                    observed |= observes(b, e.source);
             if (!observed)
                 return;
             if (values_.size() == limits::active_controls)
                 throw std::length_error("Input context exceeds 1024 active physical controls");
         } else
             values_.erase(previous);
-        values_.emplace(e.source, e.value);
+        // A control that now reports an identity no binding accepts is released, not recorded.
+        if (observed)
+            values_.emplace(e.source, e.value);
     }
     evaluate();
 }

@@ -496,6 +496,25 @@ TEST_CASE("Events whose identity no binding accepts are not recorded") {
     CHECK(identified.state("jump").pressed);
 }
 
+TEST_CASE("A recorded control that changes to an identity no binding accepts is released and not recorded") {
+    const auto pad = model_identity(1), other_pad = model_identity(2);
+    i::Binding jump{{i::ControlKind::gamepad_button, 0}};
+    jump.control.identity = pad;
+    i::Context identified({{"jump", i::ActionType::button, {jump}}});
+    for (unsigned device = 0; device < control_capacity; ++device)
+        identified.process(reported(i::ControlKind::gamepad_button, 0, device, pad));
+    CHECK(identified.state("jump").active);
+    identified.begin_frame();
+    for (unsigned device = 0; device < control_capacity; ++device)
+        identified.process(reported(i::ControlKind::gamepad_button, 0, device, other_pad));
+    CHECK_FALSE(identified.state("jump").active);
+    CHECK(identified.state("jump").released);
+    // The released controls leave room for another accepted pad.
+    identified.begin_frame();
+    identified.process(reported(i::ControlKind::gamepad_button, 0, control_capacity, pad));
+    CHECK(identified.state("jump").pressed);
+}
+
 TEST_CASE("Invalid chords are rejected by construction and rebinding without changing the context") {
     const auto valid = chord({i::ControlKind::key, 4, 1}, {{i::ControlKind::key, 224, 1}});
     i::Context context({{"chord", i::ActionType::button, {valid}}});
