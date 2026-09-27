@@ -6,10 +6,13 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
 namespace {
+// anima::Mat4 is a std::array, so argument-dependent lookup does not find its product.
+using anima::operator*;
 constexpr float tolerance = 1e-4F; // Snapshot vertices and material factors against their independent sources.
 // Runs only when the first argument names an exported model, as CTest's exported_instances passes it.
 constexpr auto exported_case = "Snapshots of an exported model match its independent deformation";
@@ -18,6 +21,34 @@ anima::Mat4 translation(float x) {
     auto m = anima::identity();
     m[12] = x;
     return m;
+}
+// A scale of (@p x, @p y, @p z); a negative one mirrors and a zero one collapses its axis.
+anima::Mat4 scaling(float x, float y, float z) {
+    auto m = anima::identity();
+    m[0] = x;
+    m[5] = y;
+    m[10] = z;
+    return m;
+}
+bool same_point(anima::Vec3 a, anima::Vec3 b) { return anima::length(a - b) < tolerance; }
+// Whether every triangle of @p snapshot winds counterclockwise when seen from the side its first corner's normal
+// faces, as the fixtures' triangles do before posing.
+bool winds_with_normals(const anima::MeshSnapshot &snapshot) {
+    for (std::size_t i = 0; i + 2 < snapshot.vertices.size(); i += 3) {
+        const auto &a = snapshot.vertices[i], &b = snapshot.vertices[i + 1], &c = snapshot.vertices[i + 2];
+        if (anima::dot(anima::cross(b.position - a.position, c.position - a.position), a.normal) <= 0)
+            return false;
+    }
+    return true;
+}
+// Whether @p actual holds @p expected's corners in the same order.
+bool same_corners(const anima::MeshSnapshot &actual, const anima::MeshSnapshot &expected) {
+    if (actual.vertices.size() != expected.vertices.size())
+        return false;
+    for (std::size_t i = 0; i < actual.vertices.size(); ++i)
+        if (!same_point(actual.vertices[i].position, expected.vertices[i].position))
+            return false;
+    return true;
 }
 std::shared_ptr<anima::Asset> asset() {
     auto source = std::make_shared<anima::Asset>();
@@ -177,6 +208,81 @@ TEST_CASE("Snapshots keep seams, skin influences, colors and rigid transforms") 
             CHECK(a.uv == b.uv);
         }
     }
+}
+
+TEST_CASE("Snapshots keep each triangle's source winding against its normals under a mirroring transform") {
+    auto source = asset();
+    auto rigid = source->primitives.front();
+    rigid.skin = -1;
+    source->primitives.push_back(rigid);
+    const auto rest = anima::sample_pose(*source);
+    const auto unmirrored = anima::make_mesh_snapshot(*source, rest);
+    REQUIRE(winds_with_normals(unmirrored));
+
+    // Mirroring every node mirrors the joints that skin the fixture and the rigid primitive's node.
+    auto mirrored_pose = rest;
+    for (auto &world : mirrored_pose.world)
+        world = scaling(-1, 1, 1) * world;
+    const auto mirrored = anima::make_mesh_snapshot(*source, mirrored_pose);
+    CHECK(winds_with_normals(mirrored));
+    REQUIRE(mirrored.vertices.size() == unmirrored.vertices.size());
+    // Each triangle keeps its first corner and swaps its last two.
+    const auto reflect = [](anima::Vec3 v) { return anima::Vec3{-v.x, v.y, v.z}; };
+    for (std::size_t i = 0; i < mirrored.vertices.size(); i += 3) {
+        CAPTURE(i);
+        CHECK(same_point(mirrored.vertices[i].position, reflect(unmirrored.vertices[i].position)));
+        CHECK(same_point(mirrored.vertices[i + 1].position, reflect(unmirrored.vertices[i + 2].position)));
+        CHECK(same_point(mirrored.vertices[i + 2].position, reflect(unmirrored.vertices[i + 1].position)));
+    }
+
+    // A mirroring attachment and a mirrored instance follow the same rule.
+    auto attached = unmirrored;
+    anima::pose_mesh_snapshot(*source, rest, attached, 0, scaling(-1, 1, 1));
+    CHECK(same_corners(attached, mirrored));
+    anima::Scene scene;
+    const auto id = scene.add(anima::Mesh::compile(*source));
+    scene.set_pose(id, rest, scaling(-1, 1, 1));
+    CHECK(same_corners(scene.snapshot(), mirrored));
+
+    // A collapsed axis has a zero determinant and keeps the source order.
+    auto flattened = unmirrored;
+    anima::pose_mesh_snapshot(*source, rest, flattened, 0, scaling(1, 1, 0));
+    for (std::size_t i = 0; i < flattened.vertices.size(); ++i) {
+        CAPTURE(i);
+        const auto source_position = unmirrored.vertices[i].position;
+        CHECK(same_point(flattened.vertices[i].position, {source_position.x, source_position.y, 0}));
+    }
+}
+
+TEST_CASE("A skinned triangle whose corners blend to opposite determinant signs follows its first corner") {
+    anima::Asset source;
+    source.nodes.resize(3);
+    source.skins.push_back({{0, 1}, {anima::identity(), anima::identity()}});
+    anima::SourcePrimitive primitive;
+    primitive.node = 2;
+    primitive.skin = 0;
+    const auto corner = [](anima::Vec3 position, std::uint32_t joint) {
+        anima::SourceVertex vertex;
+        vertex.position = position;
+        vertex.normal = {0, 0, 1};
+        vertex.joints = {joint, 0, 0, 0};
+        vertex.weights = {1, 0, 0, 0};
+        return vertex;
+    };
+    // Joint 0 mirrors and joint 1 does not. The first triangle starts on joint 0, the second on joint 1.
+    primitive.vertices = {corner({0, 0, 0}, 0), corner({1, 0, 0}, 1), corner({0, 1, 0}, 1),
+                          corner({0, 0, 0}, 1), corner({1, 0, 0}, 0), corner({0, 1, 0}, 0)};
+    source.primitives.push_back(primitive);
+    auto pose = anima::sample_pose(source);
+    pose.world[0] = scaling(-1, 1, 1);
+    const auto snapshot = anima::make_mesh_snapshot(source, pose);
+    REQUIRE(snapshot.vertices.size() == 6);
+    // The first triangle swaps its last two corners, which joint 1 leaves in place.
+    CHECK(same_point(snapshot.vertices[1].position, {0, 1, 0}));
+    CHECK(same_point(snapshot.vertices[2].position, {1, 0, 0}));
+    // The second keeps its order; joint 0 mirrors its last two corners.
+    CHECK(same_point(snapshot.vertices[4].position, {-1, 0, 0}));
+    CHECK(same_point(snapshot.vertices[5].position, {0, 1, 0}));
 }
 
 TEST_CASE(exported_case) { snapshots(anima::load_asset(exported_model)); }

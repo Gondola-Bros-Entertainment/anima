@@ -1,4 +1,5 @@
 #include "mesh_limits.hpp"
+#include "winding.hpp"
 #include <anima/assets/scene_validation.hpp>
 #include <anima/scene.hpp>
 #include <atomic>
@@ -10,6 +11,7 @@
 #include <limits>
 #include <set>
 #include <unordered_map>
+#include <utility>
 
 namespace anima {
 namespace {
@@ -714,7 +716,9 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                  draw.material < 0 ? -1 : static_cast<int>(material_offset) + draw.material, visible});
             if (draw.skinned)
                 result.skinned_vertices += draw.index_count;
+            bool reversed = false;
             for (std::size_t j = draw.first_index; j < std::size_t(draw.first_index) + draw.index_count; ++j) {
+                const auto corner = j - draw.first_index;
                 const auto &source = asset.vertices()[asset.indices()[j]];
                 auto transform = value.palette[draw.palette_offset];
                 if (draw.skinned) {
@@ -725,6 +729,9 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                                 transform[k] += value.palette[draw.palette_offset + source.joints[influence]][k] *
                                                 source.weights[influence];
                 }
+                // The first corner's matrix decides the triangle's winding, as it does on the GPU.
+                if (corner % 3 == 0)
+                    reversed = detail::reverses_winding(transform);
                 const auto position = point(transform, source.position);
                 result.vertices.push_back(
                     {position,
@@ -735,6 +742,9 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                      source.alpha});
                 if (visible)
                     expand(bounds, position);
+                // A reversed triangle swaps its last two corners, keeping its source winding against its normals.
+                if (reversed && corner % 3 == 2)
+                    std::swap(result.vertices[result.vertices.size() - 2], result.vertices.back());
             }
         }
     }

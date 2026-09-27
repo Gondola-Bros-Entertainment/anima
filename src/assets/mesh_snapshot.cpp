@@ -1,5 +1,6 @@
 #include "mesh_limits.hpp"
 #include "rotation_matrix.hpp"
+#include "winding.hpp"
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/scene_validation.hpp>
 #include <cgltf.h>
@@ -15,6 +16,7 @@
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 
 namespace anima {
 namespace {
@@ -531,7 +533,9 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
         for (auto &draw : scene.primitives)
             if (draw.first_vertex == offset)
                 draw.node_world = node_world;
-        for (const auto &source : primitive.vertices) {
+        bool reversed = false;
+        for (std::size_t corner = 0; corner < primitive.vertices.size(); ++corner) {
+            const auto &source = primitive.vertices[corner];
             Mat4 transform = node_world;
             if (primitive.skin >= 0) {
                 transform = {};
@@ -543,6 +547,9 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
                             transform[m] += joint[m] * source.weights[k];
                     }
             }
+            // The first corner's matrix decides the triangle's winding, as it does on the GPU.
+            if (corner % 3 == 0)
+                reversed = detail::reverses_winding(transform);
             auto &vertex = scene.vertices.at(offset++);
             vertex.position = point(transform, source.position);
             vertex.normal = normal(transform, source.normal);
@@ -553,6 +560,9 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
             for (float v : {vertex.position.x, vertex.position.y, vertex.position.z, vertex.color.x, vertex.color.y,
                             vertex.color.z})
                 require(std::isfinite(v), "Non-finite posed vertex/material");
+            // A reversed triangle swaps its last two corners, keeping its source winding against its normals.
+            if (reversed && corner % 3 == 2)
+                std::swap(scene.vertices.at(offset - 2), scene.vertices.at(offset - 1));
         }
     }
 }
