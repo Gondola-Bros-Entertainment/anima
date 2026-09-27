@@ -80,17 +80,58 @@ SceneRef SceneSet::load(std::string key, std::string_view document, const MeshRe
     check_key(key);
     return append(std::move(key), load_scene(document, resolve, codecs));
 }
+// One link that a remaining member's component reported into a scene being retired.
+struct SceneSet::Link {
+    // Keeps the component value that holds *target alive until the change commits.
+    std::shared_ptr<detail::ComponentRecord> component;
+    const std::string *codec;
+    GameObject *target;
+};
+std::vector<SceneSet::Link> SceneSet::links_into(const Scene &retired, const ComponentCodecs &codecs) const {
+    struct Attached {
+        std::type_index type;
+        std::shared_ptr<detail::ComponentRecord> record;
+    };
+    // Snapshot the attachments first: link callbacks are application code.
+    std::vector<Attached> attached;
+    for (const auto &member : scenes_)
+        if (member->scene.get() != &retired)
+            for (const auto &slot : member->scene->slots_)
+                if (slot.alive)
+                    for (const auto &[type, record] : slot.components)
+                        if (record->attached)
+                            attached.push_back({type, record});
+    std::vector<Link> result;
+    for (const auto &[type, record] : attached) {
+        const auto collected = codecs.collect_links(type, record->value->address());
+        for (auto *link : collected.links)
+            if (retired.contains(link->id()))
+                result.push_back({record, collected.key, link});
+    }
+    return result;
+}
 SceneRef SceneSet::replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
                            const ComponentCodecs &codecs) {
     const Mutation mutation(*this);
     const auto slot = index(target);
     auto old = scenes_[slot];
     auto next = std::make_shared<detail::SceneRecord>(
-        detail::SceneRecord{old->key, load_scene(document, resolve, codecs), true});
-    // No allocations after publication. Cleanup sees the committed membership.
+        detail::SceneRecord{old->key, detail::load_scene_member(document, *this, old->key, resolve, codecs), true});
+    const auto links = links_into(*old->scene, codecs);
+    std::vector<GameObject> rebound;
+    rebound.reserve(links.size());
+    for (const auto &link : links) {
+        auto object = next->scene->find(link.target->key());
+        if (!object.valid())
+            throw std::invalid_argument("Replacement lacks a linked object key");
+        rebound.push_back(std::move(object));
+    }
+    // No allocations after publication. Cleanup sees the committed membership and links.
     scenes_[slot] = next;
     if (active_.lock() == old)
         active_ = next;
+    for (std::size_t i = 0; i < links.size(); ++i)
+        *links[i].target = rebound[i];
     old->attached = false;
     old->scene->invalidate();
     old->scene->release();
@@ -108,16 +149,25 @@ void SceneSet::restore(std::string_view document, const MeshResolver &resolve, c
     scenes_.swap(staged->scenes_);
     active_.swap(staged->active_);
 }
-void SceneSet::unload(SceneRef scene) {
+std::vector<ClearedLink> SceneSet::unload(SceneRef scene, const ComponentCodecs &codecs) {
     const Mutation mutation(*this);
     const auto slot = index(scene);
     auto old = scenes_[slot];
+    const auto links = links_into(*old->scene, codecs);
+    std::vector<ClearedLink> cleared;
+    cleared.reserve(links.size());
+    for (const auto &link : links)
+        cleared.push_back({link.component->object, *link.codec, {old->key, link.target->key()}});
+    // No allocations after removal. Cleanup sees the committed membership and links.
     scenes_.erase(scenes_.begin() + static_cast<std::ptrdiff_t>(slot));
     if (active_.lock() == old)
         active_ = scenes_.empty() ? std::weak_ptr<detail::SceneRecord>{} : scenes_.front();
+    for (const auto &link : links)
+        *link.target = GameObject{};
     old->attached = false;
     old->scene->invalidate();
     old->scene->release();
+    return cleared;
 }
 void SceneSet::retire_all() noexcept {
     auto retired = std::move(scenes_);

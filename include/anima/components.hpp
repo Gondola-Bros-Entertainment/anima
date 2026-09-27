@@ -1,7 +1,9 @@
 #pragma once
 #include <anima/scene.hpp>
 #include <concepts>
+#include <cstddef>
 #include <functional>
+#include <type_traits>
 #include <utility>
 
 /// @file
@@ -270,15 +272,35 @@ class ObjectReferences {
     std::map<ObjectKey, GameObject> objects_;
     std::map<Scene::Id, ObjectKey> keys_;
 };
+/// The GameObject links that one component stores, as its codec's link callback reports them.
+///
+/// SceneSet::replace and SceneSet::unload create one for each component whose codec has a link
+/// callback (see ComponentCodecs::add), call the callback, and after validating the whole change
+/// assign a new handle to each reported link that names an object of the scene being retired.
+/// Applications cannot construct one.
+class ObjectLinks {
+  public:
+    ObjectLinks(const ObjectLinks &) = delete;
+    ObjectLinks &operator=(const ObjectLinks &) = delete;
+    /// Reports @p link, a GameObject stored in the visited component, which the operation may
+    /// overwrite before it returns. Report the component's own members, such as the elements of
+    /// a container it owns, not copies. Throws `std::bad_alloc` when memory runs out.
+    void add(GameObject &link) { links_.push_back(&link); }
+
+  private:
+    friend class ComponentCodecs;
+    ObjectLinks() = default;
+    std::vector<GameObject *> links_;
+};
 /// Registry of persistence adapters for component types, with no reflection or global
 /// registration.
 ///
 /// Documents store ObjectTransform and MeshRenderer state natively; every other component needs a
-/// codec, or capture fails rather than silently dropping it. Encoders must only read, and decoders
-/// may attach components only to the object they receive; other components may not be decoded yet,
-/// so look linked objects' components up after loading. A copy keeps the callbacks' bindings to
-/// services such as a physics world or mixer rather than creating new services. Scene operations
-/// borrow a registry for one call; a Prefab keeps its own copy.
+/// codec, or capture fails rather than silently dropping it. Encoders and link callbacks must only
+/// read, and decoders may attach components only to the object they receive; other components may
+/// not be decoded yet, so look linked objects' components up after loading. A copy keeps the
+/// callbacks' bindings to services such as a physics world or mixer rather than creating new
+/// services. Scene operations borrow a registry for one call; a Prefab keeps its own copy.
 class ComponentCodecs {
   public:
     /// Registers a codec for component type `T` under @p key, a stable name such as
@@ -287,9 +309,17 @@ class ComponentCodecs {
     /// @p encode is called as `encode(const T &, const ObjectReferences &)` and returns the payload.
     /// @p decode is called as `decode(GameObject, std::string_view payload, const ObjectReferences &)`
     /// and must attach a `T` to that object; the registry then applies ComponentData::enabled.
+    ///
+    /// @p links is optional. When given, it is called as `links(T &, ObjectLinks &)` and must report
+    /// every GameObject that the component stores through ObjectLinks::add, changing nothing. Given
+    /// this registry, SceneSet::replace then rebinds the component's links into the replaced scene
+    /// and SceneSet::unload clears its links into the unloaded one. Without it, those links expire
+    /// with their scene, as every handle to it does.
+    ///
     /// Throws `std::invalid_argument` for an invalid key or when `T` or @p key is already
     /// registered. `T` cannot be ObjectTransform or MeshRenderer.
-    template <class T, class Encode, class Decode> void add(std::string key, Encode encode, Decode decode) {
+    template <class T, class Encode, class Decode, class Links = std::nullptr_t>
+    void add(std::string key, Encode encode, Decode decode, [[maybe_unused]] Links links = nullptr) {
         static_assert(!std::same_as<T, ObjectTransform> && !std::same_as<T, MeshRenderer>,
                       "Native transform/renderer data has a dedicated scene representation");
         constexpr std::size_t maximum_key_bytes = 4096;
@@ -312,7 +342,12 @@ class ComponentCodecs {
                         if (!component)
                             throw std::invalid_argument("Component decoder did not attach its declared type");
                         component.set_enabled(data.enabled);
-                    }};
+                    },
+                    {}};
+        if constexpr (!std::is_null_pointer_v<Links>)
+            codec.links = [links = std::move(links)](void *component, ObjectLinks &reported) {
+                links(*static_cast<T *>(component), reported);
+            };
         codecs_.emplace(typeid(T), std::move(codec));
     }
     /// Encodes every component of @p object except ObjectTransform and MeshRenderer, sorted by type
@@ -327,11 +362,21 @@ class ComponentCodecs {
     void restore(GameObject object, std::span<const ComponentData> data, const ObjectReferences &references) const;
 
   private:
+    friend class SceneSet;
     struct Codec {
         std::string key;
         std::function<ComponentData(GameObject, const ObjectReferences &)> encode;
         std::function<void(GameObject, const ComponentData &, const ObjectReferences &)> decode;
+        // Empty when the codec was registered without a link callback.
+        std::function<void(void *, ObjectLinks &)> links;
     };
+    struct CollectedLinks {
+        const std::string *key{};
+        std::vector<GameObject *> links;
+    };
+    // The links that the link callback of @p type reports for the component value at @p component,
+    // with that codec's key; a null key when @p type has no codec with a link callback.
+    CollectedLinks collect_links(std::type_index type, void *component) const;
     std::map<std::type_index, Codec> codecs_;
 };
 } // namespace anima

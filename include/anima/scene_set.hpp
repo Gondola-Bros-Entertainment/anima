@@ -5,10 +5,12 @@
 /// Additive ownership of independently loaded scenes. Part of the `anima::assets` target.
 ///
 /// Membership changes and active selection are synchronous and happen between updates and draws.
-/// They throw `std::logic_error` when nested, or when made from a loader, decoder, component hook
-/// or constructor, or while a member scene is held by a driver. Unloading, replacing, clearing or
-/// restoring invalidates every handle to the old scenes, their objects and their components before
-/// any component cleanup runs. Old handles never rebind to a replacement.
+/// They throw `std::logic_error` when nested, or when made from a loader, decoder, link callback,
+/// component hook or constructor, or while a member scene is held by a driver. Unloading,
+/// replacing, clearing or restoring invalidates every handle to the old scenes, their objects and
+/// their components before any component cleanup runs. Old handles never rebind to a replacement;
+/// instead, SceneSet::replace and SceneSet::unload overwrite the links that surviving members'
+/// components report through their codecs (see ObjectLinks).
 
 namespace anima {
 namespace detail {
@@ -29,6 +31,17 @@ struct SceneAddress {
     /// Key of the object within that scene.
     ObjectKey object;
     bool operator==(const SceneAddress &) const = default;
+};
+
+/// A component link that SceneSet::unload set to null because it named an object of the unloaded
+/// scene.
+struct ClearedLink {
+    /// Object of a remaining member whose component held the link.
+    GameObject owner;
+    /// Codec key of that component's type, as ComponentCodecs::add registered it.
+    std::string component;
+    /// Former target, whose namespace is the unloaded scene's.
+    SceneAddress target;
 };
 
 /// Checked, weak identity of one member scene of a SceneSet.
@@ -94,12 +107,33 @@ class SceneSet {
     [[nodiscard]] SceneRef load(std::string key, std::string_view document, const MeshResolver &resolve,
                                 const ComponentCodecs &codecs = {});
     /// Replaces @p target with a scene loaded from @p document, keeping its namespace, position and
-    /// selection, and returns the new member's handle.
+    /// selection and the links between it and the other members, and returns the new member's
+    /// handle. @p codecs is borrowed for this call.
     ///
-    /// The replacement is fully loaded before the old scene is retired, so both exist meanwhile,
-    /// with their bodies, voices and documents. On failure the set and the old scene are unchanged.
-    /// Throws `std::out_of_range` for an expired @p target, `std::invalid_argument` for one from
-    /// another set, and as load_scene does.
+    /// @p document is either an `anima.scene` document, loaded as load_scene loads it, or an
+    /// `anima.scene-set` document such as serialize() writes. A set document is validated as
+    /// restore() validates it, and each of its mesh keys resolves once, but only its member with
+    /// @p target's namespace is loaded; its `active` field is ignored. That member's components
+    /// decode through the document's reference table: rows in its own namespace map to the
+    /// replacement's objects, and rows in other namespaces map to the objects that SceneSet::find
+    /// returns for their addresses among the other members. A row whose address finds no object is
+    /// left out, so a link to it fails to decode.
+    ///
+    /// Then every link that the other members' components report through link callbacks in
+    /// @p codecs (see ComponentCodecs::add) and that names a live object of @p target is rebound to
+    /// the replacement's object with the same ObjectKey. Links of components whose codec has no
+    /// link callback, or that @p codecs lacks, expire with the old scene.
+    ///
+    /// The replacement is fully loaded and every link is checked before the old scene is retired,
+    /// so both exist meanwhile, with their bodies, voices and documents. On failure the set, the old
+    /// scene, every handle and every link are unchanged. On success the links are rebound after the
+    /// replacement is published and before the old scene's handles are invalidated and its
+    /// components are cleaned up.
+    ///
+    /// Throws `std::out_of_range` for an expired @p target. Throws `std::invalid_argument` for a
+    /// @p target from another set, for invalid content as load_scene or restore() does, for a set
+    /// document without @p target's namespace, and when the replacement lacks the key of a linked
+    /// object. A link callback's exception propagates.
     [[nodiscard]] SceneRef replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
                                    const ComponentCodecs &codecs = {});
     /// Writes every member into one `anima.scene-set` version 1 JSON document, with the rules of
@@ -126,10 +160,20 @@ class SceneSet {
     /// exist meanwhile. Renderers keep the old, now empty scenes until given render_scenes() again.
     /// Throws `std::invalid_argument` for invalid content, as load_scene does.
     void restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs = {});
-    /// Removes @p scene, then releases it. If it was active(), the first remaining member becomes
-    /// active. Throws `std::out_of_range` for an expired handle and `std::invalid_argument` for one
-    /// from another set.
-    void unload(SceneRef scene);
+    /// Removes @p scene, then releases it, and returns the links it cleared. If it was active(), the
+    /// first remaining member becomes active. @p codecs is borrowed for this call.
+    ///
+    /// Every link that the remaining members' components report through link callbacks in
+    /// @p codecs (see ComponentCodecs::add) and that names a live object of @p scene is set to a
+    /// default GameObject, so it can be persisted as null, and is returned in member order; the
+    /// order within a member is unspecified. Links of components whose codec has no link callback,
+    /// or that @p codecs lacks, expire with the scene. The links are cleared after @p scene leaves
+    /// the set and before its handles are invalidated and its components are cleaned up.
+    ///
+    /// Throws `std::out_of_range` for an expired handle and `std::invalid_argument` for one from
+    /// another set, and a link callback's exception propagates; on failure the set, every handle and
+    /// every link are unchanged.
+    std::vector<ClearedLink> unload(SceneRef scene, const ComponentCodecs &codecs = {});
     /// Removes every member, invalidating all of them before any component cleanup.
     void clear();
     /// Number of members.
@@ -178,6 +222,8 @@ class SceneSet {
   private:
     friend struct detail::SceneDriver;
     class Mutation;
+    struct Link;
+    std::vector<Link> links_into(const Scene &retired, const ComponentCodecs &codecs) const;
     std::size_t index(SceneRef scene) const;
     void check_key(std::string_view key) const;
     SceneRef append(std::string key, std::shared_ptr<Scene> scene);

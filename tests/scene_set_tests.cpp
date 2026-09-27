@@ -2,11 +2,13 @@
 #include <doctest/doctest.h>
 
 #include <cstddef>
+#include <functional>
 #include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 using namespace anima;
@@ -64,6 +66,73 @@ struct ConstructorBoundary {
     ConstructorBoundary(SceneSet &scenes, const std::string &empty) {
         CHECK_THROWS_WITH_AS(scenes.serialize({}), busy_scene, std::logic_error);
         CHECK_THROWS_WITH_AS(scenes.restore(empty, {}), callback_membership, std::logic_error);
+    }
+};
+
+constexpr auto follow_key = "test.follow.v1";
+constexpr auto lacks_key = "Replacement lacks a linked object key";
+constexpr auto unmapped_target = "Object reference target is missing or expired";
+constexpr auto stale_link = "Object reference is stale or outside the captured graph";
+// An application component with one object link, which may cross members.
+struct Follow {
+    explicit Follow(GameObject linked) : target(linked) {}
+    GameObject target;
+};
+// A Follow codec, reporting the link to scene sets only when @p report is true. Each call of the link
+// callback runs @p during first.
+ComponentCodecs follow_codecs(bool report, std::function<void()> during = {}) {
+    const auto write = [](const Follow &follow, const ObjectReferences &map) {
+        return map.key(follow.target).string();
+    };
+    const auto read = [](GameObject owner, std::string_view state, const ObjectReferences &map) {
+        owner.add_component<Follow>(map.resolve(ObjectKey::parse(state)));
+    };
+    ComponentCodecs result;
+    if (report)
+        result.add<Follow>(follow_key, write, read, [during = std::move(during)](Follow &follow, ObjectLinks &found) {
+            if (during)
+                during();
+            found.add(follow.target);
+        });
+    else
+        result.add<Follow>(follow_key, write, read);
+    return result;
+}
+// Records, from its destructor, the target of a Follow in another member when this component's scene
+// is cleaned up.
+struct CleanupWitness {
+    ComponentRef<Follow> watched;
+    Scene::Id *seen;
+    ~CleanupWitness() {
+        if (watched)
+            *seen = watched->target.id();
+    }
+};
+// Members alpha and beta whose objects a and b link to each other through Follow, and a document of
+// them with beta active.
+struct Linked {
+    SceneSet scenes;
+    SceneRef alpha = scenes.create("alpha"), beta = scenes.create("beta");
+    GameObject a = alpha->create("a"), b = beta->create("b");
+    ObjectKey b_key = b.key();
+    ComponentCodecs codecs = follow_codecs(true);
+    std::string saved;
+    Linked() {
+        a.add_component<Follow>(b);
+        b.add_component<Follow>(a);
+        scenes.set_active(beta);
+        saved = scenes.serialize({}, codecs);
+        scenes.set_active(alpha);
+    }
+    // Whether the set, its selection, both members and both links are as the constructor left them.
+    bool unchanged() {
+        if (scenes.size() != 2 || !alpha.valid() || !beta.valid() || scenes.active().key() != "alpha")
+            return false;
+        scenes.set_active(beta);
+        const bool same = a.valid() && b.valid() && a.get_component<Follow>()->target.id() == b.id() &&
+                          b.get_component<Follow>()->target.id() == a.id() && scenes.serialize({}, codecs) == saved;
+        scenes.set_active(alpha);
+        return same;
     }
 };
 } // namespace
@@ -200,4 +269,154 @@ TEST_CASE("Persistence cannot run from component hooks or constructors, and sche
     CHECK(called == 2);
     CHECK(member.valid());
     CHECK(object.valid());
+}
+
+TEST_CASE_FIXTURE(Linked, "Replacing a member from a set document keeps the links to and from it") {
+    Scene::Id seen{};
+    b.add_component<CleanupWitness>(a.get_component<Follow>(), &seen);
+    const auto replaced = scenes.replace(beta, saved, {}, codecs);
+    const auto restored = replaced->find(b_key);
+    CHECK_FALSE(beta.valid());
+    CHECK_FALSE(b.valid());
+    REQUIRE(restored.valid());
+    // The member keeps its namespace, position and selection; the document's active member is ignored.
+    CHECK(scenes.scenes()[1].key() == "beta");
+    CHECK(scenes.active().key() == "alpha");
+    // The survivor's link rebinds by key, and the replacement's link resolves by address.
+    CHECK(a.get_component<Follow>()->target.id() == restored.id());
+    CHECK(restored.get_component<Follow>()->target.id() == a.id());
+    // The old scene's cleanup already saw the rebound link.
+    CHECK(seen == restored.id());
+    scenes.set_active(replaced);
+    CHECK(scenes.serialize({}, codecs) == saved);
+}
+
+TEST_CASE_FIXTURE(Linked, "Replacing a member from a scene document rebinds the links into it by key") {
+    Scene authored;
+    (void)authored.create("first");
+    auto second = authored.create("second");
+    REQUIRE(second.key() != b_key);
+    auto same_key = authored.find(b_key);
+    REQUIRE(same_key.valid());
+    same_key.set_name("rebound");
+    const auto replaced = scenes.replace(beta, serialize_scene(authored, {}), {}, codecs);
+    CHECK_FALSE(b.valid());
+    CHECK(a.get_component<Follow>()->target.name() == "rebound");
+    CHECK(a.get_component<Follow>()->target.id() == replaced->find(b_key).id());
+}
+
+TEST_CASE_FIXTURE(Linked, "A replacement that lacks a linked key or target fails without changing the set") {
+    Scene vacant;
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, serialize_scene(vacant, {}), {}, codecs), lacks_key,
+                         std::invalid_argument);
+    CHECK(unchanged());
+    SceneSet other;
+    (void)other.create("alpha");
+    (void)other.create("beta");
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, other.serialize({}), {}, codecs), lacks_key, std::invalid_argument);
+    CHECK(unchanged());
+    // The replacement links to a, which no longer exists in the member that stays.
+    a.destroy();
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, saved, {}, codecs), unmapped_target, std::invalid_argument);
+    CHECK(beta.valid());
+    CHECK(b.valid());
+    CHECK(b.get_component<Follow>()->target.id() == a.id());
+}
+
+TEST_CASE_FIXTURE(Linked, "Unloading a member clears the links into it and reports them") {
+    auto second = alpha->create("second");
+    second.add_component<Follow>(b);
+    auto bystander = alpha->create("bystander");
+    bystander.add_component<Follow>(second);
+    Scene::Id seen{1, 1, 1};
+    b.add_component<CleanupWitness>(a.get_component<Follow>(), &seen);
+    const auto cleared = scenes.unload(beta, codecs);
+    CHECK_FALSE(beta.valid());
+    CHECK_FALSE(b.valid());
+    REQUIRE(cleared.size() == 2);
+    for (const auto &link : cleared) {
+        CHECK((link.owner.id() == a.id() || link.owner.id() == second.id()));
+        CHECK(link.component == follow_key);
+        CHECK(link.target == SceneAddress{"beta", b_key});
+    }
+    CHECK(cleared[0].owner.id() != cleared[1].owner.id());
+    CHECK(a.get_component<Follow>()->target.id() == Scene::Id{});
+    CHECK(second.get_component<Follow>()->target.id() == Scene::Id{});
+    CHECK(bystander.get_component<Follow>()->target.id() == second.id());
+    CHECK(seen == Scene::Id{});
+    // A cleared link persists as null.
+    SceneSet restored;
+    restored.restore(scenes.serialize({}, codecs), {}, codecs);
+    CHECK_FALSE(restored.find(SceneAddress{"alpha", a.key()}).get_component<Follow>()->target.valid());
+}
+
+TEST_CASE_FIXTURE(Linked, "Links that no codec reports expire with their scene") {
+    const auto silent = follow_codecs(false);
+    const auto replaced = scenes.replace(beta, saved, {}, silent);
+    CHECK_FALSE(a.get_component<Follow>()->target.valid());
+    // The replacement's own link still resolves by address.
+    CHECK(replaced->find(b_key).get_component<Follow>()->target.id() == a.id());
+    CHECK_THROWS_WITH_AS(scenes.serialize({}, silent), stale_link, std::invalid_argument);
+    a.get_component<Follow>()->target = replaced->find(b_key);
+    CHECK(scenes.unload(replaced).empty());
+    CHECK_FALSE(a.get_component<Follow>()->target.valid());
+    CHECK_THROWS_WITH_AS(scenes.serialize({}, silent), stale_link, std::invalid_argument);
+}
+
+TEST_CASE_FIXTURE(Linked, "A failing link callback leaves the set unchanged, and callbacks cannot change membership") {
+    int calls = 0;
+    const auto nested = follow_codecs(true, [&] {
+        ++calls;
+        CHECK_THROWS_WITH_AS(scenes.clear(), "Scene membership changes cannot be nested", std::logic_error);
+    });
+    const auto failing = follow_codecs(true, [] { throw std::runtime_error("Link callback failed"); });
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, saved, {}, failing), "Link callback failed", std::runtime_error);
+    CHECK(unchanged());
+    CHECK_THROWS_WITH_AS(scenes.unload(beta, failing), "Link callback failed", std::runtime_error);
+    CHECK(unchanged());
+    // Only the survivor's component is visited; the retired member's own links are not.
+    const auto replaced = scenes.replace(beta, saved, {}, nested);
+    CHECK(calls == 1);
+    CHECK(scenes.unload(replaced, nested).size() == 1);
+    CHECK(calls == 2);
+}
+
+TEST_CASE("A set document replacement validates the whole document but loads only its member") {
+    const auto first_mesh = scene_set_test::persistence_mesh(), second_mesh = scene_set_test::persistence_mesh();
+    SceneSet scenes;
+    auto alpha = scenes.create("alpha"), beta = scenes.create("beta");
+    const auto kept = alpha->create("kept", first_mesh);
+    (void)beta->create("replaced", second_mesh);
+    const auto saved =
+        scenes.serialize([&](const auto &mesh) { return mesh == first_mesh ? "first-mesh" : "second-mesh"; });
+    std::vector<std::string> resolved;
+    const MeshResolver resolve = [&](std::string_view name) -> std::shared_ptr<const Mesh> {
+        resolved.emplace_back(name);
+        return name == "second-mesh" ? second_mesh : nullptr;
+    };
+    // Every mesh key of the document resolves, including those of members that are not loaded.
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, saved, resolve), "Scene mesh key could not be resolved",
+                         std::invalid_argument);
+    CHECK(resolved == std::vector<std::string>{"first-mesh"});
+    CHECK(beta.valid());
+    const MeshResolver both = [&](std::string_view name) {
+        resolved.emplace_back(name);
+        return name == "first-mesh" ? first_mesh : second_mesh;
+    };
+    resolved.clear();
+    auto renamed = saved;
+    for (auto at = renamed.find("\"beta\""); at != std::string::npos; at = renamed.find("\"beta\"", at))
+        renamed.replace(at, 6, "\"gamma\"");
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, renamed, both), "Replaced scene namespace is missing",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, substitute(saved, "\"version\": 1", "\"version\": 2"), both),
+                         unsupported_version, std::invalid_argument);
+    CHECK(beta.valid());
+    resolved.clear();
+    const auto replaced = scenes.replace(beta, saved, both);
+    CHECK(resolved == std::vector<std::string>{"first-mesh", "second-mesh"});
+    CHECK(kept.valid());
+    CHECK(alpha->size() == 1);
+    CHECK(replaced->size() == 1);
+    CHECK(replaced->find(ObjectKey{1}).renderer().mesh() == second_mesh);
 }

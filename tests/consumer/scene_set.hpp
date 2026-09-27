@@ -274,6 +274,54 @@ inline void persistence() {
               restored_counts.live == 0 && restored_counts.all_invalid && destination.serialize({}) == vacant_document,
           "Empty set restore did not clear selection, retire resources or round-trip null activity");
 }
+// An application component whose codec reports its link, so membership changes repair it.
+struct Anchor {
+    explicit Anchor(GameObject linked) : target(linked) {}
+    GameObject target;
+};
+inline ComponentCodecs anchor_codecs() {
+    ComponentCodecs codecs;
+    codecs.add<Anchor>(
+        "test.anchor.v1",
+        [](const Anchor &anchor, const ObjectReferences &map) { return map.key(anchor.target).string(); },
+        [](GameObject owner, std::string_view state, const ObjectReferences &map) {
+            owner.add_component<Anchor>(map.resolve(ObjectKey::parse(state)));
+        },
+        [](Anchor &anchor, ObjectLinks &found) { found.add(anchor.target); });
+    return codecs;
+}
+inline void cross_member_links() {
+    const auto codecs = anchor_codecs();
+    SceneSet set;
+    auto hub = set.create("hub"), level = set.create("level");
+    auto player = hub->create("player"), door = level->create("door");
+    player.add_component<Anchor>(door);
+    door.add_component<Anchor>(player);
+    const auto door_key = door.key();
+    const auto saved = set.serialize({}, codecs);
+    const auto linked = [&] { return player.get_component<Anchor>()->target; };
+
+    Scene vacant;
+    const auto vacant_document = serialize_scene(vacant, {});
+    rejects([&] { (void)set.replace(level, vacant_document, {}, codecs); });
+    check(level && door.valid() && linked().id() == door.id() && set.serialize({}, codecs) == saved,
+          "A replacement that lacks a linked key changed the set");
+
+    level = set.replace(level, saved, {}, codecs);
+    const auto reloaded = level->find(door_key);
+    check(!door.valid() && reloaded.valid() && linked().id() == reloaded.id() &&
+              reloaded.get_component<Anchor>()->target.id() == player.id() && set.serialize({}, codecs) == saved,
+          "Replacement lost a link to or from the replaced member");
+
+    const auto cleared = set.unload(level, codecs);
+    check(cleared.size() == 1 && cleared[0].owner.id() == player.id() && cleared[0].component == "test.anchor.v1" &&
+              cleared[0].target == SceneAddress{"level", door_key} && linked().id() == Scene::Id{} && !level,
+          "Unload did not clear and report the link into the unloaded member");
+    SceneSet restored;
+    restored.restore(set.serialize({}, codecs), {}, codecs);
+    check(!restored.find(SceneAddress{"hub", player.key()}).get_component<Anchor>()->target.valid(),
+          "A cleared link did not persist as null");
+}
 inline void phases() {
     PhaseCounts counts;
     SceneSet set;
@@ -310,6 +358,7 @@ inline void phases() {
 inline void run() {
     phases();
     persistence();
+    cross_member_links();
     Counts counts, cleared;
     SceneSet set;
     check(set.size() == 0 && !set.active() && set.scenes().empty(), "Scene set not initially empty");

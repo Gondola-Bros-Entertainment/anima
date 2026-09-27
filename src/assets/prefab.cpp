@@ -560,5 +560,41 @@ std::unique_ptr<SceneSet> load_scene_set(std::string_view document, const MeshRe
             codecs.restore(selected[i]->find(node.key), node.components, references);
     return staged;
 }
+
+std::shared_ptr<Scene> load_scene_member(std::string_view document, const SceneSet &scenes, std::string_view key,
+                                         const MeshResolver &resolve, const ComponentCodecs &codecs) {
+    const auto parsed = json_step([&] { return parse_json(document, maximum_document_bytes); });
+    const bool set_document = parsed.is_object() && parsed.contains("kind") && parsed.at("kind").is_string() &&
+                              parsed.at("kind").get_ref<const std::string &>() == scene_set_kind;
+    if (!set_document)
+        return instantiate_scene(json_step([&] { return decode_document(parsed, scene_kind, resolve); }), codecs);
+    const auto decoded = json_step([&] { return decode_scene_set(parsed, resolve, codecs); });
+    const auto member = std::find_if(decoded.scenes.begin(), decoded.scenes.end(),
+                                     [&](const DecodedSet::Member &candidate) { return candidate.key == key; });
+    require(member != decoded.scenes.end(), "Replaced scene namespace is missing");
+    const auto index = static_cast<std::size_t>(member - decoded.scenes.begin());
+    const auto &nodes = member->content.nodes;
+    // On failure the scene is released, which invalidates every staged handle before any decoded
+    // component is cleaned up.
+    auto scene = std::make_shared<Scene>();
+    ScenePersistence::next_key(*scene, member->content.next_key);
+    const auto objects = instantiate_prefab_nodes(*scene, nodes, nullptr, identity(), true);
+    // Rows in the replaced namespace name the new objects. Other rows resolve by address, as a
+    // restore resolves them, but against the members that stay; an address that finds no object is
+    // left unmapped, so only a link to it fails.
+    std::vector<ObjectReferences::Entry> entries;
+    entries.reserve(decoded.references.size());
+    for (const auto &reference : decoded.references) {
+        const auto object = reference.scene == index
+                                ? scene->find(reference.object)
+                                : scenes.find(SceneAddress{decoded.scenes[reference.scene].key, reference.object});
+        if (object.valid())
+            entries.push_back({reference.key, object});
+    }
+    const ObjectReferences references(entries);
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+        codecs.restore(objects[i], nodes[i].components, references);
+    return scene;
+}
 } // namespace detail
 } // namespace anima

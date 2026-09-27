@@ -154,6 +154,14 @@ void ComponentCodecs::validate(std::span<const ComponentData> data) const {
             throw std::invalid_argument("Unknown serialized component type");
     }
 }
+ComponentCodecs::CollectedLinks ComponentCodecs::collect_links(std::type_index type, void *component) const {
+    const auto found = codecs_.find(type);
+    if (found == codecs_.end() || !found->second.links)
+        return {};
+    ObjectLinks reported;
+    found->second.links(component, reported);
+    return {&found->second.key, std::move(reported.links_)};
+}
 void ComponentCodecs::restore(GameObject object, std::span<const ComponentData> data,
                               const ObjectReferences &references) const {
     validate(data);
