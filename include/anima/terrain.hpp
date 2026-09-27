@@ -46,7 +46,7 @@ struct TerrainAppearance {
     /// Materials copied into the mesh; the terrain uses the first. Empty uses one white, untextured material named
     /// `Terrain`.
     std::span<const Material> materials;
-    /// Textures copied into the mesh for the materials to reference.
+    /// Textures copied into the mesh for the materials to reference; the copies share their images.
     std::span<const Texture> textures;
     /// Name of the mesh's single node.
     std::string node_name = "Terrain";

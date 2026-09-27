@@ -20,8 +20,8 @@ void validate_material(const Material &material, std::span<const Texture> textur
 /// Applies validate_scene_geometry with @p budget, which can throw SceneCapacityError, and
 /// requires fewer than `INT_MAX` materials and textures, finite bounds, finite vertices with alpha
 /// in [0, 1] and tangent w of 0, 1 or -1, draws of whole triangles inside the vertex array with a
-/// valid material index and finite node matrix, valid materials, and textures whose byte counts
-/// match their dimensions and whose samplers and encodings are valid. Rendering consumes immutable
-/// Mesh resources; snapshots are for inspection and reference work.
+/// valid material index and finite node matrix, valid materials, and textures with an image whose
+/// byte count matches its dimensions and with valid samplers and encodings. Rendering consumes
+/// immutable Mesh resources; snapshots are for inspection and reference work.
 void validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget = {});
 } // namespace anima

@@ -83,11 +83,13 @@ void detail::validate_surfaces(std::span<const Material> materials, std::span<co
         validate_material(material, textures);
     std::size_t texture_bytes = 0;
     for (const auto &texture : textures) {
-        require(texture.width && texture.height &&
-                    texture.width <= std::numeric_limits<std::size_t>::max() / 4 / texture.height,
+        // A texture without an image has no dimensions.
+        const auto *image = texture.image.get();
+        require(image && image->width && image->height &&
+                    image->width <= std::numeric_limits<std::size_t>::max() / 4 / image->height,
                 "Invalid scene texture dimensions");
-        const auto bytes = std::size_t(texture.width) * texture.height * 4;
-        require(texture.rgba.size() == bytes, "MeshSnapshot texture byte count does not match dimensions");
+        const auto bytes = std::size_t(image->width) * image->height * 4;
+        require(image->rgba.size() == bytes, "MeshSnapshot texture byte count does not match dimensions");
         // Leave room for mip levels and staging-size arithmetic.
         require(bytes <= std::numeric_limits<std::size_t>::max() / 2 - texture_bytes,
                 "MeshSnapshot texture byte count overflow");

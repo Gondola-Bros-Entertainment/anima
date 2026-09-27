@@ -43,7 +43,8 @@ struct MeshCompileOptions {
     /// Maximum texture width and height. A larger texture is replaced by its first mip level that fits, from
     /// texture_mips(). A masked base color keeps its alpha coverage at the cutoff `alpha_cutoff / alpha` when
     /// that is in (0, 1], the rule material_texture_plan() applies to mip chains, and uses that need different
-    /// cutoffs, or none, get separate copies. Zero keeps authored sizes.
+    /// cutoffs, or none, get separate copies. Textures that share an image and an encoding share each shrunk
+    /// image. Zero keeps authored sizes.
     unsigned max_texture_edge{};
 };
 
@@ -59,7 +60,8 @@ class Mesh {
     [[nodiscard]] static std::shared_ptr<const Mesh> load(const std::filesystem::path &path) {
         return compile(*load_asset(path));
     }
-    /// Validates @p source and copies it into a new Mesh; @p source may change or be destroyed afterwards.
+    /// Validates @p source and copies it into a new Mesh, which shares the images of its textures; @p source may
+    /// change or be destroyed afterwards, but the images must not (see Image).
     ///
     /// Each source primitive becomes one IndexedDraw, in order. Within a primitive, vertices whose attributes
     /// are all bit-identical are merged, so seams and triangle order are preserved and nothing is simplified.
@@ -82,7 +84,8 @@ class Mesh {
     /// `std::runtime_error` when @p source has skins or animations, before anything else. Otherwise invalid
     /// content anywhere in @p source, including materials and textures that no primitive uses, fails as
     /// compile(source) would: its first defect in compile()'s order throws the same exception. Limits on the
-    /// size of one Mesh apply to each result.
+    /// size of one Mesh apply to each result. The results share the images of @p source's textures, and each
+    /// shrunk image among themselves.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Vertices that indices() refers to.

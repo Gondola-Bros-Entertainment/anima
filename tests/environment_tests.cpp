@@ -29,9 +29,7 @@ Environment overhead_sun() {
 }
 // A 2x1 image from transparent black to opaque white.
 Texture gradient(TextureEncoding encoding) {
-    Texture image{2, 1, {0, 0, 0, 0, 255, 255, 255, 255}, {}};
-    image.encoding = encoding;
-    return image;
+    return {std::make_shared<Image>(Image{2, 1, {0, 0, 0, 0, 255, 255, 255, 255}}), {}, encoding};
 }
 // Data maps on texture 0, which must be linear, and color maps on texture 1, which must be sRGB.
 Material textured() {

@@ -54,7 +54,8 @@ struct MeshSnapshot {
     std::vector<Primitive> primitives;
     /// Materials that Primitive::material_index refers to.
     std::vector<Material> material_data;
-    /// Textures that the materials refer to.
+    /// Textures that the materials refer to. They share their images with the Asset or Mesh they
+    /// came from instead of copying them.
     std::vector<Texture> textures;
     /// Minimum corner of the posed vertices' bounding box; Scene::snapshot counts visible
     /// primitives only.

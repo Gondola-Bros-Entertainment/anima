@@ -56,7 +56,8 @@ inline anima::Asset geometry(unsigned count) {
         asset.primitives.push_back(primitive);
         asset.materials.push_back({"surface", {1, 1, 1}, int(i)});
         const auto shade = static_cast<std::uint8_t>(80 + i * 60);
-        asset.textures.push_back({2, 1, {shade, 200, 240, 255, shade, 200, 240, 255}, {}});
+        asset.textures.push_back(
+            {std::make_shared<anima::Image>(anima::Image{2, 1, {shade, 200, 240, 255, shade, 200, 240, 255}}), {}});
     }
     return asset;
 }
@@ -296,7 +297,9 @@ inline int run(int argc, char **argv) {
     rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); });
     ++rollbacks;
     invalid = b_data;
-    invalid.textures[0].rgba.pop_back();
+    auto truncated = *invalid.textures[0].image;
+    truncated.rgba.pop_back();
+    invalid.textures[0].image = std::make_shared<anima::Image>(std::move(truncated));
     rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); });
     ++rollbacks;
     capture("rollback-invalid");

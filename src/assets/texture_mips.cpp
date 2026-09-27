@@ -99,22 +99,24 @@ MipLevel downsample(const MipLevel &previous, TextureEncoding encoding, bool wei
 } // namespace
 
 std::vector<MipLevel> texture_mips(const Texture &texture, TextureMipOptions options) {
-    if (!texture.width || !texture.height ||
-        texture.width > std::numeric_limits<std::size_t>::max() / channel_count / texture.height ||
-        texture.rgba.size() != std::size_t(texture.width) * texture.height * channel_count)
+    // A texture without an image has no dimensions.
+    const auto *image = texture.image.get();
+    if (!image || !image->width || !image->height ||
+        image->width > std::numeric_limits<std::size_t>::max() / channel_count / image->height ||
+        image->rgba.size() != std::size_t(image->width) * image->height * channel_count)
         throw std::invalid_argument("Invalid texture dimensions or byte count");
     if (texture.encoding != TextureEncoding::srgb && texture.encoding != TextureEncoding::linear)
         throw std::invalid_argument("Invalid texture encoding");
     if (options.alpha_coverage_cutoff && (!std::isfinite(*options.alpha_coverage_cutoff) ||
                                           *options.alpha_coverage_cutoff <= 0 || *options.alpha_coverage_cutoff > 1))
         throw std::invalid_argument("Alpha coverage cutoff must be finite and in (0, 1]");
-    std::vector<MipLevel> result{{texture.width, texture.height, texture.rgba}};
+    std::vector<MipLevel> result{{image->width, image->height, image->rgba}};
     while (result.back().width > 1 || result.back().height > 1)
         result.push_back(downsample(result.back(), texture.encoding, options.alpha_coverage_cutoff.has_value()));
     if (options.alpha_coverage_cutoff) {
         const auto cutoff = *options.alpha_coverage_cutoff;
         const auto coverage = double(covered_texels(alpha_histogram(result.front()), cutoff)) /
-                              (std::size_t(texture.width) * texture.height);
+                              (std::size_t(image->width) * image->height);
         // Correct independent, unscaled mip levels; scaling a parent before
         // filtering its children would accumulate coverage/colour distortion.
         for (std::size_t level = 1; level < result.size(); ++level) {

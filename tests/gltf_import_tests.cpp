@@ -1,6 +1,8 @@
 #include <anima/assets/asset.hpp>
+#include <anima/mesh.hpp>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -69,15 +71,17 @@ std::vector<std::byte> triangle(std::array<float, 4> vec4) {
     return bin;
 }
 // Buffer views 0 and 1 and accessors 0 (POSITION) and 1 (a VEC4 per vertex) over triangle(); @p more_views
-// appends further buffer views.
-std::string triangle_json(std::size_t buffer_bytes, const std::string &more_views = {}) {
+// appends further buffer views and @p more_accessors further accessors.
+std::string triangle_json(std::size_t buffer_bytes, const std::string &more_views = {},
+                          const std::string &more_accessors = {}) {
     return R"("buffers":[{"byteLength":)" + std::to_string(buffer_bytes) + R"(}],
       "bufferViews":[{"buffer":0,"byteLength":)" +
            std::to_string(position_bytes) + R"(},
                      {"buffer":0,"byteOffset":)" +
            std::to_string(position_bytes) + R"(,"byteLength":)" + std::to_string(vec4_bytes) + "}" + more_views + R"(],
       "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
-                   {"bufferView":1,"componentType":5126,"count":3,"type":"VEC4"}])";
+                   {"bufferView":1,"componentType":5126,"count":3,"type":"VEC4"})" +
+           more_accessors + "]";
 }
 std::string view(std::size_t offset, std::size_t bytes) {
     return R"(,{"buffer":0,"byteOffset":)" + std::to_string(offset) + R"(,"byteLength":)" + std::to_string(bytes) + "}";
@@ -118,6 +122,23 @@ std::vector<std::byte> textured(const std::string &extension, const std::string 
                                                            view(extension_offset, extension_source_bytes)) +
                              R"(,"images":[{"bufferView":2,"mimeType":"image/png"},{"bufferView":3,"mimeType":")" +
                              mime + R"("}],"textures":[)" + texture + "]}";
+    return glb(json, std::move(bin));
+}
+
+// A triangle with UVs whose material samples texture 0 as base color and as normal map, and three textures of
+// one PNG image, the second with nearest magnification.
+std::vector<std::byte> shared_image() {
+    auto bin = triangle({});
+    const auto png_offset = bin.size();
+    for (const auto b : fallback_png)
+        bin.push_back(static_cast<std::byte>(b));
+    const std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+      "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}},"normalTexture":{"index":0}}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":2},"material":0}]}],)" +
+                             triangle_json(bin.size(), view(png_offset, fallback_png.size()),
+                                           R"(,{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"})") +
+                             R"(,"samplers":[{"magFilter":9728}],"images":[{"bufferView":2,"mimeType":"image/png"}],
+      "textures":[{"source":0},{"source":0,"sampler":0},{"source":0}]})";
     return glb(json, std::move(bin));
 }
 } // namespace
@@ -170,10 +191,37 @@ TEST_CASE("An optional compressed texture source falls back to the PNG source") 
         const auto asset =
             load_asset(textured(extension, R"({"source":0,"extensions":{")" + extension + R"(":{"source":1}}})"));
         REQUIRE(asset->textures.size() == 1u);
-        CHECK(asset->textures[0].width == 1u);
-        CHECK(asset->textures[0].height == 1u);
-        CHECK(std::equal(fallback_texel.begin(), fallback_texel.end(), asset->textures[0].rgba.begin()));
+        REQUIRE(asset->textures[0].image);
+        const auto &image = *asset->textures[0].image;
+        CHECK(image.width == 1u);
+        CHECK(image.height == 1u);
+        CHECK(std::equal(fallback_texel.begin(), fallback_texel.end(), image.rgba.begin()));
         CHECK_THROWS_AS(load_asset(textured(extension, R"({"extensions":{")" + extension + R"(":{"source":1}}})")),
                         std::runtime_error);
     }
+}
+
+TEST_CASE("Textures made from one image share its decoded pixels, and meshes share them too") {
+    const auto asset = load_asset(shared_image());
+    // Three textures, then a copy of texture 0 for its second encoding: the normal map claims texture 0 as data
+    // first, so the base color reads the copy.
+    REQUIRE(asset->textures.size() == 4u);
+    const auto &image = asset->textures[0].image;
+    REQUIRE(image);
+    CHECK(image->width == 1u);
+    CHECK(std::ranges::equal(image->rgba, fallback_texel));
+    for (const auto &texture : asset->textures)
+        CHECK(texture.image == image);
+    // Each texture keeps its own sampler and encoding.
+    CHECK(asset->textures[0].sampler.mag == Filter::linear);
+    CHECK(asset->textures[1].sampler.mag == Filter::nearest);
+    REQUIRE(asset->materials.size() == 1u);
+    CHECK(asset->materials[0].normal_texture == 0);
+    CHECK(asset->materials[0].texture == 3);
+    CHECK(asset->textures[0].encoding == TextureEncoding::linear);
+    CHECK(asset->textures[3].encoding == TextureEncoding::srgb);
+    const auto mesh = Mesh::compile(*asset);
+    REQUIRE(mesh->materials()->textures.size() == asset->textures.size());
+    for (const auto &texture : mesh->materials()->textures)
+        CHECK(texture.image == image);
 }
