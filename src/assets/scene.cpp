@@ -244,30 +244,42 @@ Scene::Instance &Scene::get(Id id) {
 }
 const Scene::Instance &Scene::instance(Id id) const { return const_cast<Scene *>(this)->get(id); }
 void Scene::pose(Instance &value, const Pose &pose, const Mat4 &world) {
-    require(pose.world.size() == value.asset->rest_.world.size(), "Pose does not match render asset");
-    affine(world);
     std::vector<Mat4> palette;
+    std::vector<RenderBounds> bounds;
     palette.reserve(value.asset->palette_size_);
+    bounds.reserve(value.asset->draws_.size());
+    const auto combined = append_pose(*value.asset, pose, world, palette, bounds);
+    // All validation and allocations completed before publishing pose and bounds.
+    value.palette.swap(palette);
+    value.primitive_bounds.swap(bounds);
+    value.bounds = combined;
+}
+RenderBounds Scene::append_pose(const Mesh &asset, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
+                                std::vector<RenderBounds> &bounds) {
+    require(pose.world.size() == asset.rest_.world.size(), "Pose does not match render asset");
+    affine(world);
+    const auto first_matrix = palette.size(), first_bound = bounds.size();
     for (const auto &node : pose.world) {
         affine(node);
         palette.push_back(world * node);
         affine(palette.back());
     }
-    for (const auto &skin : value.asset->skins_)
+    for (const auto &skin : asset.skins_)
         for (std::size_t j = 0; j < skin.joints.size(); ++j) {
             palette.push_back(world * pose.world[skin.joints[j]] * skin.inverse_bind[j]);
             affine(palette.back());
         }
-    std::vector<RenderBounds> bounds(value.asset->draws_.size());
-    for (std::size_t i = 0; i < bounds.size(); ++i)
-        for (const auto &part : value.asset->bounds_[i])
+    bounds.resize(first_bound + asset.draws_.size());
+    const auto posed = std::span(bounds).subspan(first_bound);
+    for (std::size_t i = 0; i < posed.size(); ++i)
+        for (const auto &part : asset.bounds_[i])
             for (unsigned corner = 0; corner < 8; ++corner) {
                 const auto &b = part.bound;
-                expand(bounds[i], point(palette[part.palette],
-                                        {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
-                                         corner & 4 ? b.maximum.z : b.minimum.z}));
+                expand(posed[i], point(palette[first_matrix + part.palette],
+                                       {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
+                                        corner & 4 ? b.maximum.z : b.minimum.z}));
             }
-    for (auto &bound : bounds)
+    for (auto &bound : posed)
         if (bound.valid) {
             // Pad for the accepted weight error and an equal rounding margin in
             // the convex influence union at the GPU boundary.
@@ -281,15 +293,12 @@ void Scene::pose(Instance &value, const Pose &pose, const Mat4 &world) {
             expand(bound, hi);
         }
     RenderBounds combined;
-    for (const auto &bound : bounds)
+    for (const auto &bound : posed)
         if (bound.valid) {
             expand(combined, bound.minimum);
             expand(combined, bound.maximum);
         }
-    // All validation and allocations completed before publishing pose and bounds.
-    value.palette.swap(palette);
-    value.primitive_bounds.swap(bounds);
-    value.bounds = combined;
+    return combined;
 }
 GameObject Scene::create(std::string name, std::shared_ptr<const Mesh> mesh) {
     if (!next_key_)
@@ -530,44 +539,45 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
     auto &entry = slot(id);
     affine(local);
     affine(world);
-    // Most animated objects are leaves or keep their placement between samples.
-    if (entry.first_child == no_slot || world == entry.world) {
-        if (entry.value.asset && (replacement || world != entry.world))
-            pose(entry.value, replacement ? *replacement : entry.pose ? *entry.pose : entry.value.asset->rest_, world);
-    } else {
-        struct Update {
-            Id id;
-            Mat4 world;
-            Instance posed;
-        };
-        std::vector<Update> updates;
-        updates.push_back({id, world, {}});
-        for (std::size_t i = 0; i < updates.size(); ++i) {
-            const auto current = updates[i].id;
-            const auto placed = updates[i].world;
-            const auto &source = slot(current);
+    // Most animated objects are leaves or keep their placement between samples, so only a moved
+    // object with children re-poses more than itself.
+    const bool moved = world != entry.world, descendants = moved && entry.first_child != no_slot;
+    if (descendants || (entry.value.asset && (replacement || moved))) {
+        // Validate every affected palette and bound in the working lists before publishing any.
+        posed_objects_.clear();
+        posed_palettes_.clear();
+        posed_bounds_.clear();
+        posed_objects_.push_back({id, world, {}, {}, {}});
+        for (std::size_t i = 0; i < posed_objects_.size(); ++i) {
+            const auto current = posed_objects_[i].id;
+            const auto placed = posed_objects_[i].world;
+            const auto &source = slots_[current.slot];
             affine(placed);
             if (source.value.asset) {
-                auto &posed = updates[i].posed;
-                posed.asset = source.value.asset;
-                pose(posed,
-                     current == id && replacement ? *replacement
-                     : source.pose                ? *source.pose
-                                                  : source.value.asset->rest_,
-                     placed);
+                posed_objects_[i].palette = posed_palettes_.size();
+                posed_objects_[i].bounds = posed_bounds_.size();
+                posed_objects_[i].combined = append_pose(*source.value.asset,
+                                                         current == id && replacement ? *replacement
+                                                         : source.pose                ? *source.pose
+                                                                                      : source.value.asset->rest_,
+                                                         placed, posed_palettes_, posed_bounds_);
             }
-            for (auto child = source.first_child; child != no_slot; child = slots_[child].next_sibling)
-                updates.push_back({id_at(child), placed * slots_[child].local, {}});
+            if (descendants)
+                for (auto child = source.first_child; child != no_slot; child = slots_[child].next_sibling)
+                    posed_objects_.push_back({id_at(child), placed * slots_[child].local, {}, {}, {}});
         }
-        // Publish only after every descendant palette/bound has been validated.
-        for (auto &update : updates) {
-            auto &target = slot(update.id);
-            target.world = update.world;
-            if (target.value.asset) {
-                target.value.palette.swap(update.posed.palette);
-                target.value.primitive_bounds.swap(update.posed.primitive_bounds);
-                target.value.bounds = update.posed.bounds;
-            }
+        // A renderer keeps its mesh, so its lists keep their sizes and copying cannot allocate.
+        for (const auto &posed : posed_objects_) {
+            auto &target = slots_[posed.id.slot];
+            target.world = posed.world;
+            auto &value = target.value;
+            if (!value.asset)
+                continue;
+            std::copy_n(posed_palettes_.begin() + static_cast<std::ptrdiff_t>(posed.palette), value.palette.size(),
+                        value.palette.begin());
+            std::copy_n(posed_bounds_.begin() + static_cast<std::ptrdiff_t>(posed.bounds),
+                        value.primitive_bounds.size(), value.primitive_bounds.begin());
+            value.bounds = posed.combined;
         }
     }
     entry.local = local;

@@ -256,6 +256,14 @@ class Scene {
         std::vector<std::shared_ptr<detail::ComponentRecord>> records;
         bool ordered = true;
     };
+    // An object that update_transform moves: its new world matrix and, with a renderer, where its
+    // palette and primitive bounds start in the working lists, and their union.
+    struct PosedObject {
+        Id id;
+        Mat4 world;
+        std::size_t palette{}, bounds{};
+        RenderBounds combined;
+    };
     Id id_at(std::size_t index) const noexcept { return {owner_, slots_[index].generation, index}; }
     void link_child(std::size_t parent, std::size_t child) noexcept;
     void unlink_child(std::size_t child) noexcept;
@@ -282,6 +290,8 @@ class Scene {
     static void run_components(std::span<Scene *const> scenes, double seconds, bool fixed, bool lifecycle_only = false);
     Instance &get(Id id);
     static void pose(Instance &instance, const Pose &pose, const Mat4 &world);
+    static RenderBounds append_pose(const Mesh &asset, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
+                                    std::vector<RenderBounds> &bounds);
     std::uint64_t owner_;
     std::shared_ptr<detail::SceneLifetime> lifetime_;
     std::size_t object_count_{};
@@ -297,6 +307,11 @@ class Scene {
     mutable std::size_t removed_instances_{};
     std::unordered_map<std::type_index, ComponentList> component_types_;
     ComponentList scheduled_;
+    // Working lists of update_transform, kept between calls, so moving objects allocates only when
+    // a move affects more objects or palette matrices than any before it.
+    std::vector<PosedObject> posed_objects_;
+    std::vector<Mat4> posed_palettes_;
+    std::vector<RenderBounds> posed_bounds_;
     bool updating_{};
     std::size_t constructing_{};
 };
@@ -308,7 +323,9 @@ class Scene {
 /// Transform setters without `local` in their name work in world space and derive the local matrix
 /// from the inverse of the parent's world matrix, so they throw MathError under a singular parent;
 /// the local setters do not invert. A transform change validates the whole affected subtree, then
-/// moves descendants and renderers at once, keeping their animation poses.
+/// moves descendants and renderers at once, keeping their animation poses. Its work is proportional
+/// to that subtree, and the scene keeps its working storage, so a change allocates only when it
+/// affects more objects or palette matrices than any earlier one.
 class GameObject {
   public:
     /// Invalid handle.
