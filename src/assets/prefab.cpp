@@ -195,11 +195,13 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
     nodes.reserve(objects.size());
     // Resource resolution is explicit and cached once per key. No scene is mutated here.
     for (const auto &value : objects) {
-        anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh", "pose", "visible", "active",
-                                           "material_factors", "primitive_visible", "components"});
+        // An omitted setting takes the default that Prefab::Node declares.
+        anima::detail::json_fields(
+            value, {"key", "name", "parent", "local", "mesh"},
+            {"pose", "visible", "active", "material_factors", "primitive_visible", "components"});
         Prefab::Node node;
         node.key = ObjectKey::parse(value.at("key").get<std::string>());
-        node.active = value.at("active").get<bool>();
+        node.active = value.value("active", node.active);
         node.name = value.at("name").get<std::string>();
         const auto &parent = value.at("parent");
         if (!parent.is_null()) {
@@ -223,7 +225,8 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
             }
             node.mesh = found->second;
         }
-        const auto &pose = value.at("pose");
+        static const Json omitted;
+        const auto &pose = value.contains("pose") ? value.at("pose") : omitted;
         if (!pose.is_null()) {
             require(pose.is_array() && node.mesh && pose.size() == node.mesh->rest_pose().world.size(),
                     "Scene pose does not match the mesh");
@@ -231,20 +234,27 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
             for (const auto &world : pose)
                 node.pose->world.push_back(matrix_value(world));
         }
-        node.visible = value.at("visible").get<bool>();
-        const auto &factors = value.at("material_factors");
-        require(factors.is_array(), "Invalid scene material factors");
-        for (const auto &factor : factors) {
-            require(factor.is_array() && factor.size() == 3, "Scene material factor requires RGB");
-            node.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
+        node.visible = value.value("visible", node.visible);
+        if (value.contains("material_factors")) {
+            const auto &factors = value.at("material_factors");
+            require(factors.is_array(), "Invalid scene material factors");
+            for (const auto &factor : factors) {
+                require(factor.is_array() && factor.size() == 3, "Scene material factor requires RGB");
+                node.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
+            }
         }
-        node.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
-        const auto &components = value.at("components");
-        require(components.is_array() && components.size() <= maximum_components, "Invalid serialized component count");
-        for (const auto &component : components) {
-            anima::detail::json_fields(component, {"type", "state", "enabled"});
-            node.components.push_back({component.at("type").get<std::string>(),
-                                       component.at("state").get<std::string>(), component.at("enabled").get<bool>()});
+        if (value.contains("primitive_visible"))
+            node.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
+        if (value.contains("components")) {
+            const auto &components = value.at("components");
+            require(components.is_array() && components.size() <= maximum_components,
+                    "Invalid serialized component count");
+            for (const auto &component : components) {
+                anima::detail::json_fields(component, {"type", "state", "enabled"});
+                node.components.push_back({component.at("type").get<std::string>(),
+                                           component.at("state").get<std::string>(),
+                                           component.at("enabled").get<bool>()});
+            }
         }
         nodes.push_back(std::move(node));
     }
@@ -259,14 +269,14 @@ std::uint64_t decode_next_key(const Json &value, std::span<const Prefab::Node> n
 }
 Decoded decode_document(const Json &parsed, std::string_view kind, const MeshResolver &resolve) {
     require(parsed.is_object() && parsed.contains("version"), "Invalid scene document");
-    require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
-            "Unsupported scene document version");
+    anima::detail::json_version(parsed, "version", document_version, "Unsupported scene document version");
+    require(parsed.contains("kind") && parsed.at("kind").is_string() &&
+                parsed.at("kind").get_ref<const std::string &>() == kind,
+            "Invalid scene document kind");
     if (kind == scene_kind)
         anima::detail::json_fields(parsed, {"version", "kind", "objects", "next_key"});
     else
         anima::detail::json_fields(parsed, {"version", "kind", "objects"});
-    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == kind,
-            "Invalid scene document kind");
     MeshResources resources;
     auto nodes = decode_nodes(parsed.at("objects"), kind == prefab_kind, resolve, resources);
     std::uint64_t next_key = 1;
@@ -301,11 +311,11 @@ struct DecodedSet {
     std::vector<Reference> references;
 };
 DecodedSet decode_scene_set(const Json &parsed, const MeshResolver &resolve, const ComponentCodecs &codecs) {
-    detail::json_fields(parsed, {"version", "kind", "active", "scenes", "references"});
-    require(parsed.at("version").is_number_integer() && parsed.at("version") == scene_set_version,
-            "Unsupported scene set document version");
-    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == scene_set_kind,
+    detail::json_version(parsed, "version", scene_set_version, "Unsupported scene set document version");
+    require(parsed.contains("kind") && parsed.at("kind").is_string() &&
+                parsed.at("kind").get_ref<const std::string &>() == scene_set_kind,
             "Invalid scene set document kind");
+    detail::json_fields(parsed, {"version", "kind", "active", "scenes", "references"});
     const auto &documents = parsed.at("scenes"), &table = parsed.at("references");
     require(documents.is_array() && documents.size() <= maximum_scenes, "Invalid scene set scene count");
     require(table.is_array() && table.size() <= maximum_objects, "Invalid scene set reference count");

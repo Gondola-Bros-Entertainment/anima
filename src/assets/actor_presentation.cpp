@@ -9,8 +9,9 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
     using namespace presentation_data;
     using anima::operator*;
     const auto document = read(profile);
+    anima::detail::json_version(document, "version", 1, "Unsupported actor presentation profile version");
     anima::detail::json_fields(document, {"version", "id", "manifest", "capabilities", "sockets"});
-    if (document.at("version") != 1 || !document.at("capabilities").is_array() || !document.at("sockets").is_object())
+    if (!document.at("capabilities").is_array() || !document.at("sockets").is_object())
         throw std::invalid_argument("Invalid actor presentation profile");
     id = text(document.at("id"));
     const auto relative = std::filesystem::path(text(document.at("manifest")));
@@ -51,8 +52,9 @@ struct ActionSetCatalog::Impl {
   public:
     explicit Impl(const nlohmann::json &document, const ActionRuntime &actions) {
         using namespace presentation_data;
+        anima::detail::json_version(document, "version", 1, "Unsupported action-set catalog version");
         anima::detail::json_fields(document, {"version", "sets"});
-        if (document.at("version") != 1 || !document.at("sets").is_object())
+        if (!document.at("sets").is_object())
             throw std::invalid_argument("Invalid action-set catalog");
         for (const auto &[name, slots] : document.at("sets").items()) {
             if (name.empty() || !slots.is_object() || slots.empty())

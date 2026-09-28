@@ -13,9 +13,10 @@ struct ActionRuntime::Impl {
         using namespace presentation_data;
         if (!motion_)
             throw std::invalid_argument("Actions require a bound motion resource");
+        anima::detail::json_version(document, "schema_version", 1, "Unsupported action catalog version");
         anima::detail::json_fields(document, {"schema_version", "actions"});
-        if (document.at("schema_version") != 1 || !document.at("actions").is_array() ||
-            document.at("actions").empty() || document.at("actions").size() > maximum_actions)
+        if (!document.at("actions").is_array() || document.at("actions").empty() ||
+            document.at("actions").size() > maximum_actions)
             throw std::invalid_argument("Invalid action catalog");
         for (const auto &value : document.at("actions")) {
             anima::detail::json_fields(value, {"id", "handling", "phases"}, {"roles"});

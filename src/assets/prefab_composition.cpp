@@ -160,11 +160,11 @@ using Part = PrefabComposition::Part;
 using Mount = PrefabComposition::Mount;
 PrefabComposition decode_composition(std::string_view document) {
     const auto parsed = detail::parse_json(document, maximum_document_bytes);
-    detail::json_fields(parsed, {"version", "kind", "parts"});
-    require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
-            "Unsupported prefab composition document version");
-    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == document_kind,
+    detail::json_version(parsed, "version", document_version, "Unsupported prefab composition document version");
+    require(parsed.contains("kind") && parsed.at("kind").is_string() &&
+                parsed.at("kind").get_ref<const std::string &>() == document_kind,
             "Invalid prefab composition document kind");
+    detail::json_fields(parsed, {"version", "kind", "parts"});
     const auto &values = parsed.at("parts");
     require(values.is_array() && !values.empty() && values.size() <= maximum_parts,
             "Invalid prefab composition part count");

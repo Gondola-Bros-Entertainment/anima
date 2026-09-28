@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -24,6 +25,18 @@ inline void json_fields(const nlohmann::json &value, std::initializer_list<std::
         if (std::find(required.begin(), required.end(), it.key()) == required.end() &&
             std::find(optional.begin(), optional.end(), it.key()) == optional.end())
             throw std::invalid_argument("Unknown JSON field: " + it.key());
+}
+// Throws std::invalid_argument with message unless field of the object value is the integer
+// expected; a value that is not an object or lacks the field fails as json_fields reports it.
+// Readers call it before json_fields, so a document of another version reports its version
+// rather than a field that version lacks or adds.
+inline void json_version(const nlohmann::json &value, const char *field, std::int64_t expected, const char *message) {
+    if (!value.is_object())
+        throw std::invalid_argument("JSON document requires an object");
+    if (!value.contains(field))
+        throw std::invalid_argument("Missing JSON field: " + std::string(field));
+    if (!value.at(field).is_number_integer() || value.at(field) != expected)
+        throw std::invalid_argument(message);
 }
 
 // Private document reader shared by scene and component formats. Validate

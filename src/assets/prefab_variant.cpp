@@ -96,7 +96,8 @@ Json encode_renderer(const PrefabVariant::Renderer &renderer, const MeshName &na
 }
 using MeshResources = std::map<std::string, std::shared_ptr<const Mesh>, std::less<>>;
 PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &resolve, MeshResources &resources) {
-    detail::json_fields(value, {"mesh", "pose", "visible", "material_factors", "primitive_visible"});
+    // An omitted setting takes the default that PrefabVariant::Renderer declares.
+    detail::json_fields(value, {"mesh"}, {"pose", "visible", "material_factors", "primitive_visible"});
     PrefabVariant::Renderer renderer;
     const auto &mesh = value.at("mesh");
     if (!mesh.is_null()) {
@@ -111,7 +112,8 @@ PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &r
         }
         renderer.mesh = found->second;
     }
-    const auto &pose = value.at("pose");
+    static const Json omitted;
+    const auto &pose = value.contains("pose") ? value.at("pose") : omitted;
     if (!pose.is_null()) {
         require(pose.is_array() && renderer.mesh && pose.size() == renderer.mesh->rest_pose().world.size(),
                 "Prefab variant pose does not match the mesh");
@@ -119,14 +121,17 @@ PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &r
         for (const auto &world : pose)
             renderer.pose->world.push_back(matrix_value(world));
     }
-    renderer.visible = value.at("visible").get<bool>();
-    const auto &factors = value.at("material_factors");
-    require(factors.is_array(), "Invalid prefab variant material factors");
-    for (const auto &factor : factors) {
-        require(factor.is_array() && factor.size() == 3, "Prefab variant material factor requires RGB");
-        renderer.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
+    renderer.visible = value.value("visible", renderer.visible);
+    if (value.contains("material_factors")) {
+        const auto &factors = value.at("material_factors");
+        require(factors.is_array(), "Invalid prefab variant material factors");
+        for (const auto &factor : factors) {
+            require(factor.is_array() && factor.size() == 3, "Prefab variant material factor requires RGB");
+            renderer.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
+        }
     }
-    renderer.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
+    if (value.contains("primitive_visible"))
+        renderer.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
     return renderer;
 }
 } // namespace
@@ -238,11 +243,11 @@ namespace {
 using Override = PrefabVariant::Override;
 PrefabVariant decode_variant(std::string_view document, const MeshResolver &resolve) {
     const auto parsed = detail::parse_json(document, maximum_document_bytes);
-    detail::json_fields(parsed, {"version", "kind", "base", "overrides"});
-    require(parsed.at("version").is_number_integer() && parsed.at("version") == document_version,
-            "Unsupported prefab variant document version");
-    require(parsed.at("kind").is_string() && parsed.at("kind").get_ref<const std::string &>() == document_kind,
+    detail::json_version(parsed, "version", document_version, "Unsupported prefab variant document version");
+    require(parsed.contains("kind") && parsed.at("kind").is_string() &&
+                parsed.at("kind").get_ref<const std::string &>() == document_kind,
             "Invalid prefab variant document kind");
+    detail::json_fields(parsed, {"version", "kind", "base", "overrides"});
     auto base = parsed.at("base").get<std::string>();
     validate_key(base);
     const auto &values = parsed.at("overrides");
@@ -251,31 +256,37 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
     overrides.reserve(values.size());
     MeshResources resources;
     for (const auto &value : values) {
-        detail::json_fields(value,
-                            {"key", "name", "local", "active", "renderer", "set_components", "remove_components"});
+        // An omitted change inherits from the base, as null does.
+        detail::json_fields(value, {"key"},
+                            {"name", "local", "active", "renderer", "set_components", "remove_components"});
         Override result;
         result.key = ObjectKey::parse(value.at("key").get<std::string>());
-        if (!value.at("name").is_null())
+        const auto given = [&](const char *name) { return value.contains(name) && !value.at(name).is_null(); };
+        if (given("name"))
             result.name = value.at("name").get<std::string>();
-        if (!value.at("local").is_null())
+        if (given("local"))
             result.local = matrix_value(value.at("local"));
-        if (!value.at("active").is_null())
+        if (given("active"))
             result.active = value.at("active").get<bool>();
-        if (!value.at("renderer").is_null())
+        if (given("renderer"))
             result.renderer = decode_renderer(value.at("renderer"), resolve, resources);
-        const auto &components = value.at("set_components");
-        require(components.is_array() && components.size() <= maximum_components,
-                "Invalid prefab variant component count");
-        for (const auto &component : components) {
-            detail::json_fields(component, {"type", "state", "enabled"});
-            result.set_components.push_back({component.at("type").get<std::string>(),
-                                             component.at("state").get<std::string>(),
-                                             component.at("enabled").get<bool>()});
+        if (value.contains("set_components")) {
+            const auto &components = value.at("set_components");
+            require(components.is_array() && components.size() <= maximum_components,
+                    "Invalid prefab variant component count");
+            for (const auto &component : components) {
+                detail::json_fields(component, {"type", "state", "enabled"});
+                result.set_components.push_back({component.at("type").get<std::string>(),
+                                                 component.at("state").get<std::string>(),
+                                                 component.at("enabled").get<bool>()});
+            }
         }
-        const auto &removed = value.at("remove_components");
-        require(removed.is_array() && removed.size() <= maximum_components,
-                "Invalid prefab variant component removal count");
-        result.remove_components = removed.get<std::vector<std::string>>();
+        if (value.contains("remove_components")) {
+            const auto &removed = value.at("remove_components");
+            require(removed.is_array() && removed.size() <= maximum_components,
+                    "Invalid prefab variant component removal count");
+            result.remove_components = removed.get<std::vector<std::string>>();
+        }
         overrides.push_back(std::move(result));
     }
     return PrefabVariant(std::move(base), std::move(overrides));

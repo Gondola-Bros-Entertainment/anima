@@ -1,5 +1,8 @@
 #include "near.hpp"
+#include <anima/assets/action_runtime.hpp>
+#include <anima/assets/actor_presentation.hpp>
 #include <anima/assets/attachments.hpp>
+#include <anima/assets/interaction_runtime.hpp>
 #include <anima/assets/motion_runtime.hpp>
 #include <doctest/doctest.h>
 
@@ -318,8 +321,11 @@ TEST_CASE("An attachment catalog accepts only version 3 and none of the removed 
     const MotionFixture fixture;
     const auto catalog = attachment_catalog();
     const auto decode = [&](const std::string &text) { (void)decode_attachment_catalog(text, fixture.directory.path); };
-    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("schema_version":3)", R"("schema_version":2)")),
-                         "Unsupported attachment catalog version or units", std::invalid_argument);
+    // Another version is reported before the fields, so a removed field does not hide it.
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("schema_version":3)", R"("schema_version":2,"defaults":{})")),
+                         "Unsupported attachment catalog version", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("units":"meters")", R"("units":"feet")")),
+                         "Unsupported attachment catalog units", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("empty_handling")", R"("defaults":{},"empty_handling")")),
                          "Unknown JSON field: defaults", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"id":"prop",)", R"({"id":"prop","category":"test",)")),
@@ -330,6 +336,30 @@ TEST_CASE("An attachment catalog accepts only version 3 and none of the removed 
                          "Empty presentation identity/reference", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"":"layer.side"})")),
                          "Empty layer override base clip", std::invalid_argument);
+}
+
+TEST_CASE("Motion, action, actor and interaction documents report another version before their fields") {
+    const MotionFixture fixture;
+    // Each document also has a field that its version lacks, which must not hide the version.
+    const auto contract = [&](const std::string &from, const std::string &to) {
+        (void)MotionRuntime(fixture.body, fixture.manifest, replaced(fixture.contract, from, to));
+    };
+    CHECK_THROWS_WITH_AS(contract(R"({"version":3,)", R"({"version":2,"removed":0,)"),
+                         "Unsupported motion contract version", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(contract(R"("evaluation":{"version":1,)", R"("evaluation":{"version":2,"removed":0,)"),
+                         "Unsupported motion evaluation version", std::invalid_argument);
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, R"({"schema_version":2,"removed":0,"actions":[]})"),
+                         "Unsupported action catalog version", std::invalid_argument);
+    const ActionRuntime actions(motion, action_catalog);
+    CHECK_THROWS_WITH_AS(ActionSetCatalog(R"({"version":2,"removed":0,"sets":{}})", actions),
+                         "Unsupported action-set catalog version", std::invalid_argument);
+    const auto profile = fixture.directory.path / "actor.profile.json";
+    std::ofstream(profile) << R"({"version":2,"removed":0})";
+    CHECK_THROWS_WITH_AS(ActorPresentation{profile}, "Unsupported actor presentation profile version",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(InteractionRuntime({}, R"({"version":2,"removed":0})"),
+                         "Unsupported coordinated interaction version", std::invalid_argument);
 }
 
 TEST_CASE("An attachment instance replaces its item in a scene") {

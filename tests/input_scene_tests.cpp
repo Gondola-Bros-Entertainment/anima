@@ -20,6 +20,7 @@ constexpr unsigned control_capacity = 1024; // Recorded controls per Context, do
 constexpr auto over_capacity = "Input context exceeds 1024 active physical controls";
 constexpr auto invalid_integer = "Invalid input configuration integer";
 constexpr auto invalid_envelope = "Invalid input configuration envelope";
+constexpr auto unsupported_version = "Unsupported input configuration version";
 constexpr auto modifier_count = "Invalid input modifier count";
 constexpr auto unknown_component = "Unknown serialized component type";
 constexpr auto duplicate_field = "Duplicate JSON document field";
@@ -84,17 +85,11 @@ TEST_CASE("Chord configuration round-trips by identity, and only version 3 docum
     CHECK(restored[0].bindings[0].modifiers == map[0].bindings[0].modifiers);
     CHECK(i::serialize_map(restored) == document);
     CHECK(i::deserialize_map(R"({"version":3,"actions":[]})").empty());
-    const std::array<std::pair<std::string_view, const char *>, 5> versions{{
-        {"2", invalid_envelope},
-        {"4", invalid_integer},
-        {"3.0", invalid_integer},
-        {"-1", invalid_integer},
-        {"true", invalid_integer},
-    }};
-    for (const auto &version : versions) {
-        CAPTURE(version.first);
-        const auto invalid = "{\"version\":" + std::string(version.first) + ",\"actions\":[]}";
-        CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), version.second, std::invalid_argument);
+    // Any version but the integer 3 is reported as a version, before the fields are read.
+    for (const auto version : {"2", "4", "3.0", "-1", "true"}) {
+        CAPTURE(version);
+        const auto invalid = "{\"version\":" + std::string(version) + ",\"actions\":[],\"removed\":0}";
+        CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), unsupported_version, std::invalid_argument);
     }
     for (const auto &invalid : invalid_payloads(document, "version", "version")) {
         CAPTURE(invalid.first);
@@ -496,7 +491,9 @@ TEST_CASE("Input drivers are rejected during component construction, scheduling,
 TEST_CASE("Maps round-trip, and other versions, unknown fields and out-of-range codes are rejected") {
     const auto map = key_map();
     CHECK(i::serialize_map(i::deserialize_map(i::serialize_map(map))) == i::serialize_map(map));
-    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":1,"actions":[]})"), invalid_envelope, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":1,"actions":[]})"), unsupported_version,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":3,"actions":{}})"), invalid_envelope, std::invalid_argument);
     CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":3,"actions":[],"unknown":0})"), "Unknown JSON field: unknown",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(

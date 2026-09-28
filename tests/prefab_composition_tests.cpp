@@ -80,6 +80,10 @@ TEST_CASE("Malformed composition documents are rejected with their reason") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1", "\"version\":1.0")), unsupported_version,
                          std::invalid_argument);
+    // A removed field does not hide another version.
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(substitute(valid, "\"version\":1", "\"version\":2"), "{", "{\"removed\":0,")),
+        unsupported_version, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1,", "")), missing_version, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "anima.prefab-composition", "anima.prefab")),
                          "Invalid prefab composition document kind", std::invalid_argument);

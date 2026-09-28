@@ -177,13 +177,14 @@ struct MotionRuntime::Impl {
     static std::vector<anima::EvaluationJoint> bind(const anima::Asset &asset, const anima::Manifest &manifest,
                                                     const nlohmann::json &data) {
         // Every object is checked for unknown fields, as the other presentation readers do.
+        detail::json_version(data, "version", 3, "Unsupported motion contract version");
         detail::json_fields(data, {"version", "skeleton", "evaluation", "resource", "clips", "layers"});
         const auto &skeleton = data.at("skeleton");
         const auto &definition = data.at("evaluation");
         detail::json_fields(skeleton, {"id", "bind_signature", "joint_count"});
+        detail::json_version(definition, "version", 1, "Unsupported motion evaluation version");
         detail::json_fields(definition, {"version", "id", "parents", "masks", "chains"});
-        if (data.at("version") != 3 || definition.at("version") != 1 ||
-            definition.at("id").get<std::string>().empty() || skeleton.at("id") != manifest.skeleton_id ||
+        if (definition.at("id").get<std::string>().empty() || skeleton.at("id") != manifest.skeleton_id ||
             skeleton.at("bind_signature") != manifest.bind_signature ||
             skeleton.at("joint_count") != manifest.joint_count)
             throw std::invalid_argument("Motion rig/skin contract mismatch");
