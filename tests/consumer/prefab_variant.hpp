@@ -65,6 +65,7 @@ inline void native_and_resources() {
     renderer.visible = false;
     renderer.material_factors = {{0.2F, 0.3F, 0.4F}};
     renderer.primitive_visible = {false};
+    renderer.casts_shadows = false;
     PrefabVariant::Override root;
     root.key = {41};
     root.name = "variant root";
@@ -108,7 +109,8 @@ inline void native_and_resources() {
               node(result, {41}).mesh == replacement_mesh && node(result, {41}).pose &&
               node(result, {41}).pose->world[0][12] == 4 && !node(result, {99}).mesh &&
               node(result, {99}).name == "base child" && node(result, {99}).parent == nodes[1].parent &&
-              node(result, {700}).parent == nodes[2].parent,
+              node(result, {700}).parent == nodes[2].parent && !node(result, {41}).casts_shadows &&
+              node(result, {99}).casts_shadows,
           "Variant changed its base or lost typed overrides, authored keys or topology");
     Scene scene;
     auto placement = identity();
@@ -118,7 +120,8 @@ inline void native_and_resources() {
     const auto &rendered = scene.instance(instance.id());
     check(instance.position().x == 16 && children[0].position().x == 19 && instance.active_self() &&
               instance.renderer().mesh() == replacement_mesh && !children[0].has_component<MeshRenderer>() &&
-              !rendered.visible && !rendered.primitive_visible[0] && rendered.factors[0].x == 0.2F,
+              !rendered.visible && !rendered.primitive_visible[0] && rendered.factors[0].x == 0.2F &&
+              !rendered.casts_shadows,
           "Resolved variant did not instantiate its native state or placement");
     rejects([&] { (void)children[0].renderer(); });
 

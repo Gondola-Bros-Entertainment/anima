@@ -1,6 +1,7 @@
 // This suite supplies its own doctest main, which takes an optional exported GLB as its first argument.
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "near.hpp"
+#include <anima/prefab.hpp>
 #include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
@@ -253,6 +254,50 @@ TEST_CASE("Snapshots keep each triangle's source winding against its normals und
         const auto source_position = unmirrored.vertices[i].position;
         CHECK(same_point(flattened.vertices[i].position, {source_position.x, source_position.y, 0}));
     }
+}
+
+TEST_CASE("A renderer casts shadows until it is told not to, and a new mesh restores casting") {
+    const auto mesh = anima::Mesh::compile(*asset());
+    anima::Scene scene;
+    const auto id = scene.add(mesh);
+    CHECK(scene.instance(id).casts_shadows);
+    scene.set_casts_shadows(id, false);
+    CHECK_FALSE(scene.instance(id).casts_shadows);
+    // Hiding and showing the renderer leaves the setting alone.
+    scene.set_visible(id, false);
+    scene.set_visible(id, true);
+    CHECK_FALSE(scene.instance(id).casts_shadows);
+    auto renderer = scene.object(id).renderer();
+    renderer.set_casts_shadows(true);
+    CHECK(scene.instance(id).casts_shadows);
+    renderer.set_casts_shadows(false);
+    renderer.set_mesh(mesh);
+    CHECK(scene.instance(id).casts_shadows);
+    const auto empty = scene.create("empty");
+    CHECK_THROWS_WITH_AS(scene.set_casts_shadows(empty.id(), false), "GameObject has no MeshRenderer",
+                         std::logic_error);
+}
+
+TEST_CASE("Shadow casting persists through scene documents and prefabs") {
+    const auto mesh = anima::Mesh::compile(*asset());
+    anima::Scene scene;
+    auto caster = scene.create("caster", mesh);
+    caster.renderer().set_casts_shadows(false);
+    const anima::MeshName name = [](const std::shared_ptr<const anima::Mesh> &) { return std::string("mesh"); };
+    const anima::MeshResolver resolve = [&](std::string_view) { return mesh; };
+    const auto document = anima::serialize_scene(scene, name);
+    CHECK(document.find(R"("casts_shadows": false)") != std::string::npos);
+    const auto loaded = anima::load_scene(document, resolve);
+    CHECK_FALSE(loaded->instance(loaded->roots().front().id()).casts_shadows);
+    const auto prefab = anima::Prefab::capture(caster);
+    CHECK_FALSE(prefab.nodes().front().casts_shadows);
+    anima::Scene destination;
+    const auto copy = prefab.instantiate(destination);
+    CHECK_FALSE(destination.instance(copy.id()).casts_shadows);
+    // Without a mesh there is no renderer to stop casting.
+    anima::Prefab::Node empty;
+    empty.casts_shadows = false;
+    CHECK_THROWS_WITH_AS(anima::Prefab({empty}), "Empty scene object has renderer state", std::invalid_argument);
 }
 
 TEST_CASE("A skinned triangle whose corners blend to opposite determinant signs follows its first corner") {

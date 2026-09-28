@@ -483,7 +483,10 @@ inline void check_images(const gpu_check::Captures &images) {
         shadow("shadowed", sum(a) - sum(ground_pixel(images["shadowed"], x, z)), opaque, largest_clear_change, x, z);
         images.require(ground_pixel(images["caster-hidden"], x, z) == a, "An invisible caster kept its shadow",
                        {"unshadowed", "caster-hidden"});
-        for (const auto *name : {"detail-shadowed", "detail-only", "detail-outside-world", "detail-boundary"})
+        images.require(ground_pixel(images["non-casting"], x, z) == a, "A caster that casts no shadows kept its shadow",
+                       {"unshadowed", "non-casting"});
+        for (const auto *name :
+             {"detail-shadowed", "detail-only", "detail-outside-world", "detail-boundary", "non-casting-receiver"})
             shadow(name, sum(a) - sum(ground_pixel(images[name], x, z)), opaque, largest_clear_change, x, z);
         shadow("camera-left", sum(a) - sum(ground_pixel(images["camera-left"], x, z, {-4, 6, 10})), opaque,
                largest_moved_clear_change, x, z);
@@ -547,6 +550,13 @@ inline int run(int argc, char **argv) {
     capture("shadowed");
     require(renderer.resource_stats().shadow_draw_calls == 2, "Missing shadow casters");
     require(renderer.resource_stats().shadow_bytes > 1024, "Shadow allocation missing");
+    const auto main_draws = renderer.resource_stats().draw_calls;
+    // The caster stays visible but draws nothing into the shadow maps; the ground checks below compare it.
+    scene->set_casts_shadows(id, false);
+    capture("non-casting");
+    require(renderer.resource_stats().shadow_draw_calls == 0, "A renderer that casts no shadows drew into them");
+    require(renderer.resource_stats().draw_calls == main_draws, "A renderer that casts no shadows stopped drawing");
+    scene->set_casts_shadows(id, true);
     // Resolve authored lighting through the production component graph. Geometry
     // remains independently selected above; these scenes contain only light data.
     anima::SceneSet lighting;
@@ -606,6 +616,11 @@ inline int run(int argc, char **argv) {
     capture("multi-scene-shadowed");
     require(renderer.resource_stats().mesh_uploads == uploads && renderer.resource_stats().shadow_draw_calls == 2,
             "Cross-scene shadows lost a caster or duplicated resource uploads");
+    // The ground stops casting and still receives the other scene's caster; the ground checks compare it.
+    scene->set_casts_shadows(id, false);
+    capture("non-casting-receiver");
+    require(renderer.resource_stats().shadow_draw_calls == 1, "A non-casting receiver still drew into the shadows");
+    scene->set_casts_shadows(id, true);
     renderer.set_frustum_culling(false);
     capture("multi-scene-unculled");
     renderer.set_frustum_culling(true);

@@ -38,7 +38,7 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     const auto *renderer = value.renderer ? &*value.renderer : nullptr;
     require(!renderer || renderer->mesh ||
                 (!renderer->pose && renderer->visible && renderer->material_factors.empty() &&
-                 renderer->primitive_visible.empty()),
+                 renderer->primitive_visible.empty() && renderer->casts_shadows),
             "Empty prefab variant renderer has state");
     auto object = validation.create();
     if (value.local)
@@ -92,12 +92,13 @@ Json encode_renderer(const PrefabVariant::Renderer &renderer, const MeshName &na
             {"pose", pose},
             {"visible", renderer.visible},
             {"material_factors", factors},
-            {"primitive_visible", renderer.primitive_visible}};
+            {"primitive_visible", renderer.primitive_visible},
+            {"casts_shadows", renderer.casts_shadows}};
 }
 using MeshResources = std::map<std::string, std::shared_ptr<const Mesh>, std::less<>>;
 PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &resolve, MeshResources &resources) {
     // An omitted setting takes the default that PrefabVariant::Renderer declares.
-    detail::json_fields(value, {"mesh"}, {"pose", "visible", "material_factors", "primitive_visible"});
+    detail::json_fields(value, {"mesh"}, {"pose", "visible", "material_factors", "primitive_visible", "casts_shadows"});
     PrefabVariant::Renderer renderer;
     const auto &mesh = value.at("mesh");
     if (!mesh.is_null()) {
@@ -132,6 +133,7 @@ PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &r
     }
     if (value.contains("primitive_visible"))
         renderer.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
+    renderer.casts_shadows = value.value("casts_shadows", renderer.casts_shadows);
     return renderer;
 }
 } // namespace
@@ -188,6 +190,7 @@ Prefab PrefabVariant::resolve(const PrefabResolver &resolver, ComponentCodecs co
             node.visible = renderer.visible;
             node.material_factors = renderer.material_factors;
             node.primitive_visible = renderer.primitive_visible;
+            node.casts_shadows = renderer.casts_shadows;
         }
         for (const auto &type : value.remove_components) {
             const auto component = std::find_if(node.components.begin(), node.components.end(),

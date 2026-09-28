@@ -726,6 +726,7 @@ void MeshRenderer::clear_material_factor(std::size_t material) {
 void MeshRenderer::set_primitive_visible(std::size_t primitive, bool visible) {
     object_.scene().set_primitive_visible(object_.id_, primitive, visible);
 }
+void MeshRenderer::set_casts_shadows(bool casts) { object_.scene().set_casts_shadows(object_.id_, casts); }
 RenderBounds MeshRenderer::bounds() const { return object_.scene().instance(object_.id_).bounds; }
 void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
     auto &value = get(id);
@@ -745,6 +746,7 @@ void Scene::set_visible(Id id, bool visible) {
 void Scene::set_primitive_visible(Id id, std::size_t primitive, bool visible) {
     get(id).primitive_visible.at(primitive) = visible;
 }
+void Scene::set_casts_shadows(Id id, bool casts) { get(id).casts_shadows = casts; }
 RenderBounds Scene::bounds() const {
     RenderBounds result;
     for (auto id : instances()) {

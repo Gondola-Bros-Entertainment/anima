@@ -32,6 +32,7 @@ struct ScenePersistence {
             node.visible = source.value.visible;
             node.material_factors = source.value.factors;
             node.primitive_visible = source.value.primitive_visible;
+            node.casts_shadows = source.value.casts_shadows;
         }
         return node;
     }
@@ -72,8 +73,8 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
         require(node.components.size() <= maximum_components, "Invalid serialized component count");
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
-        require(node.mesh ||
-                    (!node.pose && node.material_factors.empty() && node.primitive_visible.empty() && node.visible),
+        require(node.mesh || (!node.pose && node.material_factors.empty() && node.primitive_visible.empty() &&
+                              node.visible && node.casts_shadows),
                 "Empty scene object has renderer state");
     }
 }
@@ -169,6 +170,7 @@ Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, Mes
                            {"active", node.active},
                            {"material_factors", factors},
                            {"primitive_visible", node.primitive_visible},
+                           {"casts_shadows", node.casts_shadows},
                            {"components", components}});
     }
     return objects;
@@ -198,7 +200,7 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
         // An omitted setting takes the default that Prefab::Node declares.
         anima::detail::json_fields(
             value, {"key", "name", "parent", "local", "mesh"},
-            {"pose", "visible", "active", "material_factors", "primitive_visible", "components"});
+            {"pose", "visible", "active", "material_factors", "primitive_visible", "casts_shadows", "components"});
         Prefab::Node node;
         node.key = ObjectKey::parse(value.at("key").get<std::string>());
         node.active = value.value("active", node.active);
@@ -245,6 +247,7 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
         }
         if (value.contains("primitive_visible"))
             node.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
+        node.casts_shadows = value.value("casts_shadows", node.casts_shadows);
         if (value.contains("components")) {
             const auto &components = value.at("components");
             require(components.is_array() && components.size() <= maximum_components,
@@ -416,6 +419,7 @@ std::vector<GameObject> instantiate_prefab_nodes(Scene &scene, std::span<const P
                 renderer.set_material_factor(i, node.material_factors[i]);
             for (std::size_t i = 0; i < node.primitive_visible.size(); ++i)
                 renderer.set_primitive_visible(i, node.primitive_visible[i]);
+            renderer.set_casts_shadows(node.casts_shadows);
         }
     } catch (...) {
         destroy_prefab_objects(objects);
