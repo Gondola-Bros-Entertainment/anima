@@ -158,6 +158,8 @@ std::filesystem::path fixture(const Temp &temp, const std::string &kind) {
     json += '}';
     if (kind == "alpha")
         json.insert(json.find("\"name\":\"red\""), "\"alphaMode\":\"BLEND\",");
+    if (kind == "double-sided")
+        json.insert(json.find("\"name\":\"red\""), "\"doubleSided\":true,");
     if (kind == "mask") {
         json.insert(json.find("\"name\":\"red\""), "\"alphaMode\":\"MASK\",\"alphaCutoff\":0.35,");
         json.insert(json.find("\"POSITION\":0"), "\"COLOR_0\":3,");
@@ -253,7 +255,7 @@ TEST_CASE("The geometry and motion loaders reject each other's resources") {
                          std::runtime_error);
 }
 
-TEST_CASE("Materials keep their alpha mask, metallic-roughness factors and glTF defaults") {
+TEST_CASE("Materials keep their alpha mask, metallic-roughness factors, sidedness and glTF defaults") {
     const Temp temp;
     const auto masked = load_glb(fixture(temp, "mask"));
     CHECK(masked.material_data.at(0).alpha_mode == AlphaMode::mask);
@@ -268,7 +270,13 @@ TEST_CASE("Materials keep their alpha mask, metallic-roughness factors and glTF 
     CHECK(pbr.material_data[1].roughness == Near{1, tolerance});
     // A primitive without a material uses the spec's default material.
     const auto implicit = load_glb(fixture(temp, "implicit-material"));
-    CHECK(implicit.material_data.at(implicit.primitives.at(0).material_index).metallic == Near{1, tolerance});
+    const auto &fallback = implicit.material_data.at(implicit.primitives.at(0).material_index);
+    CHECK(fallback.metallic == Near{1, tolerance});
+    CHECK_FALSE(fallback.double_sided);
+    // glTF materials are single-sided unless they say otherwise; programmatic ones render both sides.
+    CHECK_FALSE(masked.material_data[0].double_sided);
+    CHECK(load_glb(fixture(temp, "double-sided")).material_data.at(0).double_sided);
+    CHECK(Material{}.double_sided);
 }
 
 TEST_CASE("The default scene keeps each primitive and instance with its transform, normals and material") {

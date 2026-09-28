@@ -1229,7 +1229,7 @@ struct VulkanRenderer::Impl {
             const MaterialUniform uniform{{m.emissive.x, m.emissive.y, m.emissive.z, m.alpha},
                                           {m.normal_scale, m.alpha_mode == AlphaMode::mask ? m.alpha_cutoff : -1.F,
                                            m.occlusion_strength, m.unlit ? 1.F : 0.F},
-                                          {m.normal_texture >= 0 ? 1.F : 0.F, 0, 0, 0}};
+                                          {m.normal_texture >= 0 ? 1.F : 0.F, m.double_sided ? 1.F : 0.F, 0, 0}};
             std::memcpy(uniforms.data() + stride * i, &uniform, sizeof(uniform));
             std::array<VkDescriptorImageInfo, material_texture_count> image_infos{};
             std::array<VkWriteDescriptorSet, material_texture_count + 1> writes{};

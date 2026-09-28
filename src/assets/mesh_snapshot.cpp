@@ -337,6 +337,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         value.alpha_mode = material.alpha_mode == cgltf_alpha_mode_mask ? AlphaMode::mask : AlphaMode::opaque;
         value.alpha_cutoff = material.alpha_cutoff;
         value.unlit = material.unlit;
+        value.double_sided = material.double_sided;
         value.emissive = {material.emissive_factor[0], material.emissive_factor[1], material.emissive_factor[2]};
         value.normal_texture = texture_index(material.normal_texture, TextureEncoding::linear);
         value.normal_scale = material.normal_texture.scale;
@@ -408,11 +409,12 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                 value.node = node_index;
                 value.mesh_name = name(node->mesh->name);
                 value.skin = node->skin ? static_cast<int>(node->skin - data->skins) : -1;
-                // The implicit glTF material is also metallic=1, roughness=1.
+                // The implicit glTF material is also metallic=1, roughness=1 and single-sided.
                 if (!primitive.material && asset->materials.size() == data->materials_count) {
                     Material fallback;
                     fallback.name = "glTF default";
                     fallback.metallic = 1;
+                    fallback.double_sided = false;
                     asset->materials.push_back(std::move(fallback));
                 }
                 value.material = primitive.material ? static_cast<int>(primitive.material - data->materials)

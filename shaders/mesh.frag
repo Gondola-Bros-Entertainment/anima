@@ -45,6 +45,9 @@ void main() {
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.
     float facing = (gl_FrontFacing ? 1.0 : -1.0) * orientation;
+    // A single-sided material draws only the side its faces front.
+    if (material.maps.y < 0.5 && facing < 0.0)
+        discard;
     vec3 n = unit(worldNormal);
     // Authored tangent frames survive skinning and mirrored instance transforms.
     // Assets without TANGENT use a per-triangle cotangent frame; degenerate UVs
