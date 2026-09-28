@@ -217,6 +217,10 @@ struct Material {
     /// Alpha-test threshold for AlphaMode::mask; finite and at least 0.
     float alpha_cutoff = .5F;
     AlphaMode alpha_mode = AlphaMode::opaque;
+    /// Whether a face also renders when its back is toward the viewer; when false, that side is not
+    /// drawn. Shadows are cast from both sides either way. Programmatic materials render both
+    /// sides; the importer supplies glTF `doubleSided`, whose default is false.
+    bool double_sided = true;
     /// Renders base color without lighting or shadow casting; fog still applies (glTF
     /// `KHR_materials_unlit`).
     bool unlit = false;

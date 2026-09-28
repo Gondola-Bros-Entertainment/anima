@@ -6,6 +6,6 @@ layout(set = 0, binding = 4) uniform sampler2D occlusionTexture;
 layout(set = 0, binding = 5, std140) uniform MaterialData {
     vec4 emissiveAlpha; // RGB radiance, base alpha
     vec4 detail;        // normal scale, mask cutoff (-1 means opaque), occlusion strength, unlit
-    vec4 maps;          // normal map present
+    vec4 maps;          // normal map present, double-sided
 }
 material;
