@@ -173,6 +173,8 @@ TEST_CASE("Malformed or oversized scene set documents are rejected without chang
         {"{}", missing_version},
         {substitute(valid, "\"version\":1", "\"version\":3"), unsupported_version},
         {substitute(valid, "\"version\":1", "\"version\":1.0"), unsupported_version},
+        // A removed field does not hide another version.
+        {substitute(substitute(valid, "\"version\":1", "\"version\":3"), "{", "{\"removed\":0,"), unsupported_version},
         {substitute(valid, "\"version\":1,", ""), missing_version},
         {substitute(valid, "anima.scene-set", "anima.scene"), "Invalid scene set document kind"},
         {substitute(valid, "{", "{\"unexpected\":null,"), "Unknown JSON field: unexpected"},
@@ -222,6 +224,31 @@ TEST_CASE("Malformed or oversized scene set documents are rejected without chang
         CHECK(retained.valid());
         CHECK(destination.serialize({}) == before);
     }
+}
+
+TEST_CASE("A scene object may omit its settings, which load as their defaults and are written back") {
+    const std::string document =
+        R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1",)"
+        R"("name":"root","parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null}]})";
+    const auto loaded = load_scene(document, {});
+    const auto roots = loaded->roots();
+    REQUIRE(roots.size() == 1);
+    CHECK(roots.front().active_self());
+    CHECK_FALSE(roots.front().has_renderer());
+    const auto written = serialize_scene(*loaded, {});
+    for (const auto field : {R"("pose": null)", R"("visible": true)", R"("active": true)", R"("material_factors": [])",
+                             R"("primitive_visible": [])", R"("components": [])"}) {
+        CAPTURE(field);
+        CHECK(written.find(field) != std::string::npos);
+    }
+    // An explicit null is not an omission, so a setting that cannot be null still rejects it.
+    CHECK_THROWS_WITH_AS((void)load_scene(substitute(document, R"("mesh":null)", R"("mesh":null,"active":null)"), {}),
+                         "[json.exception.type_error.302] type must be boolean, but is null", std::invalid_argument);
+    // A removed field does not hide another version.
+    CHECK_THROWS_WITH_AS((void)load_scene(substitute(substitute(document, R"("version":3)", R"("version":2)"),
+                                                     R"("mesh":null)", R"("mesh":null,"removed":0)"),
+                                          {}),
+                         "Unsupported scene document version", std::invalid_argument);
 }
 
 TEST_CASE("An exhausted key allocator rejects creation but keeps persisted identities") {

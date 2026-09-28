@@ -5,9 +5,11 @@
 /// @file
 /// Prefabs and the strict JSON documents for prefabs and scenes. Part of the `anima::assets` target.
 ///
-/// Documents are JSON of at most 16 MiB, nested at most 16 deep, with exactly the fields listed for
-/// their kind: missing, unknown or repeated fields (compared after unescaping) and other versions or
-/// kinds are rejected. ObjectKey values are written as canonical decimal strings. A mesh is stored
+/// Documents are JSON of at most 16 MiB, nested at most 16 deep, with the fields listed for their
+/// kind. A setting, listed with its default, may be omitted and then takes that default; writers
+/// write every field. Repeated fields (compared after unescaping) are rejected while parsing; then
+/// other versions or kinds, before the other fields; then missing required and unknown fields.
+/// ObjectKey values are written as canonical decimal strings. A mesh is stored
 /// as an application-owned key of 1 to 4,096 bytes: MeshName names each distinct mesh once per call
 /// and two meshes cannot share a key, and MeshResolver runs once per distinct key. File access
 /// belongs to the caller.
@@ -110,18 +112,20 @@ class Prefab {
 /// between roots persist and links outside the scene are rejected. Lifecycle notification state,
 /// runtime ids and GPU residency are not stored. The document has exactly `version` (`3`), `kind`
 /// (`"anima.scene"`), `next_key` (the key the scene allocates next, `"0"` once exhausted) and
-/// `objects`: at most 65,536, each after its parent, with exactly these fields:
+/// `objects`: at most 65,536, each after its parent, with these fields:
 /// - `key`: nonzero and unique;
 /// - `name`;
 /// - `parent`: null, or the index of an earlier object;
 /// - `local`: 16 finite numbers, column-major;
 /// - `mesh`: null or a mesh key;
-/// - `pose`: null or one 16-number Pose::world matrix per mesh node;
-/// - `visible` and `active`: booleans;
-/// - `material_factors`: empty or one `[r, g, b]` per mesh material, each in [0, 1];
-/// - `primitive_visible`: empty or one boolean per mesh primitive;
-/// - `components`: at most 1,024 objects with exactly `type`, `state` and `enabled`
-///   (ComponentData).
+///
+/// and these settings, whose defaults are Prefab::Node's:
+/// - `pose`: null, the default, or one 16-number Pose::world matrix per mesh node;
+/// - `visible` and `active`: booleans, true by default;
+/// - `material_factors`: empty, the default, or one `[r, g, b]` per mesh material, each in [0, 1];
+/// - `primitive_visible`: empty, the default, or one boolean per mesh primitive;
+/// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
+///   `enabled` (ComponentData).
 ///
 /// An object without a mesh has a null `pose`, empty arrays and `visible` true. Throws
 /// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming

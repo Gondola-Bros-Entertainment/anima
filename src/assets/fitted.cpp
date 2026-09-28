@@ -44,9 +44,9 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
     // The one fitted catalog version this reader accepts.
     constexpr int catalog_version = 2;
     anima::detail::json_step([&] {
+        anima::detail::json_version(catalog, "version", catalog_version, "Unsupported fitted catalog version");
         anima::detail::json_fields(catalog, {"version", "items"});
-        if (catalog.at("version") != catalog_version || !catalog.at("items").is_array() ||
-            catalog.at("items").size() > maximum_catalog_items)
+        if (!catalog.at("items").is_array() || catalog.at("items").size() > maximum_catalog_items)
             throw std::invalid_argument("Invalid fitted catalog");
         std::set<std::string> ids;
         for (const auto &item : catalog.at("items")) {

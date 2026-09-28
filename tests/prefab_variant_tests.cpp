@@ -71,6 +71,10 @@ TEST_CASE("Malformed variant documents are rejected with their reason") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1", "\"version\":1.0")), unsupported_version,
                          std::invalid_argument);
+    // A removed field does not hide another version.
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(substitute(valid, "\"version\":1", "\"version\":2"), "{", "{\"removed\":0,")),
+        unsupported_version, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1,", "")), missing_version, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "anima.prefab-variant", "anima.prefab")),
                          "Invalid prefab variant document kind", std::invalid_argument);
@@ -107,7 +111,8 @@ TEST_CASE("Malformed variant documents are rejected with their reason") {
                          "Empty prefab variant override", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\"", "\"name\":42")), not_string,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\",", "")), "Missing JSON field: name",
+    // An omitted name inherits, as null does, so the override again changes nothing.
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\",", "")), "Empty prefab variant override",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"local\":null", "\"local\":[]")),
                          "Prefab variant matrix requires 16 scalars", std::invalid_argument);
@@ -118,8 +123,14 @@ TEST_CASE("Malformed variant documents are rejected with their reason") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null", "\"renderer\":{}")), "Missing JSON field: mesh",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null,", "")), "Missing JSON field: renderer",
-                         std::invalid_argument);
+    // Omitted settings take their defaults: an inherited renderer and no component changes.
+    const auto defaults =
+        decode(substitute(substitute(substitute(valid, "\"renderer\":null,", ""), "\"set_components\":[],", ""),
+                          ",\"remove_components\":[]", ""));
+    REQUIRE(defaults.overrides().size() == 1);
+    CHECK_FALSE(defaults.overrides()[0].renderer);
+    CHECK(defaults.overrides()[0].set_components.empty());
+    CHECK(defaults.overrides()[0].remove_components.empty());
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null", "\"renderer\":null,\"parent\":null")),
                          "Unknown JSON field: parent", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"set_components\":[]", "\"set_components\":null")), component_count,
@@ -133,8 +144,6 @@ TEST_CASE("Malformed variant documents are rejected with their reason") {
         conflicting_removal, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"remove_components\":[]", "\"remove_components\":[true]")),
                          "[json.exception.type_error.302] type must be string, but is boolean", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, ",\"remove_components\":[]", "")),
-                         "Missing JSON field: remove_components", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\"",
                                            "\"name\":" + std::string(32, '[') + "0" + std::string(32, ']'))),
                          "JSON document exceeds nesting limit", std::invalid_argument);
@@ -178,8 +187,10 @@ TEST_CASE("Malformed renderer overrides are rejected with their reason") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"pose\":null", "\"pose\":[]")), pose_mismatch,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"pose\":null,", "")), "Missing JSON field: pose",
-                         std::invalid_argument);
+    // An omitted pose is the rest pose, as null is.
+    const auto rest = decode(substitute(with_renderer, "\"pose\":null,", ""));
+    REQUIRE(rest.overrides()[0].renderer);
+    CHECK_FALSE(rest.overrides()[0].renderer->pose);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"primitive_visible\":[]", "\"primitive_visible\":[false]")),
                          renderer_state, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"material_factors\":[]", "\"material_factors\":[[1,1,1]]")),

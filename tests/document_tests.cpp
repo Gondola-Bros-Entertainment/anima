@@ -120,9 +120,14 @@ TEST_CASE("A fitted catalog is version 2, whose items have no slot") {
     const FittedLibrary library(body, manifest, "profile", R"({"version":2,"items":[{"id":"cover",)" + fits + "}]}");
     REQUIRE(library.contains("cover"));
     CHECK(library.definition("cover").model == "cover.glb");
+    // Another version, even an equal float, is reported before the fields, so a field it lacks or
+    // adds does not hide it.
     CHECK_THROWS_WITH_AS(
-        FittedLibrary(body, manifest, "profile", R"({"version":1,"items":[{"id":"cover",)" + fits + "}]}"),
-        "Invalid fitted catalog", std::invalid_argument);
+        FittedLibrary(body, manifest, "profile", R"({"version":1,"removed":0,"items":[{"id":"cover",)" + fits + "}]}"),
+        "Unsupported fitted catalog version", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        FittedLibrary(body, manifest, "profile", R"({"version":2.0,"items":[{"id":"cover",)" + fits + "}]}"),
+        "Unsupported fitted catalog version", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         FittedLibrary(body, manifest, "profile", R"({"version":2,"items":[{"id":"cover","slot":"top",)" + fits + "}]}"),
         "Unknown JSON field: slot", std::invalid_argument);

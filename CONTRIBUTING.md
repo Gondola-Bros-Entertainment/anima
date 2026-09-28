@@ -2,15 +2,16 @@
 
 Keep changes focused on reusable engine behavior. Applications supply their own
 content, gameplay rules, scheduling and deployment policy; see the
-[architecture](README.md#architecture). Scene and prefab documents use one current
-format; do not add compatibility readers or forwarding APIs for removed contracts.
+[architecture](README.md#architecture). Documents use one current format; do not
+add compatibility readers or forwarding APIs for removed contracts.
 
 ## Code
 
 Use C++20 and the repository's `.clang-format`; CI rejects first-party sources
 that clang-format 22.1.8 would change. Keep backend types private where the public
 module promises dependency isolation. Validate inputs before publishing state, and
-make resource ownership explicit.
+make resource ownership explicit. A new document field with a natural default may be
+omitted, and adding it keeps the version; renaming or removing a field changes it.
 
 Document every public declaration with a `///` comment stating its contract:
 ownership and lifetime, threading, units and ranges, failures and their exception

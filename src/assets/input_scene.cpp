@@ -86,9 +86,9 @@ std::string serialize_map(const Map &map) {
 namespace {
 Map decode_map(std::string_view data) {
     const auto j = detail::parse_json(data, limits::document_bytes);
+    detail::json_version(j, "version", document_version, "Unsupported input configuration version");
     detail::json_fields(j, {"version", "actions"});
-    if (integer(j.at("version"), document_version) != document_version || !j.at("actions").is_array() ||
-        j.at("actions").size() > limits::actions)
+    if (!j.at("actions").is_array() || j.at("actions").size() > limits::actions)
         throw std::invalid_argument("Invalid input configuration envelope");
     Map map;
     for (const auto &a : j.at("actions")) {

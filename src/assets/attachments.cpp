@@ -8,9 +8,10 @@ constexpr int catalog_version = 3;
 AttachmentCatalog decode_catalog(std::string_view document, const std::filesystem::path &directory) {
     using namespace presentation_data;
     const auto json = presentation_data::parse(document);
+    anima::detail::json_version(json, "schema_version", catalog_version, "Unsupported attachment catalog version");
     anima::detail::json_fields(json, {"schema_version", "units", "empty_handling", "handling", "visuals", "items"});
-    if (json.at("schema_version") != catalog_version || json.at("units") != "meters")
-        throw std::invalid_argument("Unsupported attachment catalog version or units");
+    if (json.at("units") != "meters")
+        throw std::invalid_argument("Unsupported attachment catalog units");
     for (const auto name : {"handling", "visuals", "items"})
         if (!json.at(name).is_array() || json.at(name).empty())
             throw std::invalid_argument("Attachment catalog collections require nonempty arrays");

@@ -66,11 +66,12 @@ class PrefabVariant {
     [[nodiscard]] Prefab resolve(const PrefabResolver &resolver, ComponentCodecs codecs) const;
     /// Writes an `anima.prefab-variant` version 1 document.
     ///
-    /// It has exactly `version`, `kind`, `base` and `overrides`. Each override has exactly `key`,
-    /// `name`, `local` (16 numbers), `active` and `renderer`, each null to inherit, plus
-    /// `set_components` (objects with exactly `type`, `state` and `enabled`) and
-    /// `remove_components` (type keys). A renderer has exactly `mesh`, `pose`, `visible`,
-    /// `material_factors` and `primitive_visible`, as scene objects do.
+    /// It has exactly `version`, `kind`, `base` and `overrides`. Each override has `key` and the
+    /// settings `name`, `local` (16 numbers), `active` and `renderer`, each null, the default, to
+    /// inherit, and `set_components` (objects with exactly `type`, `state` and `enabled`) and
+    /// `remove_components` (type keys), each empty by default. A renderer has `mesh` and the
+    /// settings `pose`, `visible`, `material_factors` and `primitive_visible`, with the defaults and
+    /// rules of scene objects.
     [[nodiscard]] std::string serialize(const MeshName &name) const;
     /// Reads an `anima.prefab-variant` version 1 document and validates it as the constructor does.
     static PrefabVariant deserialize(std::string_view document, const MeshResolver &resolve);
