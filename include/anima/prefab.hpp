@@ -49,7 +49,7 @@ class Prefab {
         /// Matrix relative to the parent; the root's is multiplied by the instantiation placement.
         Mat4 local = identity();
         /// Optional shared mesh; without one, #pose, #material_factors and #primitive_visible must be
-        /// empty and #visible true.
+        /// empty and #visible and #casts_shadows true.
         std::shared_ptr<const Mesh> mesh;
         /// Initial Pose::world matrices, one per mesh node; empty uses the mesh's rest pose.
         std::optional<Pose> pose;
@@ -59,6 +59,8 @@ class Prefab {
         std::vector<Vec3> material_factors;
         /// One flag per mesh primitive; empty shows every primitive.
         std::vector<bool> primitive_visible;
+        /// Whether the renderer casts shadows (Scene::Instance::casts_shadows).
+        bool casts_shadows = true;
         /// Encoded components, at most 1,024, each type at most once.
         std::vector<ComponentData> components;
         /// Authored activation (GameObject::active_self), independent of the parent.
@@ -121,13 +123,13 @@ class Prefab {
 ///
 /// and these settings, whose defaults are Prefab::Node's:
 /// - `pose`: null, the default, or one 16-number Pose::world matrix per mesh node;
-/// - `visible` and `active`: booleans, true by default;
+/// - `visible`, `active` and `casts_shadows`: booleans, true by default;
 /// - `material_factors`: empty, the default, or one `[r, g, b]` per mesh material, each in [0, 1];
 /// - `primitive_visible`: empty, the default, or one boolean per mesh primitive;
 /// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
 ///   `enabled` (ComponentData).
 ///
-/// An object without a mesh has a null `pose`, empty arrays and `visible` true. Throws
+/// An object without a mesh has a null `pose`, empty arrays, and `visible` and `casts_shadows` true. Throws
 /// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming
 /// fails or a limit is exceeded.
 [[nodiscard]] std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs = {});

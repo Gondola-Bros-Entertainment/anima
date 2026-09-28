@@ -205,7 +205,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 const auto material_index = source_draws[i].material;
                 const bool unlit =
                     material_index >= 0 && render_instance.asset->materials()->material_data[material_index].unlit;
-                if (!unlit &&
+                if (!unlit && render_instance.casts_shadows &&
                     ((environment.shadow.enabled && shadow_frustum.intersects(render_instance.primitive_bounds[i])) ||
                      (environment.detail_shadow.enabled &&
                       detail_shadow_frustum.intersects(render_instance.primitive_bounds[i]))))

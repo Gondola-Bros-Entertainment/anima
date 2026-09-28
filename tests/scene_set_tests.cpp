@@ -237,7 +237,7 @@ TEST_CASE("A scene object may omit its settings, which load as their defaults an
     CHECK_FALSE(roots.front().has_renderer());
     const auto written = serialize_scene(*loaded, {});
     for (const auto field : {R"("pose": null)", R"("visible": true)", R"("active": true)", R"("material_factors": [])",
-                             R"("primitive_visible": [])", R"("components": [])"}) {
+                             R"("primitive_visible": [])", R"("casts_shadows": true)", R"("components": [])"}) {
         CAPTURE(field);
         CHECK(written.find(field) != std::string::npos);
     }

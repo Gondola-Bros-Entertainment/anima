@@ -187,6 +187,10 @@ TEST_CASE("Malformed renderer overrides are rejected with their reason") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"pose\":null", "\"pose\":[]")), pose_mismatch,
                          std::invalid_argument);
+    // Without a mesh there is no renderer to stop casting.
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(with_renderer, "\"visible\":true", "\"visible\":true,\"casts_shadows\":false")),
+        renderer_state, std::invalid_argument);
     // An omitted pose is the rest pose, as null is.
     const auto rest = decode(substitute(with_renderer, "\"pose\":null,", ""));
     REQUIRE(rest.overrides()[0].renderer);

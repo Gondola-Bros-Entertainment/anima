@@ -20,12 +20,13 @@ class PrefabVariant {
     /// Prefab::Node.
     struct Renderer {
         /// No mesh, so applying it removes the renderer.
-        Renderer() : visible(true) {}
+        Renderer() : visible(true), casts_shadows(true) {}
         std::shared_ptr<const Mesh> mesh;
         std::optional<Pose> pose;
         bool visible;
         std::vector<Vec3> material_factors;
         std::vector<bool> primitive_visible;
+        bool casts_shadows;
     };
     /// Changes to one base object; absent fields inherit from the base.
     struct Override {
@@ -70,8 +71,8 @@ class PrefabVariant {
     /// settings `name`, `local` (16 numbers), `active` and `renderer`, each null, the default, to
     /// inherit, and `set_components` (objects with exactly `type`, `state` and `enabled`) and
     /// `remove_components` (type keys), each empty by default. A renderer has `mesh` and the
-    /// settings `pose`, `visible`, `material_factors` and `primitive_visible`, with the defaults and
-    /// rules of scene objects.
+    /// settings `pose`, `visible`, `material_factors`, `primitive_visible` and `casts_shadows`, with
+    /// the defaults and rules of scene objects.
     [[nodiscard]] std::string serialize(const MeshName &name) const;
     /// Reads an `anima.prefab-variant` version 1 document and validates it as the constructor does.
     static PrefabVariant deserialize(std::string_view document, const MeshResolver &resolve);

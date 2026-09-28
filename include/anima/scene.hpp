@@ -91,7 +91,8 @@ class Scene {
         auto operator<=>(const Id &) const = default;
     };
     /// Render state of one object's MeshRenderer. A renderer draws a primitive only when #visible,
-    /// #active and its #primitive_visible entry are all true.
+    /// #active and its #primitive_visible entry are all true, and into the key light's shadow maps
+    /// only when #casts_shadows is also true and its material is lit.
     struct Instance {
         /// Shared immutable mesh.
         std::shared_ptr<const Mesh> asset;
@@ -110,6 +111,8 @@ class Scene {
         bool visible = true;
         /// The object's GameObject::active_in_hierarchy state, separate from #visible.
         bool active = true;
+        /// Whether the renderer's primitives cast shadows. They receive shadows either way.
+        bool casts_shadows = true;
     };
     Scene();
     /// Invalidates every handle to the scene, then sends `on_disable()` to each component that
@@ -200,6 +203,9 @@ class Scene {
     /// Shows or hides one primitive of @p id's mesh. Throws `std::out_of_range` for an index
     /// outside the mesh's primitives and `std::logic_error` when the object has no renderer.
     void set_primitive_visible(Id id, std::size_t primitive, bool visible);
+    /// Sets whether @p id's renderer casts shadows (Instance::casts_shadows). Throws
+    /// `std::logic_error` when the object has no renderer.
+    void set_casts_shadows(Id id, bool casts);
     /// Render state of @p id's renderer, borrowed until the scene next changes. Throws
     /// `std::logic_error` when the object has no renderer.
     [[nodiscard]] const Instance &instance(Id id) const;
@@ -387,8 +393,8 @@ class GameObject {
     void set_world_matrix(const Mat4 &world);
     /// Whether the object has a MeshRenderer.
     [[nodiscard]] bool has_renderer() const;
-    /// Adds a renderer for @p mesh with its rest pose, authored material factors, and the renderer
-    /// and every primitive visible. Throws `std::invalid_argument` for a null mesh and
+    /// Adds a renderer for @p mesh with its rest pose, authored material factors, the renderer and
+    /// every primitive visible, and shadow casting on. Throws `std::invalid_argument` for a null mesh and
     /// `std::logic_error` when the object already has a renderer.
     [[nodiscard]] MeshRenderer add_mesh(std::shared_ptr<const Mesh> mesh);
     /// View of the current renderer. Throws `std::logic_error` when there is none.
@@ -455,8 +461,8 @@ class MeshRenderer {
     /// Shared mesh being drawn.
     [[nodiscard]] std::shared_ptr<const Mesh> mesh() const;
     /// Replaces the mesh, keeping the object's transform and resetting the pose to rest, material
-    /// factors to authored values, and the renderer and every primitive to visible. Throws
-    /// `std::invalid_argument` for a null mesh.
+    /// factors to authored values, the renderer and every primitive to visible, and shadow casting
+    /// on. Throws `std::invalid_argument` for a null mesh.
     void set_mesh(std::shared_ptr<const Mesh> mesh);
     /// Sets the animation pose, keeping the object's placement; see Scene::set_pose.
     void set_pose(const Pose &pose);
@@ -468,6 +474,8 @@ class MeshRenderer {
     void clear_material_factor(std::size_t material);
     /// Shows or hides one primitive; see Scene::set_primitive_visible.
     void set_primitive_visible(std::size_t primitive, bool visible);
+    /// Sets whether the renderer casts shadows; see Scene::set_casts_shadows.
+    void set_casts_shadows(bool casts);
     /// Union of all primitive bounds in world space, including hidden primitives.
     [[nodiscard]] RenderBounds bounds() const;
 
