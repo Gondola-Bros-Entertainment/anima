@@ -508,13 +508,13 @@ void record_blended() {
     const GpuAsset *bound = nullptr;
     for (const auto &blended : resource_blended_draws) {
         const auto &render_instance = resource_instances[blended.instance];
-        const auto pipeline = blended.custom ? blended.custom->pipeline : blended_resource_pipeline;
-        if (pipeline != bound_pipeline) {
+        const auto draw_pipeline = blended.custom ? blended.custom->pipeline : blended_resource_pipeline;
+        if (draw_pipeline != bound_pipeline) {
             if (blended.custom)
                 bind_custom(*blended.custom, false);
             else
                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, blended_resource_pipeline);
-            bound_pipeline = pipeline;
+            bound_pipeline = draw_pipeline;
         }
         if (render_instance.gpu.get() != bound) {
             bound = render_instance.gpu.get();
