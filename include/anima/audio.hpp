@@ -218,9 +218,10 @@ class Sound {
     /// voice, the left channel takes `max(0.2, (1 - c) / 2)` and the right `max(0.2, (1 + c) / 2)`, so a voice
     /// straight ahead plays at half gain on both sides. Within 0.001 of the listener, neither is weighted. A mono
     /// clip feeds both channels and a stereo clip keeps its own. While the voice plays, these gains follow
-    /// position and listener changes through linear ramps of #audio_smoothing_seconds that restart at every block;
-    /// they take their current values at once when the voice starts, resumes or becomes spatial. Nonspatial voices
-    /// ignore position() and attenuation().
+    /// position, attenuation and listener changes through a linear ramp across one block of
+    /// anima::audio_block_frames frames, reaching the new values by the end of the first whole block after the
+    /// change; they take their current values at once when the voice starts, resumes or becomes spatial.
+    /// Nonspatial voices ignore position() and attenuation().
     void spatial(bool value);
     /// Position of a spatial voice, in the same space as the listener.
     void position(Vec3 value);

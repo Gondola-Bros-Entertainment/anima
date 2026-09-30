@@ -401,7 +401,10 @@ void AudioState::open(unsigned sample_rate, unsigned maximum_voices) {
     config.noDevice = MA_TRUE;
     config.channels = output_channels;
     config.sampleRate = rate;
-    config.gainSmoothTimeInFrames = static_cast<ma_uint32>(smoothing_frames);
+    // The spatializer sets new gains every block, which restarts its ramp from the current gain. A ramp longer
+    // than a block would never finish, so gains would approach a new position geometrically; one block's ramp
+    // reaches it by the end of each block.
+    config.gainSmoothTimeInFrames = audio_block_frames;
     check_audio(ma_engine_init(&config, &engine), "Create the audio engine");
     engine_open = true;
     open_gain(master, engine, blocks, nullptr);

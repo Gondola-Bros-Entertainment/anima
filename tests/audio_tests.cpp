@@ -307,10 +307,11 @@ TEST_CASE("Spatial voices attenuate with distance and weight channels by directi
     frame = settle(audio);
     CHECK(frame[0] == Near{.25, 1e-4});
     CHECK(frame[1] == Near{.25, 1e-4});
-    sound.position({4, 0, 0}); // Silent from the maximum distance.
-    frame = settle(audio);
-    CHECK(frame[0] == Near{0, 1e-4});
-    CHECK(frame[1] == Near{0, 1e-4});
+    // Silent from the maximum distance, once the block the change lands in and one whole block have mixed.
+    sound.position({4, 0, 0});
+    auto moved = render(audio, 2 * audio_block_frames);
+    CHECK(moved[moved.size() - 2] == Near{0, 1e-6});
+    CHECK(moved.back() == Near{0, 1e-6});
     sound.position({1, 0, 0});
     audio.listener({}, {0, 0, 1}); // Facing +Z puts +X on the listener's left.
     frame = settle(audio);
