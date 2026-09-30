@@ -54,7 +54,7 @@ Json encode_control(const Control &control) {
             {"identity", encode_identity(control.identity)}};
 }
 Control decode_control(const Json &value) {
-    return {static_cast<ControlKind>(integer(value.at("kind"), static_cast<unsigned>(ControlKind::gamepad_axis))),
+    return {static_cast<ControlKind>(integer(value.at("kind"), static_cast<unsigned>(limits::last_kind))),
             static_cast<std::uint16_t>(integer(value.at("code"), limits::key_code)), any_device,
             decode_identity(value.at("identity"))};
 }

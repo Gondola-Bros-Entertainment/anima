@@ -3,6 +3,7 @@
 #include <anima/input.hpp>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -10,7 +11,7 @@
 namespace anima::input {
 namespace {
 void kind(ControlKind value) {
-    if (value < ControlKind::key || value > ControlKind::gamepad_axis)
+    if (value < ControlKind::key || value > limits::last_kind)
         throw std::invalid_argument("Unknown input control kind");
 }
 void control(Control c) {
@@ -19,7 +20,9 @@ void control(Control c) {
         throw std::invalid_argument("Input control code outside supported range");
 }
 ControlKind device_class(ControlKind value) {
-    return value == ControlKind::gamepad_axis ? ControlKind::gamepad_button : value;
+    if (value == ControlKind::gamepad_axis)
+        return ControlKind::gamepad_button;
+    return limits::delta(value) ? ControlKind::mouse_button : value;
 }
 constexpr DeviceIdentity no_identity{};
 // Recorded control values, keyed by each control's latest event source, identity included, with at most one entry
@@ -163,6 +166,7 @@ void action(const Action &a) {
     for (unsigned char c : a.name)
         if (c < '!' || c > '~')
             throw std::invalid_argument("Input action names must be printable ASCII without spaces");
+    bool held = false, delta = false;
     for (const auto &b : a.bindings) {
         control(b.control);
         if (b.modifiers.size() > limits::modifiers_per_binding)
@@ -170,7 +174,7 @@ void action(const Action &a) {
         for (std::size_t i = 0; i < b.modifiers.size(); ++i) {
             const auto modifier = b.modifiers[i];
             control(modifier);
-            if (modifier.kind == ControlKind::gamepad_axis)
+            if (modifier.kind == ControlKind::gamepad_axis || limits::delta(modifier.kind))
                 throw std::invalid_argument("Input chord modifiers must be digital");
             compatible(b.control, modifier);
             for (std::size_t previous = 0; previous < i; ++previous)
@@ -181,7 +185,12 @@ void action(const Action &a) {
             std::abs(b.scale) > limits::maximum_binding_scale || !std::isfinite(b.deadzone) || b.deadzone < 0 ||
             b.deadzone >= 1)
             throw std::invalid_argument("Invalid input binding channel/scale/deadzone");
+        if (limits::delta(b.control.kind) && b.deadzone != 0)
+            throw std::invalid_argument("Input delta bindings require a zero deadzone");
+        (limits::delta(b.control.kind) ? delta : held) = true;
     }
+    if (a.type != ActionType::button && held && delta)
+        throw std::invalid_argument("Input axis and vector2 actions cannot mix held and delta controls");
 }
 } // namespace
 void validate(const Map &map) {
@@ -208,8 +217,10 @@ void validate(const Event &e) {
     if (e.type == EventType::disconnect)
         return; // Code/value are not used; both gamepad control kinds name the same device class.
     control(e.source);
-    if (!std::isfinite(e.value) || std::abs(e.value) > 1 ||
-        (e.source.kind != ControlKind::gamepad_axis && e.value != 0 && e.value != 1))
+    // A delta control's increment may have any finite magnitude.
+    if (!std::isfinite(e.value) ||
+        (!limits::delta(e.source.kind) &&
+         (std::abs(e.value) > 1 || (e.source.kind != ControlKind::gamepad_axis && e.value != 0 && e.value != 1))))
         throw std::invalid_argument("Invalid input control value");
 }
 Context::Context(Map map) : map_(std::move(map)) {
@@ -233,9 +244,14 @@ State Context::state(std::string_view name) const { return states_[index(name)];
 void Context::begin_frame() {
     for (auto &s : states_)
         s.pressed = s.released = s.canceled = false;
+    if (sums_.empty())
+        return;
+    sums_.clear();
+    evaluate();
 }
 void Context::cancel() {
     values_.clear();
+    sums_.clear();
     for (auto &s : states_) {
         s.released |= s.active;
         s.canceled |= s.active;
@@ -285,37 +301,116 @@ float Context::read(const Binding &binding) const {
             value = it->second;
     return value; // Greatest eligible magnitude; ties choose the lowest device ID.
 }
-void Context::evaluate() {
-    for (std::size_t i = 0; i < map_.size(); ++i) {
-        const auto &a = map_[i];
-        double x{}, y{};
-        for (const auto &b : a.bindings) {
+Context::Combined Context::combine(std::size_t action_index, std::size_t first_binding) const {
+    const auto &a = map_[action_index];
+    double x{}, y{};
+    bool delta = false;
+    for (std::size_t j = 0; j < a.bindings.size(); ++j) {
+        const auto &b = a.bindings[j];
+        double adjusted{};
+        if (limits::delta(b.control.kind)) {
+            delta = true;
+            // Summed and scaled in double, so a sum near the float limit cannot overflow before saturation below.
+            double sum{};
+            const auto slot = first_binding + j;
+            for (auto it = sums_.lower_bound({slot, 0}); it != sums_.end() && it->first.first == slot; ++it)
+                sum += it->second;
+            adjusted = sum * b.scale;
+        } else {
             const float raw = read(b);
-            const float adjusted =
-                std::copysign(std::max(0.F, std::abs(raw) - b.deadzone) / (1 - b.deadzone), raw) * b.scale;
-            if (a.type == ActionType::button)
-                x = std::max(x, double(adjusted));
-            else if (b.channel == Channel::x)
-                x += adjusted;
-            else
-                y += adjusted;
+            adjusted = std::copysign(std::max(0.F, std::abs(raw) - b.deadzone) / (1 - b.deadzone), raw) * b.scale;
         }
+        if (a.type == ActionType::button)
+            x = std::max(x, adjusted);
+        else if (b.channel == Channel::x)
+            x += adjusted;
+        else
+            y += adjusted;
+    }
+    // Held controls report bounded levels, so their sums are clamped and normalized. Increments are displacements,
+    // whose sums are neither, short of saturating at the largest float. A button combines either kind into 0 or 1.
+    const bool bounded = a.type == ActionType::button || !delta;
+    if (bounded) {
         x = std::clamp(x, -1.0, 1.0);
         y = std::clamp(y, -1.0, 1.0);
-        const auto magnitude = std::sqrt(x * x + y * y);
-        if (magnitude > 1) {
-            x /= magnitude;
-            y /= magnitude;
-        }
-        const bool active = std::min(magnitude, 1.0) >= a.threshold;
-        if (a.type == ActionType::button)
-            x = active ? 1 : 0;
-        auto &s = states_[i];
-        s.pressed |= active && !s.active;
-        s.released |= !active && s.active;
-        s.active = active;
-        s.value = {static_cast<float>(x), static_cast<float>(y)};
     }
+    const auto magnitude = std::sqrt(x * x + y * y);
+    if (bounded && magnitude > 1) {
+        x /= magnitude;
+        y /= magnitude;
+    }
+    const bool active = std::min(magnitude, 1.0) >= a.threshold;
+    if (a.type == ActionType::button)
+        x = active ? 1 : 0;
+    constexpr double largest = std::numeric_limits<float>::max();
+    return {
+        {static_cast<float>(std::clamp(x, -largest, largest)), static_cast<float>(std::clamp(y, -largest, largest))},
+        active};
+}
+void Context::publish(std::size_t action_index, const Combined &combined) {
+    auto &s = states_[action_index];
+    s.pressed |= combined.active && !s.active;
+    s.released |= !combined.active && s.active;
+    s.active = combined.active;
+    s.value = combined.value;
+}
+void Context::evaluate() {
+    std::size_t first_binding = 0;
+    for (std::size_t i = 0; i < map_.size(); ++i) {
+        publish(i, combine(i, first_binding));
+        first_binding += map_[i].bindings.size();
+    }
+}
+void Context::accumulate(const Event &e) {
+    if (e.value == 0)
+        return;
+    // Each delta binding that accepts the increment, with its recorded sum for the event's device, if any, and that
+    // sum after the increment.
+    struct Accepted {
+        std::size_t action_index, first_binding, slot;
+        decltype(sums_)::iterator recorded;
+        float after;
+    };
+    std::vector<Accepted> accepted;
+    std::size_t added = 0;
+    const auto group = device_class(e.source.kind);
+    std::size_t first_binding = 0;
+    for (std::size_t i = 0; i < map_.size(); ++i) {
+        const auto &bindings = map_[i].bindings;
+        for (std::size_t j = 0; j < bindings.size(); ++j) {
+            const auto &b = bindings[j];
+            if (b.control.kind != e.source.kind || b.control.code != e.source.code)
+                continue;
+            // The chord and its precedence gate the increment now, as it arrives.
+            const auto required = selection(b, group);
+            if (!required.admits(e.source) || !held_on(values_, b, group, e.source.device, required) ||
+                !other_modifiers_held(values_, b) || outranked(map_, values_, b, e.source))
+                continue;
+            const auto slot = first_binding + j;
+            const auto recorded = sums_.find({slot, e.source.device});
+            const double after = double(recorded == sums_.end() ? 0.F : recorded->second) + e.value;
+            if (std::abs(after) > std::numeric_limits<float>::max())
+                throw std::overflow_error("Input increment would overflow a delta binding's sum");
+            added += recorded == sums_.end();
+            accepted.push_back({i, first_binding, slot, recorded, static_cast<float>(after)});
+        }
+        first_binding += bindings.size();
+    }
+    if (sums_.size() + added > limits::delta_accumulators)
+        throw std::length_error("Input context exceeds 1024 delta sums");
+    // New sums are built apart, so a failed allocation changes nothing, and merging them allocates nothing.
+    decltype(sums_) added_sums;
+    for (const auto &a : accepted)
+        if (a.recorded == sums_.end())
+            added_sums.emplace(std::pair{a.slot, e.source.device}, a.after);
+    for (const auto &a : accepted)
+        if (a.recorded != sums_.end())
+            a.recorded->second = a.after;
+    sums_.merge(added_sums);
+    // Only the accepting actions changed; they arrive in map order.
+    for (std::size_t k = 0; k < accepted.size(); ++k)
+        if (k == 0 || accepted[k].action_index != accepted[k - 1].action_index)
+            publish(accepted[k].action_index, combine(accepted[k].action_index, accepted[k].first_binding));
 }
 void Context::process(const Event &e) {
     validate(e);
@@ -324,15 +419,22 @@ void Context::process(const Event &e) {
         return;
     }
     if (e.type == EventType::disconnect) {
+        const auto group = device_class(e.source.kind);
         std::erase_if(values_, [&](const auto &entry) {
-            return device_class(entry.first.kind) == device_class(e.source.kind) &&
-                   entry.first.device == e.source.device;
+            return device_class(entry.first.kind) == group && entry.first.device == e.source.device;
         });
+        // Every sum belongs to a delta binding, whose controls are in the mouse class.
+        if (group == device_class(ControlKind::mouse_motion))
+            std::erase_if(sums_, [&](const auto &sum) { return sum.first.second == e.source.device; });
         evaluate();
         return;
     }
     if (!enabled_ || !focused_)
         return;
+    if (limits::delta(e.source.kind)) {
+        accumulate(e);
+        return;
+    }
     // A recorded control is released or updated whatever identity the event carries, so a release that arrives
     // without the identity of the press still releases it.
     const auto previous = entry(values_, e.source, e.source.device);

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 
 // The event sequences below are ones SDL 3.4 can post; the comment above each test names the SDL 3.4.16 source that
@@ -29,14 +30,58 @@ SDL_GUID connected_guid(std::uint32_t instance) {
 }
 // Stands in for SDL_GetGamepadGUIDForID once SDL reports no gamepad.
 SDL_GUID no_guid(std::uint32_t) { return SDL_GUID{}; }
-// Converts @p event for the input context of the window, which must accept it.
+// Converts @p event for the input context of the window, which must turn it into exactly one event.
 i::Event convert(const SDL_Event &event, i::SdlGamepadGuid lookup = connected_guid) {
     const auto converted = i::from_sdl(event, window, lookup);
-    REQUIRE(converted);
-    return *converted;
+    REQUIRE(converted.size() == 1u);
+    return converted[0];
 }
 bool converts(const SDL_Event &event, std::uint32_t target = window) {
-    return i::from_sdl(event, target, connected_guid).has_value();
+    return !i::from_sdl(event, target, connected_guid).empty();
+}
+// Processes every event that @p event converts into, in order.
+void apply(i::Context &context, const SDL_Event &event) {
+    for (const auto &converted : i::from_sdl(event, window, connected_guid))
+        context.process(converted);
+}
+// The Cocoa backend's mouse, which SDL reports as `which` in relative mode (src/video/cocoa/SDL_cocoamouse.m:514).
+constexpr SDL_MouseID cocoa_mouse = 1;
+// Motion in the window, as SDL_PrivateSendMouseMotion posts it (src/events/SDL_mouse.c:832-844).
+SDL_Event motion_event(float xrel, float yrel, SDL_MouseID which) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_MOUSE_MOTION;
+    event.motion.windowID = window;
+    event.motion.which = which;
+    event.motion.x = 320;
+    event.motion.y = 240;
+    event.motion.xrel = xrel;
+    event.motion.yrel = yrel;
+    return event;
+}
+// A wheel event in the window, as SDL_SendMouseWheel posts it outside relative mode (src/events/SDL_mouse.c:1050-1080).
+SDL_Event wheel_event(float x, float y, SDL_MouseWheelDirection direction = SDL_MOUSEWHEEL_NORMAL) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_MOUSE_WHEEL;
+    event.wheel.windowID = window;
+    event.wheel.which = 0;
+    event.wheel.x = x;
+    event.wheel.y = y;
+    event.wheel.direction = direction;
+    return event;
+}
+SDL_Event button_event(Uint8 button, bool down, SDL_MouseID which) {
+    SDL_Event event{};
+    event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+    event.button.windowID = window;
+    event.button.which = which;
+    event.button.button = button;
+    event.button.down = down;
+    return event;
+}
+// Whether @p event is an increment of @p kind on axis @p code of SDL's global mouse, of @p amount.
+bool increment(const i::Event &event, i::ControlKind kind, std::uint16_t code, float amount) {
+    return event.type == i::EventType::control && event.source.kind == kind && event.source.code == code &&
+           event.source.device == 0u && event.source.identity == i::DeviceIdentity{} && event.value == amount;
 }
 SDL_Event gamepad_button(SDL_GamepadButton button, bool down, SDL_JoystickID gamepad) {
     SDL_Event event{};
@@ -350,4 +395,126 @@ TEST_CASE("Mouse buttons report on SDL's global mouse, keeping presses paired ac
     removed.mdevice.which = 5;
     look.process(convert(removed));
     CHECK_FALSE(look.state("look").active); // Removing any mouse releases the buttons held on the global mouse.
+}
+
+// SDL_PrivateSendMouseMotion posts `which` as SDL_GLOBAL_MOUSE_ID, 0, outside relative mode and as the mouse's ID
+// inside it (src/events/SDL_mouse.c:817-822); Cocoa posts relative motion from AppKit's deltas under its default
+// mouse (src/video/cocoa/SDL_cocoamouse.m:601-612). A motion along one axis leaves the other's delta at zero.
+TEST_CASE("Pointer motion becomes one increment per nonzero axis on SDL's global mouse, in or out of relative mode") {
+    i::Context c({{"look",
+                   i::ActionType::vector2,
+                   {{{i::ControlKind::mouse_motion, 0}, i::Channel::x, .5F},
+                    {{i::ControlKind::mouse_motion, 1}, i::Channel::y, -.5F}}}});
+    const auto absolute = i::from_sdl(motion_event(3.5F, -2, 0), window, connected_guid);
+    REQUIRE(absolute.size() == 2u);
+    CHECK(increment(absolute[0], i::ControlKind::mouse_motion, 0, 3.5F)); // x first, unchanged,
+    CHECK(increment(absolute[1], i::ControlKind::mouse_motion, 1, -2));   // then y.
+    const auto relative = i::from_sdl(motion_event(0, 4, cocoa_mouse), window, connected_guid);
+    REQUIRE(relative.size() == 1u);
+    CHECK(increment(relative[0], i::ControlKind::mouse_motion, 1, 4));
+    apply(c, motion_event(3.5F, -2, 0));
+    apply(c, motion_event(0, 4, cocoa_mouse));
+    CHECK(c.state("look").value.x == 1.75F);
+    CHECK(c.state("look").value.y == -1);
+}
+
+// SDL_PrivateSendMouseButton posts a press outside relative mode under SDL_GLOBAL_MOUSE_ID
+// (src/events/SDL_mouse.c:991-1003). Entering relative mode posts no button event and flushes pending motion
+// (src/events/SDL_mouse.c:1406-1407), and the relative motion after it carries the mouse's ID
+// (src/events/SDL_mouse.c:817-822), as does the release.
+TEST_CASE("A right button pressed before relative mode chords with the motion that follows") {
+    i::Binding aim{{i::ControlKind::mouse_motion, 0}};
+    aim.modifiers = {{i::ControlKind::mouse_button, SDL_BUTTON_RIGHT}};
+    i::Context c({{"aim", i::ActionType::axis, {aim}}});
+    apply(c, motion_event(2, 0, 0));
+    apply(c, button_event(SDL_BUTTON_RIGHT, true, 0));
+    apply(c, motion_event(5, 0, cocoa_mouse));
+    CHECK(c.state("aim").value.x == 5); // Only the motion after the press counts.
+    apply(c, button_event(SDL_BUTTON_RIGHT, false, cocoa_mouse));
+    apply(c, motion_event(7, 0, cocoa_mouse));
+    CHECK(c.state("aim").value.x == 5);
+}
+
+// With SDL_HINT_MOUSE_RELATIVE_WARP_MOTION set, warping in relative mode clears the known position and posts absolute
+// motion under SDL_GLOBAL_MOUSE_ID (src/events/SDL_mouse.c:1266-1292), which SDL_PrivateSendMouseMotion reports with
+// zero `xrel` and `yrel` (src/events/SDL_mouse.c:824-830).
+TEST_CASE("A relative-mode warp that SDL reports as motion converts to nothing") {
+    auto warp = motion_event(0, 0, 0);
+    warp.motion.x = 100;
+    warp.motion.y = 80;
+    CHECK_FALSE(converts(warp));
+}
+
+// SDL emulates the mouse for touches under SDL_TOUCH_MOUSEID (src/events/SDL_touch.c:510) and for pens under
+// SDL_PEN_MOUSEID: motion while a pen hovers, then its touch as the left button, then motion while it touches
+// (src/events/SDL_pen.c:557, :414-415 and :546). SDL keeps those IDs in and out of relative mode
+// (src/events/SDL_mouse.c:819-822 and :992-994).
+TEST_CASE("Touch-emulated motion is dropped, and pen-emulated motion converts like the mouse's") {
+    CHECK_FALSE(converts(motion_event(3, 1, SDL_TOUCH_MOUSEID)));
+    i::Binding draw{{i::ControlKind::mouse_motion, 0}};
+    draw.modifiers = {{i::ControlKind::mouse_button, SDL_BUTTON_LEFT}};
+    i::Context c({{"draw", i::ActionType::axis, {draw}}});
+    apply(c, motion_event(40, 12, SDL_PEN_MOUSEID));
+    apply(c, button_event(SDL_BUTTON_LEFT, true, SDL_PEN_MOUSEID));
+    apply(c, motion_event(3, 1, SDL_PEN_MOUSEID));
+    CHECK(c.state("draw").value.x == 3);
+}
+
+// Cocoa reports precise scrolling as a tenth of AppKit's scrolling deltas, both axes in one event, and FLIPPED when
+// the device direction is inverted, as natural scrolling does (src/video/cocoa/SDL_cocoamouse.m:615-645). Windows
+// divides raw input by WHEEL_DELTA, one axis per event (src/video/windows/SDL_windowsevents.c:719-727).
+// SDL_SendMouseWheel drops an event with both amounts zero (src/events/SDL_mouse.c:1042-1044).
+TEST_CASE("Wheel amounts convert per axis, fractional and in the direction SDL delivers them") {
+    i::Context c({{"pan", i::ActionType::axis, {{{i::ControlKind::mouse_wheel, 0}}}},
+                  {"zoom", i::ActionType::axis, {{{i::ControlKind::mouse_wheel, 1}}}}});
+    const auto precise = i::from_sdl(wheel_event(-.3F, 1.2F), window, connected_guid);
+    REQUIRE(precise.size() == 2u);
+    CHECK(increment(precise[0], i::ControlKind::mouse_wheel, 0, -.3F));
+    CHECK(increment(precise[1], i::ControlKind::mouse_wheel, 1, 1.2F));
+    for (const auto &converted : precise)
+        c.process(converted);
+    const auto windows = i::from_sdl(wheel_event(0, 60.F / 120), window, connected_guid);
+    REQUIRE(windows.size() == 1u);
+    CHECK(increment(windows[0], i::ControlKind::mouse_wheel, 1, .5F));
+    c.process(windows[0]);
+    CHECK(c.state("pan").value.x == -.3F);
+    CHECK(c.state("zoom").value.x == 1.7F);
+    // A flipped amount keeps its sign: the user's natural scrolling setting already applies to it.
+    CHECK(increment(convert(wheel_event(0, 1, SDL_MOUSEWHEEL_FLIPPED)), i::ControlKind::mouse_wheel, 1, 1));
+}
+
+// SDL posts motion and wheel events for the window with mouse focus (src/events/SDL_mouse.c:835 and :1058).
+TEST_CASE("Another window's motion and wheel events convert to nothing") {
+    auto motion = motion_event(3, 1, 0);
+    auto wheel = wheel_event(0, 1);
+    CHECK(converts(motion));
+    CHECK(converts(wheel));
+    motion.motion.windowID = window + 1;
+    wheel.wheel.windowID = window + 1;
+    CHECK_FALSE(converts(motion));
+    CHECK_FALSE(converts(wheel));
+    CHECK_FALSE(converts(motion_event(3, 1, 0), window + 1));
+}
+
+// SDL_RemoveMouse posts the removal and nothing else (src/events/SDL_mouse.c:357-392).
+TEST_CASE("Removing a mouse drops the frame's increments") {
+    i::Context c({{"look", i::ActionType::axis, {{{i::ControlKind::mouse_motion, 0}}}}});
+    apply(c, motion_event(6, 0, cocoa_mouse));
+    CHECK(c.state("look").value.x == 6);
+    SDL_Event removed{};
+    removed.type = SDL_EVENT_MOUSE_REMOVED;
+    removed.mdevice.which = cocoa_mouse;
+    apply(c, removed);
+    CHECK(c.state("look").value.x == 0);
+    CHECK(c.state("look").released);
+}
+
+// In relative mode, an application's SDL_SetRelativeMouseTransform callback sets the motion SDL reports
+// (src/events/SDL_mouse.c:730-734), and nothing keeps it finite.
+TEST_CASE("A non-finite motion amount is dropped rather than failing the event pump") {
+    for (const float amount : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        CAPTURE(amount);
+        CHECK(increment(convert(motion_event(amount, 2, cocoa_mouse)), i::ControlKind::mouse_motion, 1, 2));
+        CHECK_FALSE(converts(motion_event(amount, 0, cocoa_mouse)));
+    }
 }

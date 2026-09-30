@@ -34,7 +34,10 @@ class ActionInput {
 /// `name`, `type`, `threshold` and `bindings`; each binding has exactly `kind`, `code`,
 /// `identity`, `channel`, `scale`, `deadzone` and `modifiers` (an array, possibly empty); each
 /// modifier has exactly `kind`, `code` and `identity`. `type`, `kind` and `channel` store
-/// enumerator values. `identity` stores a Control::identity as 32 lowercase hexadecimal digits,
+/// enumerator values. The delta kinds, ControlKind::mouse_motion and ControlKind::mouse_wheel,
+/// follow the held kinds and add no field, so they are version 3 too: a build that predates them
+/// rejects a document that uses them as an out-of-range `kind`, not as another version.
+/// `identity` stores a Control::identity as 32 lowercase hexadecimal digits,
 /// first byte first (the text `SDL_GUIDToString` writes for an SDL GUID), or null for none. A
 /// device ID names a device only while it is connected, so documents store none: every control
 /// and modifier loads with any_device, and a binding that must keep to one device selects it by
@@ -67,9 +70,9 @@ void begin_frame(SceneSet &scenes);
 /// each component's activity through Context::set_enabled.
 ///
 /// Every context is updated on a copy first and published only when all succeed, so a rejected
-/// event, invalid or over a context's capacity, changes no context. Atomicity is per event, not
-/// per frame. Throws `std::logic_error` while the scene is updating, under construction or
-/// destroyed.
+/// event, invalid, over a context's capacity or overflowing a delta binding's sum, changes no
+/// context. Atomicity is per event, not per frame. Throws `std::logic_error` while the scene is
+/// updating, under construction or destroyed.
 void dispatch(Scene &scene, const Event &event);
 /// Delivers @p event across every scene of @p scenes as dispatch(Scene &, const Event &) does,
 /// staging all of them before any changes. Also throws `std::logic_error` while the set is

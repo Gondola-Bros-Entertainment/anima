@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 /// @file
@@ -26,11 +27,20 @@ inline constexpr std::uint32_t any_device = UINT32_MAX;
 using DeviceIdentity = std::array<std::uint8_t, 16>;
 /// Physical control type. Each kind belongs to a device class (keyboard, mouse or gamepad), and
 /// device IDs of one class are independent of the others.
+///
+/// Keys, buttons and axes are held controls: an event sets a level that lasts until the control's
+/// next event. Mouse motion and the wheel are delta controls: an event carries an increment, a
+/// displacement with no resting level, and bindings add up the increments of one begin_frame()
+/// interval (see Binding). Delta codes are 0 for x and 1 for y, with amounts in the converter's
+/// units and signed as each kind states. Motion y grows downward while Anima's +Y is up, so
+/// upward pitch from motion y usually takes a negative Binding::scale.
 enum class ControlKind {
     key,            ///< Keyboard key, code in [0, 511].
     mouse_button,   ///< Mouse button, code in [1, 32].
     gamepad_button, ///< Gamepad button, code in [0, 63].
-    gamepad_axis    ///< Gamepad axis, code in [0, 15]; shares the gamepad class with buttons.
+    gamepad_axis,   ///< Gamepad axis, code in [0, 15]; shares the gamepad class with buttons.
+    mouse_motion,   ///< Pointer motion, a mouse delta control: x rightward, y downward.
+    mouse_wheel     ///< Scroll wheel, a mouse delta control: x rightward, y away from the user.
 };
 /// One physical control, or in a binding, a selector for one.
 struct Control {
@@ -56,6 +66,14 @@ enum class Channel {
 /// A binding reads its control on the selected device, keeps the sign, remaps the magnitude beyond
 /// #deadzone to [0, 1] and multiplies by #scale. It contributes zero unless every modifier is held.
 ///
+/// A binding of a delta control (a delta binding) instead contributes #scale times the sum of the
+/// increments it accepted since the last Context::begin_frame(), unclamped, from every device it
+/// admits. It decides as each increment arrives: it accepts the increment when it admits the
+/// increment's device, holds every modifier as a held binding does (those of the mouse class on
+/// that device), and no binding that outranks it holds all of its own there. A modifier pressed
+/// after an increment therefore does not claim it, and one released after it does not take it
+/// back.
+///
 /// Controls of one device class in a binding must come from one device. An explicit ID on the
 /// control or any modifier of that class selects it, and an identity on any of them admits only
 /// controls whose latest event carried that identity; conflicting explicit IDs or identities are
@@ -75,14 +93,19 @@ enum class Channel {
 /// unmodified binding. Precedence follows held controls, not press order: pressing Ctrl while S is
 /// held releases the S binding without canceling it, and releasing Ctrl restores it. Bindings with
 /// equal or partly shared modifier sets apply together, and no modifier is consumed: a binding
-/// whose bound control is Ctrl still reads it.
+/// whose bound control is Ctrl still reads it. Delta bindings apply precedence as each increment
+/// arrives: with the wheel bound alone and with Ctrl, an increment that arrives while Ctrl is held
+/// counts only toward Ctrl + wheel.
 struct Binding {
     Control control;
     /// Channel::y requires ActionType::vector2.
     Channel channel = Channel::x;
-    /// Signed multiplier, in [-16, 16].
+    /// Signed multiplier, in [-16, 16]; a negative scale inverts. For a delta binding it converts
+    /// the converter's units into the action's, such as a look sensitivity.
     float scale = 1;
-    /// Magnitude at or below which the control reads as zero, in [0, 1).
+    /// Magnitude at or below which the control reads as zero, in [0, 1). Delta bindings require 0:
+    /// the range describes a level, and a cut per increment would discard slow motion at a rate
+    /// that depends on event timing.
     float deadzone = 0;
     /// Up to four keys, mouse buttons or gamepad buttons that must all be held, pressed before or
     /// after the bound control. No kind and code may repeat within the binding, including the
@@ -91,17 +114,30 @@ struct Binding {
     std::vector<Control> modifiers{};
 };
 /// How an action combines its bindings' contributions.
+///
+/// An axis or vector2 action binds only held controls or only delta controls. A held control
+/// reports a level, such as a stick's rate, which needs the frame time to become a displacement,
+/// while an increment is already a displacement over the frame; a Context reads no clock, so no
+/// single sum of both suits every frame rate. Combine a held action and a delta action with the
+/// application's frame time instead.
 enum class ActionType {
-    button, ///< The greatest positive contribution; the value is 1 while active and 0 otherwise.
-    axis,   ///< The sum of contributions, clamped to [-1, 1].
-    vector2 ///< Per-channel sums, each clamped to [-1, 1], normalized when longer than 1.
+    /// The greatest positive contribution; the value is 1 while active and 0 otherwise. Held and
+    /// delta bindings may mix.
+    button,
+    /// The sum of contributions, clamped to [-1, 1] for held controls. For delta controls it is
+    /// not clamped, and only saturates at the largest finite float.
+    axis,
+    /// Per-channel sums. For held controls each is clamped to [-1, 1] and the vector normalized
+    /// when longer than 1; for delta controls, neither, and each only saturates as an axis does.
+    vector2
 };
 /// A named action and its bindings.
 struct Action {
     /// Unique within the map: 1 to 128 printable ASCII characters, without spaces.
     std::string name;
     ActionType type = ActionType::button;
-    /// Up to 32 bindings; an empty list leaves the action inactive.
+    /// Up to 32 bindings; an empty list leaves the action inactive. Those of an axis or vector2
+    /// action are all held or all delta bindings.
     std::vector<Binding> bindings;
     /// Activity threshold, in [0.001, 1]: the action is active while the length of its combined
     /// value reaches it. Axis values stay continuous below it.
@@ -117,6 +153,10 @@ struct Value {
     float y{};
 };
 /// Action state. The edge flags latch until the next Context::begin_frame().
+///
+/// An action that only increments keep active stays active for the rest of the frame they arrive
+/// in: the next begin_frame() makes it inactive and latches #released in the new frame, so a
+/// wheel-driven button presses in one frame and releases in the next.
 struct State {
     Value value;
     /// Whether the combined value reaches Action::threshold.
@@ -141,8 +181,9 @@ struct Event {
     /// disconnect the device class (from the kind) and device, ignoring the code and identity. Needs
     /// a concrete device ID; focus events ignore it.
     Control source;
-    /// Control events: 0 or 1 for keys and buttons, [-1, 1] for gamepad axes, 0 meaning released.
-    /// Focus events: 1 gained or 0 lost. Disconnects ignore it.
+    /// Control events: 0 or 1 for keys and buttons, [-1, 1] for gamepad axes, 0 meaning released;
+    /// for delta controls, a finite increment of any magnitude, where 0 changes nothing. Focus
+    /// events: 1 gained or 0 lost. Disconnects ignore it.
     float value{};
 };
 /// Throws `std::invalid_argument` unless @p map meets the Map, Action, Binding and ControlKind
@@ -155,8 +196,11 @@ void validate(const Event &event);
 /// Feed each frame's events to process() after begin_frame(), then read state(). Edges latch until
 /// the next begin_frame(), so a press and release within one frame both report even when the final
 /// value is zero; repeated values do not press again. The context records only nonzero values of
-/// controls that some binding can use, at most 1,024 at once. Contexts are independent: copies own
-/// separate bindings, values and latches.
+/// controls that some binding can use, at most 1,024 at once. Each delta binding keeps a float sum
+/// for each device it accepted increments from, at most 1,024 sums in all at once, until the next
+/// begin_frame(); a delta action's value therefore covers one begin_frame() interval, so read it
+/// once per frame rather than in each fixed step. Contexts are independent: copies own separate
+/// bindings, values, sums and latches.
 class Context {
   public:
     /// Creates an enabled, focused context with every action inactive. Throws
@@ -170,17 +214,22 @@ class Context {
     [[nodiscard]] std::span<const Action> actions() const { return map_; }
     /// A copy of @p action's state. Throws `std::out_of_range` for an unknown name.
     [[nodiscard]] State state(std::string_view action) const;
-    /// Clears every State::pressed, State::released and State::canceled latch; values and activity
-    /// stay. Call it once per frame before processing that frame's events.
+    /// Clears every State::pressed, State::released and State::canceled latch, then zeroes the
+    /// delta bindings' sums and reevaluates: an action that increments alone kept active becomes
+    /// inactive and latches State::released. Held values and the activity they give stay. Call it
+    /// once per frame before processing that frame's events.
     void begin_frame();
     /// Applies @p event, which validate(const Event &) must accept.
     ///
     /// A focus event calls set_focused(), even while disabled. A disconnect forgets the recorded
-    /// controls of that device class and ID and reevaluates, so other devices keep their state. A
-    /// control event is ignored while disabled or unfocused; otherwise its value and identity replace
-    /// the control's record on that device (zero releases the control, whatever either identity) and
-    /// every action is reevaluated. Throws `std::length_error` when a new control would exceed
-    /// 1,024 recorded controls. A rejected event changes nothing.
+    /// controls of that device class and ID, and for a mouse the sums of its increments, and
+    /// reevaluates, so other devices keep their state. A control event is ignored while disabled or
+    /// unfocused. Otherwise a held control's value and identity replace the control's record on
+    /// that device (zero releases the control, whatever either identity), a delta control's
+    /// increment is added to the sum of each delta binding that accepts it (see Binding), and the
+    /// actions are reevaluated. Throws `std::length_error` when a new control would exceed 1,024 recorded
+    /// controls or a new sum would exceed 1,024 sums, and `std::overflow_error` when an increment
+    /// would take a sum beyond the largest finite float. A rejected event changes nothing.
     void process(const Event &event);
     /// Disabling cancels the context and ignores control events until it is enabled again;
     /// enabling restores nothing.
@@ -191,9 +240,9 @@ class Context {
     void set_focused(bool focused);
     [[nodiscard]] bool enabled() const { return enabled_; }
     [[nodiscard]] bool focused() const { return focused_; }
-    /// Forgets every recorded control, zeroes every value and clears State::pressed; each active
-    /// action becomes inactive and latches State::released and State::canceled. Controls still
-    /// held count again only after new events.
+    /// Forgets every recorded control and every delta binding's sum, zeroes every value and clears
+    /// State::pressed; each active action becomes inactive and latches State::released and
+    /// State::canceled. Controls still held count again only after new events.
     void cancel();
     /// Replaces @p action's bindings, then cancels the context so actions need fresh input under
     /// the new configuration. Throws `std::out_of_range` for an unknown action and
@@ -201,12 +250,23 @@ class Context {
     void rebind(std::string_view action, std::vector<Binding> bindings);
 
   private:
+    // An action's combined value and activity, before they are published to its State.
+    struct Combined {
+        Value value;
+        bool active{};
+    };
     std::size_t index(std::string_view name) const;
     void evaluate();
+    [[nodiscard]] Combined combine(std::size_t action_index, std::size_t first_binding) const;
+    void publish(std::size_t action_index, const Combined &combined);
+    void accumulate(const Event &event);
     float read(const Binding &binding) const;
     Map map_;
     std::vector<State> states_;
     std::map<Control, float> values_;
+    // Each delta binding's sum of increments per device since begin_frame(), keyed by the binding's
+    // position among all the map's bindings, in order, and the device ID.
+    std::map<std::pair<std::size_t, std::uint32_t>, float> sums_;
     bool enabled_ = true, focused_ = true;
 };
 } // namespace anima::input

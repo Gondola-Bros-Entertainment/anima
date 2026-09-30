@@ -4,6 +4,7 @@
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <anima/assets/mesh_snapshot.hpp>
+#include <anima/input_sdl.hpp>
 #include <anima/ui/context.hpp>
 #include <chrono>
 #include <cmath>
@@ -158,6 +159,22 @@ inline int run(int argc, char **argv) {
     require(input && select && action && scroll, "Public RmlUi controls unavailable");
     auto subscription = document.element("action").on("click", [&](const anima::UiEvent &) { ++clicks; });
     document.show();
+    // Gameplay reads pointer look and the wheel through an action map, which receives each event the UI leaves
+    // unconsumed.
+    using anima::input::ControlKind;
+    anima::input::Context gameplay({{"look",
+                                     anima::input::ActionType::vector2,
+                                     {{{ControlKind::mouse_motion, 0}, anima::input::Channel::x},
+                                      {{ControlKind::mouse_motion, 1}, anima::input::Channel::y}}},
+                                    {"zoom", anima::input::ActionType::axis, {{{ControlKind::mouse_wheel, 1}}}}});
+    const auto route = [&](const SDL_Event &event) {
+        const auto result = ui.process_event(event);
+        if (!result.consumed)
+            for (const auto &converted : anima::input::from_sdl(event, window_id, SDL_GetGamepadGUIDForID))
+                gameplay.process(converted);
+        return result;
+    };
+    const auto look = [&] { return gameplay.state("look").value; };
     bool forward_window_events = true;
     const auto pump = [&] {
         require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "UI watchdog expired");
@@ -166,7 +183,7 @@ inline int run(int argc, char **argv) {
             require(event.type != SDL_EVENT_QUIT && event.type != SDL_EVENT_WINDOW_CLOSE_REQUESTED,
                     "UI smoke interrupted");
             if (forward_window_events || !SDL_GetWindowFromEvent(&event))
-                (void)ui.process_event(event);
+                (void)route(event);
         }
     };
     std::uint64_t ui_frames = 0; // Frames that this context's render() calls presented.
@@ -200,7 +217,7 @@ inline int run(int argc, char **argv) {
         bool found = false;
         SDL_Event received{};
         while (SDL_PollEvent(&received)) {
-            const auto current = ui.process_event(received);
+            const auto current = route(received);
             if (received.type == event.type && received.common.timestamp == event.common.timestamp) {
                 result = current;
                 found = true;
@@ -309,7 +326,9 @@ inline int run(int argc, char **argv) {
     malformed_wheel.wheel.y = not_a_number;
     rejects(malformed_wheel, "Invalid UI wheel delta", "A non-finite wheel delta was accepted");
     require(scroll->GetScrollTop() == 0, "A rejected wheel event scrolled the panel");
-    require(dispatch(wheel).consumed, "Scroll wheel escaped an interactive panel");
+    gameplay.begin_frame();
+    require(dispatch(wheel).consumed && gameplay.state("zoom").value.x == 0,
+            "Scroll wheel escaped an interactive panel into gameplay");
     for (unsigned i = 0; i < 5; ++i) {
         SDL_Delay(20);
         frame();
@@ -359,6 +378,9 @@ inline int run(int argc, char **argv) {
     motion.motion.x = 600 * logical_scale;
     motion.motion.y = 420 * logical_scale;
     require(!dispatch(motion).consumed && !ui.input_state().pointer, "Uncovered world region captured pointer");
+    gameplay.begin_frame();
+    require(!dispatch(wheel).consumed && gameplay.state("zoom").value.x == wheel.wheel.y,
+            "A wheel off every document did not reach its gameplay action");
     SDL_Event drag{};
     drag.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     drag.button.windowID = window_id;
@@ -369,7 +391,12 @@ inline int run(int argc, char **argv) {
     const auto button_point = point(action);
     motion.motion.x = button_point.x;
     motion.motion.y = button_point.y;
+    motion.motion.xrel = 12;
+    motion.motion.yrel = -5;
+    gameplay.begin_frame();
     require(!dispatch(motion).consumed && !ui.input_state().pointer, "UI stole a world drag crossing a panel");
+    require(look().x == 12 && look().y == -5, "Motion over a panel during a world drag missed its gameplay action");
+    motion.motion.xrel = motion.motion.yrel = 0;
     require(!dispatch(wheel).consumed, "UI stole scrolling during a world drag");
     auto malformed = drag;
     malformed.type = SDL_EVENT_MOUSE_BUTTON_UP;
@@ -708,7 +735,8 @@ inline int run(int argc, char **argv) {
     check_images(images, SDL_GetWindowDisplayScale(window.get()));
     std::cout << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"clicks\":" << clicks
               << ",\"utf8_edit\":true,\"select_keyboard\":true,\"scroll\":true,"
-                 "\"hidden_focus_released\":true,\"world_input_passthrough\":true,\"resize_hit_test\":true,"
+                 "\"hidden_focus_released\":true,\"world_input_passthrough\":true,\"pointer_actions\":true,"
+                 "\"resize_hit_test\":true,"
                  "\"drag_ownership\":true,\"hidden_drag_released\":true,\"caret_coordinates\":true,\"duplicate_owner_"
                  "rejected\":true,\"context_"
                  "recreations\":4,"

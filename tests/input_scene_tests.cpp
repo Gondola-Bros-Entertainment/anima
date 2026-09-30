@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -53,6 +54,19 @@ i::Event pad_event(std::uint16_t button, std::uint32_t device, const i::DeviceId
     return {i::EventType::control, {i::ControlKind::gamepad_button, button, device, pad}, value};
 }
 i::Map key_map() { return {{"activate", i::ActionType::button, {{{i::ControlKind::key, 4}}}}}; }
+// Pointer look while the right mouse button is held, Ctrl + wheel zoom, and a wheel-driven button.
+i::Map pointer_map() {
+    i::Binding look_x{{i::ControlKind::mouse_motion, 0}, i::Channel::x, .25F},
+        look_y{{i::ControlKind::mouse_motion, 1}, i::Channel::y, -.25F}, zoom{{i::ControlKind::mouse_wheel, 1}};
+    look_x.modifiers = look_y.modifiers = {{i::ControlKind::mouse_button, 3}};
+    zoom.modifiers = {{i::ControlKind::key, 224}};
+    return {{"look", i::ActionType::vector2, {look_x, look_y}},
+            {"zoom", i::ActionType::axis, {zoom}},
+            {"previous", i::ActionType::button, {{{i::ControlKind::mouse_wheel, 1}, i::Channel::x, -1}}}};
+}
+i::Event motion_event(std::uint16_t code, float amount) {
+    return {i::EventType::control, {i::ControlKind::mouse_motion, code, 0}, amount};
+}
 i::Map gamepad_map() { return {{"activate", i::ActionType::button, {{{i::ControlKind::gamepad_button, 0}}}}}; }
 // invalid_component_payloads(valid, field), each with the error of a decoder whose first required field is
 // @p first_required.
@@ -572,4 +586,118 @@ TEST_CASE("A malformed input payload fails its prefab without leaking objects") 
         CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), invalid.second.c_str(), std::invalid_argument);
         CHECK(scene.size() == before);
     }
+}
+
+TEST_CASE("Delta bindings round-trip with their modifiers in version 3, and invalid delta documents are rejected") {
+    const auto map = pointer_map();
+    const auto document = i::serialize_map(map);
+    // The delta kinds are stored as their enumerator values, in a version 3 document.
+    CHECK(document.find(R"("version":3)") != std::string::npos);
+    CHECK(document.find(R"("kind":4)") != std::string::npos);
+    CHECK(document.find(R"("kind":5)") != std::string::npos);
+    const auto restored = i::deserialize_map(document);
+    REQUIRE(restored.size() == map.size());
+    for (std::size_t action = 0; action < map.size(); ++action) {
+        CAPTURE(action);
+        CHECK(restored[action].name == map[action].name);
+        CHECK(restored[action].type == map[action].type);
+        REQUIRE(restored[action].bindings.size() == map[action].bindings.size());
+        for (std::size_t binding = 0; binding < map[action].bindings.size(); ++binding) {
+            CAPTURE(binding);
+            const auto &expected = map[action].bindings[binding];
+            const auto &actual = restored[action].bindings[binding];
+            CHECK(actual.control == expected.control);
+            CHECK(actual.channel == expected.channel);
+            CHECK(actual.scale == expected.scale);
+            CHECK(actual.deadzone == expected.deadzone);
+            CHECK(actual.modifiers == expected.modifiers);
+        }
+    }
+    CHECK(i::serialize_map(restored) == document);
+    // The component codec keeps its version 3 key.
+    Scene scene;
+    auto object = scene.create();
+    object.add_component<i::ActionInput>(map);
+    ComponentCodecs codecs;
+    i::add_component_codec(codecs);
+    CHECK(Prefab::capture(object, codecs).nodes()[0].components[0].type == "anima.action-input.v3");
+    const auto with_bindings = [](int type, std::string_view bindings) {
+        return R"({"version":3,"actions":[{"name":"a","type":)" + std::to_string(type) +
+               R"(,"threshold":0.5,"bindings":[)" + std::string(bindings) + "]}]}";
+    };
+    constexpr auto wheel_binding = R"({"kind":5,"code":1,"identity":null,"channel":0,"scale":1,"deadzone":0)";
+    const std::array<std::pair<std::string, const char *>, 5> invalids{{
+        {with_bindings(1, R"({"kind":4,"code":2,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]})"),
+         "Input control code outside supported range"},
+        {with_bindings(1, R"({"kind":6,"code":0,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]})"),
+         invalid_integer},
+        {with_bindings(1, std::string(wheel_binding) + R"(,"modifiers":[{"kind":4,"code":0,"identity":null}]})"),
+         "Input chord modifiers must be digital"},
+        {with_bindings(1,
+                       R"({"kind":5,"code":1,"identity":null,"channel":0,"scale":1,"deadzone":0.25,"modifiers":[]})"),
+         "Input delta bindings require a zero deadzone"},
+        {with_bindings(1, R"({"kind":0,"code":4,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]},)" +
+                              std::string(wheel_binding) + R"(,"modifiers":[]})"),
+         "Input axis and vector2 actions cannot mix held and delta controls"},
+    }};
+    for (const auto &[invalid, error] : invalids) {
+        CAPTURE(invalid);
+        CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), error, std::invalid_argument);
+    }
+    // A button may mix them.
+    CHECK(i::deserialize_map(with_bindings(0, R"({"kind":0,"code":4,"identity":null,"channel":0,"scale":1,)"
+                                              R"("deadzone":0,"modifiers":[]},)" +
+                                                  std::string(wheel_binding) + R"(,"modifiers":[]})"))
+              .size() == 1u);
+}
+
+TEST_CASE("A scene set's frame of increments reaches every scene, and the next frame starts at zero") {
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto input = first->create().add_component<i::ActionInput>(pointer_map());
+    auto other = second->create().add_component<i::ActionInput>(pointer_map());
+    const std::array components{input, other};
+    i::begin_frame(scenes);
+    i::dispatch(scenes, motion_event(0, 40)); // Before the right button, so no look.
+    i::dispatch(scenes, {i::EventType::control, {i::ControlKind::mouse_button, 3, 0}, 1});
+    i::dispatch(scenes, motion_event(0, 8));
+    i::dispatch(scenes, motion_event(1, 4));
+    i::dispatch(scenes, {i::EventType::control, {i::ControlKind::mouse_wheel, 1, 0}, -1});
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        CAPTURE(index);
+        const auto &context = components[index]->context();
+        CHECK(context.state("look").value.x == 2);
+        CHECK(context.state("look").value.y == -1);
+        CHECK(context.state("previous").pressed);
+        CHECK(context.state("zoom").value.x == 0); // Ctrl is not held.
+    }
+    i::begin_frame(scenes);
+    i::dispatch(scenes, motion_event(1, 8));
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        CAPTURE(index);
+        const auto &context = components[index]->context();
+        CHECK(context.state("look").value.x == 0);
+        CHECK(context.state("look").value.y == -2); // The held button still gates the new frame's motion.
+        CHECK(context.state("previous").released);
+        CHECK_FALSE(context.state("previous").active);
+    }
+}
+
+TEST_CASE("An increment that would overflow a sum in one scene changes no scene") {
+    constexpr float largest = std::numeric_limits<float>::max();
+    const i::Map map{{"look", i::ActionType::axis, {{{i::ControlKind::mouse_motion, 0}}}}};
+    SceneSet scenes;
+    auto first = scenes.create("first"), second = scenes.create("second");
+    auto input = first->create().add_component<i::ActionInput>(map);
+    auto other = second->create().add_component<i::ActionInput>(map);
+    i::begin_frame(scenes);
+    other->context().process(motion_event(0, largest));
+    CHECK_THROWS_WITH_AS(i::dispatch(scenes, motion_event(0, largest)),
+                         "Input increment would overflow a delta binding's sum", std::overflow_error);
+    CHECK(input->context().state("look").value.x == 0);
+    CHECK_FALSE(input->context().state("look").pressed);
+    CHECK(other->context().state("look").value.x == largest);
+    i::dispatch(scenes, motion_event(0, -largest));
+    CHECK(input->context().state("look").value.x == -largest);
+    CHECK(other->context().state("look").value.x == 0);
 }

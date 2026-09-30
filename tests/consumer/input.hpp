@@ -5,6 +5,7 @@
 #include <anima/input_scene.hpp>
 #include <anima/prefab.hpp>
 #include <anima/scene_set.hpp>
+#include <array>
 #endif
 #ifdef CONSUMER_INPUT_SDL
 #include <SDL3/SDL_events.h>
@@ -54,6 +55,28 @@ inline void consume_input() {
     identified.process({i::EventType::control, {i::ControlKind::gamepad_button, 0, 9, pad}, 1});
     if (!identified.state("jump").active)
         throw std::runtime_error("Independent input identity did not follow its reconnected gamepad");
+    // Pointer look and the wheel are delta controls: a frame's increments add up, scaled and unclamped, and the
+    // next frame starts from zero. Look pitch takes a negative scale, since motion y grows downward.
+    const i::Map pointer{{"look",
+                          i::ActionType::vector2,
+                          {{{i::ControlKind::mouse_motion, 0}, i::Channel::x, .5F},
+                           {{i::ControlKind::mouse_motion, 1}, i::Channel::y, -.5F}}},
+                         {"zoom", i::ActionType::axis, {{{i::ControlKind::mouse_wheel, 1}}}}};
+    const auto pointed = [](const i::Context &context, float x, float y, float zoom) {
+        const auto look = context.state("look").value;
+        return look.x == x && look.y == y && context.state("zoom").value.x == zoom;
+    };
+    i::Context pointing(pointer);
+    pointing.begin_frame();
+    pointing.process({i::EventType::control, {i::ControlKind::mouse_motion, 0, 0}, 30});
+    pointing.process({i::EventType::control, {i::ControlKind::mouse_motion, 1, 0}, 10});
+    pointing.process({i::EventType::control, {i::ControlKind::mouse_motion, 0, 0}, 10});
+    pointing.process({i::EventType::control, {i::ControlKind::mouse_wheel, 1, 0}, 2});
+    if (!pointed(pointing, 20, -5, 2))
+        throw std::runtime_error("Independent pointer actions did not sum and scale their increments");
+    pointing.begin_frame();
+    if (!pointed(pointing, 0, 0, 0) || !pointing.state("look").released)
+        throw std::runtime_error("Independent pointer actions outlived their frame");
 #ifdef CONSUMER_ASSETS
     // Documents persist a binding's device identity, which matches its gamepad under a new ID, and never an ID.
     i::Context reloaded(i::deserialize_map(i::serialize_map({{"jump", i::ActionType::button, {jump}}})));
@@ -101,6 +124,23 @@ inline void consume_input() {
     i::dispatch(scenes, {i::EventType::control, {i::ControlKind::key, 44, 0}, 1});
     if (!restored_input->context().state("interact").pressed)
         throw std::runtime_error("Independent input reactivation lost fresh input");
+    // Pointer bindings persist like any other, and a frame's increments reach every scene's copy.
+    auto pointer_object = persistent->create("independent pointer input");
+    pointer_object.add_component<i::ActionInput>(pointer);
+    auto pointer_copy = anima::Prefab::capture(pointer_object, codecs).instantiate(level.get());
+    const std::array pointer_inputs{pointer_object.get_component<i::ActionInput>(),
+                                    pointer_copy.get_component<i::ActionInput>()};
+    i::begin_frame(scenes);
+    i::dispatch(scenes, {i::EventType::control, {i::ControlKind::mouse_motion, 0, 0}, 8});
+    i::dispatch(scenes, {i::EventType::control, {i::ControlKind::mouse_motion, 1, 0}, -6});
+    i::dispatch(scenes, {i::EventType::control, {i::ControlKind::mouse_wheel, 1, 0}, -1});
+    for (const auto &input : pointer_inputs)
+        if (!pointed(input->context(), 4, 3, -1))
+            throw std::runtime_error("Independent restored pointer actions missed their increments");
+    i::begin_frame(scenes);
+    for (const auto &input : pointer_inputs)
+        if (!pointed(input->context(), 0, 0, 0))
+            throw std::runtime_error("Independent restored pointer actions outlived their frame");
     scenes.unload(level);
     i::begin_frame(scenes);
     i::dispatch(scenes, {i::EventType::control, {i::ControlKind::key, 44, 0}, 0});
@@ -116,40 +156,45 @@ inline void consume_input() {
         return guid;
     };
     SDL_Event event{};
+    // Processes every event that `event` converts into, in order.
+    const auto apply = [&event, gamepad_guid](i::Context &context) {
+        for (const auto &converted : i::from_sdl(event, 1, gamepad_guid))
+            context.process(converted);
+    };
     event.type = SDL_EVENT_KEY_DOWN;
     event.key.windowID = 1;
     event.key.scancode = SDL_SCANCODE_SPACE;
     actions.begin_frame();
-    actions.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(actions);
     if (!actions.state("interact").pressed)
         throw std::runtime_error("Independent SDL input converter failed");
     actions.cancel();
     actions.begin_frame();
     event.key.which = 3;
     event.key.scancode = SDL_SCANCODE_S;
-    actions.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(actions);
     if (actions.state("save").active)
         throw std::runtime_error("Independent SDL chord activated without its modifier");
     event.key.scancode = SDL_SCANCODE_LCTRL;
-    actions.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(actions);
     if (!actions.state("save").pressed)
         throw std::runtime_error("Independent SDL Ctrl+S events failed to activate the chord");
     actions.begin_frame();
     event.type = SDL_EVENT_KEY_UP;
-    actions.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(actions);
     if (!actions.state("save").released || actions.state("save").canceled)
         throw std::runtime_error("Independent SDL Ctrl release failed to release the chord");
     // SDL keeps one key state for all keyboards, so keyboard 4's Ctrl completes keyboard 3's chord, and removing
     // any keyboard releases every key, since SDL sends no key releases for it.
     event.type = SDL_EVENT_KEY_DOWN;
     event.key.which = 4;
-    actions.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(actions);
     if (!actions.state("save").active)
         throw std::runtime_error("Independent SDL keyboards did not share their key state");
     event = {};
     event.type = SDL_EVENT_KEYBOARD_REMOVED;
     event.kdevice.which = 4;
-    actions.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(actions);
     if (actions.state("save").active || actions.state("save").canceled)
         throw std::runtime_error("Independent SDL keyboard removal did not release its keys");
     // Gamepad events carry the GUID SDL reports, so a binding by identity matches whatever instance ID SDL assigns.
@@ -160,8 +205,22 @@ inline void consume_input() {
     event.gbutton.which = 21;
     event.gbutton.button = SDL_GAMEPAD_BUTTON_SOUTH;
     event.gbutton.down = true;
-    identified.process(*i::from_sdl(event, 1, gamepad_guid));
+    apply(identified);
     if (!identified.state("jump").pressed)
         throw std::runtime_error("Independent SDL gamepad GUID did not reach its binding by identity");
+    // One SDL motion event carries both axes, and becomes one increment per axis on the global mouse, whatever
+    // mouse relative mode reports.
+    event = {};
+    event.type = SDL_EVENT_MOUSE_MOTION;
+    event.motion.windowID = 1;
+    event.motion.which = 2;
+    event.motion.xrel = 30;
+    event.motion.yrel = 10;
+    if (i::from_sdl(event, 1, gamepad_guid).size() != 2u)
+        throw std::runtime_error("Independent SDL motion did not convert per axis");
+    pointing.begin_frame();
+    apply(pointing);
+    if (!pointed(pointing, 15, -5, 0))
+        throw std::runtime_error("Independent SDL motion missed its pointer action");
 #endif
 }

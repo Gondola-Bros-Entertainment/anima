@@ -144,7 +144,9 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
                         ++camera_updates;
                     }
                     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                        camera.zoom(event.wheel.y * (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F));
+                        // The amount as SDL delivers it, with the platform's natural scrolling setting applied, as
+                        // the UI and from_sdl use it: a wheel that would scroll a document up zooms in.
+                        camera.zoom(event.wheel.y);
                         ++camera_updates;
                     }
                     if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F)
