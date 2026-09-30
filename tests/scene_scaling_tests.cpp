@@ -4,6 +4,7 @@
 // measured operation.
 #include "allocation_counter.hpp"
 #include <anima/input_scene.hpp>
+#include <anima/prefab.hpp>
 #include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -201,4 +203,37 @@ TEST_CASE("Dispatching input changes no context when an allocation fails" *
     CHECK(failures > 0);
     CHECK(first->context().state("jump").pressed);
     CHECK(second->context().state("jump").pressed);
+}
+
+TEST_CASE("Posing a renderer allocates nothing after a pose as large") {
+    const auto mesh = triangle();
+    anima::Scene scene;
+    auto object = scene.create("Posed", mesh);
+    auto renderer = object.renderer();
+    auto pose = mesh->rest_pose();
+    const auto place = [&](float x) {
+        pose.local.front().translation = {x, 0, 0};
+        pose.world.front() = anima::matrix(pose.local.front());
+    };
+    place(1.F);
+    renderer.set_pose(pose); // Stores the first copy and sizes the scene's working storage.
+    const auto bytes = allocated_by([&] {
+        for (unsigned i = 2; i < 10; ++i) {
+            place(static_cast<float>(i));
+            renderer.set_pose(pose);
+        }
+    });
+    CHECK(bytes == 0);
+    // The last pose was published, and stored with its local transforms, which capture reads.
+    CHECK(renderer.bounds().minimum.x > 8.9F);
+    const auto stored = [&] { return anima::Prefab::capture(object).nodes().front().pose.value(); };
+    CHECK(stored().world == pose.world);
+    CHECK(stored().local.front().translation.x == 9.F);
+    // A rejected pose of the same size leaves the stored pose and the published palette.
+    const auto palette = scene.instance(object.id()).palette;
+    auto rejected = pose;
+    rejected.world.front()[3] = 1.F;
+    CHECK_THROWS_WITH_AS(renderer.set_pose(rejected), "Instance transform must be affine", std::invalid_argument);
+    CHECK(stored().world == pose.world);
+    CHECK(scene.instance(object.id()).palette == palette);
 }
