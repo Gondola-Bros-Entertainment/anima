@@ -76,6 +76,24 @@ if(ANIMA_BUILD_TESTS)
     endfunction()
 endif()
 
+# miniaudio and stb_vorbis compile once, as C++ and without the project's warnings, into this private library; see
+# third_party/README.md. Its compile definitions shape miniaudio's structures, so they apply to every translation
+# unit that includes miniaudio.h: this library's and anima_core's.
+add_library(anima_audio_dependencies STATIC src/runtime/miniaudio.cpp)
+anima_enable_sanitizers(anima_audio_dependencies)
+target_compile_features(anima_audio_dependencies PRIVATE cxx_std_20)
+target_include_directories(anima_audio_dependencies SYSTEM PUBLIC third_party/miniaudio)
+target_compile_definitions(anima_audio_dependencies PUBLIC MA_NO_RESOURCE_MANAGER MA_NO_ENCODING MA_NO_GENERATION)
+find_package(Threads REQUIRED)
+target_link_libraries(anima_audio_dependencies PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+if(APPLE)
+    # Link Core Audio instead of loading it at run time, which miniaudio's documentation recommends for passing
+    # Apple's notarization.
+    target_compile_definitions(anima_audio_dependencies PUBLIC MA_NO_RUNTIME_LINKING)
+    target_link_libraries(anima_audio_dependencies PRIVATE
+        "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
+endif()
+
 add_library(anima_core STATIC
     src/core/fixed_step.cpp
     src/core/transform.cpp
@@ -87,6 +105,7 @@ add_library(anima_core STATIC
 )
 add_library(anima::core ALIAS anima_core)
 target_include_directories(anima_core PUBLIC include)
+target_link_libraries(anima_core PRIVATE anima_audio_dependencies)
 anima_target_defaults(anima_core)
 
 if(ANIMA_BUILD_TOOLS)
