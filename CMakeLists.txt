@@ -274,6 +274,19 @@ if(ANIMA_BUILD_ASSETS)
         # default count (CONTRIBUTING.md).
         add_test(NAME scene_benchmarks COMMAND anima_scene_benchmarks --objects 1024 --repetitions 1)
         set_tests_properties(scene_benchmarks PROPERTIES LABELS benchmark)
+        # Callgrind counts the instructions of scene work that allocates nothing (CONTRIBUTING.md).
+        # Valgrind cannot run sanitized programs.
+        find_program(ANIMA_VALGRIND valgrind)
+        if(ANIMA_VALGRIND AND NOT ANIMA_ENABLE_SANITIZERS)
+            add_executable(anima_scene_scaling_scenario tests/scene_scaling_scenario.cpp)
+            target_link_libraries(anima_scene_scaling_scenario PRIVATE anima::assets)
+            anima_target_defaults(anima_scene_scaling_scenario)
+            add_test(NAME scene_scaling_instructions COMMAND "${CMAKE_COMMAND}" "-DVALGRIND=${ANIMA_VALGRIND}"
+                "-DSCENARIO=$<TARGET_FILE:anima_scene_scaling_scenario>" -DOBJECTS=16384
+                "-DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/scene-scaling-instructions"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/scene_scaling_instructions.cmake")
+            set_tests_properties(scene_scaling_instructions PROPERTIES LABELS callgrind)
+        endif()
         add_executable(anima_audio_scene_tests tests/audio_scene_tests.cpp)
         target_link_libraries(anima_audio_scene_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_audio_scene_tests)

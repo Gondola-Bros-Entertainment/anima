@@ -1,7 +1,8 @@
-// Scene operations whose cost scene_scaling_tests compares at two object counts. Each scenario
-// builds its own scene, passes only the operation it names to @p measure, which runs it once and
-// returns a measurement, checks the result and returns that measurement. A failed check throws
-// `std::logic_error`.
+// Scene operations whose cost the scaling checks compare at two object counts: scene_scaling_tests
+// counts the bytes each allocates, and scene_scaling_instructions.cmake the instructions each runs
+// under Callgrind. Each scenario builds its own scene, passes only the operation it names to
+// @p measure, which runs it once and returns a measurement, checks the result and returns that
+// measurement. A failed check throws `std::logic_error`.
 #pragma once
 #include <anima/scene.hpp>
 
