@@ -20,8 +20,10 @@ void validate(const AudioSourceSettings &s) {
     detail::audio_gain(s.volume);
     detail::audio_pitch(s.pitch);
     detail::audio_pan(s.pan);
-    detail::audio_attenuation(s.minimum_distance, s.maximum_distance);
+    detail::audio_attenuation(s.minimum_distance, s.maximum_distance, s.rolloff);
+    detail::audio_priority(s.priority);
 }
+constexpr std::string_view linear_rolloff = "linear", inverse_rolloff = "inverse";
 void key(std::string_view value) {
     if (value.empty() || value.size() > maximum_clip_key_bytes || value.find('\0') != std::string_view::npos)
         throw std::invalid_argument("Invalid audio clip key");
@@ -40,9 +42,10 @@ void AudioSource::configure(AudioSourceSettings settings) {
     sound_.volume(settings.volume);
     sound_.pitch(settings.pitch);
     sound_.pan(settings.pan);
-    sound_.attenuation(settings.minimum_distance, settings.maximum_distance);
+    sound_.attenuation(settings.minimum_distance, settings.maximum_distance, settings.rolloff);
     sound_.looping(settings.looping);
     sound_.spatial(settings.spatial);
+    sound_.priority(settings.priority);
     settings_ = settings;
 }
 void AudioSource::play() { play_pending_ = true; }
@@ -138,13 +141,17 @@ void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClip
                         {"maximum_distance", s.maximum_distance},
                         {"looping", s.looping},
                         {"spatial", s.spatial},
-                        {"play_on_start", s.play_on_start}}
+                        {"play_on_start", s.play_on_start},
+                        {"priority", s.priority},
+                        {"rolloff", s.rolloff == AudioRolloff::inverse ? inverse_rolloff : linear_rolloff}}
                 .dump();
         },
         [mixer, bus, resolve = std::move(resolve)](GameObject object, std::string_view data, const ObjectReferences &) {
             const auto j = detail::parse_json(data, maximum_component_bytes);
-            detail::json_fields(j, {"clip", "volume", "pitch", "pan", "minimum_distance", "maximum_distance", "looping",
-                                    "spatial", "play_on_start"});
+            detail::json_fields(j,
+                                {"clip", "volume", "pitch", "pan", "minimum_distance", "maximum_distance", "looping",
+                                 "spatial", "play_on_start"},
+                                {"priority", "rolloff"});
             if (!j.at("clip").is_string())
                 throw std::invalid_argument("Invalid audio source fields");
             const auto number = [&](const char *field) {
@@ -166,6 +173,25 @@ void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClip
             s.looping = flag("looping");
             s.spatial = flag("spatial");
             s.play_on_start = flag("play_on_start");
+            if (j.contains("priority")) {
+                const auto &priority = j.at("priority");
+                if (!priority.is_number_integer())
+                    throw std::invalid_argument("Invalid audio source priority");
+                // An unsigned JSON integer above INT64_MAX reads as negative, which the range check rejects too.
+                const auto value = priority.get<std::int64_t>();
+                detail::audio_priority(value);
+                s.priority = static_cast<int>(value);
+            }
+            if (j.contains("rolloff")) {
+                // Compared as a std::string: comparing the JSON value with a string_view is ambiguous on MSVC.
+                const auto *rolloff = j.at("rolloff").get_ptr<const std::string *>();
+                if (rolloff && *rolloff == linear_rolloff)
+                    s.rolloff = AudioRolloff::linear;
+                else if (rolloff && *rolloff == inverse_rolloff)
+                    s.rolloff = AudioRolloff::inverse;
+                else
+                    throw std::invalid_argument("Invalid audio source rolloff");
+            }
             validate(s);
             const auto clip_key = j.at("clip").get<std::string>();
             key(clip_key);

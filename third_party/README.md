@@ -36,6 +36,10 @@ Anima does not use, and on Apple platforms `MA_NO_RUNTIME_LINKING` links Core Au
 through the CoreFoundation, CoreAudio and AudioToolbox frameworks, the setting
 miniaudio's documentation gives for Apple's notarization. Elsewhere miniaudio loads
 its platform audio libraries at run time, and Linux links `pthread` and `dl`.
+Besides miniaudio's functions, `src/runtime/audio.cpp` uses a few fields of its
+structures directly: a sound's processing cache count and resampler when a voice
+seeks, its spatializer and the engine's listener when a voice starts, and a buffer
+reference's sample rate. An update must check that they still mean the same.
 
 SHA-256:
 
@@ -71,4 +75,5 @@ Vulkan and glslc come from the installed SDK.
 The [UI fixture notes](../tests/ui/assets/README.md) record the upstream Lato font
 and engine-authored checker image. The font's original
 [notices and SIL Open Font License](../tests/ui/assets/LICENSE.txt) are retained
-beside the font.
+beside the font. The [audio fixture notes](../tests/audio/assets/README.md) record
+how the engine-authored tones were generated.

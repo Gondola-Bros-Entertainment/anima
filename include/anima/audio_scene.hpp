@@ -6,11 +6,12 @@
 /// Scene integration for anima::Audio: a listener marker, a voice-owning source component, a
 /// synchronization driver and persistence codecs.
 ///
-/// Part of `anima::assets`; it needs no device, SDL or graphics. Use it from the scenes' thread.
-/// Invalid arguments throw `std::invalid_argument` unless a member states otherwise.
+/// Part of `anima::assets`; it needs no device, SDL or graphics. Use it from the scenes' thread; the
+/// engine may mix on its device thread meanwhile (see anima::Audio). Invalid arguments throw
+/// `std::invalid_argument` unless a member states otherwise.
 
 namespace anima {
-/// Marks the object whose world pose the mixer's listener follows.
+/// Marks the object whose world pose the engine's listener follows.
 ///
 /// At synchronize_audio(), an active listener takes its object's world position, faces the local
 /// -Z axis and has the local +Y axis up, like a Camera on that object. The axes are normalized, so
@@ -26,31 +27,36 @@ struct AudioSourceSettings {
     float pitch = 1;
     /// Pan of a nonspatial source, in [-1, 1].
     float pan = 0;
-    /// Distance up to which a spatial source plays at full gain; at least 0.
+    /// Distance up to which a spatial source plays at full gain; at least 0, and positive for
+    /// AudioRolloff::inverse.
     float minimum_distance = 1;
-    /// Distance at which a spatial source falls silent; greater than #minimum_distance and at most
-    /// 1,000,000,000.
+    /// Distance from which a spatial source's gain stops falling, silent with linear rolloff;
+    /// greater than #minimum_distance and at most 1,000,000,000.
     float maximum_distance = 100;
     bool looping = false;
     /// Plays at the object's world position; see Sound::spatial.
     bool spatial = false;
     /// Requests playback once after construction or loading; see AudioSource::play.
     bool play_on_start = false;
+    /// Priority when the engine's voice limit is reached, in [0, 255]; see Sound::play.
+    int priority = 128;
+    /// How a spatial source's gain falls between the two distances; see AudioRolloff.
+    AudioRolloff rolloff = AudioRolloff::linear;
 };
 
-/// Component that owns one mixer voice for an immutable clip.
+/// Component that owns one voice for an immutable clip, like Unity's AudioSource or Unreal's audio
+/// component.
 ///
 /// A source starts stopped. Playback requests take effect at the next synchronize_audio() in which
 /// the component is active. An inactive source pauses there, keeping its cursor, and resumes when
-/// active again unless it was paused or stopped meanwhile. The source retains its clip and mixer
-/// state; removing the component or destroying its object or scene releases the voice and its
-/// capacity. Neither construction nor persistence starts a device, callback or update loop.
+/// active again unless it was paused or stopped meanwhile. The source retains its clip and engine;
+/// removing the component or destroying its object or scene releases the voice. Neither
+/// construction nor persistence starts a device, callback or update loop.
 class AudioSource {
   public:
     /// Creates a stopped voice for @p clip in @p audio, routed to @p bus (the master output when
     /// empty) and configured by @p settings. Throws `std::invalid_argument` for invalid settings, a
-    /// null clip or another mixer's bus, `std::length_error` when the mixer is full and
-    /// `std::logic_error` for a moved-from mixer.
+    /// null clip or another engine's bus, and `std::logic_error` for a moved-from engine.
     AudioSource(Audio &audio, std::shared_ptr<const AudioClip> clip, AudioSourceSettings settings = {},
                 const AudioBus &bus = {});
     AudioSource(const AudioSource &) = delete;
@@ -67,7 +73,7 @@ class AudioSource {
     void configure(AudioSourceSettings settings);
     /// Requests playback at the next synchronization in which the source is active, resuming a
     /// paused voice or restarting a finished one. Synchronizing again never restarts a finished
-    /// one-shot.
+    /// one-shot or a voice that the engine's voice limit stopped or refused (see Sound::play).
     void play();
     /// Pauses at once, keeping the cursor, and cancels pending or interrupted playback, even while
     /// inactive.
@@ -92,7 +98,7 @@ class AudioSource {
 /// Publishes the listener and sources of @p scene to @p audio.
 ///
 /// Everything is validated first, including inactive sources, and `std::invalid_argument` is
-/// thrown before any change when a source belongs to another mixer, more than one AudioListener
+/// thrown before any change when a source belongs to another engine, more than one AudioListener
 /// is active, the listener's axes are zero or parallel, or a published position has a coordinate
 /// that is not finite or exceeds 1,000,000,000 in magnitude. Activity is ComponentRef::active():
 /// component enablement and inherited object activation.
@@ -100,13 +106,14 @@ class AudioSource {
 /// The active listener then sets Audio::listener; without one, the listener returns to the origin
 /// facing -Z with +Y up. Active sources take their object's world position when spatial, and play
 /// when play() or AudioSourceSettings::play_on_start requested it or when they were playing before
-/// becoming inactive. Inactive sources pause, keeping their cursor. Enablement changes take effect
-/// only here.
+/// becoming inactive; each such request is consumed, whether or not the voice limit admits the
+/// voice. Inactive sources pause, keeping their cursor. Enablement changes take effect only here.
 ///
-/// Call it after the application's transform changes and before rendering or AudioOutput::pump().
-/// It runs no component hooks and does not advance audio time. Use one Scene or SceneSet driver
-/// per mixer; standalone voices may share the mixer. Throws `std::logic_error` while the scene is
-/// updating, under construction or destroyed, and for a moved-from mixer.
+/// Call it after the application's transform changes. An engine with a device mixes what it
+/// publishes from its next block, and one without in its next Audio::render(). It runs no
+/// component hooks and does not advance audio time. Use one Scene or SceneSet driver per engine;
+/// standalone voices may share the engine. Throws `std::logic_error` while the scene is updating,
+/// under construction or destroyed, and for a moved-from engine.
 void synchronize_audio(Scene &scene, Audio &audio);
 /// Synchronizes every scene of @p scenes as synchronize_audio(Scene &, Audio &) does, validating
 /// all of them before any changes; at most one listener may be active across the set. Also throws
@@ -119,24 +126,25 @@ using AudioClipName = std::function<std::string(const std::shared_ptr<const Audi
 using AudioClipResolver = std::function<std::shared_ptr<const AudioClip>(std::string_view)>;
 /// Registers the `anima.audio-listener.v1` and `anima.audio-source.v1` component codecs.
 ///
-/// The codecs retain the mixer state of @p audio and @p bus, which must belong to that mixer: with
-/// a foreign bus, every source restore throws. Each restored source gets its own stopped voice on
+/// The codecs retain the engine of @p audio and @p bus, which must belong to that engine: with a
+/// foreign bus, every source restore throws. Each restored source gets its own stopped voice on
 /// @p bus (the master output when empty) and the clip @p resolve returns, and its play_on_start
 /// request waits for synchronize_audio().
 ///
-/// The listener payload is `{}`. The source payload is a JSON object of at most 64 KiB with exactly
-/// `clip` (the key), `volume`, `pitch`, `pan`, `minimum_distance`, `maximum_distance`, `looping`,
-/// `spatial` and `play_on_start`, as in AudioSourceSettings. Unknown, missing or duplicate fields,
-/// wrong types and invalid values are rejected, as is a null clip from @p resolve; a full mixer
-/// throws `std::length_error`. Keys must be nonempty, at most 4,096 bytes and free of NUL, both
-/// when captured and when restored. The scene or prefab stores transforms and component
-/// enablement; cursors, playback state, pending requests, bus settings and device queues are not
+/// The listener payload is `{}`. The source payload is a JSON object of at most 64 KiB with `clip`
+/// (the key), `volume`, `pitch`, `pan`, `minimum_distance`, `maximum_distance`, `looping`, `spatial`
+/// and `play_on_start`, and optionally `priority` (an integer) and `rolloff` (`"linear"` or
+/// `"inverse"`), as in AudioSourceSettings; the optional fields default as there, and captures
+/// write every field. Unknown, missing or duplicate fields, wrong types and invalid values are
+/// rejected, as is a null clip from @p resolve. Keys must be nonempty, at most 4,096 bytes and free
+/// of NUL, both when captured and when restored. The scene or prefab stores transforms and
+/// component enablement; cursors, playback state, pending requests and bus settings are not
 /// persisted.
 ///
-/// Neither callback may mutate scenes, components or the mixer. Throws `std::invalid_argument` for
-/// an empty callback, a @p bus of another mixer, or when @p codecs already has a codec for either
+/// Neither callback may mutate scenes, components or the engine. Throws `std::invalid_argument` for
+/// an empty callback, a @p bus of another engine, or when @p codecs already has a codec for either
 /// component type or key, leaving @p codecs unchanged, and `std::logic_error` for a moved-from
-/// mixer.
+/// engine.
 void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClipName name, AudioClipResolver resolve,
                                 const AudioBus &bus = {});
 } // namespace anima

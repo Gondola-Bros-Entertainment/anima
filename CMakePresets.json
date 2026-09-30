@@ -32,11 +32,11 @@
       "displayName": "SDL3 / Vulkan viewer (macOS / Windows / Linux)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/desktop",
-      "cacheVariables": { "ANIMA_BUILD_DESKTOP": true, "ANIMA_BUILD_ASSETS": true, "ANIMA_BUILD_AUDIO_OUTPUT": true }
+      "cacheVariables": { "ANIMA_BUILD_DESKTOP": true, "ANIMA_BUILD_ASSETS": true }
     },
     {
       "name": "full",
-      "displayName": "Every module: desktop, UI, physics, 2D physics, SDL input and audio output",
+      "displayName": "Every module: desktop, UI, physics, 2D physics and SDL input",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/full",
       "cacheVariables": {
@@ -46,8 +46,7 @@
         "ANIMA_BUILD_UI_DOCUMENTS": true,
         "ANIMA_BUILD_PHYSICS": true,
         "ANIMA_BUILD_PHYSICS2D": true,
-        "ANIMA_BUILD_INPUT_SDL": true,
-        "ANIMA_BUILD_AUDIO_OUTPUT": true
+        "ANIMA_BUILD_INPUT_SDL": true
       }
     },
     {
@@ -101,7 +100,6 @@
         "ANIMA_BUILD_PHYSICS2D": true,
         "ANIMA_BUILD_UI_DOCUMENTS": true,
         "ANIMA_BUILD_INPUT_SDL": true,
-        "ANIMA_BUILD_AUDIO_OUTPUT": true,
         "SDL_VIDEO": false,
         "SDL_UNIX_CONSOLE_BUILD": true
       }

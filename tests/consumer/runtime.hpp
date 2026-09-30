@@ -22,6 +22,12 @@ inline void check(bool value, const char *reason) {
         throw std::runtime_error(reason);
 }
 using rejection::rejects;
+// The last frame of the next block of @p audio's output, which a voice started before it reaches.
+inline std::array<float, 2> last_frame(Audio &audio) {
+    std::array<float, 2 * audio_block_frames> output{};
+    audio.render(output);
+    return {output[output.size() - 2], output.back()};
+}
 struct Tick {
     int *ticks;
     void on_fixed_update(double) { ++*ticks; }
@@ -127,9 +133,9 @@ inline void frame_cadence() {
         const auto cursor = source->cursor();
         synchronize_audio(scenes, audio);
         check(source->cursor() == cursor, "Audio synchronization advanced mixer time");
-        std::array<float, 2> samples{};
-        audio.render(samples);
-        check(std::abs(samples[0]) < 1e-6F && std::abs(samples[1] - .125F) < 1e-6F,
+        // Two units to the listener's right: half gain on the right, and a fifth of that on the left.
+        const auto samples = last_frame(audio);
+        check(std::abs(samples[0] - .025F) < 1e-4F && std::abs(samples[1] - .125F) < 1e-4F,
               "Audio synchronization missed the late-update emitter pose");
         check(std::abs(object3.position().y - reference3.pose().position.y) < 1e-6F &&
                   std::abs(object2.position().y - reference2.pose().position.y) < 1e-6F,
@@ -154,7 +160,7 @@ struct PrefabFinish {};
 inline void prefab_destinations() {
     physics::World destination_volume;
     physics2d::World destination_plane;
-    Audio destination_audio(8000, 1);
+    Audio destination_audio(8000);
     const auto clip = AudioClip::pcm(std::vector<float>(16, .25F), 1, 8000);
     const auto make_codecs = [&](physics::World &volume, physics2d::World &plane, Audio &audio, bool fail = false) {
         ComponentCodecs codecs;
@@ -259,10 +265,6 @@ inline void prefab_destinations() {
     const PrefabComposition paired(
         {{"root", "runtime-base", {}, identity()},
          {"nested", "runtime-base", PrefabComposition::Mount{"root", base->nodes()[1].key}, identity()}});
-    // The second part exceeds the destination's one-voice capacity after both
-    // physics backends and the earlier part's voice have allocated resources.
-    rejects<std::length_error>([&] { (void)paired.instantiate(destination, resolve, destination_codecs); },
-                               "Audio voice limit exceeded");
     const auto failing = make_codecs(destination_volume, destination_plane, destination_audio, true);
     rejects<std::runtime_error>([&] { (void)prefab.instantiate(destination, identity(), failing); },
                                 "Destination prefab decoder failed");
@@ -273,10 +275,9 @@ inline void prefab_destinations() {
                                 "Destination prefab decoder failed");
     std::array<float, 2> samples{};
     destination_audio.render(samples);
-    const auto available_voice = destination_audio.sound(clip);
     check(destination.size() == 1 && existing.valid() && destination_volume.size() == 0 &&
               destination_plane.size() == 0 && samples[0] == 0 && samples[1] == 0 &&
-              destination_audio.owns(available_voice),
+              destination_audio.voice_count() == 0,
           "Failed destination decoder leaked bodies, voices or staged objects");
 }
 struct SceneSetCounts {
@@ -299,7 +300,7 @@ inline void scene_set_persistence() {
     constexpr double tick = 1. / 60;
     physics::World source_volume, destination_volume;
     physics2d::World source_plane, destination_plane;
-    Audio source_audio(8000), destination_audio(8000, 4);
+    Audio source_audio(8000), destination_audio(8000);
     SceneSetCounts source_counts, destination_counts;
     const auto clip = AudioClip::pcm(std::vector<float>(32, .25F), 1, 8000);
     const auto make_codecs = [&](physics::World &volume, physics2d::World &plane, Audio &audio, SceneSetCounts &counts,
@@ -401,8 +402,7 @@ inline void scene_set_persistence() {
                                        "Audio source belongs to another mixer");
     };
     drive();
-    std::array<float, 2> samples{};
-    destination_audio.render(samples);
+    auto samples = last_frame(destination_audio);
     check(samples[0] > 0 && samples[1] > 0, "Restored scene set did not produce destination audio");
     auto prior_first = restored.find("first"), prior_second = restored.find("second");
     auto prior_source = head.get_component<AudioSource>();
@@ -423,22 +423,7 @@ inline void scene_set_persistence() {
     rejects<std::runtime_error>([&] { restored.restore(document, {}, failing); }, "Late scene-set decoder failed");
     check(destination_counts.failed_decodes == 1, "Scene-set rollback did not reach the later decoder");
     unchanged();
-    {
-        auto first_available = destination_audio.sound(clip), second_available = destination_audio.sound(clip);
-        check(destination_audio.owns(first_available) && destination_audio.owns(second_available),
-              "Late decoder failure leaked staged voices");
-    }
-    {
-        // Existing voices plus this reservation leave room only for the first
-        // staged scene, so the second scene's source must fail before commit.
-        auto reserved = destination_audio.sound(clip);
-        rejects<std::length_error>([&] { restored.restore(document, {}, destination_codecs); },
-                                   "Audio voice limit exceeded");
-        unchanged();
-        auto available = destination_audio.sound(clip);
-        check(destination_audio.owns(reserved) && destination_audio.owns(available),
-              "Capacity failure retained the first staged scene's voice");
-    }
+    check(destination_audio.voice_count() == 2, "Late decoder failure leaked staged voices");
     for (unsigned transition = 0; transition < 3; ++transition) {
         const auto old_scenes = restored.scenes();
         const auto old_views = restored.render_scenes();
@@ -459,10 +444,9 @@ inline void scene_set_persistence() {
     }
     restored.clear();
     synchronize_audio(restored, destination_audio);
-    destination_audio.render(samples);
-    auto available = destination_audio.sound(clip);
+    samples = last_frame(destination_audio);
     check(destination_counts.alive == 0 && destination_volume.size() == 0 && destination_plane.size() == 0 &&
-              samples[0] == 0 && samples[1] == 0 && destination_audio.owns(available),
+              samples[0] == 0 && samples[1] == 0 && destination_audio.voice_count() == 0,
           "Final scene-set teardown retained resources");
 }
 inline void run() {
@@ -541,9 +525,8 @@ inline void run() {
     auto source = emitter.add_component<AudioSource>(audio, clip, sound);
     synchronize_audio(scenes, audio);
     check(source->playing() && source->cursor() == 0, "Audio synchronization advanced time or missed playback");
-    std::array<float, 2> samples{};
-    audio.render(samples);
-    check(std::abs(samples[0]) < 1e-6F && std::abs(samples[1] - sample_value / 2) < 1e-6F,
+    auto samples = last_frame(audio);
+    check(std::abs(samples[0] - sample_value / 10) < 1e-4F && std::abs(samples[1] - sample_value / 2) < 1e-4F,
           "Cross-scene listener/source spatialization failed");
     auto duplicate = marker.add_component<AudioListener>();
     listener.set_position({100, 0, 0});
@@ -551,8 +534,8 @@ inline void run() {
     rejects<std::invalid_argument>([&] { synchronize_audio(scenes, audio); },
                                    "Audio scene has multiple enabled listeners");
     check(source->playing(), "Invalid listener selection partially paused sources");
-    audio.render(samples);
-    check(std::abs(samples[1] - sample_value / 2) < 1e-6F, "Rejected audio snapshot changed listener");
+    samples = last_frame(audio);
+    check(std::abs(samples[1] - sample_value / 2) < 1e-4F, "Rejected audio snapshot changed listener");
     duplicate.set_enabled(false);
     listener.set_position({0, 0, 0});
     synchronize_audio(scenes, audio);
@@ -625,7 +608,7 @@ inline void run() {
     scenes.unload(level);
     check(volume.size() == 1 && plane.size() == 1, "Unloading a scene retained bodies");
     synchronize_audio(scenes, audio);
-    audio.render(samples);
+    samples = last_frame(audio);
     check(samples[0] == 0 && samples[1] == 0, "Unloaded scene still produced audio");
     scenes.clear();
     physics::step(scenes, volume, tick);

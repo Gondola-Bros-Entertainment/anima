@@ -1,6 +1,8 @@
 #pragma once
+#include <anima/audio.hpp>
 #include <anima/core/math.hpp>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 
 namespace anima::detail {
@@ -9,6 +11,7 @@ inline constexpr float minimum_audio_pitch = .01F;
 inline constexpr float maximum_audio_pitch = 8;
 inline constexpr float maximum_audio_distance = 1e9F;
 inline constexpr float audio_direction_epsilon = 1e-6F;
+inline constexpr int maximum_audio_priority = 255;
 
 inline void audio_gain(float value) {
     if (!std::isfinite(value) || value < 0 || value > maximum_audio_gain)
@@ -22,9 +25,17 @@ inline void audio_pan(float value) {
     if (!std::isfinite(value) || std::abs(value) > 1)
         throw std::invalid_argument("Audio pan must be in [-1, 1]");
 }
-inline void audio_attenuation(float minimum, float maximum) {
+inline void audio_priority(std::int64_t value) {
+    if (value < 0 || value > maximum_audio_priority)
+        throw std::invalid_argument("Audio priority must be in [0, 255]");
+}
+inline void audio_attenuation(float minimum, float maximum, AudioRolloff rolloff) {
+    if (rolloff != AudioRolloff::linear && rolloff != AudioRolloff::inverse)
+        throw std::invalid_argument("Invalid audio rolloff");
+    // The inverse model's gain, minimum / distance, would be silent everywhere with a zero minimum and undefined at
+    // the listener.
     if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum < 0 || maximum <= minimum ||
-        maximum > maximum_audio_distance)
+        maximum > maximum_audio_distance || (rolloff == AudioRolloff::inverse && minimum == 0))
         throw std::invalid_argument("Invalid audio attenuation distances");
 }
 inline void audio_location(Vec3 value) {

@@ -433,7 +433,7 @@ inline void run() {
 
     // A decoder failure releases staged owned components; the old scene remains valid.
     auto clip = AudioClip::pcm(std::vector<float>(16, .25F), 1, 8000);
-    Audio audio(8000, 1);
+    Audio audio(8000);
     ComponentCodecs codecs;
     add_audio_component_codecs(codecs, audio, [&](auto) { return "tone"; }, [&](auto) { return clip; });
     Scene sound_scene;
@@ -469,8 +469,7 @@ inline void run() {
     check(source->playing(), "Loaded audio source failed to play");
     set.unload(playing);
     check(!source && retained_audio_view->size() == 0, "Retained scene view delayed audio teardown");
-    auto voice = audio.sound(clip); // capacity was released by both failed load and unload
-    voice.play();
+    check(audio.voice_count() == 0, "Failed load or unload retained an audio voice");
 
     // Clear invalidates all scenes before the first cleanup hook, even with retained views.
     auto left = replacement->create(), right = extra->create();

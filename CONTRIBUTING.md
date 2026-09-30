@@ -97,9 +97,9 @@ and report the device and driver used, and any platform left untested, in the pu
 request. The checks minimize and restore windows, which X11 leaves to the window
 manager, so a virtual display needs one running; CI starts Openbox.
 
-Audio tests use SDL's dummy driver, so they produce no sound and measure no
-latency. Physical input devices, text input methods and display scaling also need
-checks on real hardware.
+Audio tests render offline or play through miniaudio's null backend, so they
+produce no sound and measure no device latency. Physical input devices, text input
+methods and display scaling also need checks on real hardware.
 
 ## Documentation
 
