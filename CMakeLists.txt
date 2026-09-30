@@ -147,6 +147,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/mesh.cpp
     src/assets/terrain.cpp
     src/assets/animator.cpp
+    src/assets/animation_state_machine.cpp
     src/assets/imports.cpp
     src/assets/render_visibility.cpp
     src/assets/texture_mips.cpp
@@ -211,6 +212,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_interaction_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_interaction_tests)
         add_test(NAME animation_interactions COMMAND anima_interaction_tests)
+        add_executable(anima_state_machine_tests tests/state_machine_tests.cpp)
+        target_link_libraries(anima_state_machine_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_state_machine_tests)
+        add_test(NAME animation_state_machine COMMAND anima_state_machine_tests)
         add_executable(anima_scene_tests tests/scene_tests.cpp)
         target_link_libraries(anima_scene_tests PRIVATE anima::assets)
         # Its own doctest main takes an optional exported GLB, so it uses the runner's doctest

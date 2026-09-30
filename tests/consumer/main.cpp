@@ -32,6 +32,7 @@
 #include "references.hpp"
 #include "scene_objects.hpp"
 #include "scene_set.hpp"
+#include "state_machine.hpp"
 #include <anima/assets/render_visibility.hpp>
 #include <anima/scene.hpp>
 #endif
@@ -341,6 +342,7 @@ int main(int argc, char **argv) {
         consume_audio_scene();
         camera_consumer::run();
         lighting_consumer::run();
+        state_machine_consumer::run();
         auto asset = triangle();
         // Also exercise public resource bounds/frustum queries without requiring
         // a desktop backend or engine tools in a downstream application.
