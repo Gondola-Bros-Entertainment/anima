@@ -63,17 +63,28 @@ class Verification final : public ViewerDriver {
                 sdl_check(SDL_SetWindowSize(window, 800, 500), "Resize smoke window");
                 resized = true;
             }
+            // Minimizing is asynchronous, and SDL's Cocoa backend restores only a window that has finished
+            // minimizing, so the restore waits for the minimize event. The renderer draws nothing while the window is
+            // minimized, so no frame passes between the restore and its event.
             if (frames >= 40 && !minimized) {
                 sdl_check(SDL_MinimizeWindow(window), "Minimize smoke window");
-                minimized = waiting_restore = true;
-                restore_at = now + std::chrono::milliseconds(700);
+                SDL_SyncWindow(window); // Bounded; the event below decides.
+                minimized = true;
+                window_deadline = now + window_event_timeout;
             }
-            if (waiting_restore && now >= restore_at) {
-                sdl_check(SDL_RestoreWindow(window), "Restore smoke window");
-                waiting_restore = false;
-                restored = true;
-                renderer.request_resize();
+            if (minimized && !restored) {
+                if (frame.minimize_events > 0) {
+                    sdl_check(SDL_RestoreWindow(window), "Restore smoke window");
+                    restored = true;
+                    window_deadline = now + window_event_timeout;
+                    renderer.request_resize();
+                } else if (now > window_deadline)
+                    throw std::runtime_error("The smoke window reported no minimize within " +
+                                             std::to_string(window_event_timeout.count()) + " s");
             }
+            if (restored && frame.restore_events == 0 && now > window_deadline)
+                throw std::runtime_error("The smoke window reported no restore within " +
+                                         std::to_string(window_event_timeout.count()) + " s");
             if (frames >= 80 && !resized_again) {
                 sdl_check(SDL_SetWindowSize(window, 1024, 576), "Second smoke resize");
                 resized_again = true;
@@ -141,10 +152,12 @@ class Verification final : public ViewerDriver {
     }
 
   private:
-    bool resized{}, minimized{}, restored{}, resized_again{}, waiting_restore{};
+    // How long the smoke check waits for each minimize and restore event.
+    static constexpr std::chrono::seconds window_event_timeout{10};
+    bool resized{}, minimized{}, restored{}, resized_again{};
     bool first_requested_{};
     std::optional<std::string> pending_;
-    std::chrono::steady_clock::time_point restore_at{};
+    std::chrono::steady_clock::time_point window_deadline{};
     [[maybe_unused]] std::uint64_t scripted_frame = std::numeric_limits<std::uint64_t>::max();
 };
 // The viewer's first frame: nothing but the clear color with --empty, the asset with --asset, and otherwise
