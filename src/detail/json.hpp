@@ -5,6 +5,15 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+// Anima's copy of nlohmann/json carries a local change (third_party/README.md), so it has an inline namespace
+// of its own: an application that links its own copy of the same release shares no definition with it.
+#define NLOHMANN_JSON_NAMESPACE nlohmann::json_anima_v3_12_0
+#define NLOHMANN_JSON_NAMESPACE_BEGIN                                                                                  \
+    namespace nlohmann {                                                                                               \
+    inline namespace json_anima_v3_12_0 {
+#define NLOHMANN_JSON_NAMESPACE_END                                                                                    \
+    }                                                                                                                  \
+    }
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>

@@ -7032,6 +7032,7 @@ NLOHMANN_JSON_NAMESPACE_END
 #include <cstdio> // snprintf
 #include <cstdlib> // strtof, strtod, strtold, strtoll, strtoull
 #include <initializer_list> // initializer_list
+#include <mutex> // mutex, lock_guard
 #include <string> // char_traits, string
 #include <utility> // move
 #include <vector> // vector
@@ -7048,6 +7049,17 @@ NLOHMANN_JSON_NAMESPACE_END
 NLOHMANN_JSON_NAMESPACE_BEGIN
 namespace detail
 {
+
+// Anima local change (see third_party/README.md): glibc's localeconv() rewrites one static buffer on every
+// call, so concurrent calls race. The lexer and the serializer read the locale only here, under one lock.
+inline char locale_character(char* std::lconv::* member, char fallback) noexcept
+{
+    static std::mutex lock;
+    const std::lock_guard<std::mutex> guard(lock);
+    const auto* loc = std::localeconv();
+    JSON_ASSERT(loc != nullptr);
+    return (loc->*member == nullptr) ? fallback : *(loc->*member);
+}
 
 ///////////
 // lexer //
@@ -7162,12 +7174,9 @@ class lexer : public lexer_base<BasicJsonType>
     /////////////////////
 
     /// return the locale-dependent decimal point
-    JSON_HEDLEY_PURE
     static char get_decimal_point() noexcept
     {
-        const auto* loc = localeconv();
-        JSON_ASSERT(loc != nullptr);
-        return (loc->decimal_point == nullptr) ? '.' : *(loc->decimal_point);
+        return locale_character(&std::lconv::decimal_point, '.');
     }
 
     /////////////////////
@@ -18788,9 +18797,8 @@ class serializer
     serializer(output_adapter_t<char> s, const char ichar,
                error_handler_t error_handler_ = error_handler_t::strict)
         : o(std::move(s))
-        , loc(std::localeconv())
-        , thousands_sep(loc->thousands_sep == nullptr ? '\0' : std::char_traits<char>::to_char_type(* (loc->thousands_sep)))
-        , decimal_point(loc->decimal_point == nullptr ? '\0' : std::char_traits<char>::to_char_type(* (loc->decimal_point)))
+        , thousands_sep(locale_character(&std::lconv::thousands_sep, '\0'))
+        , decimal_point(locale_character(&std::lconv::decimal_point, '\0'))
         , indent_char(ichar)
         , indent_string(512, indent_char)
         , error_handler(error_handler_)
@@ -19686,8 +19694,6 @@ class serializer
     /// a (hopefully) large enough character buffer
     std::array<char, 64> number_buffer{{}};
 
-    /// the locale
-    const std::lconv* loc = nullptr;
     /// the locale's thousand separator character
     const char thousands_sep = '\0';
     /// the locale's decimal point character

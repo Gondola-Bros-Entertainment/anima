@@ -8,28 +8,35 @@ them compile as C++ and add no language runtime dependency.
 | Library | Source revision | Files / license |
 | --- | --- | --- |
 | [cgltf 1.15](https://github.com/jkuhlmann/cgltf/tree/360db1a95480fe102ae9c69b27c5d101167ff5ba) | `360db1a95480fe102ae9c69b27c5d101167ff5ba` (peeled `v1.15` tag) | `cgltf/cgltf.h`, `cgltf/LICENSE` (MIT) |
-| [nlohmann/json 3.12.0](https://github.com/nlohmann/json/tree/v3.12.0) | `v3.12.0` (unmodified single header) | `nlohmann/json.hpp`, `nlohmann/LICENSE.MIT` (MIT); private document parser |
+| [nlohmann/json 3.12.0](https://github.com/nlohmann/json/tree/v3.12.0) | `v3.12.0` (single header, one local change) | `nlohmann/json.hpp`, `nlohmann/LICENSE.MIT` (MIT); private document parser |
 | [stb_image 2.30](https://github.com/nothings/stb/tree/2c980bb59875b0d32144a71867fbdebb2f77cd20) | `2c980bb59875b0d32144a71867fbdebb2f77cd20` | `stb/stb_image.h`, `stb/LICENSE` (MIT or public domain; Anima uses MIT) |
 | [doctest 2.5.3](https://github.com/doctest/doctest/tree/2d0a9359a60c51affe2a9bebb1be1dca47868151) | `2d0a9359a60c51affe2a9bebb1be1dca47868151` (`v2.5.3` tag) | `doctest/doctest/doctest.h`, `doctest/LICENSE.txt` (MIT); test runner only, never linked into engine targets |
 | [Vulkan Memory Allocator 3.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tree/3aa921224c154a0d2c43912bc88e1c42ce1f7607) | `3aa921224c154a0d2c43912bc88e1c42ce1f7607` (`v3.4.0` tag) | `vma/vk_mem_alloc.h`, `vma/LICENSE.txt` (MIT); private to `anima::desktop`, which compiles its implementation once |
 | [miniaudio 0.11.25](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d) | `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d` (`0.11.25` tag) | `miniaudio/miniaudio.h`, `miniaudio/LICENSE` (public domain or MIT No Attribution; Anima uses MIT No Attribution); private to `anima::core` |
 | [stb_vorbis 1.22](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d/extras) | miniaudio's `extras/stb_vorbis.c` at the same revision | `miniaudio/stb_vorbis.c` (MIT or public domain, stated at the end of the file; Anima uses MIT); private to `anima::core` |
 
-The cgltf, JSON, doctest, Vulkan Memory Allocator and stb_vorbis files are
-unmodified. stb_image carries two local size-safety changes: 16-bit channel
-conversion uses its checked allocation helper, and 8-bit PNG row copying reuses the
-validated row byte count. miniaudio carries two local changes that make spatial
-mixing agree across targets. `ma_rsqrtf`, which normalizes the listener's axes,
-computes an exact reciprocal square root; upstream uses SSE's `rsqrtss`, an
-approximation to about 12 bits that placed sources slightly nearer on x86, so that
-one at its maximum distance stayed faintly audible. The stereo gain ramp's paths
-that step two frames at a time, taken with SSE2 and by MSVC without it, advance two
-frames' gain per step and give an odd last frame the gain that follows; upstream
-advances one frame's gain and gives that frame the ramp's starting gain, so a ramp
-covered half its change and the rest arrived at once in the next block. Anima mixes
-in stereo, so the six-channel path, which steps the same way, is left as upstream.
-The upstream revisions and licenses remain unchanged; the checksums below identify
-the patched headers.
+The cgltf, doctest, Vulkan Memory Allocator and stb_vorbis files are unmodified.
+stb_image carries two local size-safety changes: 16-bit channel conversion uses its
+checked allocation helper, and 8-bit PNG row copying reuses the validated row byte
+count. The JSON header carries one local thread-safety change: its lexer and
+serializer read the locale's decimal point and thousands separator through one
+function, `detail::locale_character`, which calls `localeconv()` under a lock,
+because glibc's `localeconv()` rewrites one static buffer on every call and documents
+concurrent calls as a data race. That function replaces the lexer's
+`get_decimal_point` body and the serializer's `loc` member. Anima compiles its copy
+in the inline namespace `nlohmann::json_anima_v3_12_0` (`src/detail/json.hpp`), so an
+application's own copy of the release shares none of its definitions. miniaudio
+carries two local changes that make spatial mixing agree across targets. `ma_rsqrtf`,
+which normalizes the listener's axes, computes an exact reciprocal square root;
+upstream uses SSE's `rsqrtss`, an approximation to about 12 bits that placed sources
+slightly nearer on x86, so that one at its maximum distance stayed faintly audible.
+The stereo gain ramp's paths that step two frames at a time, taken with SSE2 and by
+MSVC without it, advance two frames' gain per step and give an odd last frame the
+gain that follows; upstream advances one frame's gain and gives that frame the ramp's
+starting gain, so a ramp covered half its change and the rest arrived at once in the
+next block. Anima mixes in stereo, so the six-channel path, which steps the same way,
+is left as upstream. The upstream revisions and licenses remain unchanged; the
+checksums below identify the patched headers.
 
 JSON parsing is private to asset and component document implementations; public
 APIs accept UTF-8 document strings. `anima::core` does not include or link the JSON
@@ -54,7 +61,7 @@ reference's sample rate. An update must check that they still mean the same.
 SHA-256:
 
 ```text
-aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63  nlohmann/json.hpp
+e9128ea8c9a9cdc3f58a7c673cebbade052e07f6a478b0101457fbd90d2ec7b0  nlohmann/json.hpp
 46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603  nlohmann/LICENSE.MIT
 e378a21c084bf1f288bb799de827bb26906efb024255f1ecf1705ea13f11c6ec  cgltf/cgltf.h
 f619925f80ef862497aaf8e8155ef218fa6a2190055129523ca3df9119a9ba95  cgltf/LICENSE
