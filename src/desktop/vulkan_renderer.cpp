@@ -130,6 +130,9 @@ struct VulkanRenderer::Impl {
     std::uint32_t graphics_family{}, present_family{};
     VkQueue graphics_queue{}, present_queue{};
     bool maintenance_instance{}, present_fences{}, resize = true, stopped = false, fatal = false;
+    // Whether BC7 images upload as BC7: the device samples BC7 with linear filtering and RendererOptions::decode_bc7
+    // is off. Otherwise they upload decoded to RGBA8.
+    bool bc7_sampled{};
     VkCommandPool command_pool{};
     VkCommandBuffer command{};
     VkFence frame_fence{};
@@ -528,6 +531,17 @@ struct VulkanRenderer::Impl {
         VkPhysicalDeviceFeatures available{}, enabled{};
         vkGetPhysicalDeviceFeatures(physical, &available);
         enabled.fullDrawIndexUint32 = available.fullDrawIndexUint32;
+        // BC formats need the feature, and BC7 images also need sampling with linear filtering and copies into them.
+        enabled.textureCompressionBC = available.textureCompressionBC;
+        const auto bc7_features = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        bc7_sampled = available.textureCompressionBC && !options.decode_bc7;
+        for (const auto bc7_format : {VK_FORMAT_BC7_SRGB_BLOCK, VK_FORMAT_BC7_UNORM_BLOCK}) {
+            VkFormatProperties properties{};
+            vkGetPhysicalDeviceFormatProperties(physical, bc7_format, &properties);
+            bc7_sampled = bc7_sampled && (properties.optimalTilingFeatures & bc7_features) == bc7_features;
+        }
         info.pEnabledFeatures = &enabled;
         if (present_fences)
             info.pNext = &maintenance;
@@ -542,6 +556,7 @@ struct VulkanRenderer::Impl {
         vkGetDeviceQueue(device, present_family, 0, &present_queue);
         std::cout << "Presentation retirement: "
                   << (present_fences ? "EXT_swapchain_maintenance1 fences" : "Vulkan 1.1 wait-idle fallback") << '\n';
+        std::cout << "BC7 textures: " << (bc7_sampled ? "sampled as BC7" : "decoded to RGBA8 on the CPU") << '\n';
     }
     void create_frame_resources() {
         VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -1110,16 +1125,22 @@ struct VulkanRenderer::Impl {
                 throw std::runtime_error("GPU lacks filtered RGBA colour/data images");
         }
     }
-    // Creates @p texture's image, view and shared sampler for @p source, then uploads @p mips through @p upload and
-    // waits for the copy. The first texture of an upload, @p first, fires the texture and upload stages of @p failure.
-    void upload_texture(GpuTexture &texture, const Texture &source, const std::vector<MipLevel> &mips,
-                        UploadBatch &upload, RendererFailureStage failure, bool initial, bool first) {
-        const auto &pixels = *source.image;
+    // One level of texels to copy into an image: its extent and its bytes in the image's format.
+    struct TexelLevel {
+        std::uint32_t width{}, height{};
+        std::span<const std::uint8_t> bytes;
+    };
+    // Creates @p texture's image in @p image_format with one mip level per entry of @p levels, the first at the image's
+    // extent, its view and the shared sampler for @p sampling, then copies @p levels through @p upload and waits for
+    // the copy. The first texture of an upload, @p first, fires the texture and upload stages of @p failure.
+    void upload_texture(GpuTexture &texture, const Sampler &sampling, VkFormat image_format,
+                        std::span<const TexelLevel> levels, UploadBatch &upload, RendererFailureStage failure,
+                        bool initial, bool first) {
         VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         image.imageType = VK_IMAGE_TYPE_2D;
-        image.format = source.encoding == TextureEncoding::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-        image.extent = {pixels.width, pixels.height, 1};
-        image.mipLevels = static_cast<std::uint32_t>(mips.size());
+        image.format = image_format;
+        image.extent = {levels.front().width, levels.front().height, 1};
+        image.mipLevels = static_cast<std::uint32_t>(levels.size());
         image.arrayLayers = 1;
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1134,11 +1155,11 @@ struct VulkanRenderer::Impl {
         view.format = image.format;
         view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.mipLevels, 0, 1};
         check(vkCreateImageView(device, &view, nullptr, &texture.view), "Create texture view");
-        texture.shared_sampler = material_sampler(source.sampler, image.mipLevels);
+        texture.shared_sampler = material_sampler(sampling, image.mipLevels);
         texture.sampler = texture.shared_sampler->handle;
         VkDeviceSize size = 0;
-        for (const auto &mip : mips)
-            size += mip.rgba.size();
+        for (const auto &level : levels)
+            size += level.bytes.size();
         VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         buffer.size = size;
         buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -1147,10 +1168,19 @@ struct VulkanRenderer::Impl {
             static_cast<char *>(create_buffer(buffer, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, upload.staging_buffer,
                                               upload.staging_allocation, "Create texture staging buffer")
                                     .pMappedData);
+        // Levels are packed back to back. Each size is a multiple of the format's texel block, 4 bytes for RGBA8 and
+        // 16 for BC7, so every copy starts where Vulkan requires.
+        std::vector<VkBufferImageCopy> copies;
         std::size_t offset = 0;
-        for (const auto &mip : mips) {
-            std::memcpy(mapped + offset, mip.rgba.data(), mip.rgba.size());
-            offset += mip.rgba.size();
+        for (std::uint32_t level = 0; level < image.mipLevels; ++level) {
+            const auto &source = levels[level];
+            std::memcpy(mapped + offset, source.bytes.data(), source.bytes.size());
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = offset;
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            copy.imageExtent = {source.width, source.height, 1};
+            copies.push_back(copy);
+            offset += source.bytes.size();
         }
         check(vmaFlushAllocation(allocator, upload.staging_allocation, 0, VK_WHOLE_SIZE), "Flush texture staging");
         check(vkResetCommandBuffer(upload.command, 0), "Reset texture upload command");
@@ -1166,16 +1196,6 @@ struct VulkanRenderer::Impl {
         barrier.subresourceRange = view.subresourceRange;
         vkCmdPipelineBarrier(upload.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
                              nullptr, 0, nullptr, 1, &barrier);
-        std::vector<VkBufferImageCopy> copies;
-        offset = 0;
-        for (std::uint32_t level = 0; level < image.mipLevels; ++level) {
-            VkBufferImageCopy copy{};
-            copy.bufferOffset = offset;
-            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
-            copy.imageExtent = {mips[level].width, mips[level].height, 1};
-            copies.push_back(copy);
-            offset += mips[level].rgba.size();
-        }
         vkCmdCopyBufferToImage(upload.command, upload.staging_buffer, texture.image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<std::uint32_t>(copies.size()),
                                copies.data());
@@ -1204,8 +1224,56 @@ struct VulkanRenderer::Impl {
         upload.wait();
         upload.release_staging();
     }
+    // Uploads @p source's image into @p texture, sampled as @p source says, and returns its mip level count.
+    //
+    // An RGBA8 image uploads @p prepared when given, or else its mip chain built with @p mip_options, or its base level
+    // alone when @p source is not mipmapped. A BC7 image uploads the levels it stores, or its base level alone when
+    // @p source is not mipmapped: as BC7 where the device samples it, and otherwise decoded to RGBA8. One stored level
+    // samples as an unmipmapped texture does. The image must have texels unless @p prepared supplies them.
+    std::uint32_t upload_image(GpuTexture &texture, const Texture &source, const std::vector<MipLevel> *prepared,
+                               const TextureMipOptions &mip_options, UploadBatch &upload, RendererFailureStage failure,
+                               bool initial, bool first) {
+        const auto &pixels = *source.image;
+        const bool srgb = source.encoding == TextureEncoding::srgb;
+        auto sampling = source.sampler;
+        auto image_format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        std::vector<TexelLevel> levels;
+        // RGBA8 levels built here, which levels refers to.
+        std::vector<MipLevel> built;
+        if (pixels.format == ImageFormat::bc7) {
+            const auto count = sampling.mipmapped ? pixels.levels : 1U;
+            if (count == 1)
+                sampling.mipmapped = false;
+            if (bc7_sampled) {
+                image_format = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+                std::size_t offset = 0;
+                for (std::uint32_t level = 0; level < count; ++level) {
+                    const auto width = std::max(pixels.width >> level, 1U),
+                               height = std::max(pixels.height >> level, 1U);
+                    // Image::blocks: ceil(w / 4) * ceil(h / 4) blocks of 16 bytes per level.
+                    const auto bytes = (std::size_t{width} + 3) / 4 * ((std::size_t{height} + 3) / 4) * 16;
+                    levels.push_back({width, height, std::span(pixels.blocks).subspan(offset, bytes)});
+                    offset += bytes;
+                }
+            } else {
+                built = decode_image(pixels);
+                built.resize(count);
+            }
+        } else if (prepared)
+            for (const auto &mip : *prepared)
+                levels.push_back({mip.width, mip.height, mip.rgba});
+        else if (sampling.mipmapped)
+            built = texture_mips(source, mip_options);
+        else
+            levels.push_back({pixels.width, pixels.height, pixels.rgba});
+        for (const auto &mip : built)
+            levels.push_back({mip.width, mip.height, mip.rgba});
+        upload_texture(texture, sampling, image_format, levels, upload, failure, initial, first);
+        return static_cast<std::uint32_t>(levels.size());
+    }
     // Uploads the images of @p target's material plan, or of @p prepared's, and writes its material descriptors.
-    // Without @p prepared, @p texels holds the image of each source texture with its texels (Mesh::texel_images).
+    // @p texels holds the image of each source texture with its texels (Mesh::texel_images), which only a preparation
+    // of RGBA8 images does without.
     void upload_textures(GpuMaterials &target, UploadBatch &upload, RendererFailureStage failure, bool initial,
                          std::span<const std::shared_ptr<const anima::Image>> texels,
                          const MeshPreparation *prepared = nullptr) {
@@ -1219,22 +1287,18 @@ struct VulkanRenderer::Impl {
         const Texture white{std::make_shared<anima::Image>(anima::Image{1, 1, {255, 255, 255, 255}}), {}};
         for (std::size_t i = 0; i < target.textures.size(); ++i) {
             const auto &planned = plan.images[i];
-            // The texture's sampler and encoding, with the image that holds its texels unless a preparation filtered
-            // them already.
+            // The texture's sampler and encoding, with the image that holds its texels when they were read.
             auto source = white;
             if (planned.source >= 0) {
                 source = target.source->textures[planned.source];
-                if (!prepared)
+                if (!texels.empty())
                     source.image = texels[planned.source];
             }
-            const auto &pixels = *source.image;
-            const auto generated_mips = prepared ? std::vector<MipLevel>{}
-                                        : source.sampler.mipmapped
-                                            ? texture_mips(source, planned.mips)
-                                            : std::vector<MipLevel>{{pixels.width, pixels.height, pixels.rgba}};
-            const auto &mips = prepared ? prepared->images().at(i) : generated_mips;
-            total_mips += static_cast<std::uint32_t>(mips.size());
-            upload_texture(target.textures[i], source, mips, upload, failure, initial, i == 0);
+            // A preparation filtered RGBA8 images already; block-compressed ones upload the levels they store.
+            const auto *mips =
+                prepared && source.image->format == ImageFormat::rgba8 ? &prepared->images().at(i) : nullptr;
+            total_mips +=
+                upload_image(target.textures[i], source, mips, planned.mips, upload, failure, initial, i == 0);
         }
         target.material_sets.resize(target.source->material_data.size() + 1);
         const auto count = static_cast<std::uint32_t>(target.material_sets.size());
@@ -1850,6 +1914,7 @@ void VulkanRenderer::request_capture() {
         impl_->resize = true;
 }
 std::optional<CapturedImage> VulkanRenderer::take_capture() { return std::exchange(impl_->captured_image, {}); }
+bool VulkanRenderer::samples_bc7() const noexcept { return impl_->bc7_sampled; }
 void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
     impl_->running();
     for (float value : view_projection)

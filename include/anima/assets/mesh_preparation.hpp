@@ -27,7 +27,8 @@ class MeshPreparation {
     const std::shared_ptr<const Mesh> &asset() const { return asset_; }
     const MaterialTexturePlan &plan() const { return plan_; }
     /// One mip chain per MaterialTexturePlan::images entry, base level first; textures without
-    /// Sampler::mipmapped have only the base level.
+    /// Sampler::mipmapped have only the base level, and those whose image is block-compressed have none,
+    /// since they upload the levels that the image stores.
     const std::vector<std::vector<MipLevel>> &images() const { return images_; }
 
   private:

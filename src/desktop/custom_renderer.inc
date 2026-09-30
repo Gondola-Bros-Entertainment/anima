@@ -229,11 +229,8 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         for (std::size_t i = 0; i < definition.textures.size(); ++i) {
             auto texture = definition.textures[i];
             texture.image = texels[i];
-            const auto &pixels = *texture.image;
-            const auto mips = texture.sampler.mipmapped
-                                  ? texture_mips(texture)
-                                  : std::vector<MipLevel>{{pixels.width, pixels.height, pixels.rgba}};
-            upload_texture(value->textures[i], texture, mips, upload, RendererFailureStage::none, false, false);
+            (void)upload_image(value->textures[i], texture, nullptr, {}, upload, RendererFailureStage::none, false,
+                               false);
         }
     }
     const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},

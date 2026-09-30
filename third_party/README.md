@@ -86,4 +86,7 @@ The [UI fixture notes](../tests/ui/assets/README.md) record the upstream Lato fo
 and engine-authored checker image. The font's original
 [notices and SIL Open Font License](../tests/ui/assets/LICENSE.txt) are retained
 beside the font. The [audio fixture notes](../tests/audio/assets/README.md) record
-how the engine-authored tones were generated.
+how the engine-authored tones were generated. The
+[texture fixture notes](../tests/textures/README.md) record how the engine-authored
+BC7 images and their reference decodes were made with basisu and ImageMagick; no
+code from either enters Anima.

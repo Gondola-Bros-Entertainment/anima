@@ -1,3 +1,4 @@
+#include "bc7.hpp"
 #include "surface_validation.hpp"
 #include <anima/assets/scene_validation.hpp>
 #include <limits>
@@ -82,22 +83,40 @@ void detail::validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budge
     }
     validate_surfaces(scene.material_data, scene.textures, texels);
 }
+std::size_t detail::validate_image(const Image *image, Texels texels) {
+    // A texture without an image has no dimensions.
+    require(image && image->width && image->height &&
+                image->width <= std::numeric_limits<std::size_t>::max() / 4 / image->height,
+            "Invalid scene texture dimensions");
+    // An image without texels only describes a texture; see TexelRetention.
+    const auto has_texels = !image->rgba.empty() || !image->blocks.empty();
+    require(has_texels || texels == Texels::optional, "Texture image has no texels");
+    switch (image->format) {
+    case ImageFormat::rgba8: {
+        require(image->levels == 1 && image->blocks.empty(), "RGBA8 texture image must store one level and no blocks");
+        const auto bytes = std::size_t(image->width) * image->height * 4;
+        require(!has_texels || image->rgba.size() == bytes,
+                "MeshSnapshot texture byte count does not match dimensions");
+        return bytes;
+    }
+    case ImageFormat::bc7: {
+        require(image->rgba.empty(), "BC7 texture image must not store RGBA8 texels");
+        require(image->levels >= 1 && image->levels <= full_mip_levels(image->width, image->height),
+                "BC7 texture image must store 1 to all of its mip levels");
+        const auto bytes = bc7_image_bytes(image->width, image->height, image->levels);
+        require(!has_texels || image->blocks.size() == bytes,
+                "BC7 texture image byte count does not match its dimensions and levels");
+        return bytes;
+    }
+    }
+    throw std::invalid_argument("Unknown texture image format");
+}
 void detail::validate_surfaces(std::span<const Material> materials, std::span<const Texture> textures, Texels texels) {
     for (const auto &material : materials)
         validate_material(material, textures);
     std::size_t texture_bytes = 0;
     for (const auto &texture : textures) {
-        // A texture without an image has no dimensions.
-        const auto *image = texture.image.get();
-        require(image && image->width && image->height &&
-                    image->width <= std::numeric_limits<std::size_t>::max() / 4 / image->height,
-                "Invalid scene texture dimensions");
-        const auto bytes = std::size_t(image->width) * image->height * 4;
-        // An image without texels only describes a texture; see TexelRetention.
-        if (image->rgba.empty())
-            require(texels == Texels::optional, "Texture image has no texels");
-        else
-            require(image->rgba.size() == bytes, "MeshSnapshot texture byte count does not match dimensions");
+        const auto bytes = validate_image(texture.image.get(), texels);
         // Leave room for mip levels and staging-size arithmetic.
         require(bytes <= std::numeric_limits<std::size_t>::max() / 2 - texture_bytes,
                 "MeshSnapshot texture byte count overflow");

@@ -206,9 +206,13 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
             throw std::invalid_argument("Resource texture exceeds device image dimensions");
     std::vector<std::shared_ptr<const anima::Image>> texels;
     if (vertices && indices) {
-        // A preparation holds every mip chain already. Otherwise read the texels before allocating anything, since a
-        // Mesh compiled with TexelRetention::until_upload may have let them go.
-        if (!prepared)
+        // A preparation holds the mip chains of RGBA8 images, but block-compressed images upload the levels they
+        // store. Read the texels before allocating anything, since a Mesh compiled with TexelRetention::until_upload
+        // may have let them go.
+        const auto &textures = asset->materials()->textures;
+        if (!prepared || std::any_of(textures.begin(), textures.end(), [](const Texture &texture) {
+                return texture.image->format != ImageFormat::rgba8;
+            }))
             texels = asset->texel_images();
         value->vertices =
             resource_buffer(vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,

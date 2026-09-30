@@ -64,6 +64,9 @@ struct RendererOptions {
     bool profile = false;
     /// Initial main-view culling state; see VulkanRenderer::set_frustum_culling.
     bool frustum_culling = true;
+    /// Uploads ImageFormat::bc7 images decoded to RGBA8, as on a device that cannot sample BC7, even where the
+    /// device can; see VulkanRenderer::samples_bc7.
+    bool decode_bc7 = false;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -267,8 +270,12 @@ struct ResourceStats {
 /// reflectance for dielectrics. Base color is the base color texture, decoded from sRGB before filtering,
 /// times the vertex color and material factor, clamped to [0, 1]. The metallic and roughness factors multiply
 /// the blue and green channels of the metallic-roughness texture, occlusion (red) scales only ambient light,
-/// and emission is added before fog. Textures use their Sampler filters and wrap modes, with mip chains built
-/// on the CPU when mipmapped. Missing textures sample white, and a primitive's textures share one UV set.
+/// and emission is added before fog. Textures use their Sampler filters and wrap modes. ImageFormat::rgba8 images
+/// get mip chains built on the CPU when mipmapped. ImageFormat::bc7 images upload the levels they store, or only
+/// the base level for an unmipmapped texture, and a single stored level samples as an unmipmapped texture does: as
+/// `VK_FORMAT_BC7_SRGB_BLOCK` or `VK_FORMAT_BC7_UNORM_BLOCK` by the texture's encoding where samples_bc7() is true,
+/// and otherwise decoded to RGBA8 on the CPU as decode_image() decodes them, which takes four times the device
+/// memory. Missing textures sample white, and a primitive's textures share one UV set.
 /// Normal maps use the authored tangent frame, whose handedness survives skinning and mirrored transforms, or
 /// else a screen-derivative frame; degenerate UVs keep the interpolated normal. Masked materials discard
 /// fragments whose texture alpha times material alpha times vertex alpha is below the cutoff, in the color
@@ -440,6 +447,12 @@ class VulkanRenderer {
     void prepare_mesh(const MeshPreparation &preparation, ResourcePreparationOptions options = {});
     /// Current cache and allocation sizes with the latest frame counters; all zero without asset support.
     [[nodiscard]] ResourceStats resource_stats() const noexcept;
+    /// Whether ImageFormat::bc7 images upload as BC7, which the constructor decides once: the device has the
+    /// `textureCompressionBC` feature and samples `VK_FORMAT_BC7_SRGB_BLOCK` and `VK_FORMAT_BC7_UNORM_BLOCK` with
+    /// linear filtering and as copy destinations, and RendererOptions::decode_bc7 is off. Otherwise uploads decode
+    /// them to RGBA8 on the CPU. Desktop GPUs sample BC7; an application that would rather load other images than
+    /// pay for decoding can ask here first.
+    [[nodiscard]] bool samples_bc7() const noexcept;
     /// Prepares, records, submits and presents one frame; does not advance simulation or animation.
     ///
     /// Returns false while the window is hidden, minimized or zero-sized, when no image is acquired within

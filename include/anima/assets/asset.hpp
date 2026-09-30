@@ -116,27 +116,50 @@ struct Sampler {
     /// is `NEAREST` or `LINEAR`.
     bool mipmapped = true;
 };
-/// Decoded RGBA8 pixels, which textures share by identity.
+/// How an Image stores its texels.
+enum class ImageFormat {
+    /// 8-bit RGBA in Image::rgba, one level; texture_mips() builds a mip chain from it. load_asset()
+    /// decodes PNG and JPEG images to it.
+    rgba8,
+    /// BC7 blocks in Image::blocks, with every mip level that the image stores. Each block holds 4x4
+    /// texels in 16 bytes, one byte per texel, as the Khronos Data Format Specification defines BC7
+    /// (BPTC); a texture's encoding decides whether its RGB is sRGB or linear. The blocks upload as
+    /// they are, and no filtering changes them: an application's content pipeline encodes them, and
+    /// their mip levels, beforehand. load_ktx2() reads them from KTX 2.0 files.
+    bc7
+};
+/// Texels that textures share by identity.
 ///
 /// Textures hold an image through `std::shared_ptr<const Image>`, and the pointer is its identity:
 /// copying a Texture, an Asset or a MeshSnapshot, or compiling a Mesh with TexelRetention::keep,
-/// shares the pixels instead of copying them, and the image lives until its last holder releases
-/// it. Pixels must not change once a Texture refers to them, even through another pointer to the
+/// shares the texels instead of copying them, and the image lives until its last holder releases
+/// it. Texels must not change once a Texture refers to them, even through another pointer to the
 /// same Image: meshes compiled from the texture read them without synchronization, from any
 /// thread. Make a new Image to change them.
 ///
-/// An image with an empty #rgba has no texels: it only describes a texture's dimensions. The
-/// textures of a Mesh or CustomMaterial compiled with TexelRetention::until_upload refer to such
-/// images, and validate_scene() accepts them, but compiling a Mesh or CustomMaterial,
-/// texture_mips() and uploads need texels.
+/// An image whose #rgba and #blocks are both empty has no texels: it only describes a texture's
+/// dimensions, format and levels. The textures of a Mesh or CustomMaterial compiled with
+/// TexelRetention::until_upload refer to such images, and validate_scene() accepts them, but
+/// compiling a Mesh or CustomMaterial, texture_mips(), decode_image() and uploads need texels.
 struct Image {
     /// Width in texels.
     std::uint32_t width{};
     /// Height in texels.
     std::uint32_t height{};
-    /// `width * height * 4` bytes of 8-bit RGBA, row by row, starting at texture coordinate
-    /// `v = 0`, or none.
+    /// For ImageFormat::rgba8, `width * height * 4` bytes of 8-bit RGBA, row by row, starting at
+    /// texture coordinate `v = 0`, or none; empty for other formats.
     std::vector<std::uint8_t> rgba;
+    /// How the texels are stored.
+    ImageFormat format = ImageFormat::rgba8;
+    /// Mip levels stored, the first at #width by #height and each after it half the size of the one
+    /// before, rounding down to at least 1: 1 for ImageFormat::rgba8, and from 1 to the full chain
+    /// down to 1x1 for ImageFormat::bc7.
+    std::uint32_t levels = 1;
+    /// For ImageFormat::bc7, the blocks of each of #levels, the base level first: a level of `w` by
+    /// `h` texels holds `ceil(w / 4) * ceil(h / 4)` blocks of 16 bytes, row by row from `v = 0`, and
+    /// texels past the level's edge in its last blocks are unused. Empty for ImageFormat::rgba8 and
+    /// for an image without texels.
+    std::vector<std::uint8_t> blocks{};
 };
 /// How long a compiled Mesh or CustomMaterial holds the texels of its textures' images.
 ///
@@ -154,8 +177,8 @@ enum class TexelRetention {
     keep,
     /// Until a VulkanRenderer has uploaded it.
     ///
-    /// Its textures refer to images without texels, one for each image of its source, that
-    /// describe their dimensions, and it holds the source's images privately. Once a
+    /// Its textures refer to images without texels, one for each image of its source, that describe
+    /// their dimensions, format and levels, and it holds the source's images privately. Once a
     /// VulkanRenderer has uploaded it, it holds them only weakly: they stay readable through
     /// Mesh::texel_images() or CustomMaterial::texel_images() while anything else holds them, such
     /// as the source Asset or another Mesh not uploaded yet, and are freed with their last holder.
@@ -203,6 +226,13 @@ struct MipLevel {
     /// `width * height * 4` bytes of 8-bit RGBA.
     std::vector<std::uint8_t> rgba;
 };
+/// The texels of each level that @p image stores, base level first, as 8-bit RGBA: an
+/// ImageFormat::rgba8 image's one level as it is, and each level of an ImageFormat::bc7 image
+/// decoded as the Khronos Data Format Specification defines BC7, with a block of the reserved mode 8
+/// decoding to zero in all four channels. VulkanRenderer decodes BC7 images this way for devices that
+/// cannot sample them. Throws `std::invalid_argument` for an image without texels, or one that
+/// validate_scene() rejects.
+[[nodiscard]] std::vector<MipLevel> decode_image(const Image &image);
 /// Mip chain of a base-color texture, as texture_mips(const Texture &) builds it. Throws
 /// `std::invalid_argument` unless @p texture uses TextureEncoding::srgb.
 [[nodiscard]] std::vector<MipLevel> base_color_mips(const Texture &texture);
@@ -211,8 +241,9 @@ struct MipLevel {
 /// Each level halves both dimensions, rounding down to at least 1, and box-filters every source
 /// texel, including odd edges. RGB is averaged in the texture's encoding: sRGB color in linear
 /// light, data maps as stored; alpha is averaged as stored. Throws `std::invalid_argument` for a
-/// null image, a zero dimension, a byte count other than `width * height * 4`, including an image
-/// without texels, or an invalid encoding.
+/// null image, one that is not ImageFormat::rgba8 ("Mip filtering requires an RGBA8 image"), a zero
+/// dimension, a byte count other than `width * height * 4`, including an image without texels, or
+/// an invalid encoding.
 [[nodiscard]] std::vector<MipLevel> texture_mips(const Texture &texture);
 /// Options for texture_mips(const Texture &, TextureMipOptions).
 struct TextureMipOptions {

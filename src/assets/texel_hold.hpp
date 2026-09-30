@@ -26,8 +26,9 @@ class TexelHold {
     std::vector<std::weak_ptr<const Image>> images_;
     const char *released_message_;
 };
-// Replaces the image of each of @p textures with one that has its dimensions and no texels, one per distinct
-// image, so that textures sharing an image still share one, and returns a hold of the originals in texture order.
+// Replaces the image of each of @p textures with one that has its dimensions, format and levels and no texels, one per
+// distinct image, so that textures sharing an image still share one, and returns a hold of the originals in texture
+// order.
 [[nodiscard]] TexelHoldPtr hold_texels(std::vector<Texture> &textures, const char *released_message);
 // @p source for a @p mesh compiled from it with TexelRetention::keep. For TexelRetention::until_upload, a copy whose
 // textures are @p mesh's, which have no texels, so that keeping it beside @p mesh does not keep the images that

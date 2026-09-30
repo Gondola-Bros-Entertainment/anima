@@ -43,8 +43,11 @@ struct MeshCompileOptions {
     /// Maximum texture width and height. A larger texture is replaced by its first mip level that fits, from
     /// texture_mips(). A masked base color keeps its alpha coverage at the cutoff `alpha_cutoff / alpha` when
     /// that is in (0, 1], and a blended one weights color by alpha, the rules material_texture_plan() applies to
-    /// mip chains; uses that need different options, or none, get separate copies. Textures that share an image
-    /// and an encoding share each shrunk image. Zero keeps authored sizes.
+    /// mip chains; uses that need different options, or none, get separate copies. A block-compressed image is
+    /// replaced by its first stored level that fits, with the levels after it, whatever its uses, and
+    /// Mesh::compile_static throws `std::invalid_argument` ("Block-compressed texture stores no mip level within
+    /// the texture limit") when it stores none. Textures that share an image and an encoding share each shrunk
+    /// image. Zero keeps authored sizes.
     unsigned max_texture_edge{};
     /// How long each resulting Mesh holds its textures' texels; shrunk images have no other holder, so with
     /// TexelRetention::until_upload they are freed once their Mesh is uploaded.
