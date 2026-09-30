@@ -165,7 +165,7 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
 #else
                                      nullptr, nullptr,
 #endif
-                                     camera_updates});
+                                     camera_updates, minimize_events, restore_events});
 #ifdef ANIMA_HAS_ASSETS
             if (preview)
                 SDL_SetWindowTitle(window.get(),

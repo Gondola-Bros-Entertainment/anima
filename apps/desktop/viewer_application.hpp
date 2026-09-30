@@ -29,6 +29,8 @@ struct ViewerFrame {
     AssetPreview *preview;
     OrbitCamera *camera;
     unsigned &camera_updates;
+    // Window events received so far, including this iteration's.
+    unsigned minimize_events, restore_events;
 };
 class ViewerDriver {
   public:
