@@ -7,6 +7,7 @@
 #endif
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/ElementText.h>
+#include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest/doctest.h>
@@ -47,6 +48,33 @@ class Renderer final : public Rml::RenderInterface {
 constexpr auto markup = "<rml><head><style>body { font-family: LatoLatin; }</style></head><body><div "
                         "id='container'><button id='action'>Test</button></div><input "
                         "id='input' type='text'/></body></rml>";
+constexpr auto select_markup = "<rml><head><style>body { font-family: LatoLatin; }</style></head><body><select "
+                               "id='size'/><input id='input' type='text'/></body></rml>";
+
+// The options of @p dropdown as "value=label" entries, requiring each label to be the option's one text node.
+std::vector<std::string> option_entries(Rml::ElementFormControlSelect &dropdown) {
+    std::vector<std::string> entries;
+    for (int index = 0; index < dropdown.GetNumOptions(); ++index) {
+        auto &option = *dropdown.GetOption(index);
+        REQUIRE(option.GetNumChildren() == 1);
+        const auto *text = dynamic_cast<Rml::ElementText *>(option.GetChild(0));
+        REQUIRE(text != nullptr);
+        entries.push_back(option.GetAttribute<Rml::String>("value", {}) + "=" + text->GetText());
+    }
+    return entries;
+}
+// The text that @p dropdown shows for its selection, which RmlUi copies from the selected option's RML.
+std::string shown_value(Rml::Element &dropdown) {
+    for (int index = 0; index < dropdown.GetNumChildren(true); ++index)
+        if (auto &child = *dropdown.GetChild(index); child.GetTagName() == "selectvalue") {
+            REQUIRE(child.GetNumChildren() == 1);
+            const auto *text = dynamic_cast<Rml::ElementText *>(child.GetChild(0));
+            REQUIRE(text != nullptr);
+            return text->GetText();
+        }
+    FAIL("The select has no selectvalue element");
+    return {};
+}
 
 // Initializes RmlUi with a stub renderer and the test font for one test case, and owns its context. Declare it
 // before any UiDocuments so hosts are destroyed first.
@@ -152,6 +180,70 @@ TEST_CASE("Documents find elements and set literal text and form values") {
     doc.element("input").set_value("hello");
     CHECK(doc.element("input").value() == "hello");
     CHECK_THROWS_WITH_AS(button.set_value("bad"), "UI element is not a form control", std::invalid_argument);
+}
+
+TEST_CASE("Select options replace the list, keep a surviving value and dispatch one change event") {
+    Session session;
+    UiDocuments host(session.context());
+    auto doc = host.from_memory(select_markup);
+    auto size = doc.element("size");
+    auto &control = dynamic_cast<Rml::ElementFormControlSelect &>(size.native());
+    // Markup children that RmlUi has not yet moved into its option list, one of them marked selected, and a value
+    // that no current option has. Setting the attribute dispatches `change` before the listener exists.
+    size.set_markup("<option value='m'>Old medium</option><option value='l' selected>Old large</option>");
+    size.set_attribute("value", "m");
+    // Each event's value, and the option count its callback saw.
+    std::vector<std::string> changes;
+    std::vector<int> counts;
+    auto listener = size.on("change", [&](const UiEvent &event) {
+        changes.push_back(event.string("value"));
+        counts.push_back(control.GetNumOptions());
+        CHECK(size.value() == changes.back());
+    });
+
+    const std::vector<UiOption> sizes{{"s", "Small"}, {"m", "<b>Medium</b> & \"more\""}, {"l", "Large"}};
+    CHECK_THROWS_WITH_AS(doc.element("input").set_options(sizes), "UI element is not a select", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(doc.root().set_options(sizes), "UI element is not a select", std::invalid_argument);
+    size.set_options(sizes);
+    CHECK(option_entries(control) == std::vector<std::string>{"s=Small", "m=<b>Medium</b> & \"more\"", "l=Large"});
+    CHECK(size.value() == "m");
+    CHECK(control.GetSelection() == 1);
+    CHECK(changes == std::vector<std::string>{"m"});
+    CHECK(counts == std::vector<int>{3});
+    // RmlUi's update agrees with the selection, dispatching nothing, and shows the label literally.
+    session.context().Update();
+    CHECK(changes.size() == 1);
+    CHECK(control.GetSelection() == 1);
+    CHECK(shown_value(size.native()) == "<b>Medium</b> & \"more\"");
+
+    // Without the selected value, the first option is selected.
+    size.set_options(std::vector<UiOption>{{"x", "Extra"}, {"y", ""}});
+    CHECK(option_entries(control) == std::vector<std::string>{"x=Extra", "y="});
+    CHECK(size.value() == "x");
+    CHECK(control.GetSelection() == 0);
+    CHECK(changes == std::vector<std::string>{"m", "x"});
+    CHECK(counts == std::vector<int>{3, 2});
+
+    // A duplicate value changes nothing.
+    CHECK_THROWS_WITH_AS(size.set_options(std::vector<UiOption>{{"a", "A"}, {"b", "B"}, {"a", "C"}}),
+                         "Duplicate UI option value: a", std::invalid_argument);
+    CHECK(option_entries(control) == std::vector<std::string>{"x=Extra", "y="});
+    CHECK(size.value() == "x");
+    CHECK(changes.size() == 2);
+
+    // An unchanged value still dispatches `change`, and no options leave an empty value.
+    size.set_options(std::vector<UiOption>{{"y", "Why"}, {"x", "Ex"}});
+    CHECK(control.GetSelection() == 1);
+    size.set_options({});
+    CHECK(control.GetNumOptions() == 0);
+    CHECK(control.GetSelection() == -1);
+    CHECK(size.value().empty());
+    CHECK(changes == std::vector<std::string>{"m", "x", "x", ""});
+    CHECK(counts == std::vector<int>{3, 2, 2, 0});
+    host.check_events();
+
+    doc.close();
+    CHECK_THROWS_WITH_AS(size.set_options(sizes), expired_element, std::out_of_range);
 }
 
 TEST_CASE("Event subscriptions expire, disconnect and report callback failures") {
