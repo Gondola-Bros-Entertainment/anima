@@ -412,10 +412,10 @@ struct Pose {
 ///
 /// Calls may run concurrently on any thread. Each reads @p bytes, which must not change during the
 /// call, and the C locale, which the glTF parser reads to convert numbers and which must not change
-/// during the call; it shares no other mutable state and calls no application code. @p options is
-/// checked before the parse, before each image and each primitive, and before the call returns. Its
-/// steps are the parse, each decoded image and each imported primitive; one image decodes in a single
-/// step that a stop cannot interrupt.
+/// during the call; it shares no other mutable state than the StagingProgress in @p options, and calls
+/// no application code. @p options is checked before the parse, before each image and each primitive,
+/// and before the call returns. Its steps are the parse, each decoded image and each imported
+/// primitive; one image decodes in a single step that a stop cannot interrupt.
 ///
 /// Throws `std::runtime_error` for unsupported or malformed content, including content beyond
 /// these limits; `std::invalid_argument` for material values that validate_material rejects,

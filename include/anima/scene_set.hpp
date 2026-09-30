@@ -51,9 +51,10 @@ struct ClearedLink {
 ///
 /// It holds the document's members, active namespace and reference table, with component payloads still
 /// encoded, and shares the meshes and custom materials that the resolvers returned; it references no Scene,
-/// SceneSet, ComponentCodecs or service. It never changes, so any thread may copy, read or destroy it, and it
-/// can be committed any number of times. Copies share its data, and moving it copies it, so no object is ever
-/// empty.
+/// SceneSet, ComponentCodecs or service. What it holds never changes, so any thread may copy, read or
+/// destroy it, and it can be committed any number of times; as with `std::shared_ptr`, only assigning to one
+/// object while another thread uses that same object needs synchronization. Copies share its data, and
+/// moving it copies it, so no object is ever empty.
 class StagedSceneSet {
   public:
     StagedSceneSet(const StagedSceneSet &) = default;

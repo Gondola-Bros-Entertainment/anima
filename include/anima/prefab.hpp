@@ -177,8 +177,10 @@ class Prefab {
 ///
 /// It holds the document's objects and `next_key`, with component payloads still encoded, and shares the
 /// meshes and custom materials that the resolvers returned; it references no Scene, SceneSet,
-/// ComponentCodecs or service. It never changes, so any thread may copy, read or destroy it, and it can be
-/// committed any number of times. Copies share its data, and moving it copies it, so no object is ever empty.
+/// ComponentCodecs or service. What it holds never changes, so any thread may copy, read or destroy it, and
+/// it can be committed any number of times; as with `std::shared_ptr`, only assigning to one object while
+/// another thread uses that same object needs synchronization. Copies share its data, and moving it copies
+/// it, so no object is ever empty.
 class StagedScene {
   public:
     StagedScene(const StagedScene &) = default;
@@ -200,11 +202,11 @@ class StagedScene {
 ///
 /// Calls may run concurrently on any thread. Each reads @p document and the C locale, neither of which may
 /// change during the call, takes the locale lock that the file comment describes, shares no other mutable
-/// state and runs no ComponentCodecs callback. @p resolve and @p materials run on the calling thread, once per
-/// distinct mesh key and custom material name, so they must allow calls from every thread that stages with
-/// them. @p options is checked before the parse, before each object and each @p resolve or @p materials call,
-/// and before the call returns; its steps are the parse, each object, each distinct mesh key and each distinct
-/// custom material name.
+/// state than the StagingProgress in @p options, and runs no ComponentCodecs callback. @p resolve and
+/// @p materials run on the calling thread, once per distinct mesh key and custom material name, so they
+/// must allow calls from every thread that stages with them. @p options is checked before the parse, before
+/// each object and each @p resolve or @p materials call, and before the call returns; its steps are the
+/// parse, each object, each distinct mesh key and each distinct custom material name.
 ///
 /// Throws `std::invalid_argument` for invalid content, with the messages that load_scene throws for it, what
 /// @p resolve or @p materials throws, and StagingCancelled when @p options reports a stop. The checks that need

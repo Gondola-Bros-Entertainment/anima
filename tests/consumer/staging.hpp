@@ -61,12 +61,14 @@ inline std::shared_ptr<const Mesh> triangle_mesh() {
     asset.primitives.push_back(primitive);
     return Mesh::compile(asset);
 }
-// Stages @p document on a worker with @p options while the owning thread updates @p scenes and calls @p during
-// after each update, until @p during has returned true and the worker has finished. Returns the staged scene, or
-// rethrows what staging threw.
+// Stages @p document on a worker, observing @p stop and reporting to @p progress, while the owning thread updates
+// @p scenes and calls @p during after each update, until @p during has returned true and the worker has finished.
+// Returns the staged scene, or rethrows what staging threw. When the owning thread throws, it requests a stop
+// before waiting for the worker, so a resolver that waits for one cannot hang the check.
 template <class During>
 StagedScene stage_while_updating(SceneSet &scenes, const std::string &document, const MeshResolver &resolve,
-                                 const StagingOptions &options, During during) {
+                                 StopSource &stop, StagingProgress *progress, During during) {
+    const StagingOptions options{stop.get_token(), progress};
     std::promise<StagedScene> promise;
     auto result = promise.get_future();
     {
@@ -77,12 +79,17 @@ StagedScene stage_while_updating(SceneSet &scenes, const std::string &document, 
                 promise.set_exception(std::current_exception());
             }
         });
-        for (bool released = false;;) {
-            scenes.update(1. / 60);
-            released = during() || released;
-            if (released && result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-                break;
-            std::this_thread::yield();
+        try {
+            for (bool released = false;;) {
+                scenes.update(1. / 60);
+                released = during() || released;
+                if (released && result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                    break;
+                std::this_thread::yield();
+            }
+        } catch (...) {
+            stop.request_stop();
+            throw;
         }
     }
     return result.get();
@@ -120,7 +127,7 @@ inline void run() {
     constexpr int updates_before_cancel = 5;
     bool cancelled = false;
     try {
-        (void)stage_while_updating(scenes, document, waiting, {cancel.get_token(), nullptr}, [&] {
+        (void)stage_while_updating(scenes, document, waiting, cancel, nullptr, [&] {
             if (updates >= updates_before_cancel)
                 cancel.request_stop();
             return cancel.stop_requested();
@@ -133,10 +140,11 @@ inline void run() {
     check(placeholder.valid() && level->size() == 1, "Cancelled staging changed the scene set");
 
     // The second load runs to completion while the owning thread reads its progress.
+    StopSource running;
     StagingProgress progress;
     std::uint64_t completed = 0;
     bool increasing = true;
-    const auto staged = stage_while_updating(scenes, document, resolve, {StopToken{}, &progress}, [&] {
+    const auto staged = stage_while_updating(scenes, document, resolve, running, &progress, [&] {
         const auto now = progress.completed();
         increasing = increasing && now >= completed && now <= progress.total();
         completed = now;
