@@ -318,7 +318,8 @@ Context::Combined Context::combine(std::size_t action_index, std::size_t first_b
             adjusted = sum * b.scale;
         } else {
             const float raw = read(b);
-            adjusted = std::copysign(std::max(0.F, std::abs(raw) - b.deadzone) / (1 - b.deadzone), raw) * b.scale;
+            const float level = std::copysign(std::max(0.F, std::abs(raw) - b.deadzone) / (1 - b.deadzone), raw);
+            adjusted = double(level) * b.scale; // Exact: a double holds any product of two floats.
         }
         if (a.type == ActionType::button)
             x = std::max(x, adjusted);
