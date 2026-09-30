@@ -279,8 +279,10 @@ jobs:
             # ccache caches MSVC objects only with embedded debug information and without precompiled headers.
             args+=(-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON)
             if [[ "$PROFILE" != headless ]]; then
+              # The static triplet leaves no DLLs to deploy, and vcpkg's per-executable deployment step fails
+              # intermittently when Ninja links several executables at once.
               args+=("-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-                     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md)
+                     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DVCPKG_APPLOCAL_DEPS=OFF)
             fi
           fi
           cmake --preset "$PRESET" "${args[@]}"
