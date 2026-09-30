@@ -54,7 +54,7 @@ class RigidBody {
 /// component constructor, or is being destroyed.
 void step(Scene &scene, World &world, double seconds);
 /// Steps every scene of @p scenes as step(Scene &, World &, double) does, validating all of them
-/// before any changes. Also throws `std::logic_error` while @p scenes is changing membership.
+/// before any changes. Also throws `std::logic_error` while @p scenes is busy, as SceneSet describes.
 void step(SceneSet &scenes, World &world, double seconds);
 /// Registers the `anima.rigid-body-2d.v1` component codec, bound weakly to @p world: the codec
 /// does not keep the world alive. Restoring after the world is destroyed, or capturing a component

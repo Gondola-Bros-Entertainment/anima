@@ -117,7 +117,7 @@ class AudioSource {
 void synchronize_audio(Scene &scene, Audio &audio);
 /// Synchronizes every scene of @p scenes as synchronize_audio(Scene &, Audio &) does, validating
 /// all of them before any changes; at most one listener may be active across the set. Also throws
-/// `std::logic_error` while the set is changing.
+/// `std::logic_error` while the set is busy, as SceneSet describes.
 void synchronize_audio(SceneSet &scenes, Audio &audio);
 
 /// Returns the persistent key of a clip when a source is captured.

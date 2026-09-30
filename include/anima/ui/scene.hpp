@@ -54,9 +54,8 @@ class UiPanel {
 /// under construction or destroyed.
 void sync_ui_panels(Scene &scene);
 /// Synchronizes every scene of @p scenes as sync_ui_panels(Scene &) does, validating all of them
-/// before any change. Inside the callbacks, every scene of the set is guarded and set membership
-/// changes also throw `std::logic_error`; the call throws it while the set is changing or
-/// scheduling.
+/// before any change. The call holds the set as a scene driver, so the set is busy inside the
+/// callbacks, and throws `std::logic_error` while the set is busy, as SceneSet describes.
 void sync_ui_panels(SceneSet &scenes);
 /// Registers the `anima.ui-panel.v1` component codec, bound to @p host without keeping it alive:
 /// restoring after the host is destroyed or shut down throws `std::out_of_range`.

@@ -15,8 +15,10 @@ using namespace anima;
 // Limits that SceneSet::restore documents.
 constexpr std::size_t maximum_document_bytes = 16 * 1024 * 1024, maximum_namespace_bytes = 4096;
 constexpr std::size_t maximum_scenes = 1024, maximum_objects = 65536;
-constexpr auto busy_scene = "Scene drivers require an idle live scene";
-constexpr auto callback_membership = "Scene membership cannot change during scene callbacks";
+constexpr auto set_updating = "Scene set is updating";
+constexpr auto set_changing = "Scene set is changing membership";
+constexpr auto set_serializing = "Scene set is serializing";
+constexpr auto member_callbacks = "A member scene is running callbacks";
 constexpr auto unsupported_version = "Unsupported scene set document version";
 constexpr auto missing_version = "Missing JSON field: version";
 constexpr auto duplicate_field = "Duplicate JSON document field";
@@ -49,25 +51,29 @@ std::string envelope(const std::string &scenes, const std::string &references, s
     return "{\"kind\":\"anima.scene-set\",\"version\":1,\"active\":" + std::string(active) + " ,\"scenes\":[" + scenes +
            "],\"references\":[" + references + "]}";
 }
-// Calls persistence from on_update; the update that runs the hook decides each error.
+// Calls a set update and persistence from on_update; the update that runs the hook decides the error.
 struct CallbackBoundary {
     SceneSet *scenes;
     ComponentCodecs *codecs;
     const std::string *empty;
     int *called;
-    const char *serialize_error, *restore_error;
+    const char *error;
     void on_update(double) {
         ++*called;
-        CHECK_THROWS_WITH_AS(scenes->serialize({}, *codecs), serialize_error, std::logic_error);
-        CHECK_THROWS_WITH_AS(scenes->restore(*empty, {}), restore_error, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes->update(0), error, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes->serialize({}, *codecs), error, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes->restore(*empty, {}), error, std::logic_error);
     }
 };
 struct ConstructorBoundary {
     ConstructorBoundary(SceneSet &scenes, const std::string &empty) {
-        CHECK_THROWS_WITH_AS(scenes.serialize({}), busy_scene, std::logic_error);
-        CHECK_THROWS_WITH_AS(scenes.restore(empty, {}), callback_membership, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes.update(0), member_callbacks, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes.serialize({}), member_callbacks, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes.restore(empty, {}), member_callbacks, std::logic_error);
     }
 };
+// A component whose codec encodes nothing.
+struct Encoded {};
 
 constexpr auto follow_key = "test.follow.v1";
 constexpr auto lacks_key = "Replacement lacks a linked object key";
@@ -286,16 +292,36 @@ TEST_CASE("Persistence cannot run from component hooks or constructors, and sche
     object.add_component<ConstructorBoundary>(scenes, empty);
     object.remove_component<ConstructorBoundary>();
     // Updating the set holds the whole set; updating one member holds only that scene.
-    auto boundary = object.add_component<CallbackBoundary>(&scenes, &codecs, &empty, &called,
-                                                           "Scene drivers cannot run during set mutation or scheduling",
-                                                           "Scene membership changes cannot be nested");
+    auto boundary = object.add_component<CallbackBoundary>(&scenes, &codecs, &empty, &called, set_updating);
     scenes.update(0);
-    boundary->serialize_error = busy_scene;
-    boundary->restore_error = callback_membership;
+    boundary->error = member_callbacks;
     member->update(0);
     CHECK(called == 2);
     CHECK(member.valid());
     CHECK(object.valid());
+}
+
+TEST_CASE("A serialization's callbacks cannot update, change or serialize the set") {
+    SceneSet scenes;
+    auto member = scenes.create("member");
+    member->create().add_component<Encoded>();
+    int encoded = 0;
+    ComponentCodecs codecs;
+    codecs.add<Encoded>(
+        "test.encoded.v1",
+        [&](const Encoded &, const ObjectReferences &) {
+            ++encoded;
+            CHECK_THROWS_WITH_AS(scenes.update(0), set_serializing, std::logic_error);
+            CHECK_THROWS_WITH_AS((void)scenes.create("nested"), set_serializing, std::logic_error);
+            CHECK_THROWS_WITH_AS(scenes.set_active(member), set_serializing, std::logic_error);
+            CHECK_THROWS_WITH_AS((void)scenes.serialize({}), set_serializing, std::logic_error);
+            return "{}";
+        },
+        [](GameObject, std::string_view, const ObjectReferences &) {});
+    (void)scenes.serialize({}, codecs);
+    CHECK(encoded == 1);
+    CHECK(scenes.size() == 1);
+    scenes.update(0); // The set is idle again.
 }
 
 TEST_CASE_FIXTURE(Linked, "Replacing a member from a set document keeps the links to and from it") {
@@ -394,7 +420,7 @@ TEST_CASE_FIXTURE(Linked, "A failing link callback leaves the set unchanged, and
     int calls = 0;
     const auto nested = follow_codecs(true, [&] {
         ++calls;
-        CHECK_THROWS_WITH_AS(scenes.clear(), "Scene membership changes cannot be nested", std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes.clear(), set_changing, std::logic_error);
     });
     const auto failing = follow_codecs(true, [] { throw std::runtime_error("Link callback failed"); });
     CHECK_THROWS_WITH_AS((void)scenes.replace(beta, saved, {}, failing), "Link callback failed", std::runtime_error);

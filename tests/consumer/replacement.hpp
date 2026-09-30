@@ -6,6 +6,7 @@
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/scene.hpp>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <typeinfo>
+#include <vector>
 
 namespace replacement_test {
 inline void require(bool condition, const char *message) {
@@ -285,16 +287,26 @@ inline int run(int argc, char **argv) {
         ++rollbacks;
         capture(std::string("rollback-") + stage);
     }
+    // Mesh::compile rejects invalid content before any renderer sees it, so these are not rollbacks.
     auto invalid = b_data;
     invalid.primitives[0].material = std::numeric_limits<int>::max();
-    rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); }, "Invalid render primitive material");
-    ++rollbacks;
+    rejects<std::invalid_argument>([&] { (void)scene(invalid); }, "Invalid render primitive material");
     invalid = b_data;
     auto truncated = *invalid.textures[0].image;
     truncated.rgba.pop_back();
     invalid.textures[0].image = std::make_shared<anima::Image>(std::move(truncated));
-    rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); },
+    rejects<std::invalid_argument>([&] { (void)scene(invalid); },
                                    "MeshSnapshot texture byte count does not match dimensions");
+    // A valid mesh that the device cannot hold fails inside set_scenes, which keeps the previous selection. The
+    // width assumes a 2D image limit below 2^20 texels; Vulkan requires at least 4,096.
+    constexpr std::uint32_t beyond_image_limit = 1U << 20;
+    auto oversized = b_data;
+    oversized.textures[0].image = std::make_shared<anima::Image>(
+        anima::Image{beyond_image_limit, 1, std::vector<std::uint8_t>(std::size_t{beyond_image_limit} * 4, 255)});
+    const auto unrenderable = scene(oversized);
+    frame(); // Old scene can still have graphics work in flight.
+    rejects<std::invalid_argument>([&] { renderer.set_scenes({unrenderable}); },
+                                   "Resource texture exceeds device image dimensions");
     ++rollbacks;
     capture("rollback-invalid");
     auto view = anima::identity();
@@ -382,7 +394,7 @@ inline int run(int argc, char **argv) {
     rejects<std::logic_error>([&] { renderer.request_capture(); }, shut_down);
     require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");
     const unsigned imported = asset.empty() ? 0 : 1;
-    constexpr unsigned expected_rollbacks = 8, expected_mutation_rejections = 3, expected_generations = 32,
+    constexpr unsigned expected_rollbacks = 7, expected_mutation_rejections = 3, expected_generations = 32,
                        expected_captures = 18;
     require(rollbacks == expected_rollbacks && mutation_rejections == expected_mutation_rejections &&
                 stats.scene_generations == expected_generations + imported && stats.swapchain_generations >= 2 &&

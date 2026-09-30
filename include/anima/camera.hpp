@@ -82,7 +82,7 @@ struct CameraView {
 [[nodiscard]] Mat4 view_matrix(Scene &scene, float aspect);
 /// Resolves the view across every member of @p scenes as view_matrix(Scene &, float) does; the
 /// camera may be in a different member than its view, and SceneSet::active plays no part. Also
-/// throws `std::logic_error` during membership changes.
+/// throws `std::logic_error` while the set is busy, as SceneSet describes.
 [[nodiscard]] Mat4 view_matrix(SceneSet &scenes, float aspect);
 
 /// Registers the `anima.camera.v1` and `anima.camera-view.v1` codecs in @p codecs, both or neither.

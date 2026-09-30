@@ -17,7 +17,9 @@ namespace n = anima::navigation;
 using namespace anima;
 namespace {
 constexpr auto idle_scene = "Scene drivers require an idle live scene";
-constexpr auto set_scheduling = "Scene drivers cannot run during set mutation or scheduling";
+constexpr auto member_callbacks = "A member scene is running callbacks";
+constexpr auto set_updating = "Scene set is updating";
+constexpr auto set_changing = "Scene set is changing membership";
 constexpr auto step_range = "Navigation step must be in [0.000001, 0.1] seconds";
 constexpr auto position_range = "Navigation position outside finite supported range";
 constexpr auto invalid_settings = "Invalid navigation speed/arrival distance";
@@ -29,8 +31,8 @@ struct DriverProbe {
     Scene *scene;
     SceneSet *scenes;
     HookCounts *counts;
-    // What the set driver reports from these hooks: set scheduling when the set runs them, and an
-    // updating scene when that scene runs them itself.
+    // What the set driver reports from these hooks: that the set is updating when the set runs them, and
+    // that a member scene is running callbacks when that scene runs them itself.
     const char *set_rejection;
     void reject_nested() const {
         CHECK_THROWS_WITH_AS(n::update_agents(*scene, .1), idle_scene, std::logic_error);
@@ -53,7 +55,7 @@ struct DriverProbe {
 struct DriverConstruction {
     DriverConstruction(Scene &scene, SceneSet &scenes) {
         CHECK_THROWS_WITH_AS(n::update_agents(scene, .1), idle_scene, std::logic_error);
-        CHECK_THROWS_WITH_AS(n::update_agents(scenes, .1), idle_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(n::update_agents(scenes, .1), member_callbacks, std::logic_error);
     }
 };
 } // namespace
@@ -162,7 +164,7 @@ TEST_CASE("Set navigation derives each scene's intent and never runs inside a ph
     late.set_position({5, 0, 0});
     auto a = early.add_component<n::Agent>(std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}}, 2.F, 0.F);
     auto b = late.add_component<n::Agent>(std::vector<Vec3>{{5, 0, 0}, {6, 0, 0}}, 2.F, 0.F);
-    auto probe = early.add_component<DriverProbe>(&first.get(), &scenes, &counts, set_scheduling);
+    auto probe = early.add_component<DriverProbe>(&first.get(), &scenes, &counts, set_updating);
     early.add_component<DriverConstruction>(first.get(), scenes);
     n::update_agents(scenes, .1);
     // Each scene's agent derives its own intent, and navigation moves no object.
@@ -211,7 +213,7 @@ TEST_CASE("Set navigation derives each scene's intent and never runs inside a ph
 
     scenes.update(.1);
     scenes.fixed_update(.1);
-    probe->set_rejection = idle_scene;
+    probe->set_rejection = member_callbacks;
     first->update(.1);
     first->fixed_update(.1);
     // The boundary checks above leave component scheduling intact.
@@ -226,7 +228,7 @@ TEST_CASE("Set navigation derives each scene's intent and never runs inside a ph
     codecs.add<Marker>(
         "test.navigation-marker.v1", [](const Marker &, const ObjectReferences &) { return "{}"; },
         [&](GameObject object, std::string_view, const ObjectReferences &) {
-            CHECK_THROWS_WITH_AS(n::update_agents(scenes, .1), set_scheduling, std::logic_error);
+            CHECK_THROWS_WITH_AS(n::update_agents(scenes, .1), set_changing, std::logic_error);
             ++decoded;
             object.add_component<Marker>();
         });

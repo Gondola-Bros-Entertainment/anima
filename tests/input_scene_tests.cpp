@@ -26,7 +26,9 @@ constexpr auto modifier_count = "Invalid input modifier count";
 constexpr auto unknown_component = "Unknown serialized component type";
 constexpr auto duplicate_field = "Duplicate JSON document field";
 constexpr auto busy_scene = "Scene drivers require an idle live scene";
-constexpr auto busy_set = "Scene drivers cannot run during set mutation or scheduling";
+constexpr auto member_callbacks = "A member scene is running callbacks";
+constexpr auto set_updating = "Scene set is updating";
+constexpr auto set_changing = "Scene set is changing membership";
 constexpr i::Event down{i::EventType::control, {i::ControlKind::key, 4, 0}, 1};
 constexpr i::Event up{i::EventType::control, {i::ControlKind::key, 4, 0}, 0};
 i::Event key_event(std::uint16_t code, std::uint32_t device, float value = 1) {
@@ -325,7 +327,7 @@ namespace {
 // The input driver calls made from inside the scenes, and what the set drivers must report in the current phase.
 struct BoundaryChecks {
     unsigned calls{};
-    const char *set_error = busy_scene;
+    const char *set_error = member_callbacks;
 };
 // Calls every input driver from component construction and scheduling, where each must be rejected. The hooks
 // are noexcept, so they use only CHECK assertions, which report a failure without throwing.
@@ -472,12 +474,12 @@ TEST_CASE("Input drivers are rejected during component construction, scheduling,
     auto object = first->create();
     auto input = object.add_component<i::ActionInput>(key_map());
     i::dispatch(scenes, down);
-    checks.set_error = busy_scene; // Construction outside set scheduling leaves the set idle.
+    checks.set_error = member_callbacks; // Construction outside a set update leaves only the member busy.
     object.add_component<DriverProbe>(first.get(), scenes, checks);
-    checks.set_error = busy_set;
+    checks.set_error = set_updating;
     scenes.update(.01);
     scenes.fixed_update(.01);
-    checks.set_error = busy_scene; // So does updating one scene directly.
+    checks.set_error = member_callbacks; // So does updating one scene directly.
     first->update(.01);
     CHECK(checks.calls == 7u);
     // The rejected drivers changed no state.
@@ -493,15 +495,15 @@ TEST_CASE("Input drivers are rejected during component construction, scheduling,
         "test.input-boundary.v1", [](const DuringLoad &, const ObjectReferences &) { return "{}"; },
         [&](GameObject target, std::string_view, const ObjectReferences &) {
             ++loads;
-            CHECK_THROWS_WITH_AS(i::begin_frame(scenes), busy_set, std::logic_error);
-            CHECK_THROWS_WITH_AS(i::dispatch(scenes, up), busy_set, std::logic_error);
+            CHECK_THROWS_WITH_AS(i::begin_frame(scenes), set_changing, std::logic_error);
+            CHECK_THROWS_WITH_AS(i::dispatch(scenes, up), set_changing, std::logic_error);
             target.add_component<DuringLoad>();
         });
     (void)scenes.load("loaded", serialize_scene(source, {}, codecs), {}, codecs);
     CHECK(loads == 1u);
     CHECK(input->context().state("activate").active);
     CHECK(input->context().state("activate").pressed);
-    checks.set_error = busy_set;
+    checks.set_error = set_changing;
     scenes.clear();
     CHECK(checks.calls == 8u); // Retirement disabled the probe.
     i::begin_frame(scenes);

@@ -11,8 +11,7 @@ struct SceneDriver {
             throw std::logic_error("Scene drivers require an idle live scene");
     }
     static void check(const SceneSet &scenes) {
-        if (scenes.mutating_)
-            throw std::logic_error("Scene drivers cannot run during set mutation or scheduling");
+        scenes.require_idle();
         for (auto scene : scenes.scenes())
             check(scene.get());
     }
@@ -22,12 +21,13 @@ struct SceneDriver {
             check(scene);
             scene.updating_ = true;
         }
-        explicit Scope(SceneSet &scenes) : set_(&scenes) {
+        // SceneSet::serialize holds its set as a driver does, naming its own activity.
+        explicit Scope(SceneSet &scenes, SceneSet::Activity activity = SceneSet::Activity::driving) : set_(&scenes) {
             check(scenes);
             scenes_.reserve(scenes.scenes_.size());
             for (const auto &record : scenes.scenes_)
                 scenes_.push_back(record->scene.get());
-            scenes.mutating_ = true;
+            scenes.activity_ = activity;
             for (auto *scene : scenes_)
                 scene->updating_ = true;
         }
@@ -35,7 +35,7 @@ struct SceneDriver {
             for (auto *scene : scenes_)
                 scene->updating_ = false;
             if (set_)
-                set_->mutating_ = false;
+                set_->activity_ = SceneSet::Activity::idle;
         }
         Scope(const Scope &) = delete;
         Scope &operator=(const Scope &) = delete;

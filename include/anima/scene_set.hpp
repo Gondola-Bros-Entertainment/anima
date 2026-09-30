@@ -5,8 +5,7 @@
 /// Additive ownership of independently loaded scenes. Part of the `anima::assets` target.
 ///
 /// Membership changes and active selection are synchronous and happen between updates and draws.
-/// They throw `std::logic_error` when nested, or when made from a loader, decoder, link callback,
-/// component hook or constructor, or while a member scene is held by a driver. Unloading,
+/// They throw `std::logic_error` while the set is busy, as SceneSet describes. Unloading,
 /// replacing, clearing or restoring invalidates every handle to the old scenes, their objects and
 /// their components before any component cleanup runs. Old handles never rebind to a replacement;
 /// instead, SceneSet::replace and SceneSet::unload overwrite the links that surviving members'
@@ -88,14 +87,24 @@ class SceneRef {
 /// each other. There is no global scene, file access, worker thread or graphics dependency. The
 /// set must outlive calls into its scenes. active() is only a caller default: no scene driver or
 /// view_matrix consults it.
+///
+/// The set is busy while it updates its members, changes membership (in create, load, replace,
+/// restore, unload, clear or its destructor), serializes, or is held by a scene driver that runs
+/// callbacks, and while a member scene runs component hooks or cleanup, constructs a component or
+/// is held by a scene driver of its own. Only application callbacks run meanwhile, so only they
+/// can observe it. While the set is busy, its membership changes, set_active(), update(),
+/// fixed_update(), synchronize_lifecycle(), serialize() and every scene driver given the set throw
+/// `std::logic_error`, whose message names what the set is doing, or that a member scene is
+/// running callbacks.
 class SceneSet {
   public:
     SceneSet() = default;
     /// Invalidates every handle to every member before any component cleanup, then releases the
     /// members.
     ///
-    /// Destroying the set while it updates its members, changes membership or is held by a scene
-    /// driver writes a diagnostic to `stderr` and terminates the program, as Scene::~Scene() does.
+    /// Destroying the set while it updates its members, changes membership, serializes or is held
+    /// by a scene driver writes a diagnostic to `stderr` and terminates the program, as
+    /// Scene::~Scene() does.
     ~SceneSet();
     SceneSet(const SceneSet &) = delete;
     SceneSet &operator=(const SceneSet &) = delete;
@@ -149,7 +158,7 @@ class SceneSet {
     /// the rows map every object exactly once. Linked payloads store document-wide keys, so a
     /// member's `objects` cannot be loaded as a scene document. Limits are 16 MiB, 1,024 scenes and
     /// 65,536 objects in total, and no two meshes in the set may share a key, nor two custom
-    /// materials a name. Throws `std::logic_error` unless the set and its members are idle.
+    /// materials a name. Throws `std::logic_error` while the set is busy.
     [[nodiscard]] std::string serialize(const MeshName &name, const ComponentCodecs &codecs = {});
     /// Replaces the whole membership and selection with those of an `anima.scene-set` document,
     /// borrowing @p codecs for this call.
@@ -188,7 +197,7 @@ class SceneSet {
     /// Lifecycle is reconciled across the set, disables first; then every member's `on_update`
     /// hooks run before any `on_late_update` hook. Components added or activated in any member
     /// during the call wait for the next call. Throws as Scene::update does, and
-    /// `std::logic_error` during membership changes.
+    /// `std::logic_error` while the set is busy.
     void update(double seconds);
     /// Runs Scene::fixed_update across every member with one participant snapshot.
     void fixed_update(double seconds);
@@ -226,6 +235,10 @@ class SceneSet {
     friend struct detail::SceneDriver;
     class Mutation;
     struct Link;
+    // What the set itself is doing while it is busy.
+    enum class Activity : unsigned char { idle, updating, changing_membership, serializing, driving };
+    // Throws std::logic_error while the set is busy.
+    void require_idle() const;
     std::vector<Link> links_into(const Scene &retired, const ComponentCodecs &codecs) const;
     std::size_t index(SceneRef scene) const;
     void check_key(std::string_view key) const;
@@ -234,6 +247,6 @@ class SceneSet {
     void run_components(double seconds, bool fixed, bool lifecycle_only = false);
     std::vector<std::shared_ptr<detail::SceneRecord>> scenes_;
     std::weak_ptr<detail::SceneRecord> active_;
-    bool mutating_{};
+    Activity activity_{};
 };
 } // namespace anima
