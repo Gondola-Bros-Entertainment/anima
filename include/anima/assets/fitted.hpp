@@ -16,15 +16,18 @@
 namespace anima {
 /// A fitted model bound to a body's skeleton; it shares the body's bind and never owns animation.
 struct FittedAsset {
-    /// Imported fitted model.
+    /// Imported fitted model. With TexelRetention::until_upload, a copy whose textures are #render's,
+    /// which have no texels.
     std::shared_ptr<const Asset> source;
     /// Mesh compiled from #source.
     std::shared_ptr<const Mesh> render;
     /// (fitted joint node, body joint node) pairs; see compatible_skin.
     std::vector<std::pair<std::size_t, std::size_t>> joints;
-    /// Binds @p fitted to @p body. Throws for a null model or a model with clips, and
-    /// `std::runtime_error` when compatible_skin rejects the pair.
-    FittedAsset(const Asset &body, std::shared_ptr<const Asset> fitted);
+    /// Binds @p fitted to @p body and compiles #render with @p texel_retention. Throws for a null
+    /// model or a model with clips, `std::runtime_error` when compatible_skin rejects the pair, and
+    /// as Mesh::compile does.
+    FittedAsset(const Asset &body, std::shared_ptr<const Asset> fitted,
+                TexelRetention texel_retention = TexelRetention::keep);
     /// World-only pose of #render that copies each mapped joint's world matrix from @p body, a pose
     /// of the body model; other nodes keep their rest matrices. Throws `std::out_of_range` when
     /// @p body lacks a mapped joint.
@@ -50,9 +53,10 @@ class FittedLibrary {
     /// The document has `version` 2 and at most 65,536 `items`, each with a unique nonempty `id` and
     /// a nonempty `fits` object, mapping nonempty body profiles to `model` (a relative `.glb` path
     /// without `..`) and nonempty `skeleton` and `bind_signature`. The fit for @p profile must
-    /// match the manifest's skeleton and bind signature. Throws also for a null @p body.
+    /// match the manifest's skeleton and bind signature. Loads compile their meshes with
+    /// @p texel_retention. Throws also for a null @p body or an unknown @p texel_retention.
     FittedLibrary(std::shared_ptr<const Asset> body, const Manifest &manifest, std::string_view profile,
-                  std::string_view document);
+                  std::string_view document, TexelRetention texel_retention = TexelRetention::keep);
     /// Whether no item fits this body.
     bool empty() const { return definitions_.empty(); }
     /// Number of items that fit this body.

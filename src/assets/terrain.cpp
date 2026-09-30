@@ -78,6 +78,6 @@ std::shared_ptr<const Mesh> Terrain::compile(TerrainGrid field, TerrainAppearanc
             for (const auto &[dx, dz] :
                  std::array<std::pair<unsigned, unsigned>, 6>{{{0, 0}, {1, 1}, {1, 0}, {0, 0}, {0, 1}, {1, 1}}})
                 primitive.vertices.push_back(vertex(x + dx, z + dz));
-    return Mesh::compile(asset);
+    return Mesh::compile(asset, appearance.texel_retention);
 }
 } // namespace anima

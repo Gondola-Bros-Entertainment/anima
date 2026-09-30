@@ -197,6 +197,9 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         if (texture.image->width > properties.limits.maxImageDimension2D ||
             texture.image->height > properties.limits.maxImageDimension2D)
             throw std::invalid_argument("Custom material texture exceeds device image dimensions");
+    // Read the texels before creating anything, since a material with TexelRetention::until_upload may have let
+    // them go.
+    const auto texels = material->texel_images();
     auto value = std::make_unique<GpuCustomMaterial>();
     value->device = device;
     value->allocator = allocator;
@@ -224,7 +227,8 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         upload.create(graphics_family);
         value->textures.resize(definition.textures.size());
         for (std::size_t i = 0; i < definition.textures.size(); ++i) {
-            const auto &texture = definition.textures[i];
+            auto texture = definition.textures[i];
+            texture.image = texels[i];
             const auto &pixels = *texture.image;
             const auto mips = texture.sampler.mipmapped
                                   ? texture_mips(texture)
@@ -276,7 +280,10 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         create_custom_pipeline(*value, true);
     if (render_pass)
         create_custom_pipeline(*value, false);
-    return *custom_cache.emplace(material.get(), std::move(value)).first->second;
+    auto &cached = *custom_cache.emplace(material.get(), std::move(value)).first->second;
+    // Every copy has completed, so a material with TexelRetention::until_upload no longer needs its texels.
+    material->release_texels();
+    return cached;
 }
 // Creates @p gpu's main-view pipeline, or with @p shadow its depth-only variant's.
 void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {

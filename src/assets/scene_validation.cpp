@@ -54,6 +54,9 @@ std::size_t validate_scene_geometry(std::size_t vertices, SceneGeometryBudget bu
     return bytes;
 }
 void validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget) {
+    detail::validate_scene(scene, budget, detail::Texels::optional);
+}
+void detail::validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget, Texels texels) {
     (void)validate_scene_geometry(scene.vertices.size(), budget);
     require(scene.material_data.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
                 scene.textures.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()),
@@ -77,9 +80,9 @@ void validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget) {
         for (float value : draw.node_world)
             require(std::isfinite(value), "Non-finite scene node transform");
     }
-    detail::validate_surfaces(scene.material_data, scene.textures);
+    validate_surfaces(scene.material_data, scene.textures, texels);
 }
-void detail::validate_surfaces(std::span<const Material> materials, std::span<const Texture> textures) {
+void detail::validate_surfaces(std::span<const Material> materials, std::span<const Texture> textures, Texels texels) {
     for (const auto &material : materials)
         validate_material(material, textures);
     std::size_t texture_bytes = 0;
@@ -90,7 +93,11 @@ void detail::validate_surfaces(std::span<const Material> materials, std::span<co
                     image->width <= std::numeric_limits<std::size_t>::max() / 4 / image->height,
                 "Invalid scene texture dimensions");
         const auto bytes = std::size_t(image->width) * image->height * 4;
-        require(image->rgba.size() == bytes, "MeshSnapshot texture byte count does not match dimensions");
+        // An image without texels only describes a texture; see TexelRetention.
+        if (image->rgba.empty())
+            require(texels == Texels::optional, "Texture image has no texels");
+        else
+            require(image->rgba.size() == bytes, "MeshSnapshot texture byte count does not match dimensions");
         // Leave room for mip levels and staging-size arithmetic.
         require(bytes <= std::numeric_limits<std::size_t>::max() / 2 - texture_bytes,
                 "MeshSnapshot texture byte count overflow");

@@ -119,25 +119,75 @@ struct Sampler {
 /// Decoded RGBA8 pixels, which textures share by identity.
 ///
 /// Textures hold an image through `std::shared_ptr<const Image>`, and the pointer is its identity:
-/// copying a Texture, an Asset or a MeshSnapshot, or compiling a Mesh, shares the pixels instead of
-/// copying them, and the image lives until its last holder releases it. Pixels must not change
-/// once a Texture refers to them, even through another pointer to the same Image: meshes compiled
-/// from the texture read them without synchronization, from any thread. Make a new Image to
-/// change them.
+/// copying a Texture, an Asset or a MeshSnapshot, or compiling a Mesh with TexelRetention::keep,
+/// shares the pixels instead of copying them, and the image lives until its last holder releases
+/// it. Pixels must not change once a Texture refers to them, even through another pointer to the
+/// same Image: meshes compiled from the texture read them without synchronization, from any
+/// thread. Make a new Image to change them.
+///
+/// An image with an empty #rgba has no texels: it only describes a texture's dimensions. The
+/// textures of a Mesh or CustomMaterial compiled with TexelRetention::until_upload refer to such
+/// images, and validate_scene() accepts them, but compiling a Mesh or CustomMaterial,
+/// texture_mips() and uploads need texels.
 struct Image {
     /// Width in texels.
     std::uint32_t width{};
     /// Height in texels.
     std::uint32_t height{};
     /// `width * height * 4` bytes of 8-bit RGBA, row by row, starting at texture coordinate
-    /// `v = 0`.
+    /// `v = 0`, or none.
     std::vector<std::uint8_t> rgba;
 };
+/// How long a compiled Mesh or CustomMaterial holds the texels of its textures' images.
+///
+/// The texels are needed only until a renderer has uploaded them, but a Mesh or CustomMaterial
+/// lives as long as the scenes that draw it. With TexelRetention::until_upload it lets them go once
+/// uploaded, as a texture whose Read/Write setting is off does in Unity and a texture without CPU
+/// access does in Unreal: the images are then freed once nothing else holds them. The application
+/// keeps an image readable by keeping it, for example in the Asset that the Mesh was compiled from.
+///
+/// Objects that keep a whole Asset, such as Animator, MotionRuntime and a FittedLibrary's body,
+/// keep its images too. To let them go, give such objects a copy of the Asset whose textures are
+/// those of a Mesh compiled from it with TexelRetention::until_upload, which have no texels.
+enum class TexelRetention {
+    /// For its whole lifetime: its textures share its source's images, texels included.
+    keep,
+    /// Until a VulkanRenderer has uploaded it.
+    ///
+    /// Its textures refer to images without texels, one for each image of its source, that
+    /// describe their dimensions, and it holds the source's images privately. Once a
+    /// VulkanRenderer has uploaded it, it holds them only weakly: they stay readable through
+    /// Mesh::texel_images() or CustomMaterial::texel_images() while anything else holds them, such
+    /// as the source Asset or another Mesh not uploaded yet, and are freed with their last holder.
+    /// Uploading it again, in another VulkanRenderer or in one created after a RendererFatalError,
+    /// and preparing it with MeshPreparation, then need those images, and throw
+    /// `std::logic_error` once they are gone.
+    until_upload
+};
+namespace detail {
+class TexelHold;
+// The hold of a Mesh or CustomMaterial on the images of TexelRetention::until_upload, empty for
+// TexelRetention::keep. A copy holds the same images on its own, as the copied object then does.
+class TexelHoldPtr {
+  public:
+    TexelHoldPtr() noexcept;
+    explicit TexelHoldPtr(std::unique_ptr<TexelHold> hold) noexcept;
+    TexelHoldPtr(const TexelHoldPtr &other);
+    TexelHoldPtr &operator=(const TexelHoldPtr &other);
+    TexelHoldPtr(TexelHoldPtr &&other) noexcept;
+    TexelHoldPtr &operator=(TexelHoldPtr &&other) noexcept;
+    ~TexelHoldPtr();
+    [[nodiscard]] TexelHold *get() const noexcept { return hold_.get(); }
+
+  private:
+    std::unique_ptr<TexelHold> hold_;
+};
+} // namespace detail
 /// A shared decoded image with its sampler and encoding.
 struct Texture {
-    /// The pixels, shared with every texture that uses the same image. Textures that share an
-    /// image may sample and encode it differently. Validation rejects a null image as it rejects a
-    /// zero dimension.
+    /// The image, shared with every texture that uses it; see Image for images without texels.
+    /// Textures that share an image may sample and encode it differently. Validation rejects a null
+    /// image as it rejects a zero dimension.
     std::shared_ptr<const Image> image;
     Sampler sampler;
     /// The importer sets TextureEncoding::srgb for base-color and emissive maps and
@@ -161,8 +211,8 @@ struct MipLevel {
 /// Each level halves both dimensions, rounding down to at least 1, and box-filters every source
 /// texel, including odd edges. RGB is averaged in the texture's encoding: sRGB color in linear
 /// light, data maps as stored; alpha is averaged as stored. Throws `std::invalid_argument` for a
-/// null image, a zero dimension, a byte count other than `width * height * 4` or an invalid
-/// encoding.
+/// null image, a zero dimension, a byte count other than `width * height * 4`, including an image
+/// without texels, or an invalid encoding.
 [[nodiscard]] std::vector<MipLevel> texture_mips(const Texture &texture);
 /// Options for texture_mips(const Texture &, TextureMipOptions).
 struct TextureMipOptions {

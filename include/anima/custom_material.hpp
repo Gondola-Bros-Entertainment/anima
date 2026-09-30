@@ -109,9 +109,13 @@ struct CustomMaterialDefinition {
     /// as any stage's declaration of the block spans. Encode them as the shaders lay the block out, `std140` in
     /// GLSL.
     std::vector<std::byte> parameters;
-    /// At most CustomMaterial::max_textures textures, valid as validate_scene() requires of a mesh's textures,
-    /// bound in order at set 2, bindings 1 to 4. Their images are shared, not copied (see Image).
+    /// At most CustomMaterial::max_textures textures, valid as validate_scene() requires of a mesh's textures and
+    /// with texels, bound in order at set 2, bindings 1 to 4. Their images are shared, not copied (see Image).
     std::vector<Texture> textures;
+    /// How long the material holds its textures' texels. With TexelRetention::until_upload, the textures of
+    /// CustomMaterial::definition() refer to images without texels, and CustomMaterial::texel_images() returns the
+    /// supplied ones while it or anything else holds them.
+    TexelRetention texel_retention = TexelRetention::keep;
 };
 
 /// A validated, immutable custom material.
@@ -131,23 +135,31 @@ class CustomMaterial {
     /// Largest shader module, in bytes.
     static constexpr std::size_t max_shader_bytes = 16 * 1024 * 1024;
 
-    /// Validates @p definition and keeps it.
+    /// Validates @p definition and keeps it, holding its textures' images as
+    /// CustomMaterialDefinition::texel_retention says.
     ///
-    /// Throws `std::invalid_argument` before keeping anything: for a name that is empty or longer than
-    /// #max_name_bytes; for a blend mode other than the CustomBlend enumerators; for more than
-    /// #max_parameter_bytes parameters or #max_textures textures, or an invalid texture; for a missing vertex or
-    /// fragment shader, or a shadow fragment shader without a shadow vertex shader; for a module that is not
-    /// SPIR-V, is larger than #max_shader_bytes, has broken instruction framing, uses a SPIR-V version, capability,
-    /// extension, extended instruction set or memory model outside those listed in the file documentation, or has
-    /// no entry point named `main` for its stage; and for an interface that differs from the documented one: an
-    /// undocumented or mistyped input, output or resource, a resource in a stage that cannot read it, opaque depth
-    /// or color in an opaque material or the depth-only variant, a parameter block larger than
-    /// CustomMaterialDefinition::parameters, a texture binding beyond the supplied textures, a writable pose
-    /// buffer, or a fragment shader input that the preceding vertex shader does not write with the same type.
-    /// Each message names the stage and the mismatch.
+    /// Throws `std::invalid_argument` before keeping anything: for a name that is empty or longer than #max_name_bytes;
+    /// for a blend mode other than the CustomBlend enumerators; for an unknown texel retention; for more than
+    /// #max_parameter_bytes parameters or #max_textures textures, or an invalid texture, including one whose image has
+    /// no texels; for a missing vertex or fragment shader, or a shadow fragment shader without a shadow vertex shader;
+    /// for a module that is not SPIR-V, is larger than #max_shader_bytes, has broken instruction framing, uses a SPIR-V
+    /// version, capability, extension, extended instruction set or memory model outside those listed in the file
+    /// documentation, or has no entry point named `main` for its stage; and for an interface that differs from the
+    /// documented one: an undocumented or mistyped input, output or resource, a resource in a stage that cannot read
+    /// it, opaque depth or color in an opaque material or the depth-only variant, a parameter block larger than
+    /// CustomMaterialDefinition::parameters, a texture binding beyond the supplied textures, a writable pose buffer, or
+    /// a fragment shader input that the preceding vertex shader does not write with the same type. Each message names
+    /// the stage and the mismatch.
     explicit CustomMaterial(CustomMaterialDefinition definition);
-    /// The validated definition.
+    /// The validated definition. With TexelRetention::until_upload its textures' images have no texels.
     [[nodiscard]] const CustomMaterialDefinition &definition() const noexcept { return definition_; }
+    /// The image of each texture of definition(), in order, with its texels, as Mesh::texel_images() returns a
+    /// mesh's; throws `std::logic_error` ("Custom material texture texels were released after upload") once one
+    /// that TexelRetention::until_upload let go is gone. Safe to call from any thread.
+    [[nodiscard]] std::vector<std::shared_ptr<const Image>> texel_images() const;
+    /// Ends the material's own hold on the images of TexelRetention::until_upload, as VulkanRenderer does once it
+    /// has uploaded them, and as Mesh::release_texels() does for a mesh; does nothing for TexelRetention::keep.
+    void release_texels() const noexcept;
     /// CustomMaterialDefinition::name.
     [[nodiscard]] const std::string &name() const noexcept { return definition_.name; }
     /// CustomMaterialDefinition::blend.
@@ -169,5 +181,6 @@ class CustomMaterial {
     CustomMaterialDefinition definition_;
     std::uint32_t vertex_attributes_{}, shadow_vertex_attributes_{};
     bool reads_opaque_depth_{}, reads_opaque_color_{};
+    detail::TexelHoldPtr texels_;
 };
 } // namespace anima

@@ -46,47 +46,57 @@ struct MeshCompileOptions {
     /// mip chains; uses that need different options, or none, get separate copies. Textures that share an image
     /// and an encoding share each shrunk image. Zero keeps authored sizes.
     unsigned max_texture_edge{};
+    /// How long each resulting Mesh holds its textures' texels; shrunk images have no other holder, so with
+    /// TexelRetention::until_upload they are freed once their Mesh is uploaded.
+    TexelRetention texel_retention = TexelRetention::keep;
 };
 
 /// Immutable compiled render mesh: indexed geometry, draws, materials, textures and skins.
 ///
-/// Compile once and share the pointer: each Scene instance keeps its own pose, material factors and
-/// visibility, while VulkanRenderer caches GPU geometry and textures per Mesh object. To change geometry,
-/// textures or material constants, compile a new Mesh. Nothing changes after compilation, so a Mesh may be
-/// read from several threads.
+/// Compile once and share the pointer: each Scene instance keeps its own pose, material factors and visibility, while
+/// VulkanRenderer caches GPU geometry and textures per Mesh object. To change geometry, textures or material constants,
+/// compile a new Mesh. Nothing changes after compilation but the hold of a Mesh compiled with
+/// TexelRetention::until_upload on its textures' texels, which is synchronized, so a Mesh may be read from several
+/// threads.
 class Mesh {
   public:
-    /// Imports the GLB file at @p path with load_asset() and compiles it; throws what either throws.
-    [[nodiscard]] static std::shared_ptr<const Mesh> load(const std::filesystem::path &path) {
-        return compile(*load_asset(path));
+    /// Imports the GLB file at @p path with load_asset() and compiles it with @p texel_retention; throws what
+    /// either throws. With TexelRetention::until_upload nothing else holds the imported images, so they are freed
+    /// once the Mesh is uploaded.
+    [[nodiscard]] static std::shared_ptr<const Mesh> load(const std::filesystem::path &path,
+                                                          TexelRetention texel_retention = TexelRetention::keep) {
+        return compile(*load_asset(path), texel_retention);
     }
-    /// Validates @p source and copies it into a new Mesh, which shares the images of its textures; @p source may
-    /// change or be destroyed afterwards, but the images must not (see Image).
+    /// Validates @p source and copies it into a new Mesh, which shares the images of its textures, or with
+    /// TexelRetention::until_upload holds them until it is uploaded; @p source may change or be destroyed
+    /// afterwards, but the images must not (see Image).
     ///
-    /// Each source primitive becomes one IndexedDraw, in order. Within a primitive, vertices whose attributes
-    /// are all bit-identical are merged, so seams and triangle order are preserved and nothing is simplified.
-    /// Throws `std::invalid_argument` for invalid content, for example nonfinite attributes, vertex alpha
-    /// outside [0, 1], a tangent `w` other than -1, 0 or 1, skin weights that are negative or do not sum to 1
-    /// within `0.0001`, a skin with more than 512 joints, material factors outside [0, 1], a texture whose
-    /// encoding does not suit its use, or a transform that is not affine; anima::MathError for a rest rotation
-    /// that cannot be normalized; and `std::runtime_error` for a cyclic, dangling or nonfinite node hierarchy.
-    [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source);
+    /// Each source primitive becomes one IndexedDraw, in order. Within a primitive, vertices whose attributes are all
+    /// bit-identical are merged, so seams and triangle order are preserved and nothing is simplified. Throws
+    /// `std::invalid_argument` for an unknown @p texel_retention, before anything else, and for invalid content, for
+    /// example nonfinite attributes, vertex alpha outside [0, 1], a tangent `w` other than -1, 0 or 1, skin weights
+    /// that are negative or do not sum to 1 within `0.0001`, a skin with more than 512 joints, material factors outside
+    /// [0, 1], a texture whose encoding does not suit its use or whose image has no texels, or a transform that is not
+    /// affine; anima::MathError for a rest rotation that cannot be normalized; and `std::runtime_error` for a cyclic,
+    /// dangling or nonfinite node hierarchy.
+    [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source,
+                                                             TexelRetention texel_retention = TexelRetention::keep);
     /// Compiles a static @p source into one or more meshes that together draw its geometry with the same node
     /// placement, to bound individual uploads.
     ///
-    /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks
-    /// oversized textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at
-    /// every material change between consecutive primitives and whenever MeshCompileOptions::max_vertices would
-    /// be exceeded, splitting primitives between whole triangles; the draws of a split blended primitive sort
-    /// separately in VulkanRenderer. Each result keeps every node, Asset::mesh_nodes
-    /// and Asset::notices, as compile() does, but only the materials and textures it uses; a source without
-    /// primitives gives one Mesh with no materials or textures. Throws `std::invalid_argument` for a
-    /// `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of whole triangles, and
-    /// `std::runtime_error` when @p source has skins or animations, before anything else. Otherwise invalid
-    /// content anywhere in @p source, including materials and textures that no primitive uses, fails as
-    /// compile(source) would: its first defect in compile()'s order throws the same exception. Limits on the
-    /// size of one Mesh apply to each result. The results share the images of @p source's textures, and each
-    /// shrunk image among themselves.
+    /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks oversized
+    /// textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at every material
+    /// change between consecutive primitives and whenever MeshCompileOptions::max_vertices would be exceeded, splitting
+    /// primitives between whole triangles; the draws of a split blended primitive sort separately in VulkanRenderer.
+    /// Each result keeps every node, Asset::mesh_nodes and Asset::notices, as compile() does, but only the materials
+    /// and textures it uses; a source without primitives gives one Mesh with no materials or textures. Throws
+    /// `std::invalid_argument` for an unknown MeshCompileOptions::texel_retention, a `max_vertices` of 1 or 2 or a
+    /// primitive that is not a nonempty list of whole triangles, and `std::runtime_error` when @p source has skins or
+    /// animations, before anything else. Otherwise invalid content anywhere in @p source, including materials and
+    /// textures that no primitive uses, fails as compile(source) would: its first defect in compile()'s order throws
+    /// the same exception. Limits on the size of one Mesh apply to each result. The results share the images of
+    /// @p source's textures, and each shrunk image among themselves, or hold them as
+    /// MeshCompileOptions::texel_retention says.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Vertices that indices() refers to.
@@ -95,8 +105,26 @@ class Mesh {
     [[nodiscard]] std::span<const std::uint32_t> indices() const { return indices_; }
     /// One draw per source primitive, in source order.
     [[nodiscard]] std::span<const IndexedDraw> draws() const { return draws_; }
-    /// Source materials, textures and metadata; its vertices and primitives are empty.
+    /// Source materials, textures and metadata; its vertices and primitives are empty. With
+    /// TexelRetention::until_upload its textures' images have no texels; texel_images() returns the images that
+    /// have them.
     [[nodiscard]] const std::shared_ptr<const MeshSnapshot> &materials() const { return materials_; }
+    /// How this Mesh holds its textures' texels.
+    [[nodiscard]] TexelRetention texel_retention() const noexcept { return texel_retention_; }
+    /// The image of each texture of materials(), in order, with its texels.
+    ///
+    /// With TexelRetention::keep these are the textures' own images. With TexelRetention::until_upload they are
+    /// the source's images, which this Mesh holds until release_texels() and afterwards finds only while
+    /// something else holds them; throws `std::logic_error` ("Mesh texture texels were released after upload")
+    /// once one is gone. Renderers and MeshPreparation read texels only through this function. Safe to call from
+    /// any thread, also while another thread calls release_texels().
+    [[nodiscard]] std::vector<std::shared_ptr<const Image>> texel_images() const;
+    /// Ends this Mesh's own hold on the images of TexelRetention::until_upload, as VulkanRenderer does once it has
+    /// uploaded the Mesh; does nothing for TexelRetention::keep. Idempotent, and safe to call from any thread.
+    ///
+    /// Call it only once every renderer that draws this Mesh has uploaded it, unless something else keeps the
+    /// images; texel_images() states what later readers find.
+    void release_texels() const noexcept;
     /// Pose from the source's rest transforms, used by instances without an explicit pose.
     [[nodiscard]] const Pose &rest_pose() const { return rest_; }
     /// Matrices in each instance palette: one per source node, then one per joint of each skin, in order.
@@ -121,6 +149,8 @@ class Mesh {
     std::vector<AssetSkin> skins_;
     std::vector<std::vector<BoundPart>> bounds_;
     std::size_t palette_size_{};
+    TexelRetention texel_retention_ = TexelRetention::keep;
+    detail::TexelHoldPtr texels_;
 };
 
 } // namespace anima

@@ -1,5 +1,6 @@
 #include "mesh_limits.hpp"
 #include "presentation_data.hpp"
+#include "texel_hold.hpp"
 #include <anima/assets/attachments.hpp>
 namespace anima {
 namespace {
@@ -155,7 +156,11 @@ std::map<std::string, AttachmentSocket, std::less<>>
 decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
     return presentation_data::decode_step([&] { return decode_sockets(document, manifest, body); });
 }
-AttachmentLibrary::AttachmentLibrary(AttachmentCatalog definition) : catalog(std::move(definition)) {}
+AttachmentLibrary::AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention)
+    : catalog(std::move(definition)), texel_retention_(texel_retention) {
+    if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
+        throw std::invalid_argument("Unknown texel retention");
+}
 const AttachmentDefinition &AttachmentLibrary::item(std::string_view id) const {
     return presentation_data::lookup(catalog.items, id);
 }
@@ -178,7 +183,8 @@ std::shared_ptr<const AttachmentAsset> AttachmentLibrary::load(std::string_view 
         }
     auto source = anima::load_asset(path);
     validate(*source, definition);
-    auto render = anima::Mesh::compile(*source);
+    auto render = anima::Mesh::compile(*source, texel_retention_);
+    source = anima::detail::without_texels(std::move(source), *render);
     cached = {source, render};
     return std::make_shared<AttachmentAsset>(AttachmentAsset{std::move(source), std::move(render)});
 }

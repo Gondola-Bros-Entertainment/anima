@@ -261,12 +261,53 @@ TEST_CASE("Custom material definitions outside the documented limits are rejecte
     rejects(value, "Custom material has more than 4 textures");
     value.textures = {Texture{}};
     rejects(value, "Invalid scene texture dimensions");
+    value.textures = {Texture{std::make_shared<Image>(Image{1, 1, {}}), {}}};
+    rejects(value, "Texture image has no texels");
+    value = definition();
+    value.texel_retention = static_cast<TexelRetention>(2);
+    rejects(value, "Unknown custom material texel retention");
     value = definition();
     value.fragment_shader.clear();
     rejects(value, "Custom material needs a vertex and a fragment shader");
     value = definition();
     value.shadow_fragment_shader = fragment_module().words();
     rejects(value, "Custom material has a shadow fragment shader without a shadow vertex shader");
+}
+
+TEST_CASE("A custom material compiled until upload holds its textures' images until it is released") {
+    auto value = definition();
+    value.textures = {texture(), texture()};
+    value.textures.push_back(value.textures[0]); // A third texture sharing the first one's image.
+    const std::weak_ptr<const Image> first = value.textures[0].image, second = value.textures[1].image;
+    value.texel_retention = TexelRetention::until_upload;
+    const auto material = std::make_shared<const CustomMaterial>(std::move(value));
+    const auto &textures = material->definition().textures;
+    REQUIRE(textures.size() == 3);
+    CHECK(textures[0].image->rgba.empty());
+    CHECK(textures[0].image->width == 1);
+    CHECK(textures[2].image == textures[0].image);
+    CHECK(textures[1].image != textures[0].image);
+    {
+        const auto images = material->texel_images();
+        REQUIRE(images.size() == 3);
+        CHECK(images[0] == first.lock());
+        CHECK(images[1] == second.lock());
+        CHECK(images[2] == first.lock());
+    }
+    material->release_texels();
+    CHECK(first.expired());
+    CHECK(second.expired());
+    CHECK_THROWS_WITH_AS((void)material->texel_images(), "Custom material texture texels were released after upload",
+                         std::logic_error);
+    // With TexelRetention::keep the definition's textures hold the images, and releasing does nothing.
+    auto kept = definition();
+    kept.textures = {texture()};
+    const std::weak_ptr<const Image> held = kept.textures[0].image;
+    const CustomMaterial retained(std::move(kept));
+    retained.release_texels();
+    REQUIRE_FALSE(held.expired());
+    CHECK(retained.texel_images().at(0) == held.lock());
+    CHECK(retained.definition().textures[0].image == held.lock());
 }
 
 TEST_CASE("Words that are not a well-framed SPIR-V module are rejected") {

@@ -14,6 +14,9 @@ namespace anima {
 std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &source, MeshCompileOptions options) {
     const auto vertices_per_resource = options.max_vertices;
     const auto texture_edge = options.max_texture_edge;
+    const auto retention = options.texel_retention;
+    if (retention != TexelRetention::keep && retention != TexelRetention::until_upload)
+        throw std::invalid_argument("Unknown texel retention");
     if (vertices_per_resource && vertices_per_resource < 3)
         throw std::invalid_argument("Mesh vertex limit must fit at least one triangle");
     for (const auto &primitive : source.primitives)
@@ -23,7 +26,7 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
     if (!source.skins.empty() || !source.animations.empty())
         throw std::runtime_error("Static mesh preparation requires static geometry.");
     if (!vertices_per_resource && !texture_edge)
-        result.push_back(Mesh::compile(source));
+        result.push_back(Mesh::compile(source, retention));
     else {
         const auto vertex_limit =
             vertices_per_resource ? vertices_per_resource : std::numeric_limits<std::size_t>::max();
@@ -37,8 +40,8 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
         // Fail as compile() would, in its order. Compiling the nodes alone checks the hierarchy and transforms;
         // every material and texture is checked next, used or not, before any is indexed or shrunk; and each
         // piece's compile() then checks its primitives whole, in source order.
-        auto nodes_only = Mesh::compile(piece);
-        detail::validate_surfaces(source.materials, source.textures);
+        auto nodes_only = Mesh::compile(piece, retention);
+        detail::validate_surfaces(source.materials, source.textures, detail::Texels::required);
         std::vector<SourcePrimitive> pending;
         const auto oversized = [&](const Texture &texture) {
             return texture_edge && std::max(texture.image->width, texture.image->height) > texture_edge;
@@ -103,7 +106,7 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
                 }
                 primitive.material = it->second;
             }
-            result.push_back(Mesh::compile(batch));
+            result.push_back(Mesh::compile(batch, retention));
             pending.clear();
             vertices = 0;
         };

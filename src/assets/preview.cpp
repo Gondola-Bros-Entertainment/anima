@@ -147,10 +147,16 @@ std::vector<std::pair<std::size_t, std::size_t>> compatible_skin(const Asset &bo
             throw std::runtime_error("Fitted model contains an unskinned mesh; bind it to the body's rig");
     return mapping;
 }
-AssetPreview::AssetPreview(const std::filesystem::path &manifest) : manifest_(read_manifest(manifest)) {
-    model_ = load_asset(manifest_.directory / manifest_.model);
-    validate_manifest(manifest_, *model_);
-    animator_ = scene_->create(manifest_.asset_id, Mesh::compile(*model_)).add_component<Animator>(model_);
+AssetPreview::AssetPreview(const std::filesystem::path &manifest, TexelRetention texel_retention)
+    : manifest_(read_manifest(manifest)) {
+    const auto model = load_asset(manifest_.directory / manifest_.model);
+    validate_manifest(manifest_, *model);
+    auto mesh = Mesh::compile(*model, texel_retention);
+    auto motion = std::make_shared<Asset>();
+    motion->nodes = model->nodes;
+    motion->animations = model->animations;
+    model_ = std::move(motion);
+    animator_ = scene_->create(manifest_.asset_id, std::move(mesh)).add_component<Animator>(model_);
     if (manifest_.clips.empty())
         bind_pose();
     else

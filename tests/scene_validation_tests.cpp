@@ -164,6 +164,8 @@ TEST_CASE("Textures must match their dimensions and use known sampler values") {
                          texture_dimensions, std::invalid_argument);
     CHECK_THROWS_WITH_AS(anima::validate_scene(edited_image([](auto &i) { i.rgba.pop_back(); })),
                          "MeshSnapshot texture byte count does not match dimensions", std::invalid_argument);
+    // An image without texels describes a texture, as those of a Mesh compiled with TexelRetention::until_upload do.
+    CHECK_NOTHROW(anima::validate_scene(edited_image([](auto &i) { i.rgba.clear(); })));
     const auto unknown_filter = static_cast<anima::Filter>(99);
     const auto unknown_wrap = static_cast<anima::Wrap>(99);
     CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.textures[0].sampler.mag = unknown_filter; })),

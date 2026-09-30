@@ -1,4 +1,6 @@
 #include "mesh_limits.hpp"
+#include "surface_validation.hpp"
+#include "texel_hold.hpp"
 #include "winding.hpp"
 #include <algorithm>
 #include <anima/assets/scene_validation.hpp>
@@ -64,7 +66,9 @@ struct Hash {
 };
 } // namespace
 
-std::shared_ptr<const Mesh> Mesh::compile(const Asset &source) {
+std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention texel_retention) {
+    if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
+        throw std::invalid_argument("Unknown texel retention");
     auto result = std::shared_ptr<Mesh>(new Mesh);
     result->rest_ = sample_pose(source);
     for (const auto &node : source.nodes)
@@ -80,7 +84,7 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source) {
     materials->notices = source.notices;
     for (const auto &clip : source.animations)
         materials->clips.push_back(clip.name);
-    validate_scene(*materials);
+    detail::validate_scene(*materials, {}, detail::Texels::required);
     result->skins_ = source.skins;
     std::size_t palette_size = source.nodes.size();
     std::vector<std::uint32_t> offsets;
@@ -159,8 +163,24 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source) {
             if (bounds[j].valid)
                 parts.push_back({offset + static_cast<std::uint32_t>(j), bounds[j]});
     }
+    result->texel_retention_ = texel_retention;
+    if (texel_retention == TexelRetention::until_upload)
+        result->texels_ = detail::hold_texels(materials->textures, "Mesh texture texels were released after upload");
     result->materials_ = std::move(materials);
     return result;
+}
+std::vector<std::shared_ptr<const Image>> Mesh::texel_images() const {
+    if (const auto *hold = texels_.get())
+        return hold->images();
+    std::vector<std::shared_ptr<const Image>> result;
+    result.reserve(materials_->textures.size());
+    for (const auto &texture : materials_->textures)
+        result.push_back(texture.image);
+    return result;
+}
+void Mesh::release_texels() const noexcept {
+    if (auto *hold = texels_.get())
+        hold->release();
 }
 
 std::string ObjectKey::string() const { return std::to_string(value); }
