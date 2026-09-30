@@ -1,3 +1,4 @@
+#include "../detail/staging.hpp"
 #include "mesh_limits.hpp"
 #include "rotation_matrix.hpp"
 #include "winding.hpp"
@@ -182,7 +183,9 @@ Sampler sampler(const cgltf_sampler *source) {
 }
 } // namespace
 
-static std::vector<std::byte> read_glb(const std::filesystem::path &path) {
+static std::vector<std::byte> read_glb(const std::filesystem::path &path, const detail::StagingSteps &steps) {
+    steps.add(1);
+    steps.check();
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     require(bool(file), "Cannot open GLB file");
     const auto length = file.tellg();
@@ -192,9 +195,13 @@ static std::vector<std::byte> read_glb(const std::filesystem::path &path) {
     file.seekg(0);
     file.read(reinterpret_cast<char *>(bytes.data()), length);
     require(bool(file), "Cannot read GLB file");
+    steps.complete();
     return bytes;
 }
-static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes, bool motion_only) {
+static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes, bool motion_only,
+                                               const detail::StagingSteps &steps) {
+    steps.add(1);
+    steps.check();
     require(!bytes.empty() && bytes.size() <= maximum_source_bytes, "GLB must be between 1 byte and 64 MiB");
     cgltf_options options{};
     options.type = cgltf_file_type_glb;
@@ -248,6 +255,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         for (auto *node = &data->nodes[i]; node; node = node->parent)
             require(++depth <= maximum_hierarchy_depth, "Node hierarchy exceeds depth limit or contains a cycle");
     }
+    steps.complete();
     auto asset = std::make_shared<Asset>();
     asset->nodes.reserve(data->nodes_count);
     for (std::size_t i = 0; i < data->nodes_count; ++i) {
@@ -298,12 +306,43 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         total_decoded_bytes += encoded.decoded_bytes();
         images.emplace(image, TextureImage{encoded, nullptr});
     }
+    // Geometry comes from the default scene, else the first scene, else every root node.
+    const auto *selected = data->scene ? data->scene : (data->scenes_count ? &data->scenes[0] : nullptr);
+    std::vector<const cgltf_node *> roots;
+    if (selected)
+        roots.assign(selected->nodes, selected->nodes + selected->nodes_count);
+    else
+        for (std::size_t i = 0; i < data->nodes_count; ++i)
+            if (!data->nodes[i].parent)
+                roots.push_back(&data->nodes[i]);
+    // The traversal below imports every primitive of each node it reaches and rejects a node reached twice, so
+    // this count, which visits each node once, is the number of primitives a successful import has.
+    std::size_t primitive_count = 0;
+    {
+        std::vector<bool> counted(data->nodes_count);
+        std::vector<const cgltf_node *> pending(roots.rbegin(), roots.rend());
+        while (!pending.empty()) {
+            const auto *node = pending.back();
+            pending.pop_back();
+            const auto node_index = static_cast<std::size_t>(node - data->nodes);
+            if (node_index >= counted.size() || counted[node_index])
+                continue;
+            counted[node_index] = true;
+            if (node->mesh)
+                primitive_count += node->mesh->primitives_count;
+            pending.insert(pending.end(), node->children, node->children + node->children_count);
+        }
+    }
+    steps.add(images.size() + primitive_count);
     asset->textures.reserve(data->textures_count);
     for (std::size_t i = 0; i < data->textures_count; ++i) {
         const auto &texture = data->textures[i];
         auto &image = images.at(texture.image);
-        if (!image.decoded)
+        if (!image.decoded) {
+            steps.check();
             image.decoded = decode(image.encoded);
+            steps.complete();
+        }
         asset->textures.push_back({image.decoded, sampler(texture.sampler)});
     }
     // A source texture used as both colour and data needs distinct GPU encodings; the copy shares its image.
@@ -369,6 +408,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         if (node->mesh) {
             ++asset->mesh_nodes;
             for (std::size_t p = 0; p < node->mesh->primitives_count; ++p) {
+                steps.check();
                 const auto &primitive = node->mesh->primitives[p];
                 require(primitive.type == cgltf_primitive_type_triangles,
                         "Only triangle-list primitives are supported");
@@ -486,19 +526,14 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                             value.vertices[i + k].normal = n;
                     }
                 asset->primitives.push_back(std::move(value));
+                steps.complete();
             }
         }
         for (std::size_t i = 0; i < node->children_count; ++i)
             self(self, node->children[i]);
     };
-    const auto *selected = data->scene ? data->scene : (data->scenes_count ? &data->scenes[0] : nullptr);
-    if (selected)
-        for (std::size_t i = 0; i < selected->nodes_count; ++i)
-            visit(visit, selected->nodes[i]);
-    else
-        for (std::size_t i = 0; i < data->nodes_count; ++i)
-            if (!data->nodes[i].parent)
-                visit(visit, &data->nodes[i]);
+    for (const auto *root : roots)
+        visit(visit, root);
     if (!motion_only)
         require(!asset->primitives.empty(), "Selected scene contains no renderable triangles");
     for (std::size_t a = 0; a < data->animations_count; ++a) {
@@ -567,14 +602,23 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         require(asset->primitives.empty() && asset->skins.empty() && asset->materials.empty() &&
                     asset->textures.empty() && !asset->animations.empty(),
                 "Motion resources require animation without geometry, skins or materials");
+    steps.check();
     return asset;
 }
 
-std::shared_ptr<const Asset> load_asset(std::span<const std::byte> bytes) { return read_asset(bytes, false); }
-std::shared_ptr<const Asset> load_motion_asset(std::span<const std::byte> bytes) { return read_asset(bytes, true); }
-std::shared_ptr<const Asset> load_asset(const std::filesystem::path &path) { return load_asset(read_glb(path)); }
-std::shared_ptr<const Asset> load_motion_asset(const std::filesystem::path &path) {
-    return load_motion_asset(read_glb(path));
+std::shared_ptr<const Asset> load_asset(std::span<const std::byte> bytes, const StagingOptions &options) {
+    return read_asset(bytes, false, detail::StagingSteps(options));
+}
+std::shared_ptr<const Asset> load_motion_asset(std::span<const std::byte> bytes, const StagingOptions &options) {
+    return read_asset(bytes, true, detail::StagingSteps(options));
+}
+std::shared_ptr<const Asset> load_asset(const std::filesystem::path &path, const StagingOptions &options) {
+    const detail::StagingSteps steps(options);
+    return read_asset(read_glb(path, steps), false, steps);
+}
+std::shared_ptr<const Asset> load_motion_asset(const std::filesystem::path &path, const StagingOptions &options) {
+    const detail::StagingSteps steps(options);
+    return read_asset(read_glb(path, steps), true, steps);
 }
 
 void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scene, std::size_t offset,

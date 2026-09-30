@@ -91,11 +91,16 @@ SceneRef SceneSet::create(std::string key) {
     check_key(key);
     return append(std::move(key), std::make_shared<Scene>());
 }
+SceneRef SceneSet::load(std::string key, const StagedScene &staged, const ComponentCodecs &codecs) {
+    const Mutation mutation(*this, Activity::changing_membership);
+    check_key(key);
+    return append(std::move(key), load_scene(staged, codecs));
+}
 SceneRef SceneSet::load(std::string key, std::string_view document, const MeshResolver &resolve,
                         const ComponentCodecs &codecs, const CustomMaterialResolver &materials) {
     const Mutation mutation(*this, Activity::changing_membership);
     check_key(key);
-    return append(std::move(key), load_scene(document, resolve, codecs, materials));
+    return append(std::move(key), load_scene(stage_scene(document, resolve, materials), codecs));
 }
 // One link that a remaining member's component reported into a scene being retired.
 struct SceneSet::Link {
@@ -131,9 +136,22 @@ SceneRef SceneSet::replace(SceneRef target, std::string_view document, const Mes
                            const ComponentCodecs &codecs, const CustomMaterialResolver &materials) {
     const Mutation mutation(*this, Activity::changing_membership);
     const auto slot = index(target);
+    return replace_member(
+        slot, detail::load_scene_member(document, *this, scenes_[slot]->key, resolve, materials, codecs), codecs);
+}
+SceneRef SceneSet::replace(SceneRef target, const StagedScene &staged, const ComponentCodecs &codecs) {
+    const Mutation mutation(*this, Activity::changing_membership);
+    const auto slot = index(target);
+    return replace_member(slot, load_scene(staged, codecs), codecs);
+}
+SceneRef SceneSet::replace(SceneRef target, const StagedSceneSet &staged, const ComponentCodecs &codecs) {
+    const Mutation mutation(*this, Activity::changing_membership);
+    const auto slot = index(target);
+    return replace_member(slot, detail::load_scene_member(staged, *this, scenes_[slot]->key, codecs), codecs);
+}
+SceneRef SceneSet::replace_member(std::size_t slot, std::shared_ptr<Scene> scene, const ComponentCodecs &codecs) {
     auto old = scenes_[slot];
-    auto next = std::make_shared<detail::SceneRecord>(detail::SceneRecord{
-        old->key, detail::load_scene_member(document, *this, old->key, resolve, materials, codecs), true});
+    auto next = std::make_shared<detail::SceneRecord>(detail::SceneRecord{old->key, std::move(scene), true});
     const auto links = links_into(*old->scene, codecs);
     std::vector<GameObject> rebound;
     rebound.reserve(links.size());
@@ -161,11 +179,18 @@ std::string SceneSet::serialize(const MeshName &name, const ComponentCodecs &cod
 void SceneSet::restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs,
                        const CustomMaterialResolver &materials) {
     const Mutation mutation(*this, Activity::changing_membership);
-    auto staged = detail::json_step([&] { return detail::load_scene_set(document, resolve, materials, codecs); });
-    // Publication cannot allocate. The staged owner now retires the old set;
+    restore_members(stage_scene_set(document, resolve, materials), codecs);
+}
+void SceneSet::restore(const StagedSceneSet &staged, const ComponentCodecs &codecs) {
+    const Mutation mutation(*this, Activity::changing_membership);
+    restore_members(staged, codecs);
+}
+void SceneSet::restore_members(const StagedSceneSet &staged, const ComponentCodecs &codecs) {
+    auto built = detail::json_step([&] { return detail::load_scene_set(staged, codecs); });
+    // Publication cannot allocate. The built owner now retires the old set;
     // cleanup callbacks observe the complete committed replacement.
-    scenes_.swap(staged->scenes_);
-    active_.swap(staged->active_);
+    scenes_.swap(built->scenes_);
+    active_.swap(built->active_);
 }
 std::vector<ClearedLink> SceneSet::unload(SceneRef scene, const ComponentCodecs &codecs) {
     const Mutation mutation(*this, Activity::changing_membership);

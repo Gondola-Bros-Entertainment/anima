@@ -4,8 +4,10 @@
 /// @file
 /// Additive ownership of independently loaded scenes. Part of the `anima::assets` target.
 ///
-/// Membership changes and active selection are synchronous and happen between updates and draws.
-/// They throw `std::logic_error` while the set is busy, as SceneSet describes. Unloading,
+/// Membership changes and active selection are synchronous and happen between updates and draws, on the
+/// thread that owns the set. A document can be staged beforehand on any thread with stage_scene or
+/// stage_scene_set, and the overloads that take the staged result then only commit it. Membership changes
+/// throw `std::logic_error` while the set is busy, as SceneSet describes. Unloading,
 /// replacing, clearing or restoring invalidates every handle to the old scenes, their objects and
 /// their components before any component cleanup runs. Old handles never rebind to a replacement;
 /// instead, SceneSet::replace and SceneSet::unload overwrite the links that surviving members'
@@ -13,6 +15,7 @@
 
 namespace anima {
 namespace detail {
+struct SceneSetStage;
 struct SceneRecord {
     std::string key;
     std::shared_ptr<Scene> scene;
@@ -42,6 +45,41 @@ struct ClearedLink {
     /// Former target, whose namespace is the unloaded scene's.
     SceneAddress target;
 };
+
+/// An `anima.scene-set` document that stage_scene_set parsed, validated and resolved, for SceneSet::restore
+/// and SceneSet::replace to commit on the thread that owns the set.
+///
+/// It holds the document's members, active namespace and reference table, with component payloads still
+/// encoded, and shares the meshes and custom materials that the resolvers returned; it references no Scene,
+/// SceneSet, ComponentCodecs or service. It never changes, so any thread may copy, read or destroy it, and it
+/// can be committed any number of times. Copies share its data, and moving it copies it, so no object is ever
+/// empty.
+class StagedSceneSet {
+  public:
+    StagedSceneSet(const StagedSceneSet &) = default;
+    StagedSceneSet &operator=(const StagedSceneSet &) = default;
+    /// Bytes of decoded data held, excluding container overhead and the shared meshes and custom materials:
+    /// the bytes of each member's namespace and of its objects, counted as StagedScene::retained_bytes counts
+    /// them, and `2 * sizeof(ObjectKey) + sizeof(std::size_t)` per reference row. Copies share these bytes.
+    [[nodiscard]] std::size_t retained_bytes() const noexcept;
+
+  private:
+    friend struct detail::ScenePersistence;
+    explicit StagedSceneSet(std::shared_ptr<const detail::SceneSetStage> data) : data_(std::move(data)) {}
+    std::shared_ptr<const detail::SceneSetStage> data_;
+};
+/// Parses and validates an `anima.scene-set` version 1 document, as SceneSet::restore does, and resolves each
+/// distinct mesh key and custom material name of the whole document once, without creating a scene or decoding
+/// any component.
+///
+/// Calls may run concurrently on any thread, with the sharing, callbacks, cancellation and steps that
+/// stage_scene documents. Throws `std::invalid_argument` for invalid content, with the messages that
+/// SceneSet::restore throws for it, what @p resolve or @p materials throws, and StagingCancelled when
+/// @p options reports a stop. The checks that need a scene run when the document is committed, as for
+/// stage_scene.
+[[nodiscard]] StagedSceneSet stage_scene_set(std::string_view document, const MeshResolver &resolve,
+                                             const CustomMaterialResolver &materials = {},
+                                             const StagingOptions &options = {});
 
 /// Checked, weak identity of one member scene of a SceneSet.
 ///
@@ -111,8 +149,13 @@ class SceneSet {
     /// Adds an empty scene under namespace @p key. The first member of an empty set becomes
     /// active(). Throws `std::invalid_argument` for an invalid or duplicate namespace.
     [[nodiscard]] SceneRef create(std::string key);
+    /// Adds a scene built from @p staged, as load_scene(const StagedScene &, const ComponentCodecs &) builds
+    /// it, under namespace @p key. On failure the set is unchanged. Throws as create() and load_scene do.
+    [[nodiscard]] SceneRef load(std::string key, const StagedScene &staged, const ComponentCodecs &codecs = {});
     /// Adds a scene loaded from @p document, as load_scene does, under namespace @p key. On failure
-    /// the set is unchanged. Throws as create() and load_scene do.
+    /// the set is unchanged. Throws as create() and load_scene do. After checking @p key, it stages
+    /// @p document with stage_scene on the calling thread and commits it as
+    /// load(std::string, const StagedScene &, const ComponentCodecs &) does.
     [[nodiscard]] SceneRef load(std::string key, std::string_view document, const MeshResolver &resolve,
                                 const ComponentCodecs &codecs = {}, const CustomMaterialResolver &materials = {});
     /// Replaces @p target with a scene loaded from @p document, keeping its namespace, position and
@@ -144,8 +187,20 @@ class SceneSet {
     /// @p target from another set, for invalid content as load_scene or restore() does, for a set
     /// document without @p target's namespace, and when the replacement lacks the key of a linked
     /// object. A link callback's exception propagates.
+    ///
+    /// After checking @p target, it stages @p document on the calling thread, as stage_scene or
+    /// stage_scene_set does for its kind, and commits it as the overloads that take a staged document do.
     [[nodiscard]] SceneRef replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
                                    const ComponentCodecs &codecs = {}, const CustomMaterialResolver &materials = {});
+    /// Replaces @p target with a scene built from @p staged, as replace(SceneRef, std::string_view, const
+    /// MeshResolver &, const ComponentCodecs &, const CustomMaterialResolver &) does for an `anima.scene`
+    /// document, with the same guarantees and exceptions.
+    [[nodiscard]] SceneRef replace(SceneRef target, const StagedScene &staged, const ComponentCodecs &codecs = {});
+    /// Replaces @p target with the member of @p staged that has its namespace, as replace(SceneRef,
+    /// std::string_view, const MeshResolver &, const ComponentCodecs &, const CustomMaterialResolver &) does
+    /// for an `anima.scene-set` document, with the same guarantees and exceptions. Every member's component
+    /// types are checked against @p codecs before any object is created.
+    [[nodiscard]] SceneRef replace(SceneRef target, const StagedSceneSet &staged, const ComponentCodecs &codecs = {});
     /// Writes every member into one `anima.scene-set` version 1 JSON document, with the rules of
     /// serialize_scene and @p codecs borrowed for this call.
     ///
@@ -170,8 +225,16 @@ class SceneSet {
     /// then every old handle is invalidated before the old components are cleaned up; both sets
     /// exist meanwhile. Renderers keep the old, now empty scenes until given render_scenes() again.
     /// Throws `std::invalid_argument` for invalid content, as load_scene does.
+    ///
+    /// Stages @p document with stage_scene_set on the calling thread, then commits it as
+    /// restore(const StagedSceneSet &, const ComponentCodecs &) does.
     void restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs = {},
                  const CustomMaterialResolver &materials = {});
+    /// Replaces the whole membership and selection with those of @p staged, as restore(std::string_view,
+    /// const MeshResolver &, const ComponentCodecs &, const CustomMaterialResolver &) does, with the same
+    /// guarantees. Every component type is checked against @p codecs, borrowed for this call, before any object
+    /// is created. Throws `std::invalid_argument` for an unregistered component type, and what a decoder throws.
+    void restore(const StagedSceneSet &staged, const ComponentCodecs &codecs = {});
     /// Removes @p scene, then releases it, and returns the links it cleared. If it was active(), the
     /// first remaining member becomes active. @p codecs is borrowed for this call.
     ///
@@ -240,6 +303,8 @@ class SceneSet {
     // Throws std::logic_error while the set is busy.
     void require_idle() const;
     std::vector<Link> links_into(const Scene &retired, const ComponentCodecs &codecs) const;
+    SceneRef replace_member(std::size_t slot, std::shared_ptr<Scene> scene, const ComponentCodecs &codecs);
+    void restore_members(const StagedSceneSet &staged, const ComponentCodecs &codecs);
     std::size_t index(SceneRef scene) const;
     void check_key(std::string_view key) const;
     SceneRef append(std::string key, std::shared_ptr<Scene> scene);

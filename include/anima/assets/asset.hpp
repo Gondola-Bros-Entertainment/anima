@@ -1,4 +1,5 @@
 #pragma once
+#include <anima/assets/staging.hpp>
 #include <anima/core/transform.hpp>
 #include <array>
 #include <cstddef>
@@ -377,9 +378,10 @@ struct Pose {
     std::vector<Mat4> world;
 };
 /// Reads the GLB file at @p path, 1 byte to 64 MiB, and imports it as
-/// load_asset(std::span<const std::byte>) does. Throws `std::runtime_error` also when the file
-/// cannot be read.
-[[nodiscard]] std::shared_ptr<const Asset> load_asset(const std::filesystem::path &path);
+/// load_asset(std::span<const std::byte>, const StagingOptions &) does. The read is one more step of
+/// @p options, checked before it starts. Throws `std::runtime_error` also when the file cannot be read.
+[[nodiscard]] std::shared_ptr<const Asset> load_asset(const std::filesystem::path &path,
+                                                      const StagingOptions &options = {});
 /// Imports a binary glTF 2.0 (GLB) snapshot of 1 byte to 64 MiB. The result owns its data; no file
 /// is opened and @p bytes is not retained.
 ///
@@ -404,18 +406,31 @@ struct Pose {
 /// and needs one. External files, sparse accessors, compressed geometry, texture transforms, maps
 /// on different UV sets, morph targets and GPU instancing are rejected.
 ///
+/// Calls may run concurrently on any thread. Each reads @p bytes, which must not change during the
+/// call, and the C locale, which the glTF parser reads to convert numbers and which must not change
+/// during the call; it shares no other mutable state and calls no application code. @p options is
+/// checked before the parse, before each image and each primitive, and before the call returns. Its
+/// steps are the parse, each decoded image and each imported primitive; one image decodes in a single
+/// step that a stop cannot interrupt.
+///
 /// Throws `std::runtime_error` for unsupported or malformed content, including content beyond
 /// these limits; `std::invalid_argument` for material values that validate_material rejects,
-/// including metallic or roughness factors outside [0, 1]; and anima::MathError, a
-/// `std::invalid_argument`, for a rotation that cannot be normalized.
-[[nodiscard]] std::shared_ptr<const Asset> load_asset(std::span<const std::byte> bytes);
+/// including metallic or roughness factors outside [0, 1]; anima::MathError, a
+/// `std::invalid_argument`, for a rotation that cannot be normalized; and StagingCancelled when
+/// @p options reports a stop.
+[[nodiscard]] std::shared_ptr<const Asset> load_asset(std::span<const std::byte> bytes,
+                                                      const StagingOptions &options = {});
 /// Imports a GLB holding only nodes and clips, for motion bound to a separate model through
-/// MotionRuntime. As load_asset(std::span<const std::byte>), except that the file needs at least
-/// one clip and no geometry, skins, materials or textures; `std::runtime_error` otherwise.
-[[nodiscard]] std::shared_ptr<const Asset> load_motion_asset(std::span<const std::byte> bytes);
+/// MotionRuntime. As load_asset(std::span<const std::byte>, const StagingOptions &), except that the
+/// file needs at least one clip and no geometry, skins, materials or textures; `std::runtime_error`
+/// otherwise.
+[[nodiscard]] std::shared_ptr<const Asset> load_motion_asset(std::span<const std::byte> bytes,
+                                                             const StagingOptions &options = {});
 /// Reads the GLB file at @p path, 1 byte to 64 MiB, and imports it as
-/// load_motion_asset(std::span<const std::byte>) does.
-[[nodiscard]] std::shared_ptr<const Asset> load_motion_asset(const std::filesystem::path &path);
+/// load_motion_asset(std::span<const std::byte>, const StagingOptions &) does, with the read as one more
+/// step of @p options.
+[[nodiscard]] std::shared_ptr<const Asset> load_motion_asset(const std::filesystem::path &path,
+                                                             const StagingOptions &options = {});
 /// Samples @p animation at @p time seconds over the rest pose, or returns the rest pose when
 /// @p animation is null.
 ///

@@ -65,7 +65,7 @@ class Mesh {
   public:
     /// Imports the GLB file at @p path with load_asset() and compiles it with @p texel_retention; throws what
     /// either throws. With TexelRetention::until_upload nothing else holds the imported images, so they are freed
-    /// once the Mesh is uploaded.
+    /// once the Mesh is uploaded. Calls may run concurrently on any thread, as calls of both functions may.
     [[nodiscard]] static std::shared_ptr<const Mesh> load(const std::filesystem::path &path,
                                                           TexelRetention texel_retention = TexelRetention::keep) {
         return compile(*load_asset(path), texel_retention);
@@ -82,6 +82,9 @@ class Mesh {
     /// [0, 1], a texture whose encoding does not suit its use or whose image has no texels, or a transform that is not
     /// affine; anima::MathError for a rest rotation that cannot be normalized; and `std::runtime_error` for a cyclic,
     /// dangling or nonfinite node hierarchy.
+    ///
+    /// Calls may run concurrently on any thread. Each reads @p source, which must not change during the call,
+    /// shares or holds its images through their atomic reference counts, and calls no application code.
     [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source,
                                                              TexelRetention texel_retention = TexelRetention::keep);
     /// Compiles a static @p source into one or more meshes that together draw its geometry with the same node
@@ -99,7 +102,7 @@ class Mesh {
     /// textures that no primitive uses, fails as compile(source) would: its first defect in compile()'s order throws
     /// the same exception. Limits on the size of one Mesh apply to each result. The results share the images of
     /// @p source's textures, and each shrunk image among themselves, or hold them as
-    /// MeshCompileOptions::texel_retention says.
+    /// MeshCompileOptions::texel_retention says. Calls may run concurrently on any thread, as compile() calls may.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Vertices that indices() refers to.

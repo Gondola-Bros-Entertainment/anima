@@ -127,6 +127,7 @@ if(ANIMA_BUILD_ASSETS)
     target_compile_features(anima_asset_dependencies PRIVATE cxx_std_20)
     add_library(anima_assets STATIC
     src/assets/mesh_snapshot.cpp
+    src/assets/staging.cpp
     src/assets/animation.cpp
     src/assets/evaluation.cpp
     src/assets/manifest.cpp
@@ -330,8 +331,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_texture_mip_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_texture_mip_tests)
         add_test(NAME texture_mips COMMAND anima_texture_mip_tests)
+        # The staging and custom material suites start threads, as applications do, so they link a thread library.
+        find_package(Threads REQUIRED)
         add_executable(anima_custom_material_tests tests/custom_material_tests.cpp)
-        target_link_libraries(anima_custom_material_tests PRIVATE anima::assets anima_test_main)
+        target_link_libraries(anima_custom_material_tests PRIVATE anima::assets anima_test_main Threads::Threads)
         anima_target_defaults(anima_custom_material_tests)
         add_test(NAME custom_materials COMMAND anima_custom_material_tests)
         add_executable(anima_texture_compression_tests tests/texture_compression_tests.cpp)
@@ -341,6 +344,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_texture_compression_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_texture_compression_tests)
         add_test(NAME texture_compression COMMAND anima_texture_compression_tests)
+        add_executable(anima_staging_tests tests/staging_tests.cpp)
+        target_link_libraries(anima_staging_tests PRIVATE anima::assets anima_test_main Threads::Threads)
+        anima_target_defaults(anima_staging_tests)
+        add_test(NAME staging COMMAND anima_staging_tests)
         add_executable(anima_mesh_tests tests/mesh_tests.cpp)
         target_link_libraries(anima_mesh_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_mesh_tests)
