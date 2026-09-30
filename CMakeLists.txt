@@ -653,6 +653,9 @@ if(ANIMA_BUILD_TESTS)
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})
         endforeach()
+        anima_add_gpu_check(desktop_compressed_textures "${desktop}" --compressed-textures
+            "${anima_gpu_checks}/desktop_compressed_textures" "${CMAKE_CURRENT_SOURCE_DIR}/tests/textures")
+        list(APPEND desktop_checks compressed_textures)
         foreach(stage IN ITEMS upload-timeout device-lost)
             string(REPLACE "-" "_" stage_id "${stage}")
             anima_add_gpu_check(desktop_resources_${stage_id}

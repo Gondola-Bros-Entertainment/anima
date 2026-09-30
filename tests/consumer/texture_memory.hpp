@@ -87,9 +87,10 @@ inline std::shared_ptr<anima::Scene> scene_of(const std::shared_ptr<const anima:
 // One renderer on one window, drawing selections and keeping each frame read back by name.
 class Harness {
   public:
-    explicit Harness(const std::filesystem::path &output)
+    /// A harness whose renderer decodes BC7 images to RGBA8 when @p decode_bc7 (RendererOptions::decode_bc7).
+    explicit Harness(const std::filesystem::path &output, bool decode_bc7 = false)
         : window_(gpu_check::window("Anima texture memory verification", 640, 480)),
-          renderer_(window_.get(), options()), images(output) {
+          renderer_(window_.get(), options(decode_bc7)), images(output) {
         int width = 0, height = 0;
         require(SDL_GetWindowSizeInPixels(window_.get(), &width, &height) && width > 0 && height > 0,
                 "Texture memory window has no drawable size");
@@ -124,9 +125,10 @@ class Harness {
     }
 
   private:
-    static anima::RendererOptions options() {
+    static anima::RendererOptions options(bool decode_bc7) {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.decode_bc7 = decode_bc7;
         return settings;
     }
     gpu_check::Video video_;

@@ -97,10 +97,13 @@ instances check, `--allocations`, `--culling`, `--foliage`, `--environment`,
 documented compositing, fog, exposure, draw order and shadow policy,
 `--custom-materials`, which draws the consumer's own water, effect and probe shaders,
 compiled by glslc in its build, and compares their frame inputs, passes, sorting, time,
-opaque depth and color, skinning and shadows with the renderer's contract, and
+opaque depth and color, skinning and shadows with the renderer's contract,
 `--texture-memory`, which measures the CPU texels and device images of a 2048-texel
 texture and checks that meshes and custom materials compiled with
-`TexelRetention::until_upload` let their texels go once uploaded and keep drawing.
+`TexelRetention::until_upload` let their texels go once uploaded and keep drawing, and
+`--compressed-textures`, which draws BC7 images from `tests/textures` within their
+encoding error of their sources, compares the device's BC7 sampling with the CPU
+decoding that devices without it get, and measures the memory of both formats.
 Each check opens a window, requires Khronos validation, compares its frames in memory,
 and fails on a pixel mismatch or any validation message. The checks run one at a time:
 

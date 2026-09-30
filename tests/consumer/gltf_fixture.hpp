@@ -81,6 +81,13 @@ class Builder {
         images_.push_back(R"({"bufferView":)" + std::to_string(view) + R"(,"mimeType":"image/png"})");
         return int(images_.size() - 1);
     }
+    /// Embeds an already encoded image @p file of glTF MIME type @p mime; returns the image index.
+    int image(const std::vector<std::uint8_t> &file, std::string_view mime) {
+        const auto view = append(file.data(), file.size(), 0);
+        images_.push_back(R"({"bufferView":)" + std::to_string(view) + R"(,"mimeType":")" + std::string(mime) +
+                          R"("})");
+        return int(images_.size() - 1);
+    }
     /// The GLB file. @p members are the document's other top-level members, such as scenes, nodes, meshes,
     /// materials, textures, samplers, skins and animations, written as JSON without enclosing braces.
     [[nodiscard]] std::vector<std::byte> glb(const std::string &members) const {
