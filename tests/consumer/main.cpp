@@ -41,6 +41,7 @@
 #ifdef CONSUMER_DESKTOP
 #include "allocations.hpp"
 #include "blending.hpp"
+#include "compressed_textures.hpp"
 #include "culling.hpp"
 #include "custom_materials.hpp"
 #include "environment.hpp"
@@ -324,6 +325,8 @@ int main(int argc, char **argv) {
             return custom_material_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--texture-memory")
             return texture_memory_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--compressed-textures")
+            return compressed_texture_test::run(argc, argv);
 #endif
         anima::FixedStepClock clock;
         require(clock.advance(clock.step() * 3).steps == 3, "Public core target failed");
