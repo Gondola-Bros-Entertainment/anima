@@ -1,7 +1,12 @@
 #pragma once
 #include <anima/assets/action.hpp>
 #include <anima/assets/motion_runtime.hpp>
-#include <anima/core/capabilities.hpp>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 /// @file
 /// Action catalogs bound to a MotionRuntime: per-phase pose layers, prop tracks and contact
@@ -109,7 +114,7 @@ struct ActionDefinition {
     /// Handling profiles that can perform the action.
     std::set<std::string, std::less<>> handling;
     /// Attachment roles the action requires, each with the handling profiles it accepts.
-    std::map<std::string, Capabilities, std::less<>> required_roles;
+    std::map<std::string, std::set<std::string, std::less<>>, std::less<>> required_roles;
 };
 /// Result of ActionRuntime::sample.
 struct ActionSample {

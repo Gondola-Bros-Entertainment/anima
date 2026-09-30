@@ -19,7 +19,6 @@
 // A complete tiny application using public targets/headers, copied out of the
 // repository by the consumer test. There are no includes of engine implementation.
 #include <anima/audio.hpp>
-#include <anima/core/capabilities.hpp>
 #include <anima/core/fixed_step.hpp>
 #include <anima/core/heightfield.hpp>
 #include <array>
@@ -329,10 +328,6 @@ int main(int argc, char **argv) {
             return material_test::run_sidedness(argc, argv);
 #endif
         anima::FixedStepClock clock;
-        const std::array variants{anima::ActionVariant{"observe", {}}, anima::ActionVariant{"signal", {"beacon"}}};
-        require(anima::resolve_action(variants, {"beacon"}) == "signal" &&
-                    anima::resolve_action(variants, {}) == "observe",
-                "Public core capability selection failed");
         require(clock.advance(clock.step() * 3).steps == 3, "Public core target failed");
         const anima::Heightfield terrain{2, 2, 0, 0, 1, 1, {0, 1, 0, 1}};
         anima::validate_heightfield(terrain.view());

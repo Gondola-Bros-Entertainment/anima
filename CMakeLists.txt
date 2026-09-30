@@ -81,7 +81,6 @@ add_library(anima_core STATIC
     src/core/transform.cpp
     src/core/heightfield.cpp
     src/core/triangle_query.cpp
-    src/core/capabilities.cpp
     src/runtime/audio.cpp
     src/runtime/navigation.cpp
     src/runtime/input.cpp

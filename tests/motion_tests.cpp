@@ -401,11 +401,8 @@ TEST_CASE("Motion, action, actor and interaction documents report another versio
     const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
     CHECK_THROWS_WITH_AS(ActionRuntime(motion, R"({"schema_version":2,"removed":0,"actions":[]})"),
                          "Unsupported action catalog version", std::invalid_argument);
-    const ActionRuntime actions(motion, action_catalog);
-    CHECK_THROWS_WITH_AS(ActionSetCatalog(R"({"version":2,"removed":0,"sets":{}})", actions),
-                         "Unsupported action-set catalog version", std::invalid_argument);
     const auto profile = fixture.directory.path / "actor.profile.json";
-    std::ofstream(profile) << R"({"version":2,"removed":0})";
+    std::ofstream(profile) << R"({"version":1,"capabilities":[]})";
     CHECK_THROWS_WITH_AS(ActorPresentation{profile}, "Unsupported actor presentation profile version",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(InteractionRuntime({}, R"({"version":2,"removed":0})"),
