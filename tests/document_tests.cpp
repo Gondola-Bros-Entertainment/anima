@@ -105,6 +105,13 @@ TEST_CASE("A fitted model path must be a relative .glb path without '..'") {
                            "Fitted model must be a relative .glb path without '..'", std::invalid_argument);
 }
 
+TEST_CASE("A fitted library rejects an unknown texel retention") {
+    const auto body = std::make_shared<const Asset>();
+    REQUIRE_THROWS_WITH_AS(
+        FittedLibrary(body, Manifest{}, "profile", R"({"version":2,"items":[]})", static_cast<TexelRetention>(2)),
+        "Unknown texel retention", std::invalid_argument);
+}
+
 TEST_CASE("A fitted catalog field of the wrong JSON type is rejected as std::invalid_argument") {
     const auto body = std::make_shared<const Asset>();
     const auto catalog = R"({"version":2,"items":[{"id":5,"fits":{}}]})";

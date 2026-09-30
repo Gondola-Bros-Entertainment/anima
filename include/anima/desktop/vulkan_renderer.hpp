@@ -247,6 +247,12 @@ struct ResourceStats {
 /// is in flight, and palettes, descriptors and cached resources are replaced or destroyed only after its
 /// fence. Transfers go through staging buffers, which are freed only after their upload completes.
 ///
+/// Uploads read texels through Mesh::texel_images() and CustomMaterial::texel_images(), and once an upload has
+/// completed they call release_texels() on the Mesh or CustomMaterial, so that one compiled with
+/// TexelRetention::until_upload lets its texels go: the GPU cache keeps only device images. Uploading such a Mesh or
+/// material again, in another renderer or in one created after a RendererFatalError, succeeds only while something
+/// else still holds its source images.
+///
 /// The GPU mesh cache is keyed by Mesh object: each cached Mesh owns one vertex buffer, one index buffer and
 /// its own material images, even when another Mesh has identical content. Buffers and images are suballocated
 /// from larger device memory blocks, except that a large resource, or one the driver asks to place alone, gets
@@ -404,14 +410,15 @@ class VulkanRenderer {
     /// Selects the scenes to draw, or clears the selection with an empty list; the renderer keeps the pointers.
     /// It never follows SceneSet::active(); SceneSet::render_scenes() lists a set's scenes.
     ///
-    /// Throws `std::invalid_argument` for a null or repeated scene before any work. Then waits for the frame in
-    /// flight and uploads the meshes of every visible, active instance, whatever the view. If that fails, the
-    /// previous selection stays and meshes uploaded so far stay cached. It throws `std::invalid_argument` for a
-    /// mesh beyond device limits (more vertices than the indexed-draw range, or a texture larger than the 2D
-    /// image limit), `std::length_error` when the palettes exceed the storage-buffer range, `std::runtime_error`
-    /// for other failures, including failed Vulkan calls such as allocations, InjectedRendererFailure as
-    /// SceneReplacementOptions::fail_after requests, and RendererFatalError for device loss or a fence timeout.
-    /// The swapchain is untouched, so this works while the window is minimized.
+    /// Throws `std::invalid_argument` for a null or repeated scene before any work. Then waits for the frame in flight
+    /// and uploads the meshes of every visible, active instance, whatever the view. If that fails, the previous
+    /// selection stays and meshes uploaded so far stay cached. It throws `std::invalid_argument` for a mesh beyond
+    /// device limits (more vertices than the indexed-draw range, or a texture larger than the 2D image limit),
+    /// `std::logic_error` as Mesh::texel_images() and CustomMaterial::texel_images() do for texels that
+    /// TexelRetention::until_upload let go, `std::length_error` when the palettes exceed the storage-buffer range,
+    /// `std::runtime_error` for other failures, including failed Vulkan calls such as allocations,
+    /// InjectedRendererFailure as SceneReplacementOptions::fail_after requests, and RendererFatalError for device loss
+    /// or a fence timeout. The swapchain is untouched, so this works while the window is minimized.
     ///
     /// Selected scenes remain the caller's to change between draws; each draw() prepares their current content.
     /// A scene that its SceneSet unloads or replaces stays selected but is empty.
@@ -422,13 +429,14 @@ class VulkanRenderer {
     /// Throws `std::invalid_argument` for a null pointer anywhere in @p assets before any upload; an empty span
     /// does nothing. Waits for the frame in flight and leaves the selection, view and poses unchanged. Not
     /// atomic: after a failure, meshes uploaded earlier stay cached while they have other owners. Throws
-    /// `std::invalid_argument` for a mesh beyond device limits, `std::runtime_error` for other upload failures,
+    /// `std::invalid_argument` for a mesh beyond device limits, `std::logic_error` as Mesh::texel_images() does for
+    /// texels that TexelRetention::until_upload let go, `std::runtime_error` for other upload failures,
     /// including failed Vulkan calls, InjectedRendererFailure as ResourcePreparationOptions::fail_after
     /// requests, and RendererFatalError for device loss or a fence timeout.
     void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, ResourcePreparationOptions options = {});
     /// Uploads MeshPreparation::asset() as prepare_meshes() does, using the preparation's mip chains instead of
-    /// computing them here. Allocation and upload still run synchronously on this thread. @p preparation is
-    /// read only during the call, and not at all if the mesh is already cached.
+    /// computing them here, so it reads no texels from the Mesh. Allocation and upload still run synchronously on
+    /// this thread. @p preparation is read only during the call, and not at all if the mesh is already cached.
     void prepare_mesh(const MeshPreparation &preparation, ResourcePreparationOptions options = {});
     /// Current cache and allocation sizes with the latest frame counters; all zero without asset support.
     [[nodiscard]] ResourceStats resource_stats() const noexcept;

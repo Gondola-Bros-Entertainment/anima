@@ -252,6 +252,20 @@ TEST_CASE("An attachment set prepares as many roles as the caller names") {
     CHECK(library.resident_assets().size() == 1); // Every role shares the one loaded model.
 }
 
+TEST_CASE("An attachment library compiles its models with the texel retention it was given") {
+    const MotionFixture fixture;
+    auto catalog = decode_attachment_catalog(attachment_catalog(), fixture.directory.path);
+    CHECK_THROWS_WITH_AS(AttachmentLibrary(catalog, static_cast<TexelRetention>(2)), "Unknown texel retention",
+                         std::invalid_argument);
+    const AttachmentLibrary kept(catalog);
+    CHECK(kept.load("prop")->render->texel_retention() == TexelRetention::keep);
+    const AttachmentLibrary released(std::move(catalog), TexelRetention::until_upload);
+    const auto loaded = released.load("prop");
+    CHECK(loaded->render->texel_retention() == TexelRetention::until_upload);
+    CHECK(loaded->source->textures.size() == loaded->render->materials()->textures.size());
+    CHECK(released.load("prop")->source == loaded->source); // Loads still share the model while it lives.
+}
+
 TEST_CASE("Layer clips compose over a base clip on disjoint masks, and overlapping masks are rejected") {
     const MotionFixture fixture;
     const auto runtime = fixture.runtime();

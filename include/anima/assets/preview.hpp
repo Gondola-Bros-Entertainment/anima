@@ -53,10 +53,12 @@ void validate_manifest(const Manifest &manifest, const Asset &asset);
 /// shows the model alone; applications assemble attachments and fitted meshes.
 class AssetPreview {
   public:
-    /// Loads the manifest at @p manifest and its model, then plays the first manifest clip, or
-    /// shows the bind pose when there is none. Throws as read_manifest, load_asset and
-    /// validate_manifest do.
-    explicit AssetPreview(const std::filesystem::path &manifest);
+    /// Loads the manifest at @p manifest and its model, compiles the model's Mesh with
+    /// @p texel_retention and keeps only the model's nodes and clips for its Animator, so that the
+    /// Mesh alone holds the geometry and textures; then plays the first manifest clip, or shows the
+    /// bind pose when there is none. Throws as read_manifest, load_asset, validate_manifest and
+    /// Mesh::compile do.
+    explicit AssetPreview(const std::filesystem::path &manifest, TexelRetention texel_retention = TexelRetention::keep);
     AssetPreview(const AssetPreview &) = delete;
     AssetPreview &operator=(const AssetPreview &) = delete;
     AssetPreview(AssetPreview &&) noexcept = default;
@@ -89,6 +91,7 @@ class AssetPreview {
 
   private:
     Manifest manifest_;
+    // The model's nodes and clips, which the Animator samples.
     std::shared_ptr<const Asset> model_;
     std::shared_ptr<Scene> scene_ = std::make_shared<Scene>();
     ComponentRef<Animator> animator_;

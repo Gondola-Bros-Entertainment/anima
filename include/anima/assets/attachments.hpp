@@ -127,7 +127,8 @@ std::map<std::string, AttachmentSocket, std::less<>>
 decode_attachment_sockets(std::string_view document, const Manifest &manifest, const Asset &body);
 /// A loaded prop model.
 struct AttachmentAsset {
-    /// Imported model.
+    /// Imported model. When its library compiles #render with TexelRetention::until_upload, a copy whose
+    /// textures are #render's, which have no texels.
     std::shared_ptr<const Asset> source;
     /// Mesh compiled from #source.
     std::shared_ptr<const Mesh> render;
@@ -139,7 +140,9 @@ class AttachmentLibrary {
   public:
     /// The catalog as given; the library does not validate it again.
     const AttachmentCatalog catalog;
-    explicit AttachmentLibrary(AttachmentCatalog definition);
+    /// A library of @p definition whose loads compile their meshes with @p texel_retention. Throws
+    /// `std::invalid_argument` for an unknown @p texel_retention.
+    explicit AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention = TexelRetention::keep);
     /// Item @p id. Throws `std::out_of_range` for an unknown id.
     const AttachmentDefinition &item(std::string_view id) const;
     /// Visual @p id. Throws `std::out_of_range` for an unknown id.
@@ -163,6 +166,7 @@ class AttachmentLibrary {
         std::weak_ptr<const Asset> source;
         std::weak_ptr<const Mesh> render;
     };
+    TexelRetention texel_retention_;
     mutable std::mutex mutex_;
     mutable std::map<std::filesystem::path, CachedModel> models_;
 };

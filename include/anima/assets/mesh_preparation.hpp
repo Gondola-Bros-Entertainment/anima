@@ -14,8 +14,10 @@ namespace anima {
 /// owns its mip chains, including base texels, so keep only the preparations still needed.
 class MeshPreparation {
   public:
-    /// Plans and filters the textures of @p asset; see material_texture_plan and texture_mips.
-    /// Throws `std::invalid_argument` for a null asset or an invalid material or texture.
+    /// Plans and filters the textures of @p asset, reading their texels through Mesh::texel_images(); see
+    /// material_texture_plan and texture_mips. Throws `std::invalid_argument` for a null asset or an invalid
+    /// material or texture, and `std::logic_error` as Mesh::texel_images() does once the texels of a Mesh compiled
+    /// with TexelRetention::until_upload are gone.
     explicit MeshPreparation(std::shared_ptr<const Mesh> asset);
     MeshPreparation(MeshPreparation &&) noexcept = default;
     MeshPreparation &operator=(MeshPreparation &&) noexcept = default;

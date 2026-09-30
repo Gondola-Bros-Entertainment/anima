@@ -204,7 +204,12 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         if (texture.image->width > properties.limits.maxImageDimension2D ||
             texture.image->height > properties.limits.maxImageDimension2D)
             throw std::invalid_argument("Resource texture exceeds device image dimensions");
+    std::vector<std::shared_ptr<const anima::Image>> texels;
     if (vertices && indices) {
+        // A preparation holds every mip chain already. Otherwise read the texels before allocating anything, since a
+        // Mesh compiled with TexelRetention::until_upload may have let them go.
+        if (!prepared)
+            texels = asset->texel_images();
         value->vertices =
             resource_buffer(vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -220,11 +225,13 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         upload.fatal = &fatal;
         upload.errors = &errors;
         upload.create(graphics_family);
-        upload_textures(*value->materials, upload, failure, false, prepared);
+        upload_textures(*value->materials, upload, failure, false, texels, prepared);
     }
     resource_cache.emplace(asset.get(), value);
     ++resources.mesh_uploads;
     resources.geometry_uploaded_bytes += vertices + indices;
+    // Every copy has completed, so a Mesh compiled with TexelRetention::until_upload no longer needs its texels.
+    asset->release_texels();
     return value;
 }
 void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, RendererFailureStage failure = {},

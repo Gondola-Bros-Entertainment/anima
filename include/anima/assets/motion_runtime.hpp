@@ -94,7 +94,8 @@ struct MotionEvaluation {
 /// A motion contract bound to a model. Immutable after construction; copies share it.
 class MotionRuntime {
   public:
-    /// Binds the motion contract @p contract to @p asset, the model of @p manifest.
+    /// Binds the motion contract @p contract to @p asset, the model of @p manifest. The runtime holds
+    /// @p asset, and with it the images of its textures; TexelRetention describes how to let them go.
     ///
     /// The contract has `version` 3; `skeleton` (`id`, `bind_signature` and `joint_count`, equal
     /// to the manifest's); `resource`, a relative `.glb` path without `..`, resolved beside the

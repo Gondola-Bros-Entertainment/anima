@@ -1,4 +1,5 @@
 #include "surface_validation.hpp"
+#include "texel_hold.hpp"
 #include <algorithm>
 #include <anima/custom_material.hpp>
 #include <array>
@@ -720,9 +721,11 @@ CustomMaterial::CustomMaterial(CustomMaterialDefinition definition) : definition
     require(value.blend == CustomBlend::opaque || value.blend == CustomBlend::blended ||
                 value.blend == CustomBlend::additive,
             "Unknown custom material blend mode");
+    require(value.texel_retention == TexelRetention::keep || value.texel_retention == TexelRetention::until_upload,
+            "Unknown custom material texel retention");
     require(value.parameters.size() <= max_parameter_bytes, "Custom material parameters exceed 256 bytes");
     require(value.textures.size() <= max_textures, "Custom material has more than 4 textures");
-    detail::validate_surfaces({}, value.textures);
+    detail::validate_surfaces({}, value.textures, detail::Texels::required);
     require(!value.vertex_shader.empty() && !value.fragment_shader.empty(),
             "Custom material needs a vertex and a fragment shader");
     require(value.shadow_fragment_shader.empty() || !value.shadow_vertex_shader.empty(),
@@ -740,5 +743,21 @@ CustomMaterial::CustomMaterial(CustomMaterialDefinition definition) : definition
     vertex_attributes_ = vertex.attributes;
     reads_opaque_depth_ = fragment.opaque_depth;
     reads_opaque_color_ = fragment.opaque_color;
+    if (value.texel_retention == TexelRetention::until_upload)
+        texels_ =
+            detail::hold_texels(definition_.textures, "Custom material texture texels were released after upload");
+}
+std::vector<std::shared_ptr<const Image>> CustomMaterial::texel_images() const {
+    if (const auto *hold = texels_.get())
+        return hold->images();
+    std::vector<std::shared_ptr<const Image>> result;
+    result.reserve(definition_.textures.size());
+    for (const auto &texture : definition_.textures)
+        result.push_back(texture.image);
+    return result;
+}
+void CustomMaterial::release_texels() const noexcept {
+    if (auto *hold = texels_.get())
+        hold->release();
 }
 } // namespace anima

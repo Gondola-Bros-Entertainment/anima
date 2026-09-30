@@ -151,6 +151,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/imports.cpp
     src/assets/render_visibility.cpp
     src/assets/texture_mips.cpp
+    src/assets/texel_hold.cpp
     src/assets/material_textures.cpp
     src/assets/mesh_preparation.cpp
     src/assets/motion_runtime.cpp

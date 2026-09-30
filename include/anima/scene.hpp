@@ -234,7 +234,8 @@ class Scene {
     [[nodiscard]] RenderBounds bounds() const;
     /// Expands every renderer's current geometry into an owning MeshSnapshot on the CPU, for tools
     /// and reference checks; rendering never uses it. Primitives keep their mesh materials, since a
-    /// snapshot does not describe custom materials.
+    /// snapshot does not describe custom materials, and textures their meshes' images, which have no
+    /// texels for a Mesh compiled with TexelRetention::until_upload.
     ///
     /// Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
     /// included but marked invisible and left out of the snapshot bounds. Normals follow normal(), and

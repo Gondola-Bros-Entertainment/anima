@@ -50,6 +50,8 @@ struct TerrainAppearance {
     std::span<const Texture> textures;
     /// Name of the mesh's single node.
     std::string node_name = "Terrain";
+    /// How long the mesh holds its textures' texels; see Mesh::compile.
+    TexelRetention texel_retention = TexelRetention::keep;
 };
 
 /// A region of a shared sample lattice, compiled as one terrain chunk.

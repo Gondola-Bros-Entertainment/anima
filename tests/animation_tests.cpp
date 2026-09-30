@@ -466,6 +466,31 @@ TEST_CASE("A fitted model follows the body pose, so it cannot bring clips of its
     CHECK(FittedAsset(asset, std::make_shared<const Asset>(still)).joints.size() == 2);
 }
 
+TEST_CASE("A fitted model compiled until upload keeps a source without texels") {
+    const auto body = fixture();
+    auto textured = body;
+    textured.animations.clear();
+    textured.materials.push_back({"cloth", {1, 1, 1}, 0});
+    textured.primitives[0].material = 0;
+    textured.textures.push_back({std::make_shared<Image>(Image{1, 1, {255, 128, 64, 255}}), {}});
+    auto source = std::make_shared<const Asset>(textured);
+    textured.textures.clear();
+    const std::weak_ptr<const Image> authored = source->textures[0].image;
+    const FittedAsset kept(body, source);
+    CHECK(kept.source == source);
+    CHECK(kept.render->texel_retention() == TexelRetention::keep);
+    const FittedAsset fitted(body, std::move(source), TexelRetention::until_upload);
+    REQUIRE(fitted.source->textures.size() == 1);
+    // The source's textures are the mesh's, which describe the image without holding its texels.
+    CHECK(fitted.source->textures[0].image == fitted.render->materials()->textures[0].image);
+    CHECK(fitted.source->textures[0].image->rgba.empty());
+    CHECK(fitted.source->primitives.size() == 1);
+    CHECK(fitted.joints.size() == 2);
+    fitted.render->release_texels();
+    REQUIRE_FALSE(authored.expired()); // The kept fitted model still holds its source.
+    CHECK(fitted.render->texel_images().at(0) == authored.lock());
+}
+
 TEST_CASE("Base-color mipmaps average in linear light and keep odd edges") {
     const Texture checker{std::make_shared<Image>(Image{2, 1, {0, 0, 0, 255, 255, 255, 255, 255}}), {}};
     const auto mips = base_color_mips(checker);

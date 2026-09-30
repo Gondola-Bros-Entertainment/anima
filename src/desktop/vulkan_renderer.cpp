@@ -1204,7 +1204,10 @@ struct VulkanRenderer::Impl {
         upload.wait();
         upload.release_staging();
     }
+    // Uploads the images of @p target's material plan, or of @p prepared's, and writes its material descriptors.
+    // Without @p prepared, @p texels holds the image of each source texture with its texels (Mesh::texel_images).
     void upload_textures(GpuMaterials &target, UploadBatch &upload, RendererFailureStage failure, bool initial,
+                         std::span<const std::shared_ptr<const anima::Image>> texels,
                          const MeshPreparation *prepared = nullptr) {
         require_texture_formats();
         const auto generated_plan = prepared
@@ -1213,10 +1216,17 @@ struct VulkanRenderer::Impl {
         const auto &plan = prepared ? prepared->plan() : generated_plan;
         target.textures.resize(plan.images.size());
         std::uint32_t total_mips = 0;
+        const Texture white{std::make_shared<anima::Image>(anima::Image{1, 1, {255, 255, 255, 255}}), {}};
         for (std::size_t i = 0; i < target.textures.size(); ++i) {
-            const Texture white{std::make_shared<anima::Image>(anima::Image{1, 1, {255, 255, 255, 255}}), {}};
             const auto &planned = plan.images[i];
-            const auto &source = planned.source < 0 ? white : target.source->textures[planned.source];
+            // The texture's sampler and encoding, with the image that holds its texels unless a preparation filtered
+            // them already.
+            auto source = white;
+            if (planned.source >= 0) {
+                source = target.source->textures[planned.source];
+                if (!prepared)
+                    source.image = texels[planned.source];
+            }
             const auto &pixels = *source.image;
             const auto generated_mips = prepared ? std::vector<MipLevel>{}
                                         : source.sampler.mipmapped

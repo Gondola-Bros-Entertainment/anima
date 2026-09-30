@@ -1,4 +1,6 @@
 #include <anima/assets/material_textures.hpp>
+#include <anima/assets/mesh_preparation.hpp>
+#include <anima/assets/scene_validation.hpp>
 #include <anima/mesh.hpp>
 #include <doctest/doctest.h>
 
@@ -31,6 +33,9 @@ constexpr auto invalid_material = "Invalid render primitive material";
 constexpr auto invalid_texture_reference = "Invalid material texture reference";
 constexpr auto invalid_factors = "Invalid material factors";
 constexpr auto texture_byte_mismatch = "MeshSnapshot texture byte count does not match dimensions";
+constexpr auto no_texels = "Texture image has no texels";
+constexpr auto released_texels = "Mesh texture texels were released after upload";
+constexpr auto unknown_retention = "Unknown texel retention";
 constexpr auto invalid_parent = "Invalid node parent";
 constexpr auto invalid_vertex = "Invalid render vertex";
 
@@ -326,7 +331,7 @@ TEST_CASE("Static splitting rejects a malformed texture as compile() does, used 
     rejects_like_compile<std::invalid_argument>(truncated, texture_byte_mismatch);
     auto unused = static_source({0, 1});
     unused.textures.push_back(texture_of({1, 1, {}})); // No material samples it, and it has no texels.
-    rejects_like_compile<std::invalid_argument>(unused, texture_byte_mismatch);
+    rejects_like_compile<std::invalid_argument>(unused, no_texels);
 }
 
 TEST_CASE("Static pieces carry the source's mesh node count and import notices, as compile() does") {
@@ -364,4 +369,127 @@ TEST_CASE("Static splitting reports the first of several defects that compile() 
     ordered.primitives[0].vertices[0].position.x = std::numeric_limits<float>::quiet_NaN();
     ordered.primitives[1].material = static_cast<int>(ordered.materials.size());
     rejects_like_compile<std::invalid_argument>(ordered, invalid_vertex);
+}
+
+namespace {
+// static_source({0, 1}) with a second texture that samples texture 0's image with another filter, for material 1.
+Asset shared_image_source() {
+    auto source = static_source({0, 1});
+    source.textures.push_back(source.textures[0]);
+    source.textures[1].sampler.mag = Filter::nearest;
+    source.materials[1].texture = 1;
+    return source;
+}
+} // namespace
+
+TEST_CASE("A mesh that keeps its texels reads them through its textures") {
+    const auto source = shared_image_source();
+    const auto mesh = Mesh::compile(source);
+    CHECK(mesh->texel_retention() == TexelRetention::keep);
+    const auto images = mesh->texel_images();
+    REQUIRE(images.size() == source.textures.size());
+    for (std::size_t i = 0; i < images.size(); ++i)
+        CHECK(images[i] == mesh->materials()->textures[i].image);
+    mesh->release_texels(); // Does nothing for TexelRetention::keep.
+    CHECK(mesh->texel_images() == images);
+}
+
+TEST_CASE("A mesh compiled until upload describes its textures without texels and holds its source's images") {
+    std::weak_ptr<const Image> authored;
+    std::shared_ptr<const Mesh> mesh;
+    {
+        const auto source = shared_image_source();
+        authored = source.textures[0].image;
+        mesh = Mesh::compile(source, TexelRetention::until_upload);
+    }
+    CHECK(mesh->texel_retention() == TexelRetention::until_upload);
+    // The source is gone, but the mesh holds its image for the upload.
+    REQUIRE_FALSE(authored.expired());
+    const auto &textures = mesh->materials()->textures;
+    REQUIRE(textures.size() == 2);
+    const auto &description = textures[0].image;
+    CHECK(description != authored.lock());
+    CHECK(description->width == authored_edge);
+    CHECK(description->height == authored_edge);
+    CHECK(description->rgba.empty());
+    // Textures that share an image share its description, and keep their own samplers.
+    CHECK(textures[1].image == description);
+    CHECK(textures[1].sampler.mag == Filter::nearest);
+    CHECK_NOTHROW(validate_scene(*mesh->materials()));
+    const auto images = mesh->texel_images();
+    REQUIRE(images.size() == 2);
+    CHECK(images[0] == authored.lock());
+    CHECK(images[1] == authored.lock());
+}
+
+TEST_CASE("Released texels are freed with their last holder and stay readable until then") {
+    auto source = std::make_shared<Asset>(shared_image_source());
+    const std::weak_ptr<const Image> authored = source->textures[0].image;
+    const auto mesh = Mesh::compile(*source, TexelRetention::until_upload);
+    mesh->release_texels();
+    // The application still holds the source, so the images stay readable through the mesh.
+    CHECK(mesh->texel_images().front() == authored.lock());
+    source.reset();
+    CHECK(authored.expired());
+    CHECK_THROWS_WITH_AS((void)mesh->texel_images(), released_texels, std::logic_error);
+    CHECK_THROWS_WITH_AS(MeshPreparation(mesh), released_texels, std::logic_error);
+    mesh->release_texels(); // Idempotent.
+    // The mesh itself stays usable for drawing and inspection.
+    CHECK(mesh->materials()->textures.size() == 2);
+    CHECK_NOTHROW(validate_scene(*mesh->materials()));
+}
+
+TEST_CASE("Meshes that share images hold them until each of them is released") {
+    std::weak_ptr<const Image> authored, reduced;
+    std::vector<std::shared_ptr<const Mesh>> pieces;
+    {
+        const auto source = static_source({0, 1, 0});
+        authored = source.textures[0].image;
+        pieces = Mesh::compile_static(source, {.max_vertices = triangle_corners,
+                                               .max_texture_edge = reduced_edge,
+                                               .texel_retention = TexelRetention::until_upload});
+    }
+    REQUIRE(pieces.size() == 3);
+    // Only the shrunk image is needed, and every textured piece holds it.
+    CHECK(authored.expired());
+    reduced = pieces[0]->texel_images().at(0);
+    REQUIRE_FALSE(reduced.expired());
+    CHECK(reduced.lock()->width == reduced_edge);
+    CHECK(pieces[0]->materials()->textures[0].image->rgba.empty());
+    pieces[0]->release_texels();
+    CHECK(pieces[0]->texel_images().at(0) == reduced.lock()); // Piece 2 still holds it.
+    pieces[2]->release_texels();
+    CHECK(reduced.expired());
+    CHECK_THROWS_WITH_AS((void)pieces[0]->texel_images(), released_texels, std::logic_error);
+    CHECK(pieces[1]->texel_images().empty()); // The untextured piece has nothing to release.
+}
+
+TEST_CASE("A copy of a mesh holds its images on its own") {
+    std::weak_ptr<const Image> authored;
+    std::shared_ptr<const Mesh> mesh;
+    {
+        const auto source = static_source({0});
+        authored = source.textures[0].image;
+        mesh = Mesh::compile(source, TexelRetention::until_upload);
+    }
+    const auto copy = std::make_shared<const Mesh>(*mesh);
+    mesh->release_texels();
+    CHECK(mesh->texel_images() == copy->texel_images());
+    copy->release_texels();
+    CHECK(authored.expired());
+}
+
+TEST_CASE("Compilation rejects an unknown texel retention and images without texels") {
+    const auto source = static_source({0, 1});
+    const auto unknown = static_cast<TexelRetention>(2);
+    CHECK_THROWS_WITH_AS(Mesh::compile(source, unknown), unknown_retention, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.texel_retention = unknown}), unknown_retention,
+                         std::invalid_argument);
+    // The retention is checked before anything else.
+    CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.max_vertices = 1, .texel_retention = unknown}),
+                         unknown_retention, std::invalid_argument);
+    // A mesh's descriptions cannot be compiled again: they have no texels to upload.
+    auto described = source;
+    described.textures = Mesh::compile(source, TexelRetention::until_upload)->materials()->textures;
+    rejects_like_compile<std::invalid_argument>(described, no_texels);
 }

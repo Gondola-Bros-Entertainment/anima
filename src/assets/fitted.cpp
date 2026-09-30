@@ -1,4 +1,5 @@
 #include "presentation_data.hpp"
+#include "texel_hold.hpp"
 #include <anima/assets/fitted.hpp>
 #include <mutex>
 namespace anima {
@@ -12,17 +13,20 @@ static std::filesystem::path relative_model(const std::string &name) {
 struct FittedLibrary::State {
     std::shared_ptr<const anima::Asset> body;
     std::filesystem::path directory;
+    TexelRetention texel_retention;
     std::mutex mutex;
     std::map<std::filesystem::path, std::weak_ptr<const FittedAsset>> models;
-    State(std::shared_ptr<const anima::Asset> b, std::filesystem::path d)
-        : body(std::move(b)), directory(std::move(d)) {}
+    State(std::shared_ptr<const anima::Asset> b, std::filesystem::path d, TexelRetention t)
+        : body(std::move(b)), directory(std::move(d)), texel_retention(t) {}
 };
-FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::Asset> fitted)
+FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::Asset> fitted,
+                         TexelRetention texel_retention)
     : source(std::move(fitted)), joints(source ? anima::compatible_skin(body, *source)
                                                : throw std::invalid_argument("Fitted asset requires a source")) {
     if (!source->animations.empty())
         throw std::invalid_argument("Fitted models follow the body pose and cannot own motion");
-    render = anima::Mesh::compile(*source);
+    render = anima::Mesh::compile(*source, texel_retention);
+    source = anima::detail::without_texels(std::move(source), *render);
 }
 anima::Pose FittedAsset::pose(const anima::Pose &body) const {
     auto result = render->rest_pose();
@@ -34,11 +38,13 @@ anima::Pose FittedAsset::pose(const anima::Pose &body) const {
     return result;
 }
 FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const anima::Manifest &manifest,
-                             std::string_view profile, std::string_view document)
-    : state_(std::make_shared<State>(std::move(body), manifest.directory)) {
+                             std::string_view profile, std::string_view document, TexelRetention texel_retention)
+    : state_(std::make_shared<State>(std::move(body), manifest.directory, texel_retention)) {
     using namespace presentation_data;
     if (!state_->body)
         throw std::invalid_argument("Fitted library requires a body");
+    if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
+        throw std::invalid_argument("Unknown texel retention");
     const auto catalog = parse(document);
     constexpr std::size_t maximum_catalog_items = 65'536;
     // The one fitted catalog version this reader accepts.
@@ -81,7 +87,7 @@ std::shared_ptr<const FittedAsset> FittedLibrary::load(std::string_view id) cons
     if (const auto found = state_->models.find(path); found != state_->models.end())
         if (auto result = found->second.lock())
             return result;
-    auto result = std::make_shared<FittedAsset>(*state_->body, anima::load_asset(path));
+    auto result = std::make_shared<FittedAsset>(*state_->body, anima::load_asset(path), state_->texel_retention);
     state_->models[path] = result;
     return result;
 }
