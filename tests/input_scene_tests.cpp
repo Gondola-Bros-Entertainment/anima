@@ -427,6 +427,12 @@ TEST_CASE("A scene set event rejected in one scene changes no scene") {
     CHECK(input->context().enabled());
     CHECK(input->context().state("activate").active);
     CHECK_FALSE(input->context().state("activate").canceled);
+    i::begin_frame(scenes);
+    CHECK_FALSE(input->context().enabled());
+    input.set_enabled(true);
+    CHECK_THROWS_WITH_AS(i::dispatch(scenes, beyond), over_capacity, std::length_error);
+    // Or its enablement.
+    CHECK_FALSE(input->context().enabled());
 }
 
 TEST_CASE("Replacing, unloading and clearing scenes detaches their input without disturbing the rest") {

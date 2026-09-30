@@ -1,6 +1,9 @@
 #pragma once
 #include <anima/input.hpp>
 #include <cstddef>
+#include <map>
+#include <utility>
+#include <vector>
 
 namespace anima::input::limits {
 inline constexpr std::size_t actions = 128;
@@ -33,3 +36,35 @@ inline constexpr float maximum_binding_scale = 16;
     return control.code <= limit && (control.kind != ControlKind::mouse_button || control.code != 0);
 }
 } // namespace anima::input::limits
+
+namespace anima::input {
+struct Context::Staged {
+    // A delta binding that accepts the increment: its action, the action's first binding and its own position
+    // among all the map's bindings, and its sum for the event's device after the increment.
+    struct Accepted {
+        std::size_t action_index, first_binding, slot;
+        float after;
+    };
+    // An event that validate(const Event &) accepts.
+    Event event;
+    // Applied first, as set_enabled() applies it.
+    bool enabled{};
+    // The node that records a held control anew, or none.
+    std::map<Control, float> record;
+    // The delta bindings that accept an increment, in map order.
+    std::vector<Accepted> accepted;
+    // The nodes of the sums an increment starts.
+    Sums started;
+};
+} // namespace anima::input
+
+namespace anima::detail {
+// Lets scene dispatch stage an event for every context before it applies the event to any.
+struct InputStaging {
+    using Staged = input::Context::Staged;
+    [[nodiscard]] static Staged stage(const input::Context &context, const input::Event &event, bool enable) {
+        return context.stage(event, enable);
+    }
+    static void apply(input::Context &context, Staged &&staged) noexcept { context.apply(std::move(staged)); }
+};
+} // namespace anima::detail
