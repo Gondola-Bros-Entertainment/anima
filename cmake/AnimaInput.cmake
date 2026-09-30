@@ -1,5 +1,9 @@
 # A pure event converter needs SDL headers, but no SDL runtime or Vulkan. An
 # application already owning SDL can use this target without a second device loop.
+# Without a directory given, the SDL that the desktop or audio modules fetched supplies them.
+if(NOT ANIMA_INPUT_SDL_INCLUDE_DIR AND anima_sdl_source)
+    set(ANIMA_INPUT_SDL_INCLUDE_DIR "${anima_sdl_source}/include" CACHE PATH "Directory containing SDL3/SDL_events.h")
+endif()
 find_path(ANIMA_INPUT_SDL_INCLUDE_DIR SDL3/SDL_events.h REQUIRED)
 if(NOT EXISTS "${ANIMA_INPUT_SDL_INCLUDE_DIR}/SDL3/SDL_events.h")
     message(FATAL_ERROR "ANIMA_INPUT_SDL_INCLUDE_DIR must contain SDL3/SDL_events.h")

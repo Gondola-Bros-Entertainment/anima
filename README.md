@@ -130,7 +130,10 @@ component or the application applies it. Physics publishes poses after the fixed
 callbacks, and audio synchronization reads the final transforms without advancing
 sample time. Input edges last until the next `begin_frame`, through frames with
 several fixed ticks or none, so queue an edge-triggered command until a tick
-consumes it.
+consumes it. Delta actions, bound to mouse motion or the scroll wheel, sum what
+arrived during one `begin_frame` interval, so read them once per frame, for example
+in `update`: read in each fixed tick, they would apply twice in a frame with two
+ticks and not at all in a frame with none.
 
 Each driver takes one `Scene` or a whole `SceneSet`, and the set's active scene does
 not filter it. A physics world or mixer shared by several scenes needs one call

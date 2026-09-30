@@ -20,6 +20,14 @@ constexpr auto repeated = "Repeated input chord control";
 constexpr auto conflict = "Input chord device selectors conflict";
 constexpr auto binding_error = "Invalid input binding channel/scale/deadzone";
 constexpr auto over_capacity = "Input context exceeds 1024 active physical controls";
+constexpr auto digital_modifiers = "Input chord modifiers must be digital";
+constexpr auto delta_deadzone = "Input delta bindings require a zero deadzone";
+constexpr auto mixed_controls = "Input axis and vector2 actions cannot mix held and delta controls";
+constexpr auto invalid_value = "Invalid input control value";
+constexpr auto sum_overflow = "Input increment would overflow a delta binding's sum";
+constexpr auto over_sum_capacity = "Input context exceeds 1024 delta sums";
+constexpr unsigned sum_capacity = 1024; // Delta sums per Context, documented in include/anima/input.hpp.
+constexpr std::uint16_t x_code = 0, y_code = 1, right_button = 3, left_ctrl = 224;
 
 i::Event key(unsigned code, bool down, unsigned device = 0) {
     return {i::EventType::control, {i::ControlKind::key, static_cast<std::uint16_t>(code), device}, down ? 1.F : 0.F};
@@ -43,6 +51,18 @@ i::Event reported(i::ControlKind kind, unsigned code, unsigned device, const i::
                   float value = 1) {
     return {i::EventType::control, {kind, static_cast<std::uint16_t>(code), device, identity}, value};
 }
+// An increment of @p amount on axis @p code of pointer motion or the wheel.
+i::Event motion(std::uint16_t code, float amount, unsigned device = 0) {
+    return event(i::ControlKind::mouse_motion, code, device, amount);
+}
+i::Event wheel(std::uint16_t code, float amount, unsigned device = 0) {
+    return event(i::ControlKind::mouse_wheel, code, device, amount);
+}
+i::Binding delta(i::ControlKind kind, std::uint16_t code, i::Channel channel = i::Channel::x, float scale = 1) {
+    return {{kind, code}, channel, scale};
+}
+// Every edge latch of @p state is clear.
+bool unlatched(const i::State &state) { return !state.pressed && !state.released && !state.canceled; }
 i::Map movement_map() {
     return {{"trigger", i::ActionType::button, {{{i::ControlKind::key, 4}}}},
             {"move",
@@ -578,4 +598,249 @@ TEST_CASE("A chord modifier beyond the recorded-control capacity is rejected wit
         capacity.process({i::EventType::disconnect, {i::ControlKind::key, 0, device}});
     CHECK_FALSE(capacity.state("chord").active);
     CHECK(capacity.state("chord").released);
+}
+
+TEST_CASE("Increments sum within a frame, scale without clamping, and reset at begin_frame") {
+    i::Context c({{"look",
+                   i::ActionType::vector2,
+                   {delta(i::ControlKind::mouse_motion, x_code, i::Channel::x, .5F),
+                    delta(i::ControlKind::mouse_motion, y_code, i::Channel::y, -.5F)}},
+                  {"zoom", i::ActionType::axis, {delta(i::ControlKind::mouse_wheel, y_code)}},
+                  {"inverted", i::ActionType::axis, {delta(i::ControlKind::mouse_wheel, y_code, i::Channel::x, -1)}}});
+    c.process(motion(x_code, 40));
+    CHECK(c.state("look").value.x == 20); // 40 with scale 0.5 reads 20, unclamped.
+    CHECK(c.state("look").pressed);
+    c.process(motion(x_code, 10));
+    c.process(motion(y_code, 8));
+    auto look = c.state("look");
+    // The increments sum, and the negative scale inverts y; the vector is not normalized.
+    CHECK(look.value.x == 25);
+    CHECK(look.value.y == -4);
+    CHECK(look.active);
+    c.process(wheel(y_code, 1.5F));
+    c.process(wheel(y_code, -.25F));
+    CHECK(c.state("zoom").value.x == 1.25F);
+    CHECK(c.state("inverted").value.x == -1.25F);
+    c.begin_frame();
+    c.process(motion(x_code, 0)); // A zero increment changes nothing.
+    // The new frame starts every sum at zero, and the actions that increments kept active release in it.
+    for (const auto *name : {"look", "zoom", "inverted"}) {
+        CAPTURE(name);
+        const auto state = c.state(name);
+        CHECK(state.value.x == 0);
+        CHECK(state.value.y == 0);
+        CHECK_FALSE(state.active);
+        CHECK(state.released);
+        CHECK_FALSE(state.canceled);
+    }
+    c.process(motion(x_code, -6));
+    CHECK(c.state("look").value.x == -3);
+    c.begin_frame();
+    c.begin_frame();
+    CHECK(unlatched(c.state("look"))); // A frame without increments leaves nothing to release.
+    // A value too large for any level passes through unchanged.
+    c.process(wheel(y_code, 1e30F));
+    CHECK(c.state("zoom").value.x == 1e30F);
+}
+
+TEST_CASE("A wheel-driven button presses in one frame and releases in the next") {
+    i::Context c(
+        {{"next", i::ActionType::button, {delta(i::ControlKind::mouse_wheel, y_code)}},
+         {"previous", i::ActionType::button, {delta(i::ControlKind::mouse_wheel, y_code, i::Channel::x, -1)}},
+         // A button may mix held and delta controls.
+         {"either", i::ActionType::button, {{{i::ControlKind::key, 4}}, delta(i::ControlKind::mouse_wheel, y_code)}}});
+    c.process(wheel(y_code, .25F));
+    CHECK_FALSE(c.state("next").active); // Below the threshold,
+    c.process(wheel(y_code, .25F));
+    auto next = c.state("next");
+    CHECK(next.active); // until the sum reaches it.
+    CHECK(next.pressed);
+    CHECK(next.value.x == 1);
+    CHECK_FALSE(c.state("previous").active); // A button takes only positive contributions.
+    CHECK(c.state("either").active);
+    c.begin_frame();
+    next = c.state("next");
+    CHECK_FALSE(next.active);
+    CHECK(next.released);
+    CHECK_FALSE(next.pressed);
+    CHECK_FALSE(next.canceled);
+    CHECK(next.value.x == 0);
+    c.begin_frame();
+    CHECK(unlatched(c.state("next")));
+    c.process(wheel(y_code, -3));
+    CHECK(c.state("previous").pressed);
+    c.process(key(4, true));
+    c.begin_frame();
+    // The held key keeps the mixed button active through the frame boundary, with no edge.
+    CHECK(c.state("either").active);
+    CHECK(unlatched(c.state("either")));
+    CHECK(c.state("previous").released);
+}
+
+TEST_CASE("A chord gates each increment as it arrives, and precedence applies then") {
+    auto zoom = delta(i::ControlKind::mouse_wheel, y_code);
+    zoom.modifiers = {{i::ControlKind::key, left_ctrl}};
+    auto aim = delta(i::ControlKind::mouse_motion, x_code);
+    aim.modifiers = {{i::ControlKind::mouse_button, right_button}};
+    i::Context c({{"scroll", i::ActionType::axis, {delta(i::ControlKind::mouse_wheel, y_code)}},
+                  {"zoom", i::ActionType::axis, {zoom}},
+                  {"aim", i::ActionType::axis, {aim}}});
+    c.process(wheel(y_code, 1));
+    c.process(key(left_ctrl, true));
+    // Ctrl pressed after the increment in the same frame does not claim it, nor take it from the plain binding.
+    CHECK(c.state("zoom").value.x == 0);
+    CHECK(c.state("scroll").value.x == 1);
+    c.process(wheel(y_code, 2));
+    // While Ctrl is held, Ctrl + wheel outranks the plain wheel binding.
+    CHECK(c.state("zoom").value.x == 2);
+    CHECK(c.state("scroll").value.x == 1);
+    c.process(key(left_ctrl, false));
+    CHECK(c.state("zoom").value.x == 2); // Releasing Ctrl keeps what the chord accepted this frame.
+    c.process(wheel(y_code, 4));
+    CHECK(c.state("scroll").value.x == 5);
+    CHECK(c.state("zoom").value.x == 2);
+    // Motion counts toward right button + motion only while the button is held on the motion's mouse.
+    c.process(motion(x_code, 3));
+    c.process(event(i::ControlKind::mouse_button, right_button, 1));
+    c.process(motion(x_code, 5));
+    CHECK(c.state("aim").value.x == 0);
+    c.process(event(i::ControlKind::mouse_button, right_button, 0));
+    c.process(motion(x_code, 7));
+    CHECK(c.state("aim").value.x == 7);
+}
+
+TEST_CASE("Focus loss, cancellation, disabling, rebinding and a mouse disconnect drop increments") {
+    const auto look = [] {
+        return i::Context({{"look", i::ActionType::axis, {delta(i::ControlKind::mouse_motion, x_code)}}});
+    };
+    const auto dropped = [](const i::Context &context, const char *step) {
+        CAPTURE(step);
+        const auto state = context.state("look");
+        CHECK(state.value.x == 0);
+        CHECK_FALSE(state.active);
+        CHECK(state.released);
+    };
+    auto focus = look();
+    focus.process(motion(x_code, 4));
+    focus.process({i::EventType::focus, {}, 0});
+    dropped(focus, "focus loss");
+    CHECK(focus.state("look").canceled);
+    focus.process(motion(x_code, 4));
+    focus.process({i::EventType::focus, {}, 1});
+    CHECK(focus.state("look").value.x == 0); // Increments while unfocused are ignored.
+    auto canceled = look();
+    canceled.process(motion(x_code, 4));
+    canceled.cancel();
+    dropped(canceled, "cancel");
+    canceled.process(motion(x_code, 2));
+    CHECK(canceled.state("look").value.x == 2); // The next increment starts a new sum.
+    auto disabled = look();
+    disabled.process(motion(x_code, 4));
+    disabled.set_enabled(false);
+    dropped(disabled, "disabling");
+    auto rebound = look();
+    rebound.process(motion(x_code, 4));
+    rebound.rebind("look", {delta(i::ControlKind::mouse_motion, x_code, i::Channel::x, 2)});
+    dropped(rebound, "rebinding");
+    rebound.process(motion(x_code, 4));
+    CHECK(rebound.state("look").value.x == 8);
+    // A disconnect drops the increments of that mouse only, and a keyboard's none.
+    auto mice = look();
+    mice.process(motion(x_code, 4, 0));
+    mice.process(motion(x_code, 6, 1));
+    CHECK(mice.state("look").value.x == 10); // A wildcard binding sums every mouse.
+    mice.process({i::EventType::disconnect, {i::ControlKind::key, 0, 1}});
+    CHECK(mice.state("look").value.x == 10);
+    mice.process({i::EventType::disconnect, {i::ControlKind::mouse_button, 0, 1}});
+    CHECK(mice.state("look").value.x == 4);
+    CHECK_FALSE(mice.state("look").released);
+    mice.process({i::EventType::disconnect, {i::ControlKind::mouse_motion, 0, 0}});
+    dropped(mice, "mouse disconnect");
+    CHECK_FALSE(mice.state("look").canceled);
+    // A binding that selects a device reads only its increments.
+    i::Context paired({{"look", i::ActionType::axis, {{{i::ControlKind::mouse_motion, x_code, 1}}}}});
+    paired.process(motion(x_code, 4, 0));
+    paired.process(motion(x_code, 6, 1));
+    CHECK(paired.state("look").value.x == 6);
+}
+
+TEST_CASE("Delta modifiers, deadzones, mixed analog actions, codes and non-finite increments are rejected") {
+    const auto valid = delta(i::ControlKind::mouse_motion, x_code);
+    i::Context context({{"look", i::ActionType::axis, {valid}}});
+    context.process(motion(x_code, 3));
+    auto motion_modifier = valid, wheel_modifier = valid, deadzone = valid, motion_code = valid, wheel_code = valid;
+    motion_modifier.control = {i::ControlKind::mouse_wheel, y_code};
+    motion_modifier.modifiers = {{i::ControlKind::mouse_motion, x_code}};
+    wheel_modifier.modifiers = {{i::ControlKind::mouse_wheel, y_code}};
+    deadzone.deadzone = .1F;
+    motion_code.control.code = 2;
+    wheel_code.control = {i::ControlKind::mouse_wheel, 2};
+    struct Invalid {
+        i::ActionType type;
+        std::vector<i::Binding> bindings;
+        const char *error;
+    };
+    const std::vector<Invalid> invalids{
+        {i::ActionType::axis, {motion_modifier}, digital_modifiers},
+        {i::ActionType::axis, {wheel_modifier}, digital_modifiers},
+        {i::ActionType::axis, {deadzone}, delta_deadzone},
+        {i::ActionType::axis, {valid, {{i::ControlKind::gamepad_axis, 0}}}, mixed_controls},
+        {i::ActionType::vector2,
+         {{{i::ControlKind::key, 4}}, delta(i::ControlKind::mouse_wheel, y_code)},
+         mixed_controls},
+        {i::ActionType::axis, {motion_code}, code_range},
+        {i::ActionType::axis, {wheel_code}, code_range},
+    };
+    for (std::size_t index = 0; index < invalids.size(); ++index) {
+        CAPTURE(index);
+        const auto &invalid = invalids[index];
+        CHECK_THROWS_WITH_AS(i::Context({{"look", invalid.type, invalid.bindings}}), invalid.error,
+                             std::invalid_argument);
+        CHECK_THROWS_WITH_AS(context.rebind("look", invalid.bindings), invalid.error, std::invalid_argument);
+        CHECK(context.state("look").value.x == 3); // The rejected rebind kept the sum and the binding.
+        CHECK(context.actions()[0].bindings[0].control == valid.control);
+    }
+    CHECK_THROWS_WITH_AS(context.process(motion(2, 1)), code_range, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(context.process(wheel(2, 1)), code_range, std::invalid_argument);
+    for (const float amount : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                               -std::numeric_limits<float>::infinity()}) {
+        CAPTURE(amount);
+        CHECK_THROWS_WITH_AS(context.process(motion(x_code, amount)), invalid_value, std::invalid_argument);
+    }
+    CHECK(context.state("look").value.x == 3);
+}
+
+TEST_CASE("An increment that would overflow a sum changes nothing, and delta values saturate") {
+    constexpr float largest = std::numeric_limits<float>::max();
+    i::Context c({{"raw", i::ActionType::axis, {delta(i::ControlKind::mouse_motion, x_code)}},
+                  {"fast", i::ActionType::axis, {delta(i::ControlKind::mouse_motion, x_code, i::Channel::x, 16)}}});
+    c.process(motion(x_code, largest));
+    CHECK(c.state("raw").value.x == largest);
+    CHECK(c.state("fast").value.x == largest); // Sixteen times the sum saturates at the largest float.
+    c.begin_frame();
+    c.begin_frame();
+    c.process(motion(x_code, largest));
+    CHECK_THROWS_WITH_AS(c.process(motion(x_code, largest)), sum_overflow, std::overflow_error);
+    const auto raw = c.state("raw");
+    CHECK(raw.value.x == largest);
+    CHECK(raw.active);
+    CHECK(raw.pressed);
+    CHECK_FALSE(raw.released);
+    c.process(motion(x_code, -largest));
+    // Neither sum took the rejected increment, so the opposite one cancels exactly.
+    CHECK(c.state("raw").value.x == 0);
+    CHECK(c.state("fast").value.x == 0);
+}
+
+TEST_CASE("A delta sum beyond the context's capacity is rejected without being recorded") {
+    i::Context c({{"look", i::ActionType::axis, {delta(i::ControlKind::mouse_motion, x_code)}}});
+    for (unsigned device = 0; device < sum_capacity; ++device)
+        c.process(motion(x_code, 1, device));
+    CHECK_THROWS_WITH_AS(c.process(motion(x_code, 1, sum_capacity)), over_sum_capacity, std::length_error);
+    CHECK(c.state("look").value.x == float(sum_capacity));
+    c.process(motion(x_code, 1, 0)); // An existing sum still takes increments.
+    CHECK(c.state("look").value.x == float(sum_capacity + 1));
+    c.begin_frame();
+    c.process(motion(x_code, 1, sum_capacity)); // The next frame starts with none.
+    CHECK(c.state("look").value.x == 1);
 }
