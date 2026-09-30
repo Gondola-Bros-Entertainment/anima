@@ -12,7 +12,8 @@ Entry points:
   anima::ComponentCodecs persists components.
 - anima::FixedStepClock drives fixed-step simulation.
 - anima::physics::World and anima::physics2d::World simulate rigid bodies.
-- anima::VulkanRenderer draws the selected scenes on the desktop.
+- anima::VulkanRenderer draws the selected scenes on the desktop, and
+  anima::CustomMaterial gives their surfaces an application's own shaders.
 - anima::Camera and anima::CameraView select views, and anima::view_matrix resolves
   them for the renderer.
 

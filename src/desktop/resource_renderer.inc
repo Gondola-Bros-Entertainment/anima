@@ -11,9 +11,10 @@ struct ResourceInstance {
     // Ranges of resource_draws, the instance's opaque and masked main-view draws, and of resource_shadow_draws.
     std::size_t first_draw{}, draw_count{}, first_shadow{}, shadow_count{};
 };
+struct GpuCustomMaterial;
 // A main-view draw that composites over the target instead of replacing it, recorded after every opaque and
-// masked draw in the order sort_back_to_front() gives. Blended materials fill this list today; any later mode that
-// must draw in view order after opaque surfaces belongs in it too.
+// masked draw in the order sort_back_to_front() gives: a blended material's, or a blended or additive custom
+// material's.
 struct BlendedDraw {
     // Index into resource_instances.
     std::size_t instance{};
@@ -21,6 +22,16 @@ struct BlendedDraw {
     std::size_t draw{};
     // blend_order_key() of the draw's world bounds; larger is farther.
     double key{};
+    // The custom material that draws it, or null for the draw's Material.
+    const GpuCustomMaterial *custom{};
+};
+// A draw of an opaque custom material in the main view, or of a custom material's depth-only variant.
+struct CustomDraw {
+    // Index into resource_instances.
+    std::size_t instance{};
+    // Index into the instance's Mesh::draws().
+    std::size_t draw{};
+    const GpuCustomMaterial *custom{};
 };
 struct ResourcePush {
     Mat4 view;
@@ -55,6 +66,9 @@ std::unique_ptr<ResourceBuffer> pose_buffer;
 std::vector<ResourceInstance> resource_instances;
 std::vector<std::size_t> resource_draws, resource_shadow_draws;
 std::vector<BlendedDraw> resource_blended_draws;
+std::vector<CustomDraw> resource_custom_draws, resource_custom_shadow_draws;
+// Whether a blended or additive custom material in resource_blended_draws reads opaque depth or color.
+bool resource_opaque_inputs{};
 RenderFrustum resource_frustum;
 ResourceStats resources{};
 
@@ -221,13 +235,15 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     std::vector<ResourceInstance> instances;
     std::vector<std::size_t> draws, shadows;
     std::vector<BlendedDraw> blended;
+    std::vector<CustomDraw> custom_draws, custom_shadows;
     std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0;
     for (const auto &source : sources)
         for (auto id : source->instances()) {
             const auto &render_instance = source->instance(id);
             if (!render_instance.visible || !render_instance.active || render_instance.asset->draws().empty())
                 continue;
-            const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size();
+            const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size(),
+                       first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size();
             bool candidate = false;
             const auto source_draws = render_instance.asset->draws();
             const bool cull = use_frustum && options.frustum_culling;
@@ -240,29 +256,45 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 const auto material_index = source_draws[i].material;
                 const auto *material =
                     material_index < 0 ? nullptr : &render_instance.asset->materials()->material_data[material_index];
-                const bool blend = material && material->alpha_mode == AlphaMode::blend;
+                // A custom material in the draw's material slot replaces its Material in every pass.
+                const auto *custom =
+                    material_index < 0 ? nullptr : render_instance.custom_materials[material_index].get();
+                const bool blend = custom ? custom->blend() != CustomBlend::opaque
+                                          : material && material->alpha_mode == AlphaMode::blend;
                 const auto &bounds = render_instance.primitive_bounds[i];
                 if (outside || (cull && !resource_frustum.intersects(bounds)))
                     ++culled_draws;
                 else if (blend) // Every nonempty draw has valid bounds.
-                    blended.push_back({instances.size(), i, blend_order_key(bounds)});
+                    blended.push_back(
+                        {instances.size(), i, blend_order_key(bounds),
+                         custom ? &gpu_custom(render_instance.custom_materials[material_index]) : nullptr});
+                else if (custom)
+                    custom_draws.push_back(
+                        {instances.size(), i, &gpu_custom(render_instance.custom_materials[material_index])});
                 else
                     draws.push_back(i);
-                // A depth-only shadow map holds neither unlit surfaces nor partial transmission.
-                const bool casts = !material || !(material->unlit || blend);
+                // A depth-only shadow map holds neither unlit surfaces nor partial transmission; a custom material
+                // casts through its depth-only variant.
+                const bool casts = custom ? custom->casts_shadows() : !material || !(material->unlit || blend);
                 if (casts && render_instance.casts_shadows &&
                     ((environment.shadow.enabled && shadow_frustum.intersects(bounds)) ||
-                     (environment.detail_shadow.enabled && detail_shadow_frustum.intersects(bounds))))
-                    shadows.push_back(i);
+                     (environment.detail_shadow.enabled && detail_shadow_frustum.intersects(bounds)))) {
+                    if (custom)
+                        custom_shadows.push_back(
+                            {instances.size(), i, &gpu_custom(render_instance.custom_materials[material_index])});
+                    else
+                        shadows.push_back(i);
+                }
             }
             if (!candidate)
                 continue;
             ++candidate_instances;
-            const bool main_view = draws.size() != first_draw || blended.size() != first_blended;
+            const bool main_view =
+                draws.size() != first_draw || blended.size() != first_blended || custom_draws.size() != first_custom;
             if (!main_view)
                 ++culled_instances;
-            // An instance with blended draws is always kept, so their instance index above stays valid.
-            if (!main_view && shadows.size() == first_shadow)
+            // An instance with blended or custom draws is always kept, so their instance index above stays valid.
+            if (!main_view && shadows.size() == first_shadow && custom_shadows.size() == first_custom_shadow)
                 continue;
             const auto max_matrices = properties.limits.maxStorageBufferRange / sizeof(Mat4);
             if (palettes.size() > max_matrices || render_instance.palette.size() > max_matrices - palettes.size())
@@ -296,11 +328,19 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
         flush_resource(*pose_buffer);
     }
     sort_back_to_front(blended);
+    // The frame copies opaque depth and color only when a drawn custom material reads them; draw() allocates the
+    // copies.
+    const bool reads_opaque = std::any_of(blended.begin(), blended.end(), [](const BlendedDraw &draw) {
+        return draw.custom && (draw.custom->source->reads_opaque_depth() || draw.custom->source->reads_opaque_color());
+    });
     inject_scene(failure, RendererFailureStage::ready, false);
     resource_instances.swap(instances);
     resource_draws.swap(draws);
     resource_shadow_draws.swap(shadows);
     resource_blended_draws.swap(blended);
+    resource_custom_draws.swap(custom_draws);
+    resource_custom_shadow_draws.swap(custom_shadows);
+    resource_opaque_inputs = resources.opaque_inputs = reads_opaque;
     resources.pose_uploaded_bytes = bytes;
     resources.instances = candidate_instances - culled_instances;
     resources.candidate_instances = candidate_instances;
@@ -337,6 +377,9 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
             resource_draws.clear();
             resource_shadow_draws.clear();
             resource_blended_draws.clear();
+            resource_custom_draws.clear();
+            resource_custom_shadow_draws.clear();
+            resource_opaque_inputs = resources.opaque_inputs = false;
             resources.pose_uploaded_bytes = resources.instances = 0;
             resources.candidate_instances = resources.culled_instances = 0;
             resources.candidate_draws = resources.culled_draws = 0;
@@ -416,6 +459,11 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
                                  environment_set, pose_set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
+    record_indexed(draw, shadow);
+}
+// Records @p draw with the bound pipeline, geometry, descriptors and push constants, and counts it in the shadow or
+// main-view statistics.
+void record_indexed(const IndexedDraw &draw, bool shadow) {
     vkCmdDrawIndexed(command, draw.index_count, 1, draw.first_index, 0, 0);
     if (shadow) {
         ++resources.shadow_draw_calls;
@@ -426,7 +474,8 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     }
 }
 // Records one shadow region's casters or, when @p shadow is false, the main view: every opaque and masked draw in
-// selection, instance and draw order, then the blended draws back to front.
+// selection, instance and draw order, then the opaque custom material draws, then, unless the frame copies opaque
+// inputs first, the blended draws back to front.
 void record_resources(bool shadow = false, bool detail = false) {
     if (!shadow) {
         resources.draw_calls = 0;
@@ -448,23 +497,33 @@ void record_resources(bool shadow = false, bool detail = false) {
             record_draw(render_instance, draw_index, view, shadow);
         }
     }
-    if (!shadow)
+    record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, shadow, detail);
+    if (!shadow && !resource_opaque_inputs)
         record_blended();
 }
-// Records resource_blended_draws in order. Depth then holds every opaque and masked surface, which the blended
-// pipeline tests against without writing.
+// Records resource_blended_draws in order, each through the blended pipeline or its custom material's. Depth then
+// holds every opaque and masked surface, which these pipelines test against without writing.
 void record_blended() {
-    if (resource_blended_draws.empty())
-        return;
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, blended_resource_pipeline);
+    VkPipeline bound_pipeline = VK_NULL_HANDLE;
     const GpuAsset *bound = nullptr;
     for (const auto &blended : resource_blended_draws) {
         const auto &render_instance = resource_instances[blended.instance];
+        const auto pipeline = blended.custom ? blended.custom->pipeline : blended_resource_pipeline;
+        if (pipeline != bound_pipeline) {
+            if (blended.custom)
+                bind_custom(*blended.custom, false);
+            else
+                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, blended_resource_pipeline);
+            bound_pipeline = pipeline;
+        }
         if (render_instance.gpu.get() != bound) {
             bound = render_instance.gpu.get();
             bind_geometry(*bound);
         }
-        record_draw(render_instance, blended.draw, view_projection, false);
+        if (blended.custom)
+            record_custom_draw(render_instance, blended.draw, view_projection, false);
+        else
+            record_draw(render_instance, blended.draw, view_projection, false);
     }
 }
 ResourceStats resource_stats() const {
@@ -480,6 +539,14 @@ ResourceStats resource_stats() const {
         for (const auto &texture : gpu->materials->textures)
             value.resident_texture_bytes += texture.allocation_bytes;
     }
+    value.cached_custom_materials = custom_cache.size();
+    for (const auto &[key, gpu] : custom_cache) {
+        (void)key;
+        for (const auto &texture : gpu->textures)
+            value.resident_texture_bytes += texture.allocation_bytes;
+    }
+    value.opaque_input_bytes =
+        opaque_inputs ? opaque_inputs->color.allocation_bytes + opaque_inputs->depth.allocation_bytes : 0;
     value.shadow_bytes = shadow_target ? shadow_target->texture.allocation_bytes : 0;
     value.shadow_bytes += detail_shadow_target ? detail_shadow_target->texture.allocation_bytes : 0;
     value.pose_buffer_bytes = pose_buffer ? pose_buffer->allocation_bytes : 0;
@@ -490,9 +557,18 @@ void retire_resources() {
     resource_draws.clear();
     resource_shadow_draws.clear();
     resource_blended_draws.clear();
+    resource_custom_draws.clear();
+    resource_custom_shadow_draws.clear();
+    resource_opaque_inputs = false;
     for (auto it = resource_cache.begin(); it != resource_cache.end();) {
         if (it->second->asset.use_count() == 1)
             it = resource_cache.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = custom_cache.begin(); it != custom_cache.end();) {
+        if (it->second->source.use_count() == 1)
+            it = custom_cache.erase(it);
         else
             ++it;
     }

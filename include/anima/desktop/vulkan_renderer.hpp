@@ -21,7 +21,7 @@
 /// public API. Scenes, environments and mesh preparation also need asset support (`ANIMA_BUILD_ASSETS=ON`).
 /// Without it anima::VulkanRenderer draws only its clear color and the diagnostic triangle, with a UiContext's UI
 /// composited over them; its set_scenes, prepare_meshes and prepare_mesh members throw `std::logic_error`, and
-/// set_environment validates its argument, then throws `std::logic_error`.
+/// set_environment and set_time validate their arguments, then throw `std::logic_error`.
 
 struct SDL_Window;
 
@@ -166,7 +166,7 @@ struct FrameProfile {
     double gpu_ms{};
     /// Both shadow regions.
     double gpu_shadow_ms{};
-    /// Sky and meshes into the scene target.
+    /// Sky and meshes into the scene target, with the copy of opaque inputs on frames that make one.
     double gpu_scene_ms{};
     /// Display conversion and UI.
     double gpu_resolve_ms{};
@@ -188,8 +188,16 @@ struct ResourceStats {
     std::uint64_t geometry_uploaded_bytes{};
     /// Device allocation bytes of cached vertex and index buffers.
     std::uint64_t resident_geometry_bytes{};
-    /// Device allocation bytes of cached material images.
+    /// Device allocation bytes of cached material images, custom materials' included.
     std::uint64_t resident_texture_bytes{};
+    /// Custom materials in the GPU cache.
+    std::uint64_t cached_custom_materials{};
+    /// Whether the latest preparation draws a custom material that reads opaque depth or color, so that its frame
+    /// copies both after the opaque draws.
+    bool opaque_inputs{};
+    /// Allocation bytes of the opaque depth and color copies, which exist from the first frame that copies them
+    /// until the swapchain is recreated.
+    std::uint64_t opaque_input_bytes{};
     /// Allocation bytes of the pose buffer, which holds every prepared instance's palette.
     std::uint64_t pose_buffer_bytes{};
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
@@ -220,12 +228,19 @@ struct ResourceStats {
     std::uint64_t world_target_bytes{};
 };
 
-/// Renders selected scenes into one borrowed SDL window through a fixed pipeline.
+/// Renders selected scenes into one borrowed SDL window.
 ///
 /// Each frame renders the shadow regions, then the optional sky, the opaque and masked meshes and the blended
-/// meshes into a linear `RGBA16F` target, converts it for display and composites UI last. Blending is a fixed
-/// mode of that pass: custom shaders, material layouts and render passes are not supported. The window must
+/// meshes into a linear `RGBA16F` target, converts it for display and composites UI last. The window must
 /// outlive the renderer, which never destroys it.
+///
+/// Applications customize shading, not the frame. A CustomMaterial supplies SPIR-V vertex and fragment shaders,
+/// an optional depth-only variant, a parameter block, textures and a blend mode for the mesh material slots it
+/// is assigned to (Scene::set_custom_material), and its shaders read the inputs that custom_material.hpp
+/// documents. The renderer creates its pipelines and keeps the passes and their order, depth testing, sorting,
+/// the vertex, descriptor and push constant layouts, the display conversion and every Vulkan object.
+/// Applications cannot add render passes, render targets, post-processing or compute work, cannot reach Vulkan
+/// objects, and cannot change the standard material's shading.
 ///
 /// Use the renderer from the application's SDL video thread, with no concurrent calls. Scenes and settings
 /// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. One frame
@@ -275,7 +290,8 @@ struct ResourceStats {
 /// color of transparent texels still reaches the edges between them and opaque ones. Blended materials cast no
 /// shadows, since shadow maps hold depth only; lit ones receive shadows.
 ///
-/// Each frame the blended draws of all selected scenes sort together, back to front, by one key per draw of each
+/// Each frame the blended draws of all selected scenes, including those of blended and additive custom materials,
+/// sort together, back to front, by one key per draw of each
 /// instance: the squared distance from the eye to the center of the draw's world bounds
 /// (Scene::Instance::primitive_bounds) in a perspective view, or that center's distance along the view direction
 /// in an orthographic one. Draws with equal keys keep selection, instance and draw order, so their order does not
@@ -287,6 +303,21 @@ struct ResourceStats {
 ///   water plane and an object floating on it.
 /// - Mesh::compile_static can split one primitive into several draws, which sort separately.
 ///
+/// A custom material draws in the pass that its CustomBlend mode selects. An opaque one draws in the world pass
+/// after every opaque and masked mesh, testing depth with `LESS` and writing it, so it hides and is hidden as they
+/// are. Blended and additive ones are blended draws: they sort with blended materials and draw in that order,
+/// testing depth with `LESS` and writing none. When a frame draws a blended or additive custom material whose
+/// fragment shader reads opaque depth or color (CustomMaterial::reads_opaque_depth,
+/// CustomMaterial::reads_opaque_color), the world pass ends after the opaque draws, the renderer copies the depth
+/// and color targets into images that those shaders sample, and a second pass loads the targets and draws the
+/// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and
+/// released with the swapchain. A custom material casts shadows only through its depth-only variant, which draws
+/// into each enabled shadow region with that region's view-projection; without one it casts none. Custom shaders
+/// read no shadow maps, and fog is theirs to apply from the documented inputs, while exposure and tone mapping
+/// apply to the whole target at display conversion. A CustomMaterial's shader modules, pipelines, parameter
+/// buffer, textures and descriptors are created the first time a preparation draws it and are released as cached
+/// meshes are, once only the renderer references the material; creating them fails as a mesh upload does.
+///
 /// Swapchains follow the window's pixel size with FIFO presentation. Recreation after a resize or an
 /// out-of-date or suboptimal result waits for the device to go idle, so it can stall briefly. Display output is
 /// sRGB-encoded once: by an sRGB swapchain format when the surface offers one, otherwise in the display shader
@@ -297,9 +328,9 @@ struct ResourceStats {
 /// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to
 /// standard output.
 ///
-/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_environment(), set_scenes(),
-/// prepare_meshes(), prepare_mesh() and draw() throw `std::logic_error`; after a RendererFatalError they throw
-/// RendererFatalError.
+/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_environment(), set_time(),
+/// set_scenes(), prepare_meshes(), prepare_mesh() and draw() throw `std::logic_error`; after a RendererFatalError
+/// they throw RendererFatalError.
 class VulkanRenderer {
   public:
     /// Creates the Vulkan instance, surface and device for @p window, then selects RendererOptions::scenes.
@@ -364,6 +395,12 @@ class VulkanRenderer {
     /// and keeps the previous environment. The next draw() allocates changed shadow maps and throws
     /// SceneResourceError if that fails.
     void set_environment(const Environment &environment);
+    /// Sets the seconds that custom material shaders read as the frame block's `time`, from the next draw(); it
+    /// starts at 0. The renderer never advances it, so the application chooses the clock, pauses and rate. Shaders
+    /// receive it as a 32-bit float, whose resolution coarsens as it grows (to about 1 ms from 8,192 s), so wrap it at
+    /// a period that the shaders tolerate. Throws `std::invalid_argument` unless @p seconds is finite, keeping the
+    /// previous time.
+    void set_time(float seconds);
     /// Selects the scenes to draw, or clears the selection with an empty list; the renderer keeps the pointers.
     /// It never follows SceneSet::active(); SceneSet::render_scenes() lists a set's scenes.
     ///
