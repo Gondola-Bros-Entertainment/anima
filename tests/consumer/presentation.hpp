@@ -243,10 +243,9 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
     text_file(directory / "actor.asset.json",
               R"({"schema_version":3,"units":"meters","asset_id":"consumer.actor","model":"actor.glb","skeleton":)" +
                   skeleton + R"(,"clips":[],"motion_contract":"motion.json"})");
-    text_file(
-        directory / "actor.profile.json",
-        R"({"version":1,"id":"consumer.profile","manifest":"actor.asset.json","capabilities":["can.signal"],"sockets":{"port":{"node":)" +
-            quoted(3) + R"(,"frame":null},"starboard":{"node":)" + quoted(6) + R"(,"frame":null}}})");
+    text_file(directory / "actor.profile.json",
+              R"({"version":2,"id":"consumer.profile","manifest":"actor.asset.json","sockets":{"port":{"node":)" +
+                  quoted(3) + R"(,"frame":null},"starboard":{"node":)" + quoted(6) + R"(,"frame":null}}})");
     auto port_frame = identity();
     port_frame[12] = world[3].x;
     port_frame[13] = world[3].y;
@@ -511,16 +510,6 @@ inline void run() {
             {"id":"recover","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[1,0]}]}]}]})";
         ActionRuntime runtime(motion, actions);
         runtime.validate_roles("signal", {{"probe", "port"}, {"beacon", "starboard"}});
-        ActionSetCatalog choices(
-            R"({"version":1,"sets":{"operator":{"use":[{"action":"signal","requires":["can.signal"]}]}}})", runtime);
-        check(choices.resolve("operator", "use", actor.capabilities) == "signal",
-              "Independent capabilities did not select an action");
-        rejects<std::invalid_argument>(
-            [&] {
-                resolve_action(std::array{ActionVariant{"a", {"x"}}, ActionVariant{"b", {"y"}}},
-                               Capabilities{"x", "y"});
-            },
-            "No unique compatible action variant");
         validate_attachment_action(runtime, library, attachments, "signal");
         const std::string handling = "port"; // This consumer's choice among the action's profiles.
         const auto holding = runtime.sample(carried, {"signal", 1, .7, {}, {}}, handling);
@@ -560,8 +549,6 @@ inline void run() {
         unknown_joint.offsets.push_back({.joint = "absent"});
         rejects<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_joint); },
                                    "Unknown evaluation joint: absent");
-        rejects<std::out_of_range>([&] { (void)choices.resolve("absent", "use", actor.capabilities); },
-                                   "Missing presentation reference: absent");
         rejects<std::invalid_argument>(
             [&] { ActionRuntime unknown(motion, with_first(actions, R"("clip":"signal")", R"("clip":"absent")")); },
             "Missing animation: absent");
@@ -571,12 +558,6 @@ inline void run() {
                     motion, with_first(actions, R"("props":[)", R"("contacts":{"absent":[[0,1],[1,1]]},"props":[)"));
             },
             "Unknown motion chain: absent");
-        rejects<std::invalid_argument>(
-            [&] {
-                ActionSetCatalog unknown(
-                    R"({"version":1,"sets":{"operator":{"use":[{"action":"absent","requires":[]}]}}})", runtime);
-            },
-            "Unknown action: absent");
         MotionControls contact;
         const auto end = point(baseline.world[sockets.at("starboard").node], {});
         contact.contacts.push_back({"starboard", end, {2, 0, 1}, 1, {}});
