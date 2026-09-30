@@ -1,45 +1,40 @@
 // Pins how scene work grows with the objects it touches, through the bytes it allocates, and what a
-// failed allocation leaves behind. This executable replaces the global allocation functions, so it
-// counts, and can fail, every allocation the engine makes during a measured operation.
+// failed allocation leaves behind. This executable links allocation_counter.cpp, which replaces the
+// global allocation functions, so it counts, and can fail, every allocation the engine makes during a
+// measured operation.
+#include "allocation_counter.hpp"
 #include <anima/input_scene.hpp>
 #include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <memory>
 #include <new>
 #include <string>
 #include <vector>
 
 namespace {
-std::size_t counted_allocation_bytes = 0;
-bool counting_allocations = false;
-// While failing_allocations, each allocation beyond the next allocations_allowed throws std::bad_alloc.
-std::size_t allocations_allowed = 0;
-bool failing_allocations = false;
-
 // Bytes allocated while @p operation runs.
 template <class Operation> std::size_t allocated_by(Operation &&operation) {
-    counted_allocation_bytes = 0;
-    counting_allocations = true;
+    allocation_counter::bytes = 0;
+    allocation_counter::counting = true;
     operation();
-    counting_allocations = false;
-    return counted_allocation_bytes;
+    allocation_counter::counting = false;
+    return allocation_counter::bytes;
 }
 
 // Whether @p operation throws std::bad_alloc when only its first @p allowed allocations succeed.
 template <class Operation> bool fails_after(std::size_t allowed, Operation &&operation) {
-    allocations_allowed = allowed;
-    failing_allocations = true;
+    allocation_counter::allowed = allowed;
+    allocation_counter::failing = true;
     try {
         operation();
     } catch (const std::bad_alloc &) {
-        failing_allocations = false;
+        allocation_counter::failing = false;
         return true;
     }
-    failing_allocations = false;
+    allocation_counter::failing = false;
     return false;
 }
 
@@ -124,21 +119,6 @@ std::size_t dispatch_bytes(std::size_t extra) {
     return bytes;
 }
 } // namespace
-
-void *operator new(std::size_t bytes) {
-    if (counting_allocations)
-        counted_allocation_bytes += bytes;
-    if (failing_allocations) {
-        if (allocations_allowed == 0)
-            throw std::bad_alloc();
-        --allocations_allowed;
-    }
-    if (void *allocation = std::malloc(bytes ? bytes : 1))
-        return allocation;
-    throw std::bad_alloc();
-}
-void operator delete(void *allocation) noexcept { std::free(allocation); }
-void operator delete(void *allocation, std::size_t) noexcept { std::free(allocation); }
 
 TEST_CASE("Attaching children allocates no more per child as their parent grows") {
     // Reallocating the parent's child list on each attach would allocate 16 times as many bytes
