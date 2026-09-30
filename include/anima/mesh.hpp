@@ -42,9 +42,9 @@ struct MeshCompileOptions {
     std::size_t max_vertices{};
     /// Maximum texture width and height. A larger texture is replaced by its first mip level that fits, from
     /// texture_mips(). A masked base color keeps its alpha coverage at the cutoff `alpha_cutoff / alpha` when
-    /// that is in (0, 1], the rule material_texture_plan() applies to mip chains, and uses that need different
-    /// cutoffs, or none, get separate copies. Textures that share an image and an encoding share each shrunk
-    /// image. Zero keeps authored sizes.
+    /// that is in (0, 1], and a blended one weights color by alpha, the rules material_texture_plan() applies to
+    /// mip chains; uses that need different options, or none, get separate copies. Textures that share an image
+    /// and an encoding share each shrunk image. Zero keeps authored sizes.
     unsigned max_texture_edge{};
 };
 
@@ -77,7 +77,8 @@ class Mesh {
     /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks
     /// oversized textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at
     /// every material change between consecutive primitives and whenever MeshCompileOptions::max_vertices would
-    /// be exceeded, splitting primitives between whole triangles. Each result keeps every node, Asset::mesh_nodes
+    /// be exceeded, splitting primitives between whole triangles; the draws of a split blended primitive sort
+    /// separately in VulkanRenderer. Each result keeps every node, Asset::mesh_nodes
     /// and Asset::notices, as compile() does, but only the materials and textures it uses; a source without
     /// primitives gives one Mesh with no materials or textures. Throws `std::invalid_argument` for a
     /// `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of whole triangles, and

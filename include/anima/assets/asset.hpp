@@ -174,16 +174,32 @@ struct TextureMipOptions {
     /// fraction of texels at or above the cutoff: the nearest coverage that 8-bit alpha can reach,
     /// preferring the smallest change on ties. Coverage counts texel centers, not filtered screen
     /// area, and ignores vertex alpha; small levels only approximate it.
-    std::optional<float> alpha_coverage_cutoff;
+    std::optional<float> alpha_coverage_cutoff{};
+    /// Averages color weighted by alpha, without correcting coverage, as blended base-color maps need.
+    ///
+    /// Each smaller level's premultiplied color, its alpha times its color as texture_mips() averages it (sRGB
+    /// color in linear light, data maps as stored), is then the mean of the premultiplied colors of the texels of
+    /// the previous level that it averages, within 8-bit rounding, so texels with zero alpha add no color. A
+    /// level whose texels all have zero alpha gets zero color. Alpha is averaged as stored, and the base level is
+    /// kept. #alpha_coverage_cutoff weights color this way too.
+    bool alpha_weighted_color = false;
     bool operator==(const TextureMipOptions &) const = default;
 };
 /// texture_mips(const Texture &) with @p options. Throws `std::invalid_argument` also for a cutoff
 /// that is not finite or not in (0, 1].
 [[nodiscard]] std::vector<MipLevel> texture_mips(const Texture &texture, TextureMipOptions options);
-/// How a material uses alpha, in color and shadow passes alike. The importer rejects glTF `BLEND`.
+/// How a material uses its alpha: the base-color texture's alpha times Material::alpha times vertex alpha.
 enum class AlphaMode {
-    opaque, ///< Alpha is ignored.
-    mask    ///< Discards fragments whose texture, material and vertex alpha product is below the cutoff.
+    /// Alpha is ignored, in color and shadow passes alike (glTF `OPAQUE`).
+    opaque,
+    /// Discards fragments whose alpha is below Material::alpha_cutoff, in color and shadow passes alike (glTF
+    /// `MASK`).
+    mask,
+    /// Composites the shaded color, emission included, over what lies behind it with the "over" operator,
+    /// weighted by alpha (glTF `BLEND`). Blended surfaces draw after opaque and masked ones and write no depth;
+    /// VulkanRenderer states their order and its limits. They cast no shadows, as unlit materials do, since
+    /// shadow maps hold depth only; lit blended surfaces receive shadows as other lit surfaces do.
+    blend
 };
 /// Metallic-roughness material with glTF semantics. validate_material states the accepted values.
 struct Material {
@@ -214,7 +230,8 @@ struct Material {
     float occlusion_strength = 1;
     /// Base-color alpha factor in [0, 1].
     float alpha = 1;
-    /// Alpha-test threshold for AlphaMode::mask; finite and at least 0.
+    /// Alpha-test threshold for AlphaMode::mask, which the other modes ignore; finite and at least 0 in every
+    /// mode.
     float alpha_cutoff = .5F;
     AlphaMode alpha_mode = AlphaMode::opaque;
     /// Whether a face also renders when its back is toward the viewer; when false, that side is not
@@ -300,10 +317,11 @@ struct Pose {
 /// Every other channel counts its keys toward the key limit, even when it shares its sampler's
 /// accessors with other channels, and the limit is checked before any key is read.
 ///
-/// `KHR_materials_unlit` is the only extension that may be required. A texture with an optional
-/// Basis or WebP source uses its PNG or JPEG source instead, and needs one. External files,
-/// sparse accessors, compressed geometry, texture transforms, `BLEND` materials, maps on
-/// different UV sets, morph targets and GPU instancing are rejected.
+/// Each material's `alphaMode` becomes the AlphaMode of the same name, with its `alphaCutoff` and
+/// the alpha of its base-color factor. `KHR_materials_unlit` is the only extension that may be
+/// required. A texture with an optional Basis or WebP source uses its PNG or JPEG source instead,
+/// and needs one. External files, sparse accessors, compressed geometry, texture transforms, maps
+/// on different UV sets, morph targets and GPU instancing are rejected.
 ///
 /// Throws `std::runtime_error` for unsupported or malformed content, including content beyond
 /// these limits; `std::invalid_argument` for material values that validate_material rejects,

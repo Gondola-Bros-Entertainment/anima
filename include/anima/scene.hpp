@@ -92,7 +92,7 @@ class Scene {
     };
     /// Render state of one object's MeshRenderer. A renderer draws a primitive only when #visible,
     /// #active and its #primitive_visible entry are all true, and into the key light's shadow maps
-    /// only when #casts_shadows is also true and its material is lit.
+    /// only when #casts_shadows is also true and its material is lit and not AlphaMode::blend.
     struct Instance {
         /// Shared immutable mesh.
         std::shared_ptr<const Mesh> asset;

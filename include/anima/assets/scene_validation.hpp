@@ -12,7 +12,8 @@ namespace anima {
 ///
 /// The base-color factor, metallic, roughness, alpha and occlusion strength must be in [0, 1];
 /// the emissive factor finite and nonnegative; the normal scale finite; the alpha cutoff finite
-/// and nonnegative; and the alpha mode valid. Each texture index must be -1 or in range, naming an
+/// and nonnegative, whichever the alpha mode; and the alpha mode AlphaMode::opaque,
+/// AlphaMode::mask or AlphaMode::blend. Each texture index must be -1 or in range, naming an
 /// sRGB texture for the base-color and emissive maps and a linear one for the other maps.
 void validate_material(const Material &material, std::span<const Texture> textures);
 /// Checks @p scene and its storage budget.

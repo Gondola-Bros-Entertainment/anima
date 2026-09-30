@@ -1,4 +1,5 @@
 #include <anima/assets/asset.hpp>
+#include <anima/assets/material_textures.hpp>
 #include <anima/mesh.hpp>
 #include <doctest/doctest.h>
 
@@ -250,6 +251,25 @@ std::vector<std::byte> motion_clips(const std::vector<std::size_t> &clip_keys, b
     return glb(json, std::move(bin));
 }
 
+// Vertex alpha of blended_triangle(), from COLOR_0.
+constexpr float blended_vertex_alpha = .25F;
+// A triangle with UVs and COLOR_0 whose BLEND material has the alpha cutoff 0.8, which BLEND ignores, the base-color
+// factor alpha @p alpha_factor (JSON text) and a base-color texture of the PNG image.
+std::vector<std::byte> blended_triangle(const std::string &alpha_factor) {
+    auto bin = triangle({1, 1, 1, blended_vertex_alpha});
+    const auto png_offset = bin.size();
+    for (const auto b : fallback_png)
+        bin.push_back(static_cast<std::byte>(b));
+    const std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+      "materials":[{"alphaMode":"BLEND","alphaCutoff":0.8,
+                    "pbrMetallicRoughness":{"baseColorFactor":[1,1,1,)" +
+                             alpha_factor + R"(],"baseColorTexture":{"index":0}}}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0,"COLOR_0":1,"TEXCOORD_0":2},"material":0}]}],)" +
+                             triangle_json(bin.size(), view(png_offset, fallback_png.size()),
+                                           R"(,{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"})") +
+                             R"(,"images":[{"bufferView":2,"mimeType":"image/png"}],"textures":[{"source":0}]})";
+    return glb(json, std::move(bin));
+}
 // A triangle with UVs whose material samples texture 0 as base color and as normal map, and three textures of
 // one PNG image, the second with nearest magnification.
 std::vector<std::byte> shared_image() {
@@ -291,6 +311,37 @@ TEST_CASE("A metallic factor outside [0, 1] is rejected by material validation")
                                triangle_json(position_bytes + vec4_bytes) + "}",
                            triangle({}));
     CHECK_THROWS_WITH_AS(load_asset(bytes), "Invalid material factors", std::invalid_argument);
+}
+
+TEST_CASE("A BLEND material imports as a blended material with its alpha factor, texture and vertex alpha") {
+    constexpr float alpha_factor = .6F, cutoff = .8F;
+    const auto asset = load_asset(blended_triangle("0.6"));
+    REQUIRE(asset->materials.size() == 1u);
+    const auto &material = asset->materials[0];
+    CHECK(material.alpha_mode == AlphaMode::blend);
+    CHECK(material.alpha == doctest::Approx(alpha_factor));
+    CHECK(material.alpha_cutoff == doctest::Approx(cutoff)); // Kept, though only masking reads it.
+    REQUIRE(material.texture == 0);
+    CHECK(asset->textures.at(0).encoding == TextureEncoding::srgb);
+    CHECK(std::ranges::equal(asset->textures[0].image->rgba, fallback_texel));
+    REQUIRE(asset->primitives.size() == 1u);
+    for (const auto &vertex : asset->primitives[0].vertices)
+        CHECK(vertex.alpha == doctest::Approx(blended_vertex_alpha));
+    // The base-color map filters its mips with alpha-weighted color, without coverage correction.
+    const auto plan = material_texture_plan(asset->materials, asset->textures);
+    const auto &mips = plan.images.at(plan.bindings.at(1)[0]).mips;
+    CHECK(mips.alpha_weighted_color);
+    CHECK_FALSE(mips.alpha_coverage_cutoff);
+    const auto mesh = Mesh::compile(*asset);
+    CHECK(mesh->materials()->material_data.at(0).alpha_mode == AlphaMode::blend);
+}
+
+TEST_CASE("A blended alpha factor that is NaN or outside [0, 1] is rejected by material validation") {
+    // cgltf's tokenizer accepts the bare token nan, which is not JSON, and reads it with atof as NaN.
+    for (const std::string factor : {"nan", "1.5", "-0.5"}) {
+        CAPTURE(factor);
+        CHECK_THROWS_WITH_AS(load_asset(blended_triangle(factor)), "Invalid material factors", std::invalid_argument);
+    }
 }
 
 TEST_CASE("A clip whose samplers hold one key imports as a pose of zero duration") {

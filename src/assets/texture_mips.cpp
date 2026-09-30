@@ -112,7 +112,8 @@ std::vector<MipLevel> texture_mips(const Texture &texture, TextureMipOptions opt
         throw std::invalid_argument("Alpha coverage cutoff must be finite and in (0, 1]");
     std::vector<MipLevel> result{{image->width, image->height, image->rgba}};
     while (result.back().width > 1 || result.back().height > 1)
-        result.push_back(downsample(result.back(), texture.encoding, options.alpha_coverage_cutoff.has_value()));
+        result.push_back(downsample(result.back(), texture.encoding,
+                                    options.alpha_weighted_color || options.alpha_coverage_cutoff.has_value()));
     if (options.alpha_coverage_cutoff) {
         const auto cutoff = *options.alpha_coverage_cutoff;
         const auto coverage = double(covered_texels(alpha_histogram(result.front()), cutoff)) /

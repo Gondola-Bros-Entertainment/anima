@@ -333,8 +333,9 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         Material value;
         value.name = name(material.name);
         value.metallic = 1;
-        require(material.alpha_mode != cgltf_alpha_mode_blend, "General alpha BLEND materials are unsupported");
-        value.alpha_mode = material.alpha_mode == cgltf_alpha_mode_mask ? AlphaMode::mask : AlphaMode::opaque;
+        value.alpha_mode = material.alpha_mode == cgltf_alpha_mode_mask    ? AlphaMode::mask
+                           : material.alpha_mode == cgltf_alpha_mode_blend ? AlphaMode::blend
+                                                                           : AlphaMode::opaque;
         value.alpha_cutoff = material.alpha_cutoff;
         value.unlit = material.unlit;
         value.double_sided = material.double_sided;
@@ -556,8 +557,8 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         asset->animations.push_back(std::move(clip));
     }
     asset->notices.emplace_back(
-        "Double-sided metallic/roughness materials with normal, occlusion and emissive maps; "
-        "opaque, alpha-mask and KHR_materials_unlit supported. One shared UV set per material.");
+        "Metallic/roughness materials with normal, occlusion and emissive maps; opaque, alpha-mask, "
+        "alpha-blend and KHR_materials_unlit supported. One shared UV set per material.");
     if (data->extensions_used_count)
         asset->notices.emplace_back("Optional extensions other than KHR_materials_unlit are ignored; unsupported "
                                     "required extensions are rejected.");

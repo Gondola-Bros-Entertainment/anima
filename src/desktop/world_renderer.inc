@@ -44,10 +44,11 @@ void create_world_layout() {
 void create_world_image(GpuTexture &target) {
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(physical, world_color_format, &properties);
-    const auto needed = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    // Blended meshes composite into the target, which the display conversion then samples.
+    const auto needed = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+                        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
     if ((properties.optimalTilingFeatures & needed) != needed)
-        throw std::runtime_error("Device lacks filtered RGBA16F world targets");
+        throw std::runtime_error("Device lacks filtered, blendable RGBA16F world targets");
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     image.imageType = VK_IMAGE_TYPE_2D;
     image.format = world_color_format;

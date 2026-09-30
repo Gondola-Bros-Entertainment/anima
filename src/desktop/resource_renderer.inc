@@ -8,7 +8,19 @@ struct ResourceInstance {
     std::shared_ptr<GpuAsset> gpu;
     const Scene::Instance *source{};
     std::uint32_t palette_offset{};
+    // Ranges of resource_draws, the instance's opaque and masked main-view draws, and of resource_shadow_draws.
     std::size_t first_draw{}, draw_count{}, first_shadow{}, shadow_count{};
+};
+// A main-view draw that composites over the target instead of replacing it, recorded after every opaque and
+// masked draw in the order sort_back_to_front() gives. Blended materials fill this list today; any later mode that
+// must draw in view order after opaque surfaces belongs in it too.
+struct BlendedDraw {
+    // Index into resource_instances.
+    std::size_t instance{};
+    // Index into the instance's Mesh::draws().
+    std::size_t draw{};
+    // blend_order_key() of the draw's world bounds; larger is farther.
+    double key{};
 };
 struct ResourcePush {
     Mat4 view;
@@ -34,7 +46,7 @@ static constexpr auto resource_attributes = std::to_array<VkVertexInputAttribute
 VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};
-VkPipeline resource_pipeline{};
+VkPipeline resource_pipeline{}, blended_resource_pipeline{};
 VkDescriptorPool pose_pool{};
 VkDescriptorSet pose_set{};
 std::vector<std::shared_ptr<const Scene>> resource_scenes;
@@ -42,8 +54,34 @@ std::map<const Mesh *, std::shared_ptr<GpuAsset>> resource_cache;
 std::unique_ptr<ResourceBuffer> pose_buffer;
 std::vector<ResourceInstance> resource_instances;
 std::vector<std::size_t> resource_draws, resource_shadow_draws;
+std::vector<BlendedDraw> resource_blended_draws;
 RenderFrustum resource_frustum;
 ResourceStats resources{};
+
+// The distance by which blended draws sort, from the center of @p bounds: squared from the eye in a perspective
+// view, or along the view direction in an orthographic one, where view_origin holds the unit direction toward the
+// camera. Either way a larger key is farther. Doubles keep the squares of finite float coordinates finite.
+double blend_order_key(const RenderBounds &bounds) const {
+    const std::array<double, 3> center{(double(bounds.minimum.x) + bounds.maximum.x) / 2,
+                                       (double(bounds.minimum.y) + bounds.maximum.y) / 2,
+                                       (double(bounds.minimum.z) + bounds.maximum.z) / 2};
+    double key = 0;
+    if (view_origin[3] != 0)
+        for (std::size_t axis = 0; axis < center.size(); ++axis) {
+            const auto offset = center[axis] - view_origin[axis];
+            key += offset * offset;
+        }
+    else
+        for (std::size_t axis = 0; axis < center.size(); ++axis)
+            key -= center[axis] * view_origin[axis];
+    return key;
+}
+// Orders @p draws back to front. The sort is stable, so draws with equal keys keep selection, instance and draw
+// order, and their order cannot change from one frame to the next.
+static void sort_back_to_front(std::vector<BlendedDraw> &draws) {
+    std::stable_sort(draws.begin(), draws.end(),
+                     [](const BlendedDraw &a, const BlendedDraw &b) { return a.key > b.key; });
+}
 
 std::unique_ptr<ResourceBuffer> resource_buffer(VkDeviceSize bytes, VkBufferUsageFlags usage,
                                                 VkMemoryPropertyFlags properties) {
@@ -182,13 +220,14 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     std::vector<Mat4> palettes;
     std::vector<ResourceInstance> instances;
     std::vector<std::size_t> draws, shadows;
+    std::vector<BlendedDraw> blended;
     std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0;
     for (const auto &source : sources)
         for (auto id : source->instances()) {
             const auto &render_instance = source->instance(id);
             if (!render_instance.visible || !render_instance.active || render_instance.asset->draws().empty())
                 continue;
-            const auto first_draw = draws.size(), first_shadow = shadows.size();
+            const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size();
             bool candidate = false;
             const auto source_draws = render_instance.asset->draws();
             const bool cull = use_frustum && options.frustum_culling;
@@ -198,25 +237,32 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                     continue;
                 candidate = true;
                 ++candidate_draws;
-                if (outside || (cull && !resource_frustum.intersects(render_instance.primitive_bounds[i])))
+                const auto material_index = source_draws[i].material;
+                const auto *material =
+                    material_index < 0 ? nullptr : &render_instance.asset->materials()->material_data[material_index];
+                const bool blend = material && material->alpha_mode == AlphaMode::blend;
+                const auto &bounds = render_instance.primitive_bounds[i];
+                if (outside || (cull && !resource_frustum.intersects(bounds)))
                     ++culled_draws;
+                else if (blend) // Every nonempty draw has valid bounds.
+                    blended.push_back({instances.size(), i, blend_order_key(bounds)});
                 else
                     draws.push_back(i);
-                const auto material_index = source_draws[i].material;
-                const bool unlit =
-                    material_index >= 0 && render_instance.asset->materials()->material_data[material_index].unlit;
-                if (!unlit && render_instance.casts_shadows &&
-                    ((environment.shadow.enabled && shadow_frustum.intersects(render_instance.primitive_bounds[i])) ||
-                     (environment.detail_shadow.enabled &&
-                      detail_shadow_frustum.intersects(render_instance.primitive_bounds[i]))))
+                // A depth-only shadow map holds neither unlit surfaces nor partial transmission.
+                const bool casts = !material || !(material->unlit || blend);
+                if (casts && render_instance.casts_shadows &&
+                    ((environment.shadow.enabled && shadow_frustum.intersects(bounds)) ||
+                     (environment.detail_shadow.enabled && detail_shadow_frustum.intersects(bounds))))
                     shadows.push_back(i);
             }
             if (!candidate)
                 continue;
             ++candidate_instances;
-            if (draws.size() == first_draw)
+            const bool main_view = draws.size() != first_draw || blended.size() != first_blended;
+            if (!main_view)
                 ++culled_instances;
-            if (draws.size() == first_draw && shadows.size() == first_shadow)
+            // An instance with blended draws is always kept, so their instance index above stays valid.
+            if (!main_view && shadows.size() == first_shadow)
                 continue;
             const auto max_matrices = properties.limits.maxStorageBufferRange / sizeof(Mat4);
             if (palettes.size() > max_matrices || render_instance.palette.size() > max_matrices - palettes.size())
@@ -249,10 +295,12 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
         std::memcpy(pose_buffer->mapping, palettes.data(), bytes);
         flush_resource(*pose_buffer);
     }
+    sort_back_to_front(blended);
     inject_scene(failure, RendererFailureStage::ready, false);
     resource_instances.swap(instances);
     resource_draws.swap(draws);
     resource_shadow_draws.swap(shadows);
+    resource_blended_draws.swap(blended);
     resources.pose_uploaded_bytes = bytes;
     resources.instances = candidate_instances - culled_instances;
     resources.candidate_instances = candidate_instances;
@@ -288,6 +336,7 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
             resource_instances.clear();
             resource_draws.clear();
             resource_shadow_draws.clear();
+            resource_blended_draws.clear();
             resources.pose_uploaded_bytes = resources.instances = 0;
             resources.candidate_instances = resources.culled_instances = 0;
             resources.candidate_draws = resources.culled_draws = 0;
@@ -344,51 +393,78 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
         throw;
     }
 }
+void bind_geometry(const GpuAsset &gpu) {
+    const VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(command, 0, 1, &gpu.vertices->buffer, &offset);
+    vkCmdBindIndexBuffer(command, gpu.indices->buffer, 0, VK_INDEX_TYPE_UINT32);
+}
+// Records draw @p draw_index of @p render_instance with the bound pipeline and geometry, through @p view, and
+// counts it in the shadow or main-view statistics.
+void record_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view, bool shadow) {
+    const auto &source = *render_instance.source;
+    const auto &draw = source.asset->draws()[draw_index];
+    const Material fallback;
+    const auto &material = draw.material < 0 ? fallback : source.asset->materials()->material_data.at(draw.material);
+    const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
+    const ResourcePush push{view,
+                            view_origin,
+                            {material.metallic, material.roughness, 0, 0},
+                            {render_instance.palette_offset + draw.palette_offset, draw.skinned ? 1U : 0U, 0, 0},
+                            {factor.x, factor.y, factor.z, 1}};
+    vkCmdPushConstants(command, resource_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(push), &push);
+    const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
+                                 environment_set, pose_set};
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
+    vkCmdDrawIndexed(command, draw.index_count, 1, draw.first_index, 0, 0);
+    if (shadow) {
+        ++resources.shadow_draw_calls;
+        resources.shadow_submitted_indices += draw.index_count;
+    } else {
+        ++resources.draw_calls;
+        resources.submitted_indices += draw.index_count;
+    }
+}
+// Records one shadow region's casters or, when @p shadow is false, the main view: every opaque and masked draw in
+// selection, instance and draw order, then the blended draws back to front.
 void record_resources(bool shadow = false, bool detail = false) {
     if (!shadow) {
         resources.draw_calls = 0;
         resources.submitted_indices = 0;
     }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? shadow_resource_pipeline : resource_pipeline);
+    const auto &view = shadow ? (detail ? detail_shadow_view : shadow_view) : view_projection;
     for (const auto &render_instance : resource_instances) {
-        const auto &gpu = *render_instance.gpu;
-        const auto &source = *render_instance.source;
-        const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(command, 0, 1, &gpu.vertices->buffer, &offset);
-        vkCmdBindIndexBuffer(command, gpu.indices->buffer, 0, VK_INDEX_TYPE_UINT32);
         const auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
         const auto count = shadow ? render_instance.shadow_count : render_instance.draw_count;
+        if (!count)
+            continue;
+        bind_geometry(*render_instance.gpu);
         for (std::size_t i = first; i < first + count; ++i) {
             const auto draw_index = (shadow ? resource_shadow_draws : resource_draws)[i];
-            if (shadow &&
-                !(detail ? detail_shadow_frustum : shadow_frustum).intersects(source.primitive_bounds[draw_index]))
+            if (shadow && !(detail ? detail_shadow_frustum : shadow_frustum)
+                               .intersects(render_instance.source->primitive_bounds[draw_index]))
                 continue;
-            const auto &draw = source.asset->draws()[draw_index];
-            const Material fallback;
-            const auto &material =
-                draw.material < 0 ? fallback : source.asset->materials()->material_data.at(draw.material);
-            const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
-            const ResourcePush push{
-                shadow ? (detail ? detail_shadow_view : shadow_view) : view_projection,
-                view_origin,
-                {material.metallic, material.roughness, 0, 0},
-                {render_instance.palette_offset + draw.palette_offset, draw.skinned ? 1U : 0U, 0, 0},
-                {factor.x, factor.y, factor.z, 1}};
-            vkCmdPushConstants(command, resource_pipeline_layout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-            const VkDescriptorSet sets[]{gpu.materials->material_sets.at(std::size_t(draw.material + 1)),
-                                         environment_set, pose_set};
-            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0,
-                                    nullptr);
-            vkCmdDrawIndexed(command, draw.index_count, 1, draw.first_index, 0, 0);
-            if (shadow) {
-                ++resources.shadow_draw_calls;
-                resources.shadow_submitted_indices += draw.index_count;
-            } else {
-                ++resources.draw_calls;
-                resources.submitted_indices += draw.index_count;
-            }
+            record_draw(render_instance, draw_index, view, shadow);
         }
+    }
+    if (!shadow)
+        record_blended();
+}
+// Records resource_blended_draws in order. Depth then holds every opaque and masked surface, which the blended
+// pipeline tests against without writing.
+void record_blended() {
+    if (resource_blended_draws.empty())
+        return;
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, blended_resource_pipeline);
+    const GpuAsset *bound = nullptr;
+    for (const auto &blended : resource_blended_draws) {
+        const auto &render_instance = resource_instances[blended.instance];
+        if (render_instance.gpu.get() != bound) {
+            bound = render_instance.gpu.get();
+            bind_geometry(*bound);
+        }
+        record_draw(render_instance, blended.draw, view_projection, false);
     }
 }
 ResourceStats resource_stats() const {
@@ -413,6 +489,7 @@ void retire_resources() {
     resource_instances.clear();
     resource_draws.clear();
     resource_shadow_draws.clear();
+    resource_blended_draws.clear();
     for (auto it = resource_cache.begin(); it != resource_cache.end();) {
         if (it->second->asset.use_count() == 1)
             it = resource_cache.erase(it);

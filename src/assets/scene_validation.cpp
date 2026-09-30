@@ -22,7 +22,8 @@ void validate_material(const Material &m, std::span<const Texture> textures) {
     require(finite(m.emissive) && m.emissive.x >= 0 && m.emissive.y >= 0 && m.emissive.z >= 0 &&
                 std::isfinite(m.normal_scale) && std::isfinite(m.alpha_cutoff) && m.alpha_cutoff >= 0,
             "Invalid material surface parameters");
-    require(m.alpha_mode == AlphaMode::opaque || m.alpha_mode == AlphaMode::mask, "Invalid alpha mode");
+    require(m.alpha_mode == AlphaMode::opaque || m.alpha_mode == AlphaMode::mask || m.alpha_mode == AlphaMode::blend,
+            "Invalid alpha mode");
     struct TextureUse {
         int index;
         TextureEncoding encoding;

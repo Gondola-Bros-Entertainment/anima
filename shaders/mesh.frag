@@ -15,6 +15,8 @@ layout(push_constant) uniform Surface {
 surface;
 #include "environment.glsl"
 layout(location = 0) out vec4 outColor;
+// Set in the blended pipeline, which composites premultiplied color over the target with ONE, ONE_MINUS_SRC_ALPHA.
+layout(constant_id = 0) const bool blended = false;
 const float PI = 3.14159265359;
 const float minimumRoughness = 0.045;
 const float dielectricReflectance = 0.04;
@@ -99,7 +101,9 @@ void main() {
     }
     n *= facing;
     vec4 base = texture(baseColorTexture, texcoord);
-    if (material.detail.y >= 0.0 && base.a * material.emissiveAlpha.a * vertexAlpha < material.detail.y)
+    // The alpha that masking tests and blending composites with.
+    float alpha = base.a * material.emissiveAlpha.a * vertexAlpha;
+    if (material.detail.y >= 0.0 && alpha < material.detail.y)
         discard;
     vec3 albedo = clamp(base.rgb * baseColor, 0.0, 1.0);
     vec3 v = unit(surface.viewOrigin.xyz - worldPosition * surface.viewOrigin.w);
@@ -121,5 +125,8 @@ void main() {
         float transmittance = exp(-environment.fog.w * length(surface.viewOrigin.xyz - worldPosition));
         color = mix(environment.fog.rgb, color, transmittance);
     }
-    outColor = vec4(clamp(color, vec3(0), vec3(maximumHalfFloat)), 1.0);
+    color = clamp(color, vec3(0), vec3(maximumHalfFloat));
+    // Blending scales the whole shaded and fogged color, emission included, by the straight alpha.
+    alpha = clamp(alpha, 0.0, 1.0);
+    outColor = blended ? vec4(color * alpha, alpha) : vec4(color, 1.0);
 }

@@ -156,8 +156,10 @@ std::filesystem::path fixture(const Temp &temp, const std::string &kind) {
     if (kind == "extension")
         json += R"(,"extensionsRequired":["KHR_draco_mesh_compression"])";
     json += '}';
-    if (kind == "alpha")
+    if (kind == "alpha") {
         json.insert(json.find("\"name\":\"red\""), "\"alphaMode\":\"BLEND\",");
+        json.replace(json.find("[1,0,0,1]"), 9, "[1,0,0,0.4]");
+    }
     if (kind == "double-sided")
         json.insert(json.find("\"name\":\"red\""), "\"doubleSided\":true,");
     if (kind == "mask") {
@@ -255,13 +257,17 @@ TEST_CASE("The geometry and motion loaders reject each other's resources") {
                          std::runtime_error);
 }
 
-TEST_CASE("Materials keep their alpha mask, metallic-roughness factors, sidedness and glTF defaults") {
+TEST_CASE("Materials keep their alpha mode, metallic-roughness factors, sidedness and glTF defaults") {
     const Temp temp;
     const auto masked = load_glb(fixture(temp, "mask"));
     CHECK(masked.material_data.at(0).alpha_mode == AlphaMode::mask);
     CHECK(masked.material_data[0].alpha_cutoff == Near{.35F, tolerance});
     CHECK(masked.material_data[0].alpha == Near{.7F, tolerance});
     CHECK(masked.vertices.at(0).alpha == Near{0, tolerance}); // The vertex colour's alpha.
+    const auto blended = load_glb(fixture(temp, "alpha"));
+    CHECK(blended.material_data.at(0).alpha_mode == AlphaMode::blend);
+    CHECK(blended.material_data[0].alpha == Near{.4F, tolerance});
+    CHECK(blended.material_data.at(1).alpha_mode == AlphaMode::opaque); // glTF's default mode.
     const auto pbr = load_glb(fixture(temp, "pbr"));
     CHECK(pbr.material_data.at(0).metallic == Near{.7F, tolerance});
     CHECK(pbr.material_data[0].roughness == Near{.23F, tolerance});
@@ -374,8 +380,6 @@ TEST_CASE("Invalid and unsupported GLB content is rejected with its reason") {
                          std::runtime_error);
     CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "sparse")), "Sparse accessors are unsupported", std::runtime_error);
     CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "extension")), "Required glTF extension is unsupported",
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "alpha")), "General alpha BLEND materials are unsupported",
                          std::runtime_error);
     CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "truncated")), truncated_glb, std::runtime_error);
 }
