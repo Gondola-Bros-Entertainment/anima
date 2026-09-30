@@ -11,8 +11,9 @@ namespace anima {
 ///
 /// Construction reads the Mesh, its texels through Mesh::texel_images(), which is safe on any thread, and
 /// shares no other mutable state, so constructions may run concurrently on any thread, and it filters
-/// exactly as a synchronous upload does. The object is move-only, shares ownership of the Mesh and owns
-/// its mip chains, including base texels, so keep only the preparations still needed.
+/// exactly as a synchronous upload does. The object is move-only, shares ownership of the Mesh and of its
+/// block-compressed images, and owns its mip chains, including base texels, so keep only the preparations
+/// still needed.
 class MeshPreparation {
   public:
     /// Plans and filters the textures of @p asset, reading their texels through Mesh::texel_images(); see
@@ -31,10 +32,15 @@ class MeshPreparation {
     /// Sampler::mipmapped have only the base level, and those whose image is block-compressed have none,
     /// since they upload the levels that the image stores.
     const std::vector<std::vector<MipLevel>> &images() const { return images_; }
+    /// One image per MaterialTexturePlan::images entry: the block-compressed image, with its texels, that the entry
+    /// uploads, or null for an entry whose mip chain images() holds. Holding these lets a preparation upload a Mesh
+    /// compiled with TexelRetention::until_upload after an earlier upload let the Mesh's texels go.
+    const std::vector<std::shared_ptr<const Image>> &compressed_images() const { return compressed_images_; }
 
   private:
     std::shared_ptr<const Mesh> asset_;
     MaterialTexturePlan plan_;
     std::vector<std::vector<MipLevel>> images_;
+    std::vector<std::shared_ptr<const Image>> compressed_images_;
 };
 } // namespace anima

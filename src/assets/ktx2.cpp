@@ -5,6 +5,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // Reads the subset of KTX 2.0 (Khronos, "KTX File Format Specification", version 2.0) that holds one BC7 image:
 // the header, the level index, the data format descriptor's basic block and the levels, all little-endian.
@@ -14,18 +15,30 @@ constexpr std::size_t maximum_file_bytes = 64 * 1024 * 1024;
 constexpr std::uint32_t maximum_edge = 8192;
 constexpr std::size_t maximum_texels = 16 * 1024 * 1024;
 constexpr std::array<std::uint8_t, 12> identifier{0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
-// Offsets of the header fields that follow the identifier, and of the index that follows them.
+// Offsets of the header fields that follow the identifier, and of the level index that follows them.
 constexpr std::size_t format_offset = 12, type_size_offset = 16, width_offset = 20, height_offset = 24,
                       depth_offset = 28, layers_offset = 32, faces_offset = 36, levels_offset = 40,
-                      supercompression_offset = 44, dfd_offset = 48, kvd_offset = 56, sgd_offset = 64,
-                      level_index_offset = 80, level_index_entry = 24;
+                      supercompression_offset = 44, dfd_offset = 48, dfd_length_offset = 52, kvd_offset = 56,
+                      kvd_length_offset = 60, sgd_length_offset = 72, level_index_offset = 80;
+// Each level index entry: byteOffset, byteLength and uncompressedByteLength.
+constexpr std::size_t level_index_entry = 24, level_length = 8, level_uncompressed_length = 16;
 constexpr std::uint32_t vk_format_bc7_unorm_block = 145, vk_format_bc7_srgb_block = 146;
-// The data format descriptor's basic block: a 4-byte total size, then the block's 24-byte header and 16 bytes of
-// each sample.
-constexpr std::size_t basic_block_header = 24, sample_bytes = 16;
-constexpr std::uint32_t basic_block_version = 2;
+// The data format descriptor (Khronos Data Format Specification 1.3): its 4-byte dfdTotalSize, then the basic
+// block, whose 24-byte header holds, at these offsets from the block, the vendor and descriptor type, the version
+// number and block size, the color model, the transfer function, the texel block dimensions and bytesPlane0, and
+// which describes each sample in 16 bytes.
+constexpr std::size_t total_size_bytes = 4, basic_block_header = 24, sample_bytes = 16;
+constexpr std::size_t block_type = 0, block_version = 4, block_model = 8, block_transfer = 10, block_dimensions = 12,
+                      block_bytes_plane0 = 16;
+// KHR_DF_VENDORID_KHRONOS with KHR_DF_KHR_DESCRIPTORTYPE_BASICFORMAT, and KHR_DF_VERSIONNUMBER_1_3, which shares its
+// word with the block size in the upper 16 bits.
+constexpr std::uint32_t khronos_basic_format = 0, version_1_3 = 2, version_mask = 0xFFFF, block_size_shift = 16;
 constexpr std::uint8_t model_bc7 = 134, transfer_linear = 1, transfer_srgb = 2;
-constexpr std::size_t bc7_alignment = 16;
+// The texel block dimensions of BC7, each stored minus one in its own byte, and its one plane of
+// detail::bc7_block_bytes.
+constexpr std::uint32_t bc7_dimensions = (detail::bc7_block_edge - 1) | ((detail::bc7_block_edge - 1) << 8);
+// Levels of a format whose blocks take 16 bytes start at multiples of 16.
+constexpr std::size_t bc7_alignment = detail::bc7_block_bytes;
 
 void require(bool condition, const std::string &message) {
     if (!condition)
@@ -81,30 +94,35 @@ std::shared_ptr<const Image> load_ktx2(std::span<const std::byte> bytes, Texture
     require(levels != 0, "KTX2 level count 0 asks for generated mip levels, which BC7 images cannot have");
     require(levels <= detail::full_mip_levels(width, height), "KTX2 level count exceeds the image's mip chain");
     require(file.u32(supercompression_offset) == 0, "KTX2 supercompression is unsupported");
-    require(!file.u64(sgd_offset + 8), "KTX2 has supercompression global data without supercompression");
+    require(!file.u64(sgd_length_offset), "KTX2 has supercompression global data without supercompression");
     require(file.contains(level_index_offset, std::uint64_t{levels} * level_index_entry),
             "KTX2 level index exceeds the file");
     // The data format descriptor: its total size, then exactly one basic block describing BC7 in the format's
     // transfer function.
-    const auto descriptor = file.u32(dfd_offset), descriptor_bytes = file.u32(dfd_offset + 4);
-    require(file.contains(descriptor, descriptor_bytes) && descriptor_bytes >= 4 + basic_block_header + sample_bytes &&
+    const auto descriptor = file.u32(dfd_offset), descriptor_bytes = file.u32(dfd_length_offset);
+    require(file.contains(descriptor, descriptor_bytes) &&
+                descriptor_bytes >= total_size_bytes + basic_block_header + sample_bytes &&
                 file.u32(descriptor) == descriptor_bytes,
             "Invalid KTX2 data format descriptor");
-    const auto block = std::size_t{descriptor} + 4;
-    require(file.u32(block) == 0 && (file.u32(block + 4) & 0xFFFF) == basic_block_version &&
-                (file.u32(block + 4) >> 16) == descriptor_bytes - 4,
+    const auto block = std::size_t{descriptor} + total_size_bytes;
+    const auto version = file.u32(block + block_version);
+    require(file.u32(block + block_type) == khronos_basic_format && (version & version_mask) == version_1_3 &&
+                version >> block_size_shift == descriptor_bytes - total_size_bytes,
             "KTX2 data format descriptor must be one basic block");
-    require(file.u8(block + 8) == model_bc7 && file.u32(block + 12) == 0x0303 && file.u8(block + 16) == 16,
+    require(file.u8(block + block_model) == model_bc7 && file.u32(block + block_dimensions) == bc7_dimensions &&
+                file.u8(block + block_bytes_plane0) == detail::bc7_block_bytes,
             "KTX2 data format descriptor does not describe BC7");
-    require(file.u8(block + 10) == (srgb ? transfer_srgb : transfer_linear),
+    require(file.u8(block + block_transfer) == (srgb ? transfer_srgb : transfer_linear),
             "KTX2 data format descriptor's transfer function does not match its format");
-    const auto key_values = file.u32(kvd_offset), key_value_bytes = file.u32(kvd_offset + 4);
+    const auto key_values = file.u32(kvd_offset), key_value_bytes = file.u32(kvd_length_offset);
     require(!key_value_bytes || file.contains(key_values, key_value_bytes), "KTX2 key/value data exceed the file");
-    Image image{width, height, {}, ImageFormat::bc7, levels, {}};
-    image.blocks.reserve(detail::bc7_image_bytes(width, height, levels));
+    // Check every level before allocating the image, whose size the header alone would otherwise decide.
+    std::vector<std::span<const std::byte>> stored;
+    stored.reserve(levels);
     for (std::uint32_t level = 0; level < levels; ++level) {
         const auto entry = level_index_offset + std::size_t{level} * level_index_entry;
-        const auto offset = file.u64(entry), length = file.u64(entry + 8), uncompressed = file.u64(entry + 16);
+        const auto offset = file.u64(entry), length = file.u64(entry + level_length),
+                   uncompressed = file.u64(entry + level_uncompressed_length);
         const auto name = "KTX2 mip level " + std::to_string(level);
         require(offset % bc7_alignment == 0, name + " is not aligned to 16 bytes");
         require(offset >= level_index_offset + std::uint64_t{levels} * level_index_entry,
@@ -113,10 +131,15 @@ std::shared_ptr<const Image> load_ktx2(std::span<const std::byte> bytes, Texture
                 name + " does not hold exactly its BC7 blocks");
         require(uncompressed == length, name + " has an uncompressed length other than its length");
         require(file.contains(offset, length), name + " exceeds the file");
-        const auto data = bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
-        for (const auto value : data)
-            image.blocks.push_back(std::to_integer<std::uint8_t>(value));
+        stored.push_back(bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(length)));
     }
+    Image image{width, height, {}, ImageFormat::bc7, levels, {}};
+    image.blocks.resize(detail::bc7_image_bytes(width, height, levels));
+    auto out = image.blocks.begin();
+    for (const auto level : stored)
+        out = std::ranges::transform(level, out, [](std::byte value) {
+                  return std::to_integer<std::uint8_t>(value);
+              }).out;
     return std::make_shared<const Image>(std::move(image));
 }
 std::shared_ptr<const Image> load_ktx2(const std::filesystem::path &path, TextureEncoding encoding) {
@@ -129,7 +152,7 @@ std::shared_ptr<const Image> load_ktx2(const std::filesystem::path &path, Textur
             "KTX2 must be between 1 byte and 64 MiB");
     std::vector<std::byte> bytes(static_cast<std::size_t>(length));
     file.seekg(0);
-    file.read(reinterpret_cast<char *>(bytes.data()), length);
+    file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     require(bool(file), "Cannot read KTX2 file");
     return load_ktx2(bytes, encoding);
 }

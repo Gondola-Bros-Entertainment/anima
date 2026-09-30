@@ -4,6 +4,7 @@
 Needs Python 3 with Pillow, and basisu 2.50 (Homebrew formula basis_universal) and ImageMagick 7 (magick) on PATH.
 """
 import os
+from pathlib import Path
 import shutil
 import struct
 import subprocess
@@ -12,10 +13,52 @@ import tempfile
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# A BC7 block covers BC7_BLOCK_EDGE by BC7_BLOCK_EDGE texels in BC7_BLOCK_BYTES.
+BC7_BLOCK_EDGE, BC7_BLOCK_BYTES = 4, 16
+BC7_BLOCK_BITS = BC7_BLOCK_BYTES * 8
+# Values from vulkan_core.h, khr_df.h and dxgiformat.h.
 VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC7_SRGB_BLOCK = 145, 146
+KHR_DF_KHR_DESCRIPTORTYPE_BASICFORMAT, KHR_DF_VERSIONNUMBER_1_3 = 0, 2
 KHR_DF_MODEL_BC7 = 134
 KHR_DF_TRANSFER_LINEAR, KHR_DF_TRANSFER_SRGB = 1, 2
 KHR_DF_PRIMARIES_BT709 = 1
+KHR_DF_FLAG_ALPHA_STRAIGHT = 0
+KHR_DF_CHANNEL_BC7_COLOR = 0
+DXGI_FORMAT_BC7_UNORM = 98
+# KTX 2.0: the identifier, nine 32-bit header fields, the 32-bit offsets and lengths of the data format descriptor
+# and the key/value data, the 64-bit offset and length of the supercompression global data, then one level index
+# entry of three 64-bit fields per level. Levels start at multiples of BC7_BLOCK_BYTES.
+KTX2_IDENTIFIER = b'\xabKTX 20\xbb\r\n\x1a\n'
+KTX2_HEADER_BYTES = len(KTX2_IDENTIFIER) + 9 * 4 + 4 * 4 + 2 * 8
+KTX2_LEVEL_ENTRY_BYTES = 3 * 8
+# The data format descriptor: its 32-bit total size, the basic block's 24-byte header, and one 16-byte sample of
+# every bit of the block, whose upper value is the largest 32-bit value.
+DFD_TOTAL_SIZE_BYTES, DFD_BASIC_BLOCK_HEADER_BYTES = 4, 24
+DFD_SAMPLE_UPPER = 0xFFFFFFFF
+# DDS: the magic, the 124-byte DDS_HEADER from its dwSize on, and the DDS_HEADER_DXT10, with the fields this script
+# reads at their offsets in the file.
+DDS_MAGIC, DDS_FOURCC_DX10 = b'DDS ', b'DX10'
+DDS_HEADER_BYTES, DDS_PIXELFORMAT_BYTES = 124, 32
+DDS_FILE_HEADER_BYTES = len(DDS_MAGIC) + DDS_HEADER_BYTES + 5 * 4
+DDS_HEIGHT_OFFSET, DDS_FOURCC_OFFSET = 12, 84
+DDSD_CAPS, DDSD_HEIGHT, DDSD_WIDTH, DDSD_PIXELFORMAT, DDSD_LINEARSIZE = 0x1, 0x2, 0x4, 0x1000, 0x80000
+DDPF_FOURCC, DDSCAPS_TEXTURE = 0x4, 0x1000
+D3D10_RESOURCE_DIMENSION_TEXTURE2D = 3
+
+
+class FixtureError(Exception):
+    """A tool's output or this script's own layout is not what the fixtures need."""
+
+
+def require(condition, message):
+    """Raises FixtureError with @p message unless @p condition holds; unlike assert, python -O keeps it."""
+    if not condition:
+        raise FixtureError(message)
+
+
+def blocks_across(texels):
+    """BC7 blocks covering @p texels in one direction."""
+    return (texels + BC7_BLOCK_EDGE - 1) // BC7_BLOCK_EDGE
 
 
 def pattern(width, height):
@@ -67,54 +110,61 @@ def opaque(width, height):
 
 def dfd(transfer):
     """A KTX2 data format descriptor with one basic block describing BC7 with @p transfer."""
-    sample = struct.pack('<HBBBBBBII', 0, 127, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF)
-    block = struct.pack('<IHH', 0, 2, 24 + len(sample))
-    block += bytes([KHR_DF_MODEL_BC7, KHR_DF_PRIMARIES_BT709, transfer, 0, 3, 3, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0])
+    # bitOffset 0 and bitLength minus one, the channel, four sample positions, and the lower and upper values.
+    sample = struct.pack('<HBBBBBBII', 0, BC7_BLOCK_BITS - 1, KHR_DF_CHANNEL_BC7_COLOR, 0, 0, 0, 0, 0,
+                         DFD_SAMPLE_UPPER)
+    block = struct.pack('<IHH', KHR_DF_KHR_DESCRIPTORTYPE_BASICFORMAT, KHR_DF_VERSIONNUMBER_1_3,
+                        DFD_BASIC_BLOCK_HEADER_BYTES + len(sample))
+    # Model, primaries, transfer and flags; four texel block dimensions, each minus one; eight bytesPlane fields.
+    block += bytes([KHR_DF_MODEL_BC7, KHR_DF_PRIMARIES_BT709, transfer, KHR_DF_FLAG_ALPHA_STRAIGHT])
+    block += bytes([BC7_BLOCK_EDGE - 1, BC7_BLOCK_EDGE - 1, 0, 0])
+    block += bytes([BC7_BLOCK_BYTES] + [0] * 7)
     block += sample
-    return struct.pack('<I', 4 + len(block)) + block
+    return struct.pack('<I', DFD_TOTAL_SIZE_BYTES + len(block)) + block
 
 
 def dds_levels(path):
     """Width, height and each mip level's blocks of a BC7 DX10 DDS file."""
-    data = open(path, 'rb').read()
-    assert data[:4] == b'DDS '
-    height, width, _, _, levels = struct.unpack_from('<IIIII', data, 12)
-    assert data[84:88] == b'DX10'
+    data = Path(path).read_bytes()
+    require(data.startswith(DDS_MAGIC), f'{path} is not a DDS file')
+    height, width, _, _, levels = struct.unpack_from('<IIIII', data, DDS_HEIGHT_OFFSET)
+    require(data[DDS_FOURCC_OFFSET:DDS_FOURCC_OFFSET + len(DDS_FOURCC_DX10)] == DDS_FOURCC_DX10,
+            f'{path} has no DX10 header')
     levels = max(levels, 1)
-    offset, result = 148, []
+    offset, result = DDS_FILE_HEADER_BYTES, []
     for level in range(levels):
         w, h = max(width >> level, 1), max(height >> level, 1)
-        size = ((w + 3) // 4) * ((h + 3) // 4) * 16
+        size = blocks_across(w) * blocks_across(h) * BC7_BLOCK_BYTES
         result.append(data[offset:offset + size])
         offset += size
-    assert offset == len(data)
+    require(offset == len(data), f'{path} holds other than its levels\' blocks')
     return width, height, result
 
 
 def write_ktx2(path, width, height, levels, vk_format, transfer):
     """A KTX 2.0 file of @p levels (base level first), without supercompression or key/value data. Level data are
     stored smallest first, each aligned to 16 bytes, as the specification requires."""
-    identifier = b'\xabKTX 20\xbb\r\n\x1a\n'
     descriptor = dfd(transfer)
-    header_bytes = 12 + 9 * 4 + 4 * 4 + 2 * 8 + len(levels) * 24
+    header_bytes = KTX2_HEADER_BYTES + len(levels) * KTX2_LEVEL_ENTRY_BYTES
     dfd_offset = header_bytes
     offset = dfd_offset + len(descriptor)
     placed = [None] * len(levels)
     body = b''
     for level in reversed(range(len(levels))):
-        padding = (-offset) % 16
+        padding = (-offset) % BC7_BLOCK_BYTES
         body += b'\0' * padding
         offset += padding
         placed[level] = (offset, len(levels[level]))
         body += levels[level]
         offset += len(levels[level])
-    header = identifier + struct.pack('<9I', vk_format, 1, width, height, 0, 0, 1, len(levels), 0)
+    # vkFormat, typeSize, pixelWidth, pixelHeight, pixelDepth, layerCount, faceCount, levelCount and
+    # supercompressionScheme: one 2D image without supercompression.
+    header = KTX2_IDENTIFIER + struct.pack('<9I', vk_format, 1, width, height, 0, 0, 1, len(levels), 0)
     header += struct.pack('<IIIIQQ', dfd_offset, len(descriptor), 0, 0, 0, 0)
     for start, size in placed:
         header += struct.pack('<QQQ', start, size, size)
-    assert len(header) == header_bytes
-    with open(path, 'wb') as file:
-        file.write(header + descriptor + body)
+    require(len(header) == header_bytes, 'The KTX2 header layout is wrong')
+    Path(path).write_bytes(header + descriptor + body)
 
 
 def decoded_atlas(dds, work, name):
@@ -129,9 +179,9 @@ def decoded_atlas(dds, work, name):
                .convert('RGBA') for level in level_names]
     magick = os.path.join(work, f'{name}-magick.png')
     subprocess.run(['magick', dds, magick], check=True)
-    whole = (0, 0, width // 4 * 4, height // 4 * 4)
-    assert Image.open(magick).convert('RGBA').crop(whole).tobytes() == decoded[0].crop(whole).tobytes(), \
-        f'basisu and ImageMagick decode {name} differently'
+    whole = (0, 0, width // BC7_BLOCK_EDGE * BC7_BLOCK_EDGE, height // BC7_BLOCK_EDGE * BC7_BLOCK_EDGE)
+    require(Image.open(magick).convert('RGBA').crop(whole).tobytes() == decoded[0].crop(whole).tobytes(),
+            f'basisu and ImageMagick decode {name} differently')
     atlas = Image.new('RGBA', (sum(level.width for level in decoded), height))
     x = 0
     for level in decoded:
@@ -160,13 +210,13 @@ class Bits:
         self.value, self.count = 0, 0
 
     def put(self, value, bits):
-        assert 0 <= value < (1 << bits)
+        require(0 <= value < (1 << bits), f'{value} does not fit in {bits} bits')
         self.value |= value << self.count
         self.count += bits
 
     def block(self):
-        assert self.count == 128
-        return self.value.to_bytes(16, 'little')
+        require(self.count == BC7_BLOCK_BITS, f'A BC7 block holds {self.count} bits')
+        return self.value.to_bytes(BC7_BLOCK_BYTES, 'little')
 
 
 def partition_blocks():
@@ -204,13 +254,19 @@ def partition_blocks():
 
 def write_dds(path, width, height, blocks, dxgi_format):
     """A DX10 DDS file of one level of BC7 @p blocks, for basisu and ImageMagick to decode."""
-    header = struct.pack('<4s7I44x', b'DDS ', 124, 0x81007, height, width, len(blocks) * 16, 0, 1)
-    header += struct.pack('<2I4s5I', 32, 0x4, b'DX10', 0, 0, 0, 0, 0)
-    header += struct.pack('<5I', 0x1000, 0, 0, 0, 0)
-    header += struct.pack('<5I', dxgi_format, 3, 0, 1, 0)
-    assert len(header) == 148
-    with open(path, 'wb') as file:
-        file.write(header + b''.join(blocks))
+    flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE
+    # The magic, then DDS_HEADER: dwSize, dwFlags, dwHeight, dwWidth, dwPitchOrLinearSize, dwDepth, dwMipMapCount
+    # and 11 reserved words.
+    header = struct.pack('<4s7I44x', DDS_MAGIC, DDS_HEADER_BYTES, flags, height, width,
+                         len(blocks) * BC7_BLOCK_BYTES, 0, 1)
+    # DDS_PIXELFORMAT: dwSize, dwFlags, dwFourCC and five unused masks; then dwCaps, three more caps and a
+    # reserved word.
+    header += struct.pack('<2I4s5I', DDS_PIXELFORMAT_BYTES, DDPF_FOURCC, DDS_FOURCC_DX10, 0, 0, 0, 0, 0)
+    header += struct.pack('<5I', DDSCAPS_TEXTURE, 0, 0, 0, 0)
+    # DDS_HEADER_DXT10: dxgiFormat, resourceDimension, miscFlag, arraySize and miscFlags2.
+    header += struct.pack('<5I', dxgi_format, D3D10_RESOURCE_DIMENSION_TEXTURE2D, 0, 1, 0)
+    require(len(header) == DDS_FILE_HEADER_BYTES, 'The DDS header layout is wrong')
+    Path(path).write_bytes(header + b''.join(blocks))
 
 
 def main():
@@ -234,15 +290,16 @@ def main():
                        VK_FORMAT_BC7_UNORM_BLOCK if linear else VK_FORMAT_BC7_SRGB_BLOCK,
                        KHR_DF_TRANSFER_LINEAR if linear else KHR_DF_TRANSFER_SRGB)
             decoded_atlas(dds, work, name).save(os.path.join(HERE, f'{name}-bc7-decoded.png'))
-        # 128 blocks, 16 across, in the order partition_blocks() makes them.
+        # The blocks lie row by row in the order partition_blocks() makes them.
         blocks = partition_blocks()
-        width, height = 64, 32
-        rows = [b''.join(blocks[row * 16 + column] for column in range(16)) for row in range(8)]
+        blocks_per_row = 16
+        width, height = blocks_per_row * BC7_BLOCK_EDGE, len(blocks) // blocks_per_row * BC7_BLOCK_EDGE
         dds = os.path.join(work, 'partitions.dds')
-        write_dds(dds, width, height, [rows[row][i:i + 16] for row in range(8) for i in range(0, 256, 16)], 98)
-        write_ktx2(os.path.join(HERE, 'partitions-bc7.ktx2'), width, height, [b''.join(rows)],
+        write_dds(dds, width, height, blocks, DXGI_FORMAT_BC7_UNORM)
+        write_ktx2(os.path.join(HERE, 'partitions-bc7.ktx2'), width, height, [b''.join(blocks)],
                    VK_FORMAT_BC7_UNORM_BLOCK, KHR_DF_TRANSFER_LINEAR)
         decoded_atlas(dds, work, 'partitions').save(os.path.join(HERE, 'partitions-bc7-decoded.png'))
 
 
-main()
+if __name__ == '__main__':
+    main()

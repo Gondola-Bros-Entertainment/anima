@@ -234,6 +234,10 @@ struct MipLevel {
 /// cannot sample them. Throws `std::invalid_argument` for an image without texels, or one that
 /// validate_scene() rejects.
 [[nodiscard]] std::vector<MipLevel> decode_image(const Image &image);
+/// The first @p levels levels of @p image, decoded as decode_image(const Image &) decodes them, without decoding
+/// the rest. Throws `std::invalid_argument` as that overload does, and when @p levels is 0 or more than
+/// Image::levels.
+[[nodiscard]] std::vector<MipLevel> decode_image(const Image &image, std::uint32_t levels);
 /// Mip chain of a base-color texture, as texture_mips(const Texture &) builds it. Throws
 /// `std::invalid_argument` unless @p texture uses TextureEncoding::srgb.
 [[nodiscard]] std::vector<MipLevel> base_color_mips(const Texture &texture);
