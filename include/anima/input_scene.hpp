@@ -64,7 +64,7 @@ void add_component_codec(ComponentCodecs &codecs);
 /// `std::logic_error` while the scene is updating, under construction or destroyed.
 void begin_frame(Scene &scene);
 /// Starts an input frame for every scene of @p scenes as begin_frame(Scene &) does. Also throws
-/// `std::logic_error` while the set is changing.
+/// `std::logic_error` while the set is busy, as SceneSet describes.
 void begin_frame(SceneSet &scenes);
 /// Delivers @p event through Context::process to every ActionInput of @p scene, after applying
 /// each component's activity through Context::set_enabled.
@@ -76,6 +76,6 @@ void begin_frame(SceneSet &scenes);
 void dispatch(Scene &scene, const Event &event);
 /// Delivers @p event across every scene of @p scenes as dispatch(Scene &, const Event &) does,
 /// staging all of them before any changes. Also throws `std::logic_error` while the set is
-/// changing.
+/// busy, as SceneSet describes.
 void dispatch(SceneSet &scenes, const Event &event);
 } // namespace anima::input

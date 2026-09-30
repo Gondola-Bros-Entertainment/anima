@@ -91,8 +91,7 @@ struct Reentry {
     unsigned *calls;
     void on_update(double) {
         CHECK_THROWS_WITH_AS(lighting_environment(*scene), busy_scene, std::logic_error);
-        CHECK_THROWS_WITH_AS(lighting_environment(*scenes),
-                             "Scene drivers cannot run during set mutation or scheduling", std::logic_error);
+        CHECK_THROWS_WITH_AS(lighting_environment(*scenes), "Scene set is updating", std::logic_error);
         ++*calls;
     }
 };

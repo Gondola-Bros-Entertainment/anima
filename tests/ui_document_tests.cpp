@@ -106,9 +106,9 @@ class Session {
 #ifdef TEST_UI_SCENE
 constexpr auto busy_scene = "Scene drivers require an idle live scene";
 constexpr auto nested_updates = "Component updates cannot be nested";
-constexpr auto membership_in_callbacks = "Scene membership cannot change during scene callbacks";
-constexpr auto set_scheduling = "Scene drivers cannot run during set mutation or scheduling";
-constexpr auto nested_membership = "Scene membership changes cannot be nested";
+constexpr auto member_callbacks = "A member scene is running callbacks";
+constexpr auto set_updating = "Scene set is updating";
+constexpr auto set_driven = "Scene set is held by a scene driver";
 
 // Whether @p f throws std::logic_error with @p message; for noexcept component hooks, where an assertion
 // cannot report directly.
@@ -131,19 +131,20 @@ struct PanelDriverProbe {
     PanelDriverChecks &checks;
     PanelDriverProbe(Scene &owner, SceneSet &selection, PanelDriverChecks &results)
         : scene(owner), scenes(selection), checks(results) {
-        attempt(busy_scene);
+        attempt(member_callbacks);
     }
-    // @p set_error is what the scene set reports: its scheduling while it runs this hook, else the busy scene.
+    // @p set_error is what the scene set reports: that it is updating while its update runs this hook, else that
+    // a member scene is running callbacks.
     void attempt(std::string_view set_error) noexcept {
         ++checks.calls;
         checks.rejected &= driver_rejected([&] { sync_ui_panels(scene); }, busy_scene);
         checks.rejected &= driver_rejected([&] { sync_ui_panels(scenes); }, set_error);
     }
-    void on_enable() noexcept { attempt(set_scheduling); }
-    void on_disable() noexcept { attempt(busy_scene); }
-    void on_update(double) { attempt(set_scheduling); }
-    void on_fixed_update(double) { attempt(set_scheduling); }
-    void on_late_update(double) { attempt(set_scheduling); }
+    void on_enable() noexcept { attempt(set_updating); }
+    void on_disable() noexcept { attempt(member_callbacks); }
+    void on_update(double) { attempt(set_updating); }
+    void on_fixed_update(double) { attempt(set_updating); }
+    void on_late_update(double) { attempt(set_updating); }
 };
 struct Payload {
     std::string state, error;
@@ -440,18 +441,18 @@ TEST_CASE("Panel drivers reject reentry from UI events and component callbacks")
     auto first = scenes.create("first"), second = scenes.create("second");
     auto object = first->create();
     auto panel = object.add_component<UiPanel>(host, "controls", controls, false);
-    // Whether the set's driver dispatches the event. It then reports its own mutation; while one scene's driver
-    // dispatches it, the set reports the busy scene and scene callbacks instead.
+    // Whether the set's driver dispatches the event. The set then reports that a scene driver holds it; while one
+    // scene's driver dispatches it, the set reports that a member scene is running callbacks instead.
     bool complete_set = true;
     unsigned events = 0;
     const auto attempt = [&](const UiEvent &) {
         ++events;
         CHECK_THROWS_WITH_AS(sync_ui_panels(first.get()), busy_scene, std::logic_error);
-        CHECK_THROWS_WITH_AS(sync_ui_panels(scenes), complete_set ? set_scheduling : busy_scene, std::logic_error);
+        const auto set_error = complete_set ? set_driven : member_callbacks;
+        CHECK_THROWS_WITH_AS(sync_ui_panels(scenes), set_error, std::logic_error);
         CHECK_THROWS_WITH_AS(first->update(0), nested_updates, std::logic_error);
-        const auto membership = complete_set ? nested_membership : membership_in_callbacks;
-        CHECK_THROWS_WITH_AS(scenes.fixed_update(0), membership, std::logic_error);
-        CHECK_THROWS_WITH_AS(scenes.create("nested"), membership, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes.fixed_update(0), set_error, std::logic_error);
+        CHECK_THROWS_WITH_AS(scenes.create("nested"), set_error, std::logic_error);
         if (complete_set)
             CHECK_THROWS_WITH_AS(second->update(0), nested_updates, std::logic_error);
     };

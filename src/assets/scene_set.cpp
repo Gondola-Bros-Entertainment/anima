@@ -23,30 +23,47 @@ std::string SceneRef::key() const { return lock()->key; }
 Scene &SceneRef::get() const { return *lock()->scene; }
 std::shared_ptr<const Scene> SceneRef::render_scene() const { return lock()->scene; }
 
+void SceneSet::require_idle() const {
+    switch (activity_) {
+    case Activity::idle:
+        break;
+    case Activity::updating:
+        throw std::logic_error("Scene set is updating");
+    case Activity::changing_membership:
+        throw std::logic_error("Scene set is changing membership");
+    case Activity::serializing:
+        throw std::logic_error("Scene set is serializing");
+    case Activity::driving:
+        throw std::logic_error("Scene set is held by a scene driver");
+    }
+    for (const auto &record : scenes_)
+        if (record->scene->updating_ || record->scene->constructing_)
+            throw std::logic_error("A member scene is running callbacks");
+}
+// Holds an idle set for one update or membership change.
 class SceneSet::Mutation {
   public:
-    explicit Mutation(SceneSet &owner) : owner_(owner) {
-        if (owner_.mutating_)
-            throw std::logic_error("Scene membership changes cannot be nested");
-        for (const auto &record : owner_.scenes_)
-            if (record->scene->updating_ || record->scene->constructing_)
-                throw std::logic_error("Scene membership cannot change during scene callbacks");
-        owner_.mutating_ = true;
+    Mutation(SceneSet &owner, Activity activity) : owner_(owner) {
+        owner_.require_idle();
+        owner_.activity_ = activity;
     }
-    ~Mutation() { owner_.mutating_ = false; }
+    ~Mutation() { owner_.activity_ = Activity::idle; }
+    Mutation(const Mutation &) = delete;
+    Mutation &operator=(const Mutation &) = delete;
 
   private:
     SceneSet &owner_;
 };
 SceneSet::~SceneSet() {
-    // As for Scene: the update, membership change or driver on the stack resumes after its callback.
-    if (mutating_) {
-        std::fputs("SceneSet destroyed while updating, changing membership or held by a scene driver; "
+    // As for Scene: the update, membership change, serialization or driver on the stack resumes after its
+    // callback.
+    if (activity_ != Activity::idle) {
+        std::fputs("SceneSet destroyed while updating, changing membership, serializing or held by a scene driver; "
                    "destroy it after the call returns\n",
                    stderr);
         std::terminate();
     }
-    mutating_ = true;
+    activity_ = Activity::changing_membership;
     retire_all();
 }
 void SceneSet::check_key(std::string_view key) const {
@@ -70,13 +87,13 @@ SceneRef SceneSet::append(std::string key, std::shared_ptr<Scene> scene) {
     return SceneRef(record);
 }
 SceneRef SceneSet::create(std::string key) {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::changing_membership);
     check_key(key);
     return append(std::move(key), std::make_shared<Scene>());
 }
 SceneRef SceneSet::load(std::string key, std::string_view document, const MeshResolver &resolve,
                         const ComponentCodecs &codecs, const CustomMaterialResolver &materials) {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::changing_membership);
     check_key(key);
     return append(std::move(key), load_scene(document, resolve, codecs, materials));
 }
@@ -112,7 +129,7 @@ std::vector<SceneSet::Link> SceneSet::links_into(const Scene &retired, const Com
 }
 SceneRef SceneSet::replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
                            const ComponentCodecs &codecs, const CustomMaterialResolver &materials) {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::changing_membership);
     const auto slot = index(target);
     auto old = scenes_[slot];
     auto next = std::make_shared<detail::SceneRecord>(detail::SceneRecord{
@@ -138,12 +155,12 @@ SceneRef SceneSet::replace(SceneRef target, std::string_view document, const Mes
     return SceneRef(next);
 }
 std::string SceneSet::serialize(const MeshName &name, const ComponentCodecs &codecs) {
-    const detail::SceneDriver::Scope scope(*this);
+    const detail::SceneDriver::Scope scope(*this, Activity::serializing);
     return detail::serialize_scene_set(*this, name, codecs);
 }
 void SceneSet::restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs,
                        const CustomMaterialResolver &materials) {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::changing_membership);
     auto staged = detail::json_step([&] { return detail::load_scene_set(document, resolve, materials, codecs); });
     // Publication cannot allocate. The staged owner now retires the old set;
     // cleanup callbacks observe the complete committed replacement.
@@ -151,7 +168,7 @@ void SceneSet::restore(std::string_view document, const MeshResolver &resolve, c
     active_.swap(staged->active_);
 }
 std::vector<ClearedLink> SceneSet::unload(SceneRef scene, const ComponentCodecs &codecs) {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::changing_membership);
     const auto slot = index(scene);
     auto old = scenes_[slot];
     const auto links = links_into(*old->scene, codecs);
@@ -183,7 +200,7 @@ void SceneSet::retire_all() noexcept {
         record->scene->release();
 }
 void SceneSet::clear() {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::changing_membership);
     retire_all();
 }
 std::vector<SceneRef> SceneSet::scenes() const {
@@ -201,7 +218,7 @@ std::vector<std::shared_ptr<const Scene>> SceneSet::render_scenes() const {
     return result;
 }
 void SceneSet::run_components(double seconds, bool fixed, bool lifecycle_only) {
-    const Mutation mutation(*this);
+    const Mutation mutation(*this, Activity::updating);
     std::vector<Scene *> selected;
     selected.reserve(scenes_.size());
     for (const auto &record : scenes_)
@@ -219,7 +236,7 @@ SceneRef SceneSet::find(std::string_view key) const noexcept {
 }
 SceneRef SceneSet::active() const noexcept { return SceneRef(active_.lock()); }
 void SceneSet::set_active(SceneRef scene) {
-    const Mutation mutation(*this);
+    require_idle(); // Selecting runs no callback, so it need not hold the set.
     active_ = scenes_[index(scene)];
 }
 SceneAddress SceneSet::address(GameObject object) const {

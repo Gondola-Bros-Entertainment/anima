@@ -48,7 +48,7 @@ class Agent {
 /// `std::logic_error` while the scene is updating, constructing a component or being destroyed.
 void update_agents(Scene &scene, double seconds);
 /// Updates every scene of @p scenes as update_agents(Scene &, double) does, computing all agents before publishing
-/// any. Also throws `std::logic_error` while the set is changing.
+/// any. Also throws `std::logic_error` while the set is busy, as SceneSet describes.
 void update_agents(SceneSet &scenes, double seconds);
 /// Registers the `anima.navigation-agent.v1` component codec for Agent. It binds no world or other service. Throws
 /// when @p codecs already has an Agent codec or that key.

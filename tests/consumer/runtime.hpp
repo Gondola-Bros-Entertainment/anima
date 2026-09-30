@@ -38,19 +38,14 @@ struct Reentry {
     physics2d::World *plane;
     Audio *audio;
     void on_fixed_update(double seconds) {
-        rejects<std::logic_error>([&] { input::begin_frame(*scenes); },
-                                  "Scene drivers cannot run during set mutation or scheduling");
+        rejects<std::logic_error>([&] { input::begin_frame(*scenes); }, "Scene set is updating");
         rejects<std::logic_error>(
             [&] { input::dispatch(*scenes, {input::EventType::control, {input::ControlKind::key, 44, 0}, 1}); },
-            "Scene drivers cannot run during set mutation or scheduling");
-        rejects<std::logic_error>([&] { navigation::update_agents(*scenes, seconds); },
-                                  "Scene drivers cannot run during set mutation or scheduling");
-        rejects<std::logic_error>([&] { physics::step(*scenes, *volume, seconds); },
-                                  "Scene drivers cannot run during set mutation or scheduling");
-        rejects<std::logic_error>([&] { physics2d::step(*scenes, *plane, seconds); },
-                                  "Scene drivers cannot run during set mutation or scheduling");
-        rejects<std::logic_error>([&] { synchronize_audio(*scenes, *audio); },
-                                  "Scene drivers cannot run during set mutation or scheduling");
+            "Scene set is updating");
+        rejects<std::logic_error>([&] { navigation::update_agents(*scenes, seconds); }, "Scene set is updating");
+        rejects<std::logic_error>([&] { physics::step(*scenes, *volume, seconds); }, "Scene set is updating");
+        rejects<std::logic_error>([&] { physics2d::step(*scenes, *plane, seconds); }, "Scene set is updating");
+        rejects<std::logic_error>([&] { synchronize_audio(*scenes, *audio); }, "Scene set is updating");
     }
 };
 struct FrameCounts {

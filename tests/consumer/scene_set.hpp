@@ -31,22 +31,21 @@ struct Probe {
         try {
             set->clear();
         } catch (const std::logic_error &error) {
-            if (std::string_view(error.what()) == "Scene membership changes cannot be nested")
+            if (std::string_view(error.what()) == "Scene set is changing membership")
                 ++counts->rejected;
         }
     }
     void on_update(double) {
         ++counts->updates;
-        rejects<std::logic_error>([&] { set->clear(); }, "Scene membership changes cannot be nested");
-        rejects<std::logic_error>([&] { (void)set->create("during-update"); },
-                                  "Scene membership changes cannot be nested");
-        rejects<std::logic_error>([&] { set->set_active(set->active()); }, "Scene membership changes cannot be nested");
+        rejects<std::logic_error>([&] { set->clear(); }, "Scene set is updating");
+        rejects<std::logic_error>([&] { (void)set->create("during-update"); }, "Scene set is updating");
+        rejects<std::logic_error>([&] { set->set_active(set->active()); }, "Scene set is updating");
     }
 };
 struct Construct {
     Construct(GameObject object, SceneSet &set) {
-        rejects<std::logic_error>([&] { set.unload(set.active()); },
-                                  "Scene membership cannot change during scene callbacks");
+        rejects<std::logic_error>([&] { set.unload(set.active()); }, "A member scene is running callbacks");
+        rejects<std::logic_error>([&] { set.update(0); }, "A member scene is running callbacks");
         rejects<std::logic_error>([&] { set.active()->synchronize_lifecycle(); }, "Component updates cannot be nested");
         object.set_name("constructed");
     }
@@ -66,9 +65,9 @@ struct PhaseProbe {
     bool add;
     void on_update(double) {
         ++counts->frame;
-        rejects<std::logic_error>([&] { set->update(0); }, "Scene membership changes cannot be nested");
+        rejects<std::logic_error>([&] { set->update(0); }, "Scene set is updating");
         rejects<std::logic_error>([&] { peer->update(0); }, "Component updates cannot be nested");
-        rejects<std::logic_error>([&] { set->unload(peer); }, "Scene membership changes cannot be nested");
+        rejects<std::logic_error>([&] { set->unload(peer); }, "Scene set is updating");
         if (add) {
             destination.add_component<Added>(counts);
             dormant.set_active(true);
@@ -93,7 +92,7 @@ struct PinnedCleanup {
         try {
             set->clear();
         } catch (const std::logic_error &error) {
-            if (std::string_view(error.what()) == "Scene membership changes cannot be nested")
+            if (std::string_view(error.what()) == "Scene set is updating")
                 ++counts->cleanup_rejected;
         }
     }
@@ -132,10 +131,10 @@ inline ComponentCodecs persistence_codecs(PersistenceCounts &counts, SceneSet *d
         [](const SetOwned &value, const ObjectReferences &) { return value.accepted ? "ok" : "fail"; },
         [&counts, destination](GameObject object, std::string_view state, const ObjectReferences &) {
             if (destination) {
-                rejects<std::logic_error>([&] { destination->clear(); }, "Scene membership changes cannot be nested");
-                rejects<std::logic_error>([&] { destination->update(0); }, "Scene membership changes cannot be nested");
+                rejects<std::logic_error>([&] { destination->clear(); }, "Scene set is changing membership");
+                rejects<std::logic_error>([&] { destination->update(0); }, "Scene set is changing membership");
                 rejects<std::logic_error>([&] { (void)destination->serialize({}); },
-                                          "Scene drivers cannot run during set mutation or scheduling");
+                                          "Scene set is changing membership");
             }
             object.add_component<SetOwned>(counts);
             counts.decoded.push_back(object);
@@ -194,7 +193,8 @@ inline void persistence() {
     };
     const auto document = authored.serialize(
         [&](const auto &resource) {
-            rejects<std::logic_error>([&] { authored.clear(); }, "Scene membership changes cannot be nested");
+            rejects<std::logic_error>([&] { authored.clear(); }, "Scene set is serializing");
+            rejects<std::logic_error>([&] { authored.update(0); }, "Scene set is serializing");
             rejects<std::logic_error>([&] { alpha->update(0); }, "Component updates cannot be nested");
             return name(resource);
         },
@@ -444,7 +444,7 @@ inline void run() {
         "test.failure.v1",
         [](const Failure &value, const ObjectReferences &) { return value.valid ? "{}" : "malformed"; },
         [&](GameObject object, std::string_view state, const ObjectReferences &) {
-            rejects<std::logic_error>([&] { set.unload(extra); }, "Scene membership changes cannot be nested");
+            rejects<std::logic_error>([&] { set.unload(extra); }, "Scene set is changing membership");
             object.add_component<Failure>();
             if (state != "{}")
                 throw std::invalid_argument("Fixture state must be an empty object");

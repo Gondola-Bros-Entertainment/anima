@@ -575,24 +575,23 @@ inline void run() {
         crawler(workspace.directory / "4/actor.profile.json");
     InteractionRuntime::Actors actors{{"pilot", pilot.actor}, {"crawler", crawler.actor}};
     const std::string layers = R"({"layers":[{"clip":"drift","interval":[0,1]}]})";
-    const std::string roles = "{\"pilot\":{\"dock\":" + layers + ",\"link\":" + layers + ",\"undock\":" + layers +
-                              "},\"crawler\":{\"dock\":" + layers + ",\"link\":" + layers + ",\"undock\":" + layers +
-                              "}}";
+    const std::string phases = "{\"dock\":" + layers + ",\"link\":" + layers + ",\"undock\":" + layers + "}";
+    const std::string roles = "{\"pilot\":" + phases + ",\"crawler\":" + phases + "}";
     const std::string weights = R"({"dock":[[0,0],[1,1]],"link":[[0,1],[1,1]],"undock":[[0,1],[1,0]]})";
     const std::string edge =
         R"({"child":"pilot","parent":"crawler","child_socket":"port","parent_socket":"port","weights":)" + weights +
         "}";
-    const auto interaction_document = [&](const std::string &edges) {
+    const auto interaction_document = [&](const std::string &edges, const std::string &members) {
         return R"({"version":1,"id":"dock","phases":[{"id":"dock","duration":0.2},{"id":"link","duration":0.4,"held":true},{"id":"undock","duration":0.2}],"roles":)" +
-               roles + ",\"attachments\":[" + edges +
+               members + ",\"attachments\":[" + edges +
                R"(],"contacts":[{"child":"pilot","parent":"crawler","chain":"starboard","target_socket":"starboard","pole":[2,0,1],"weights":)" +
                weights + "}]}";
     };
-    InteractionRuntime interaction(actors, interaction_document(edge));
+    InteractionRuntime interaction(actors, interaction_document(edge, roles));
     rejects<std::invalid_argument>(
         [&] {
             InteractionRuntime unknown(
-                actors, with_first(interaction_document(edge), R"("chain":"starboard")", R"("chain":"absent")"));
+                actors, with_first(interaction_document(edge, roles), R"("chain":"starboard")", R"("chain":"absent")"));
         },
         "Unknown motion chain: absent");
     auto parent_world = identity();
@@ -616,9 +615,15 @@ inline void run() {
     const std::string reverse =
         R"({"child":"crawler","parent":"pilot","child_socket":"port","parent_socket":"port","weights":)" + weights +
         "}";
+    // Attachments must be fewer than roles, so a cycle of two attachments needs a third role outside it.
+    auto observed = actors;
+    observed.emplace("observer", pilot.actor);
+    const auto observed_roles = "{\"pilot\":" + phases + ",\"crawler\":" + phases + ",\"observer\":" + phases + "}";
+    const InteractionRuntime unattached(observed, interaction_document(edge, observed_roles));
+    check(unattached.bindings().roles().size() == 3, "An unattached role was not accepted");
     rejects<std::invalid_argument>(
-        [&] { InteractionRuntime cycle(actors, interaction_document(edge + "," + reverse)); },
-        "Invalid interaction role or attachment count");
+        [&] { InteractionRuntime cycle(observed, interaction_document(edge + "," + reverse, observed_roles)); },
+        "Cyclic interaction placement ownership");
     worlds.erase("pilot");
     rejects<std::invalid_argument>([&] { interaction.sample(.5, {}, worlds); },
                                    "Every interaction role needs a free placement");

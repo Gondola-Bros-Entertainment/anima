@@ -82,7 +82,8 @@ class SceneEnvironment {
 /// after scene updates; geometry and camera selection are separate.
 [[nodiscard]] Environment lighting_environment(Scene &scene);
 /// Resolves as lighting_environment(Scene &) does across every scene of @p scenes, so links may cross scenes;
-/// SceneSet::active() plays no part. Also throws `std::logic_error` while the set is changing.
+/// SceneSet::active() plays no part. Also throws `std::logic_error` while the set is busy, as SceneSet
+/// describes.
 [[nodiscard]] Environment lighting_environment(SceneSet &scenes);
 
 /// Registers the `anima.directional-light.v1` and `anima.scene-environment.v1` component codecs together,
