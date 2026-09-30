@@ -37,6 +37,13 @@ template <class Operation> bool fails_after(std::size_t allowed, Operation &&ope
     allocation_counter::failing = false;
     return false;
 }
+// While MSVC's iterator debugging is on, as in its Debug configuration, its library allocates a container proxy in
+// noexcept constructors such as std::vector's default one, so a failure injected there terminates the program.
+#if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL > 0
+constexpr bool noexcept_constructors_allocate = true;
+#else
+constexpr bool noexcept_constructors_allocate = false;
+#endif
 
 // A one-triangle mesh with one node.
 std::shared_ptr<const anima::Mesh> triangle() {
@@ -163,7 +170,8 @@ TEST_CASE("Dispatching input allocates no more for a larger action map") {
     CHECK(large <= small);
 }
 
-TEST_CASE("Dispatching input changes no context when an allocation fails") {
+TEST_CASE("Dispatching input changes no context when an allocation fails" *
+          doctest::skip(noexcept_constructors_allocate)) {
     namespace i = anima::input;
     const i::Map map{{"look", i::ActionType::axis, {{{i::ControlKind::mouse_motion, 0}}}},
                      {"jump", i::ActionType::button, {{{i::ControlKind::key, 44}}}}};
