@@ -15,11 +15,21 @@ them compile as C++ and add no language runtime dependency.
 | [miniaudio 0.11.25](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d) | `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d` (`0.11.25` tag) | `miniaudio/miniaudio.h`, `miniaudio/LICENSE` (public domain or MIT No Attribution; Anima uses MIT No Attribution); private to `anima::core` |
 | [stb_vorbis 1.22](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d/extras) | miniaudio's `extras/stb_vorbis.c` at the same revision | `miniaudio/stb_vorbis.c` (MIT or public domain, stated at the end of the file; Anima uses MIT); private to `anima::core` |
 
-The cgltf, JSON, doctest, Vulkan Memory Allocator, miniaudio and stb_vorbis files
-are unmodified. stb_image carries two local size-safety changes: 16-bit channel
+The cgltf, JSON, doctest, Vulkan Memory Allocator and stb_vorbis files are
+unmodified. stb_image carries two local size-safety changes: 16-bit channel
 conversion uses its checked allocation helper, and 8-bit PNG row copying reuses the
-validated row byte count. The upstream revision and license remain unchanged; the
-checksum below identifies the patched header.
+validated row byte count. miniaudio carries two local changes that make spatial
+mixing agree across targets. `ma_rsqrtf`, which normalizes the listener's axes,
+computes an exact reciprocal square root; upstream uses SSE's `rsqrtss`, an
+approximation to about 12 bits that placed sources slightly nearer on x86, so that
+one at its maximum distance stayed faintly audible. The stereo gain ramp's paths
+that step two frames at a time, taken with SSE2 and by MSVC without it, advance two
+frames' gain per step and give an odd last frame the gain that follows; upstream
+advances one frame's gain and gives that frame the ramp's starting gain, so a ramp
+covered half its change and the rest arrived at once in the next block. Anima mixes
+in stereo, so the six-channel path, which steps the same way, is left as upstream.
+The upstream revisions and licenses remain unchanged; the checksums below identify
+the patched headers.
 
 JSON parsing is private to asset and component document implementations; public
 APIs accept UTF-8 document strings. `anima::core` does not include or link the JSON
@@ -54,7 +64,7 @@ cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421  doctest/doctes
 0fe0b331fa1513dcce8604ff1fa925f32d1cea17d8aeb1c2471fad40d291adc5  doctest/LICENSE.txt
 8487b7995ad3b263eb73bc5b9a77d71aa69b6bef5d58a715c02d2663afd81f1a  vma/vk_mem_alloc.h
 52df2c03d6cfc9ffec13c9d3626c530fc9ce0cbe41d5ea3d10cd46edeb1aeb38  vma/LICENSE.txt
-ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89  miniaudio/miniaudio.h
+1760f0ca949e885e971600406ee223616c701c0bf6920584571cff85570b4f75  miniaudio/miniaudio.h
 457f1b500e0adf6bc059edddfa78a2f62012e7c3bb43476c20e0bd23b25ba0eb  miniaudio/LICENSE
 4c7cb2ff1f7011e9d67950446b7eb9ca044f2e464d76bfbb0b84dd2e23e65636  miniaudio/stb_vorbis.c
 ```

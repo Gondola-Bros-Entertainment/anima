@@ -345,6 +345,34 @@ TEST_CASE("Spatial voices attenuate with distance and weight channels by directi
     CHECK(centered[0] == Near{std::sqrt(.5), 1e-5});
 }
 
+TEST_CASE("Spatial changes ramp linearly across the block they land in") {
+    constexpr std::size_t block = audio_block_frames;
+    Audio audio(rate);
+    auto sound = audio.sound(AudioClip::pcm({1, 1}, 1, rate));
+    sound.looping(true);
+    sound.spatial(true);
+    sound.attenuation(0, 4);
+    sound.position({0, 0, -2}); // A quarter on each side.
+    sound.play();
+    (void)render(audio, 4 * block); // Whole blocks, so that the next change lands at the start of one.
+    // Frame k of the block has moved k / audio_block_frames of the way to the new gains.
+    const auto check = [](const std::vector<float> &output, std::size_t frame, double from, double to) {
+        CAPTURE(frame);
+        const auto expected = from + (to - from) * static_cast<double>(frame) / block;
+        CHECK(output[2 * frame] == Near{expected, tolerance});
+        CHECK(output[2 * frame + 1] == Near{expected, tolerance});
+    };
+    sound.position({4, 0, 0}); // Silent.
+    auto output = render(audio, block);
+    for (const std::size_t frame : {std::size_t{1}, block / 2, block - 1})
+        check(output, frame, .25, 0);
+    // A render that ends partway through a block ends the block early, here after an odd number of frames.
+    sound.position({0, 0, -2});
+    output = render(audio, block / 2 + 1);
+    for (const std::size_t frame : {block / 2 - 1, block / 2})
+        check(output, frame, 0, .25);
+}
+
 TEST_CASE("Clips resample linearly and the mix is limited") {
     Audio audio(16000);
     auto sound = audio.sound(AudioClip::pcm({0, 1, 0, -1}, 1, rate));

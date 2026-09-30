@@ -12404,35 +12404,7 @@ static MA_INLINE double ma_sqrtd(double x)
 
 static MA_INLINE float ma_rsqrtf(float x)
 {
-    #if defined(MA_SUPPORT_SSE2) && !defined(MA_NO_SSE2) && (defined(MA_X64) || (defined(_M_IX86_FP) && _M_IX86_FP == 2) || defined(__SSE2__))
-    {
-        /*
-        For SSE we can use RSQRTSS.
-
-        This Stack Overflow post suggests that compilers don't necessarily generate optimal code
-        when using intrinsics:
-
-            https://web.archive.org/web/20221211012522/https://stackoverflow.com/questions/32687079/getting-fewest-instructions-for-rsqrtss-wrapper
-
-        I'm going to do something similar here, but a bit simpler.
-        */
-        #if defined(__GNUC__) || defined(__clang__)
-        {
-            float result;
-            __asm__ __volatile__("rsqrtss %1, %0" : "=x"(result) : "x"(x));
-            return result;
-        }
-        #else
-        {
-            return _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ps1(x)));
-        }
-        #endif
-    }
-    #else
-    {
-        return 1 / (float)ma_sqrtd(x);
-    }
-    #endif
+    return 1 / (float)ma_sqrtd(x);
 }
 
 
@@ -50752,7 +50724,7 @@ static /*__attribute__((noinline))*/ ma_result ma_gainer_process_pcm_frames_inte
                         ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
 
                         /* Expand some arrays so we can have a clean SIMD loop below. */
-                        __m128 runningGainDelta0 = _mm_set_ps(pRunningGainDelta[1], pRunningGainDelta[0], pRunningGainDelta[1], pRunningGainDelta[0]);
+                        __m128 runningGainDelta0 = _mm_set_ps(pRunningGainDelta[1] * 2, pRunningGainDelta[0] * 2, pRunningGainDelta[1] * 2, pRunningGainDelta[0] * 2);
                         __m128 runningGain0      = _mm_set_ps(pRunningGain[1] + pRunningGainDelta[1], pRunningGain[0] + pRunningGainDelta[0], pRunningGain[1], pRunningGain[0]);
 
                         for (; iFrame < unrolledLoopCount; iFrame += 1) {
@@ -50760,6 +50732,7 @@ static /*__attribute__((noinline))*/ ma_result ma_gainer_process_pcm_frames_inte
                             runningGain0 = _mm_add_ps(runningGain0, runningGainDelta0);
                         }
 
+                        _mm_storeu_ps(pRunningGain, runningGain0);
                         iFrame = unrolledLoopCount << 1;
                     } else
                 #endif
@@ -50774,10 +50747,12 @@ static /*__attribute__((noinline))*/ ma_result ma_gainer_process_pcm_frames_inte
                         ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
 
                         /* Expand some arrays so we can have a clean 4x SIMD operation in the loop. */
-                        pRunningGainDelta[2] = pRunningGainDelta[0];
-                        pRunningGainDelta[3] = pRunningGainDelta[1];
                         pRunningGain[2] = pRunningGain[0] + pRunningGainDelta[0];
                         pRunningGain[3] = pRunningGain[1] + pRunningGainDelta[1];
+                        pRunningGainDelta[0] *= 2;
+                        pRunningGainDelta[1] *= 2;
+                        pRunningGainDelta[2] = pRunningGainDelta[0];
+                        pRunningGainDelta[3] = pRunningGainDelta[1];
 
                         for (; iFrame < unrolledLoopCount; iFrame += 1) {
                             pFramesOutF32[iFrame*4 + 0] = pFramesInF32[iFrame*4 + 0] * pRunningGain[0];
