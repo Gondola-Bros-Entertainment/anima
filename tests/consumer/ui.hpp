@@ -508,6 +508,65 @@ inline int run(int argc, char **argv) {
         skip_capture("a UI press keeps the application's mouse capture");
     }
     (void)SDL_CaptureMouse(false);
+    { // Relative mouse mode hides the pointer and reports motion, so the pointer is gameplay's.
+        const auto action_point = point(action), scroll_point = point(scroll);
+        SDL_Event over{};
+        over.type = SDL_EVENT_MOUSE_MOTION;
+        over.motion.windowID = window_id;
+        over.motion.x = action_point.x;
+        over.motion.y = action_point.y;
+        SDL_Event press{};
+        press.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        press.button.windowID = window_id;
+        press.button.button = SDL_BUTTON_LEFT;
+        press.button.x = action_point.x;
+        press.button.y = action_point.y;
+        require(dispatch(over).consumed && dispatch(press).consumed && ui.input_state().pointer,
+                "The relative-mode fixture did not press the button");
+        const auto clicks_before = clicks;
+        require(SDL_SetWindowRelativeMouseMode(window.get(), true), "Relative mouse mode did not start");
+        require(!ui.input_state().pointer, "The UI kept the pointer in relative mouse mode");
+        // Motion and the wheel over documents pass to gameplay, hit testing and scrolling nothing.
+        gameplay.begin_frame();
+        over.motion.xrel = 7;
+        over.motion.yrel = 3;
+        require(!dispatch(over).consumed && !ui.input_state().pointer && look().x == 7 && look().y == 3,
+                "The UI took relative motion over a document from gameplay");
+        over.motion.x = scroll_point.x;
+        over.motion.y = scroll_point.y;
+        require(!dispatch(over).consumed && look().x == 14, "The UI took relative motion over the scroll panel");
+        const float scrolled = scroll->GetScrollTop();
+        require(!dispatch(wheel).consumed && gameplay.state("zoom").value.x == wheel.wheel.y,
+                "The UI took a relative-mode wheel from gameplay");
+        for (unsigned i = 0; i < 5; ++i) {
+            SDL_Delay(20);
+            frame();
+        }
+        require(scroll->GetScrollTop() == scrolled, "A relative-mode wheel scrolled a document");
+        // Entering the mode cancelled the document press, whose release stays with the UI even while a gameplay
+        // press is held, and clicks nothing.
+        auto aim = press;
+        aim.button.button = SDL_BUTTON_RIGHT;
+        require(!dispatch(aim).consumed, "The UI took a relative-mode press from gameplay");
+        press.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        require(dispatch(press).consumed && clicks == clicks_before,
+                "The release of a press cancelled by relative mode escaped the UI or clicked");
+        aim.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        require(!dispatch(aim).consumed, "The UI took a relative-mode release from gameplay");
+        // A press over a document is gameplay's too, and clicks nothing.
+        press.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        require(!dispatch(press).consumed, "The UI took a relative-mode press over a document");
+        press.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        require(!dispatch(press).consumed && clicks == clicks_before, "A relative-mode press clicked a document");
+        require(SDL_SetWindowRelativeMouseMode(window.get(), false), "Relative mouse mode did not end");
+        over.motion.x = action_point.x;
+        over.motion.y = action_point.y;
+        over.motion.xrel = over.motion.yrel = 0;
+        require(dispatch(over).consumed && ui.input_state().pointer, "Hit testing did not resume after relative mode");
+        over.motion.x = 600 * logical_scale;
+        over.motion.y = 420 * logical_scale;
+        require(!dispatch(over).consumed && !ui.input_state().pointer, "The pointer did not leave the documents");
+    }
     auto mesh = std::make_shared<anima::MeshSnapshot>();
     mesh->vertices = {{{-1, -1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}},
                       {{1, -1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}},
@@ -736,7 +795,7 @@ inline int run(int argc, char **argv) {
     std::cout << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"clicks\":" << clicks
               << ",\"utf8_edit\":true,\"select_keyboard\":true,\"scroll\":true,"
                  "\"hidden_focus_released\":true,\"world_input_passthrough\":true,\"pointer_actions\":true,"
-                 "\"resize_hit_test\":true,"
+                 "\"relative_mode_passthrough\":true,\"resize_hit_test\":true,"
                  "\"drag_ownership\":true,\"hidden_drag_released\":true,\"caret_coordinates\":true,\"duplicate_owner_"
                  "rejected\":true,\"context_"
                  "recreations\":4,"

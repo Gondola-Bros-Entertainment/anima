@@ -25,13 +25,15 @@ namespace anima {
 struct UiInputResult {
     /// The UI used this event, so gameplay should not also apply it. A press keeps its owner
     /// until release: pointer events are consumed while a press that began on a document is held
-    /// and never while one that reached gameplay is held. The release of a key whose press
-    /// reached gameplay is never consumed.
+    /// and never while one that reached gameplay is held, and the release of a document press that
+    /// the context cancelled is consumed. The release of a key whose press reached gameplay is
+    /// never consumed. In relative mouse mode no other pointer event is consumed; see
+    /// UiContext::process_event.
     bool consumed{};
-    /// The window has input focus and the UI owns the pointer: a press that began on a document
-    /// is held, or no gameplay press is held and the pointer is over or pressing a document
-    /// element. Hit testing includes each visible document's own box and ignores transparency;
-    /// RCSS `pointer-events: none` excludes an element.
+    /// The window has input focus, is not in relative mouse mode, and the UI owns the pointer: a
+    /// press that began on a document is held, or no gameplay press is held and the pointer is over
+    /// or pressing a document element. Hit testing includes each visible document's own box and
+    /// ignores transparency; RCSS `pointer-events: none` excludes an element.
     bool pointer{};
     /// The window has input focus and a visible `textarea`, `select` or `input` has focus, so key
     /// events are consumed. Inputs of type `button`, `submit`, `checkbox` and `radio`, like other
@@ -157,6 +159,16 @@ class UiContext {
     /// mouse capture and text input that the context started; pointer and key events are then
     /// ignored until focus returns.
     ///
+    /// While the window is in SDL's relative mouse mode (`SDL_GetWindowRelativeMouseMode`), SDL
+    /// hides the pointer and reports motion, so the pointer belongs to gameplay: the context hit
+    /// tests nothing and hovers no element, motion and wheel events pass unconsumed and scroll
+    /// nothing, and a press passes unconsumed as one outside every document, blurring the focused
+    /// control. Entering the mode cancels a press held on a document as hiding the document does.
+    /// Once the mode ends, hit testing resumes at the next motion event or, while a gameplay press
+    /// is held, at the release of the last one. The context reads the mode when it processes each
+    /// event and in update(), so events queued before the application changed it follow the new
+    /// mode.
+    ///
     /// Before changing any state, whatever the focus or held presses, throws
     /// `std::invalid_argument` for a motion or button event whose coordinates are not finite or,
     /// scaled by the pixel density, exceed `std::numeric_limits<int>::max() - 1` in magnitude, and
@@ -171,10 +183,11 @@ class UiContext {
     /// RmlUi layout, animations and data models. Call it once per frame after processing events
     /// and before render().
     ///
-    /// It cancels presses on hidden or closed documents, blurs a focused element that became
-    /// hidden and, when nothing captures the keyboard, stops the text input that it started. Throws
-    /// `std::runtime_error` when SDL reports invalid display metrics. After the RmlUi update, it
-    /// rethrows a captured callback exception; see UiDocuments::check_events.
+    /// It cancels presses on hidden or closed documents, and in relative mouse mode every document
+    /// press, blurs a focused element that became hidden and, when nothing captures the keyboard,
+    /// stops the text input that it started. Throws `std::runtime_error` when SDL reports invalid
+    /// display metrics. After the RmlUi update, it rethrows a captured callback exception; see
+    /// UiDocuments::check_events.
     void update();
     /// Draws the renderer's selected scenes with the UI composited over them and presents one
     /// frame. Call it instead of VulkanRenderer::draw, after update().
