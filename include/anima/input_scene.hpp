@@ -69,10 +69,12 @@ void begin_frame(SceneSet &scenes);
 /// Delivers @p event through Context::process to every ActionInput of @p scene, after applying
 /// each component's activity through Context::set_enabled.
 ///
-/// Every context is updated on a copy first and published only when all succeed, so a rejected
-/// event, invalid, over a context's capacity or overflowing a delta binding's sum, changes no
-/// context. Atomicity is per event, not per frame. Throws `std::logic_error` while the scene is
-/// updating, under construction or destroyed.
+/// Every context first checks the event and allocates what applying it needs, and the event is
+/// applied to the contexts only once all have, so a rejected event, invalid, over a context's
+/// capacity or overflowing a delta binding's sum, changes no context, nor does a failed
+/// allocation. No context is copied, so each costs what Context::process does. Atomicity is per
+/// event, not per frame. Throws `std::logic_error` while the scene is updating, under
+/// construction or destroyed.
 void dispatch(Scene &scene, const Event &event);
 /// Delivers @p event across every scene of @p scenes as dispatch(Scene &, const Event &) does,
 /// staging all of them before any changes. Also throws `std::logic_error` while the set is

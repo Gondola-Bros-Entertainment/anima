@@ -362,18 +362,10 @@ void Context::evaluate() {
         first_binding += map_[i].bindings.size();
     }
 }
-void Context::accumulate(const Event &e) {
+void Context::stage_increment(Staged &staged) const {
+    const auto &e = staged.event;
     if (e.value == 0)
         return;
-    // Each delta binding that accepts the increment, with its recorded sum for the event's device, if any, and that
-    // sum after the increment.
-    struct Accepted {
-        std::size_t action_index, first_binding, slot;
-        decltype(sums_)::iterator recorded;
-        float after;
-    };
-    std::vector<Accepted> accepted;
-    std::size_t added = 0;
     const auto group = device_class(e.source.kind);
     std::size_t first_binding = 0;
     for (std::size_t i = 0; i < map_.size(); ++i) {
@@ -392,29 +384,44 @@ void Context::accumulate(const Event &e) {
             const double after = double(recorded == sums_.end() ? 0.F : recorded->second) + e.value;
             if (std::abs(after) > std::numeric_limits<float>::max())
                 throw std::overflow_error("Input increment would overflow a delta binding's sum");
-            added += recorded == sums_.end();
-            accepted.push_back({i, first_binding, slot, recorded, static_cast<float>(after)});
+            // New sums are built apart, so a failed allocation changes nothing, and merging them allocates nothing.
+            if (recorded == sums_.end())
+                staged.started.emplace(std::pair{slot, e.source.device}, static_cast<float>(after));
+            staged.accepted.push_back({i, first_binding, slot, static_cast<float>(after)});
         }
         first_binding += bindings.size();
     }
-    if (sums_.size() + added > limits::delta_accumulators)
+    if (sums_.size() + staged.started.size() > limits::delta_accumulators)
         throw std::length_error("Input context exceeds 1024 delta sums");
-    // New sums are built apart, so a failed allocation changes nothing, and merging them allocates nothing.
-    decltype(sums_) added_sums;
-    for (const auto &a : accepted)
-        if (a.recorded == sums_.end())
-            added_sums.emplace(std::pair{a.slot, e.source.device}, a.after);
-    for (const auto &a : accepted)
-        if (a.recorded != sums_.end())
-            a.recorded->second = a.after;
-    sums_.merge(added_sums);
-    // Only the accepting actions changed; they arrive in map order.
-    for (std::size_t k = 0; k < accepted.size(); ++k)
-        if (k == 0 || accepted[k].action_index != accepted[k - 1].action_index)
-            publish(accepted[k].action_index, combine(accepted[k].action_index, accepted[k].first_binding));
 }
-void Context::process(const Event &e) {
-    validate(e);
+Context::Staged Context::stage(const Event &e, bool enable) const {
+    Staged staged{e, enable, {}, {}, {}};
+    // Only a control event can be rejected, and a disabled or unfocused context ignores it.
+    if (e.type != EventType::control || !enable || !focused_)
+        return staged;
+    if (limits::delta(e.source.kind)) {
+        stage_increment(staged);
+        return staged;
+    }
+    // Releasing or updating a recorded control needs nothing new; see apply().
+    const auto previous = entry(values_, e.source, e.source.device);
+    if (e.value == 0 || (previous != values_.end() && previous->first == e.source))
+        return staged;
+    bool observed = false;
+    for (const auto &a : map_)
+        for (const auto &b : a.bindings)
+            observed |= observes(b, e.source);
+    if (!observed)
+        return staged;
+    if (previous == values_.end() && values_.size() == limits::active_controls)
+        throw std::length_error("Input context exceeds 1024 active physical controls");
+    staged.record.emplace(e.source, e.value);
+    return staged;
+}
+void Context::apply(Staged &&staged) noexcept {
+    const auto &e = staged.event;
+    // Enabling changes nothing that staging read, and disabling makes a control event change nothing.
+    set_enabled(staged.enabled);
     if (e.type == EventType::focus) {
         set_focused(e.value != 0);
         return;
@@ -433,7 +440,15 @@ void Context::process(const Event &e) {
     if (!enabled_ || !focused_)
         return;
     if (limits::delta(e.source.kind)) {
-        accumulate(e);
+        for (const auto &a : staged.accepted)
+            if (const auto recorded = sums_.find({a.slot, e.source.device}); recorded != sums_.end())
+                recorded->second = a.after;
+        sums_.merge(staged.started);
+        // Only the accepting actions changed; they arrive in map order.
+        const auto &accepted = staged.accepted;
+        for (std::size_t k = 0; k < accepted.size(); ++k)
+            if (k == 0 || accepted[k].action_index != accepted[k - 1].action_index)
+                publish(accepted[k].action_index, combine(accepted[k].action_index, accepted[k].first_binding));
         return;
     }
     // A recorded control is released or updated whatever identity the event carries, so a release that arrives
@@ -446,21 +461,18 @@ void Context::process(const Event &e) {
     } else if (previous != values_.end() && previous->first == e.source)
         previous->second = e.value;
     else {
-        bool observed = false;
-        for (const auto &a : map_)
-            for (const auto &b : a.bindings)
-                observed |= observes(b, e.source);
-        if (previous == values_.end()) {
-            if (!observed)
-                return;
-            if (values_.size() == limits::active_controls)
-                throw std::length_error("Input context exceeds 1024 active physical controls");
-        } else
+        // Staging recorded the control only if a binding observes it.
+        if (previous == values_.end() && staged.record.empty())
+            return;
+        if (previous != values_.end())
             values_.erase(previous);
         // A control that now reports an identity no binding accepts is released, not recorded.
-        if (observed)
-            values_.emplace(e.source, e.value);
+        values_.merge(staged.record);
     }
     evaluate();
+}
+void Context::process(const Event &e) {
+    validate(e);
+    apply(stage(e, enabled_));
 }
 } // namespace anima::input

@@ -1,18 +1,24 @@
-// Pins how scene work grows with the objects it touches, through the bytes it allocates. This
-// executable replaces the global allocation functions, so it counts every allocation the engine
-// makes during a measured operation.
+// Pins how scene work grows with the objects it touches, through the bytes it allocates, and what a
+// failed allocation leaves behind. This executable replaces the global allocation functions, so it
+// counts, and can fail, every allocation the engine makes during a measured operation.
+#include <anima/input_scene.hpp>
 #include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <new>
+#include <string>
 #include <vector>
 
 namespace {
 std::size_t counted_allocation_bytes = 0;
 bool counting_allocations = false;
+// While failing_allocations, each allocation beyond the next allocations_allowed throws std::bad_alloc.
+std::size_t allocations_allowed = 0;
+bool failing_allocations = false;
 
 // Bytes allocated while @p operation runs.
 template <class Operation> std::size_t allocated_by(Operation &&operation) {
@@ -21,6 +27,20 @@ template <class Operation> std::size_t allocated_by(Operation &&operation) {
     operation();
     counting_allocations = false;
     return counted_allocation_bytes;
+}
+
+// Whether @p operation throws std::bad_alloc when only its first @p allowed allocations succeed.
+template <class Operation> bool fails_after(std::size_t allowed, Operation &&operation) {
+    allocations_allowed = allowed;
+    failing_allocations = true;
+    try {
+        operation();
+    } catch (const std::bad_alloc &) {
+        failing_allocations = false;
+        return true;
+    }
+    failing_allocations = false;
+    return false;
 }
 
 // A one-triangle mesh with one node.
@@ -72,11 +92,47 @@ std::size_t wide_attach_bytes(std::size_t count) {
             child.set_parent(parent);
     });
 }
+
+// Bytes allocated while two input contexts, whose maps bind @p extra more actions to other keys with a modifier,
+// receive a second increment of a frame and a key's press and release.
+std::size_t dispatch_bytes(std::size_t extra) {
+    namespace i = anima::input;
+    i::Map map{{"look", i::ActionType::axis, {{{i::ControlKind::mouse_motion, 0}}}},
+               {"jump", i::ActionType::button, {{{i::ControlKind::key, 44}}}}};
+    for (std::size_t k = 0; k < extra; ++k)
+        map.push_back({"action_" + std::to_string(k),
+                       i::ActionType::button,
+                       {{{i::ControlKind::key, static_cast<std::uint16_t>(100 + k)},
+                         i::Channel::x,
+                         1,
+                         0,
+                         {{i::ControlKind::key, 500}}}}});
+    anima::Scene scene;
+    auto first = scene.create().add_component<i::ActionInput>(map);
+    (void)scene.create().add_component<i::ActionInput>(map);
+    const i::Event motion{i::EventType::control, {i::ControlKind::mouse_motion, 0, 0}, 1.5F};
+    i::begin_frame(scene);
+    i::dispatch(scene, motion); // Starts the frame's sums, so the measured increment adds to them.
+    const auto bytes = allocated_by([&] {
+        i::dispatch(scene, motion);
+        i::dispatch(scene, {i::EventType::control, {i::ControlKind::key, 44, 0}, 1});
+        i::dispatch(scene, {i::EventType::control, {i::ControlKind::key, 44, 0}, 0});
+    });
+    REQUIRE(first->context().state("look").value.x == 3);
+    REQUIRE(first->context().state("jump").pressed);
+    REQUIRE(first->context().state("jump").released);
+    return bytes;
+}
 } // namespace
 
 void *operator new(std::size_t bytes) {
     if (counting_allocations)
         counted_allocation_bytes += bytes;
+    if (failing_allocations) {
+        if (allocations_allowed == 0)
+            throw std::bad_alloc();
+        --allocations_allowed;
+    }
     if (void *allocation = std::malloc(bytes ? bytes : 1))
         return allocation;
     throw std::bad_alloc();
@@ -119,4 +175,42 @@ TEST_CASE("Moving rendered objects and hierarchies allocates nothing after a mov
     // The moves were published: the last child's triangle starts at (9, 9).
     CHECK(children.back().renderer().bounds().minimum.x > 8.9F);
     CHECK(children.back().renderer().bounds().minimum.y > 8.9F);
+}
+
+TEST_CASE("Dispatching input allocates no more for a larger action map") {
+    // Staging each event on a copy of every context would allocate every action's bindings and modifiers per event.
+    const auto small = dispatch_bytes(0), large = dispatch_bytes(126);
+    CHECK(large <= small);
+}
+
+TEST_CASE("Dispatching input changes no context when an allocation fails") {
+    namespace i = anima::input;
+    const i::Map map{{"look", i::ActionType::axis, {{{i::ControlKind::mouse_motion, 0}}}},
+                     {"jump", i::ActionType::button, {{{i::ControlKind::key, 44}}}}};
+    anima::Scene scene;
+    auto first = scene.create().add_component<i::ActionInput>(map);
+    auto second = scene.create().add_component<i::ActionInput>(map);
+    i::begin_frame(scene);
+    // Each dispatch fails at its first allocation, then its second, and so on, until it succeeds.
+    std::size_t failures = 0;
+    const i::Event motion{i::EventType::control, {i::ControlKind::mouse_motion, 0, 0}, 1.5F};
+    for (std::size_t allowed = 0; fails_after(allowed, [&] { i::dispatch(scene, motion); }); ++allowed) {
+        ++failures;
+        CHECK(first->context().state("look").value.x == 0);
+        CHECK(second->context().state("look").value.x == 0);
+    }
+    CHECK(failures > 0);
+    // The failed dispatches started no sum, so the increment counts once.
+    CHECK(first->context().state("look").value.x == 1.5F);
+    CHECK(second->context().state("look").value.x == 1.5F);
+    failures = 0;
+    const i::Event press{i::EventType::control, {i::ControlKind::key, 44, 0}, 1};
+    for (std::size_t allowed = 0; fails_after(allowed, [&] { i::dispatch(scene, press); }); ++allowed) {
+        ++failures;
+        CHECK_FALSE(first->context().state("jump").pressed);
+        CHECK_FALSE(second->context().state("jump").pressed);
+    }
+    CHECK(failures > 0);
+    CHECK(first->context().state("jump").pressed);
+    CHECK(second->context().state("jump").pressed);
 }

@@ -144,21 +144,22 @@ template <class Scenes> void begin_frame_scenes(Scenes &scenes) {
     }
 }
 template <class Scenes> void dispatch_scenes(Scenes &scenes, const Event &event) {
+    using anima::detail::InputStaging;
     anima::detail::SceneDriver::check(scenes);
     validate(event);
+    // Every context stages the event, which checks it and allocates what applying it needs, before any context
+    // applies it, and applying cannot fail. No context is copied.
     struct Pending {
         ComponentRef<ActionInput> target;
-        Context context;
+        InputStaging::Staged staged;
     };
+    const auto inputs = scenes.template components<ActionInput>();
     std::vector<Pending> pending;
-    for (auto input : scenes.template components<ActionInput>()) {
-        auto context = input->context();
-        context.set_enabled(input.active());
-        context.process(event);
-        pending.push_back({input, std::move(context)});
-    }
+    pending.reserve(inputs.size());
+    for (auto input : inputs)
+        pending.push_back({input, InputStaging::stage(input->context(), event, input.active())});
     for (auto &p : pending)
-        p.target->context() = std::move(p.context);
+        InputStaging::apply(p.target->context(), std::move(p.staged));
 }
 } // namespace
 void begin_frame(Scene &scene) { begin_frame_scenes(scene); }

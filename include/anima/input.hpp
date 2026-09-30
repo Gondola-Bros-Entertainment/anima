@@ -18,6 +18,10 @@
 /// invokes callbacks or issues game commands. Use each Context from one thread. Invalid arguments
 /// throw `std::invalid_argument` unless a member states otherwise.
 
+namespace anima::detail {
+struct InputStaging;
+} // namespace anima::detail
+
 namespace anima::input {
 /// Device selector matching every device of a control's class; valid in bindings, never in events.
 inline constexpr std::uint32_t any_device = UINT32_MAX;
@@ -229,7 +233,8 @@ class Context {
     /// increment is added to the sum of each delta binding that accepts it (see Binding), and the
     /// actions are reevaluated. Throws `std::length_error` when a new control would exceed 1,024 recorded
     /// controls or a new sum would exceed 1,024 sums, and `std::overflow_error` when an increment
-    /// would take a sum beyond the largest finite float. A rejected event changes nothing.
+    /// would take a sum beyond the largest finite float. A rejected event changes nothing, nor does
+    /// a failed allocation.
     void process(const Event &event);
     /// Disabling cancels the context and ignores control events until it is enabled again;
     /// enabling restores nothing.
@@ -250,23 +255,32 @@ class Context {
     void rebind(std::string_view action, std::vector<Binding> bindings);
 
   private:
+    friend struct anima::detail::InputStaging;
     // An action's combined value and activity, before they are published to its State.
     struct Combined {
         Value value;
         bool active{};
     };
+    // Each delta binding's sum of increments per device since begin_frame(), keyed by the binding's
+    // position among all the map's bindings, in order, and the device ID.
+    using Sums = std::map<std::pair<std::size_t, std::uint32_t>, float>;
+    // A validated event's effect on this context, with everything applying it allocates.
+    struct Staged;
     std::size_t index(std::string_view name) const;
     void evaluate();
     [[nodiscard]] Combined combine(std::size_t action_index, std::size_t first_binding) const;
     void publish(std::size_t action_index, const Combined &combined);
-    void accumulate(const Event &event);
+    // Checks what process() would do with @p event after set_enabled(@p enable), throwing as it does, and
+    // allocates what that needs, without changing the context.
+    [[nodiscard]] Staged stage(const Event &event, bool enable) const;
+    void stage_increment(Staged &staged) const;
+    // Makes the changes stage() prepared, on the unchanged context it staged them for; allocates nothing.
+    void apply(Staged &&staged) noexcept;
     float read(const Binding &binding) const;
     Map map_;
     std::vector<State> states_;
     std::map<Control, float> values_;
-    // Each delta binding's sum of increments per device since begin_frame(), keyed by the binding's
-    // position among all the map's bindings, in order, and the device ID.
-    std::map<std::pair<std::size_t, std::uint32_t>, float> sums_;
+    Sums sums_;
     bool enabled_ = true, focused_ = true;
 };
 } // namespace anima::input
