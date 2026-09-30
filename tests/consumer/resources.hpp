@@ -1,6 +1,7 @@
 #pragma once
 #include "gpu_checks.hpp"
 #include "reference.hpp"
+#include "rejection.hpp"
 #include <SDL3/SDL.h>
 #include <anima/assets/mesh_preparation.hpp>
 #include <anima/desktop/vulkan_renderer.hpp>
@@ -14,14 +15,7 @@ inline void require(bool value, const char *message) {
     if (!value)
         throw std::runtime_error(message);
 }
-template <class E, class F> void rejects(F action) {
-    try {
-        action();
-    } catch (const E &) {
-        return;
-    }
-    throw std::runtime_error("Expected resource operation failure");
-}
+using rejection::rejects;
 // Failures injected into set_scenes() and prepare_mesh() report their stage, no initialization and wording that
 // fits both calls.
 template <class F> void injected(anima::RendererFailureStage stage, F action) {
@@ -177,7 +171,7 @@ inline int run(int argc, char **argv) {
     images.discard({"preloaded-reference"});
     {
         const std::array invalid{anima::Mesh::compile(*asset), std::shared_ptr<const anima::Mesh>{}};
-        rejects<std::invalid_argument>([&] { renderer.prepare_meshes(invalid); });
+        rejects<std::invalid_argument>([&] { renderer.prepare_meshes(invalid); }, "Cannot prepare a null render asset");
         require(renderer.resource_stats().mesh_uploads == prepared_uploads,
                 "Invalid preparation partially uploaded its inputs");
     }
@@ -193,15 +187,21 @@ inline int run(int argc, char **argv) {
     if (!fatal.empty()) {
         auto candidate = std::make_shared<anima::Scene>();
         (void)candidate->add(anima::Mesh::compile(*asset));
+        // The timeout reports the failed wait; the lost device is reported once the upload is retired.
+        const bool timeout = fatal == "upload-timeout";
+        constexpr std::string_view timed_out = "Injected upload timeout failed (VkResult 2)";
         if (prepare_fatal) {
             const std::array candidate_meshes{candidate->instance(candidate->instances().front()).asset};
             const anima::MeshPreparation candidate_preparation(candidate_meshes.front());
             rejects<anima::RendererFatalError>(
-                [&] { renderer.prepare_mesh(candidate_preparation, {anima::parse_renderer_failure_stage(fatal)}); });
+                [&] { renderer.prepare_mesh(candidate_preparation, {anima::parse_renderer_failure_stage(fatal)}); },
+                timeout ? timed_out : "Device lost while retiring resource preparation");
         } else
             rejects<anima::RendererFatalError>(
-                [&] { renderer.set_scenes({candidate}, {anima::parse_renderer_failure_stage(fatal)}); });
-        rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); });
+                [&] { renderer.set_scenes({candidate}, {anima::parse_renderer_failure_stage(fatal)}); },
+                timeout ? timed_out : "Device lost while retiring resource upload");
+        rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); },
+                                           "Renderer has a fatal failure; only shutdown is legal");
         const auto stats = renderer.shutdown();
         require(!stats.validation_errors && !stats.validation_warnings, "Fatal resource cleanup validation failed");
         std::cout << "PASS resource fatal classification " << fatal << '\n';

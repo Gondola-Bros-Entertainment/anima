@@ -1,4 +1,5 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/lighting.hpp>
 #include <anima/scene_set.hpp>
 #include <stdexcept>
@@ -40,13 +41,8 @@ inline void run() {
         throw std::runtime_error("Lighting replacement retained handles or changed its result");
     auto selected = level->components<anima::SceneEnvironment>().front();
     selected->sun.destroy();
-    bool rejected = false;
-    try {
-        (void)anima::lighting_environment(scenes);
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    if (!rejected)
-        throw std::runtime_error("Independent lighting silently repaired a stale light");
+    // A stale light is rejected, not silently repaired.
+    rejection::rejects<std::invalid_argument>([&] { (void)anima::lighting_environment(scenes); },
+                                              "Selected light must be a live object in the scene selection");
 }
 } // namespace lighting_consumer

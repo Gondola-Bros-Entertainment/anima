@@ -273,6 +273,37 @@ TEST_CASE("Layer clips compose over a base clip on disjoint masks, and overlappi
     CHECK_THROWS_WITH_AS(runtime.layer_mask("absent"), "Unknown motion layer: absent", std::out_of_range);
 }
 
+TEST_CASE("A layer lists exactly its mask's joints and their parents outside it, and animates only those joints") {
+    const MotionFixture fixture;
+    const auto contract = [&](std::string_view from, std::string_view to) {
+        (void)MotionRuntime(fixture.body, fixture.manifest, replaced(fixture.contract, from, to));
+    };
+    constexpr auto declared = "Invalid motion layer ownership/context";
+    // The limb mask owns the upper, middle and end joints, whose parent outside the mask is the root.
+    CHECK_THROWS_WITH_AS(contract(R"("owned_joints":["end","middle","upper"])", R"("owned_joints":["middle","upper"])"),
+                         declared, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(contract(R"("context_joints":["root"])", R"("context_joints":[])"), declared,
+                         std::invalid_argument);
+    // A clip cannot be both a base clip and a layer clip.
+    CHECK_THROWS_WITH_AS(contract(R"("layer.side":{)", R"("base":{)"), declared, std::invalid_argument);
+    // The side layer's clip turns the side joint, which the limb mask does not own.
+    CHECK_THROWS_WITH_AS(contract(R"("layer.side":{"mask":"side","owned_joints":["side"])",
+                                  R"("layer.side":{"mask":"limb","owned_joints":["end","middle","upper"])"),
+                         "Motion layer animates joints it does not own", std::invalid_argument);
+}
+
+TEST_CASE("An evaluated layer clip keeps the mask its contract declares") {
+    const MotionFixture fixture;
+    const auto runtime = fixture.runtime();
+    MotionLayer layer;
+    layer.clip = "layer.limb";
+    layer.mask = "side";
+    MotionControls controls;
+    controls.layers.push_back(layer);
+    CHECK_THROWS_WITH_AS(runtime.evaluate(runtime.sample("base", 0), controls),
+                         "Layer control exceeds the resource's declared ownership", std::invalid_argument);
+}
+
 TEST_CASE("Actions check the roles they require, and the caller chooses the handling profile") {
     constexpr auto unmet_role = "Missing or incompatible required action role: tool";
     const MotionFixture fixture;
@@ -299,6 +330,17 @@ TEST_CASE("Actions check the roles they require, and the caller chooses the hand
     }
     CHECK_THROWS_WITH_AS(actions.sample(base, {"reach", 1, .25, {}, {}}, "other"),
                          "Action is incompatible with this handling profile", std::invalid_argument);
+}
+
+TEST_CASE("An action layer that plays a layer clip uses that clip's mask") {
+    const MotionFixture fixture;
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    constexpr auto wrong_mask = "Action layer must use its layer clip's mask";
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb")", R"("mask":"side")")),
+                         wrong_mask, std::invalid_argument);
+    // Without a mask the layer is full-body, which a layer clip is not.
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb",)", "")), wrong_mask,
+                         std::invalid_argument);
 }
 
 TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership checks the chosen clips") {
@@ -336,6 +378,14 @@ TEST_CASE("An attachment catalog accepts only version 3 and none of the removed 
                          "Empty presentation identity/reference", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"":"layer.side"})")),
                          "Empty layer override base clip", std::invalid_argument);
+}
+
+TEST_CASE("A handling profile's layer overrides are an object keyed by base clip") {
+    const MotionFixture fixture;
+    CHECK_THROWS_WITH_AS(
+        decode_attachment_catalog(replaced(attachment_catalog(), R"({"base":"layer.side"})", R"(["layer.side"])"),
+                                  fixture.directory.path),
+        "Layer overrides must map base clips to layer clips", std::invalid_argument);
 }
 
 TEST_CASE("Motion, action, actor and interaction documents report another version before their fields") {

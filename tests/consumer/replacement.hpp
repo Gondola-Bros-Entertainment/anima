@@ -1,6 +1,7 @@
 #pragma once
 // Standalone consumer: public APIs only. No game rules or engine implementation.
 #include "gpu_checks.hpp"
+#include "rejection.hpp"
 #include <SDL3/SDL.h>
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/scene.hpp>
@@ -12,7 +13,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <typeinfo>
 
 namespace replacement_test {
@@ -20,23 +20,9 @@ inline void require(bool condition, const char *message) {
     if (!condition)
         throw std::runtime_error(message);
 }
-template <class Error, class F> void rejects(F operation) {
-    bool caught = false;
-    try {
-        operation();
-    } catch (const anima::RendererFatalError &) {
-        if constexpr (std::is_same_v<Error, anima::RendererFatalError>)
-            caught = true;
-        else
-            throw;
-    } catch (const std::exception &error) {
-        if (dynamic_cast<const Error *>(&error))
-            caught = true;
-        else
-            throw;
-    }
-    require(caught, "Expected operation to be rejected");
-}
+using rejection::rejects;
+// What every call but shutdown() throws once the renderer is fatal.
+constexpr std::string_view fatal_renderer = "Renderer has a fatal failure; only shutdown is legal";
 inline anima::Asset geometry(unsigned count) {
     anima::Asset asset;
     asset.nodes.resize(count);
@@ -103,20 +89,22 @@ inline void reject_failed_swapchain(bool disable_present_fences) {
     options.fail_after = anima::RendererFailureStage::swapchain;
     anima::VulkanRenderer renderer(window.get(), options);
     const auto started = std::chrono::steady_clock::now();
-    rejects<anima::RendererFatalError>([&] {
-        // draw() returns false until the window is drawable; the first swapchain it creates fails.
-        for (;;) {
-            require(std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
-                    "Swapchain failure watchdog expired");
-            SDL_Event event{};
-            while (SDL_PollEvent(&event)) {
+    rejects<anima::RendererFatalError>(
+        [&] {
+            // draw() returns false until the window is drawable; the first swapchain it creates fails.
+            for (;;) {
+                require(std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+                        "Swapchain failure watchdog expired");
+                SDL_Event event{};
+                while (SDL_PollEvent(&event)) {
+                }
+                require(!renderer.draw(), "Injected swapchain failure presented a frame");
+                SDL_Delay(5);
             }
-            require(!renderer.draw(), "Injected swapchain failure presented a frame");
-            SDL_Delay(5);
-        }
-    });
-    rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); });
-    rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); });
+        },
+        "Injected initialization failure after swapchain");
+    rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); }, fatal_renderer);
+    rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); }, fatal_renderer);
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings && !stats.swapchain_generations &&
                 !stats.presented_frames,
@@ -256,13 +244,17 @@ inline int run(int argc, char **argv) {
     capture("scene-a");
     if (!fatal.empty()) {
         frame(); // Leave a graphics submit pending before attempting upload.
+        // The timeout reports the failed wait; the lost device is reported once the upload is retired.
         rejects<anima::RendererFatalError>(
-            [&] { renderer.set_scenes({b}, {anima::parse_renderer_failure_stage(fatal)}); });
-        rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); });
-        rejects<anima::RendererFatalError>([&] { renderer.set_scenes({}); });
-        rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); });
-        rejects<anima::RendererFatalError>([&] { renderer.request_capture(output / "after-fatal.ppm"); });
-        rejects<anima::RendererFatalError>([&] { renderer.request_capture(); });
+            [&] { renderer.set_scenes({b}, {anima::parse_renderer_failure_stage(fatal)}); },
+            fatal == "upload-timeout" ? "Injected upload timeout failed (VkResult 2)"
+                                      : "Device lost while retiring resource upload");
+        rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); }, fatal_renderer);
+        rejects<anima::RendererFatalError>([&] { renderer.set_scenes({}); }, fatal_renderer);
+        rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); }, fatal_renderer);
+        rejects<anima::RendererFatalError>([&] { renderer.request_capture(output / "after-fatal.ppm"); },
+                                           fatal_renderer);
+        rejects<anima::RendererFatalError>([&] { renderer.request_capture(); }, fatal_renderer);
         const auto stats = renderer.shutdown();
         require(!stats.validation_errors && !stats.validation_warnings && stats.scene_generations == generations &&
                     generations == 2,
@@ -288,37 +280,41 @@ inline int run(int argc, char **argv) {
     for (const auto *stage : {"vertex", "index", "texture", "texture-upload", "descriptors", "ready"}) {
         frame(); // Old scene can still have graphics work in flight.
         rejects<std::runtime_error>(
-            [&] { renderer.set_scenes({scene(b_data)}, {anima::parse_renderer_failure_stage(stage)}); });
+            [&] { renderer.set_scenes({scene(b_data)}, {anima::parse_renderer_failure_stage(stage)}); },
+            "Injected resource preparation failure after " + std::string(stage));
         ++rollbacks;
         capture(std::string("rollback-") + stage);
     }
     auto invalid = b_data;
     invalid.primitives[0].material = std::numeric_limits<int>::max();
-    rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); });
+    rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); }, "Invalid render primitive material");
     ++rollbacks;
     invalid = b_data;
     auto truncated = *invalid.textures[0].image;
     truncated.rgba.pop_back();
     invalid.textures[0].image = std::make_shared<anima::Image>(std::move(truncated));
-    rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); });
+    rejects<std::invalid_argument>([&] { renderer.set_scenes({scene(invalid)}); },
+                                   "MeshSnapshot texture byte count does not match dimensions");
     ++rollbacks;
     capture("rollback-invalid");
     auto view = anima::identity();
     view[0] = std::numeric_limits<float>::quiet_NaN();
-    rejects<std::invalid_argument>([&] { renderer.set_view(view); });
-    rejects<std::invalid_argument>([&] { renderer.set_view({}); });
-    const auto mutation = [&](auto edit) {
-        rejects<std::invalid_argument>(edit);
+    rejects<std::invalid_argument>([&] { renderer.set_view(view); },
+                                   anima::math_error_message(anima::MathErrorCode::nonfinite_projection));
+    rejects<std::invalid_argument>([&] { renderer.set_view({}); },
+                                   anima::math_error_message(anima::MathErrorCode::singular_projection));
+    const auto mutation = [&](auto edit, std::string_view expected) {
+        rejects<std::invalid_argument>(edit, expected);
         ++mutation_rejections;
         frame(); // Rejected input must leave both the scene and frame usable.
     };
     auto malformed = saved;
     malformed.world.pop_back();
-    mutation([&] { a->set_pose(id, malformed); });
+    mutation([&] { a->set_pose(id, malformed); }, "Pose does not match render asset");
     malformed = saved;
     malformed.world[0][0] = std::numeric_limits<float>::quiet_NaN();
-    mutation([&] { a->set_pose(id, malformed); });
-    mutation([&] { a->set_material_factor(id, 0, {-1, 0, 0}); });
+    mutation([&] { a->set_pose(id, malformed); }, "Non-finite instance transform");
+    mutation([&] { a->set_material_factor(id, 0, {-1, 0, 0}); }, "Invalid render material factor");
     capture("rollback-update");
     replace({b});
     capture("scene-b");
@@ -379,10 +375,11 @@ inline int run(int argc, char **argv) {
                 stats.scene_generations == generations && !stats.validation_warnings && !stats.validation_errors,
             "Replacement statistics or validation failed");
     require(renderer.shutdown().capture_count == captures, "Repeated shutdown changed statistics");
-    rejects<std::logic_error>([&] { renderer.set_scenes({}); });
-    rejects<std::logic_error>([&] { (void)renderer.draw(); });
-    rejects<std::logic_error>([&] { renderer.request_capture(output / "after-shutdown.ppm"); });
-    rejects<std::logic_error>([&] { renderer.request_capture(); });
+    constexpr std::string_view shut_down = "Renderer is shut down";
+    rejects<std::logic_error>([&] { renderer.set_scenes({}); }, shut_down);
+    rejects<std::logic_error>([&] { (void)renderer.draw(); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.request_capture(output / "after-shutdown.ppm"); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.request_capture(); }, shut_down);
     require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");
     const unsigned imported = asset.empty() ? 0 : 1;
     constexpr unsigned expected_rollbacks = 8, expected_mutation_rejections = 3, expected_generations = 32,

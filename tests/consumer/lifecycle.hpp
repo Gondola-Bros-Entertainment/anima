@@ -1,7 +1,9 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/prefab.hpp>
 #include <functional>
 #include <stdexcept>
+#include <string_view>
 
 namespace lifecycle_test {
 using namespace anima;
@@ -9,14 +11,7 @@ inline void check(bool value, const char *message) {
     if (!value)
         throw std::runtime_error(message);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Lifecycle operation should reject");
-}
+using rejection::rejects;
 struct Counts {
     int enables{}, disables{}, frames{}, fixed{}, late{}, destroyed{}, invalid_disables{};
 };
@@ -87,7 +82,7 @@ inline void run() {
     child.set_parent(parent);
     scene.synchronize_lifecycle();
     check(counts.disables == 3, "Reparent under inactive object missed disable");
-    rejects([&] { parent.set_parent(child); });
+    rejects<std::invalid_argument>([&] { parent.set_parent(child); }, "GameObject parenting would create a cycle");
     check(!child.active_in_hierarchy() && !parent.parent(), "Failed reparent changed activation");
     parent.set_active(true);
     parent.set_active(false);
@@ -109,12 +104,15 @@ inline void run() {
     Counts spawned;
     auto first = scene.create();
     ComponentRef<Probe> added;
+    // Callbacks cannot propagate exceptions, so they count the rejections that have the expected message.
+    constexpr std::string_view nested = "Component updates cannot be nested";
     int nested_rejections = 0;
     first.add_component<Callback>(Callback{[&] {
                                                try {
                                                    scene.synchronize_lifecycle();
-                                               } catch (const std::logic_error &) {
-                                                   ++nested_rejections;
+                                               } catch (const std::logic_error &error) {
+                                                   if (nested == error.what())
+                                                       ++nested_rejections;
                                                }
                                                added = scene.create().add_component<Probe>(spawned);
                                            },
@@ -147,7 +145,7 @@ inline void run() {
     check(stopped.enables == 1 && stopped.disables == 1, "Update mutation missed next-boundary disable");
     auto throwing = scene.create();
     throwing.add_component<Callback>(Callback{{}, {}, [] { throw std::runtime_error("tick"); }});
-    rejects([&] { scene.update(0); });
+    rejects<std::runtime_error>([&] { scene.update(0); }, "tick");
     throwing.destroy();
     scene.update(0); // exception released scheduler
     stopper.destroy();
@@ -157,8 +155,9 @@ inline void run() {
                                               [&] {
                                                   try {
                                                       scene.update(0);
-                                                  } catch (const std::logic_error &) {
-                                                      ++nested_rejections;
+                                                  } catch (const std::logic_error &error) {
+                                                      if (nested == error.what())
+                                                          ++nested_rejections;
                                                   }
                                               },
                                               {}});
@@ -225,13 +224,15 @@ inline void run() {
     auto malformed = document;
     auto flag = malformed.find("\"active\": false");
     malformed.replace(flag, 15, "\"active\": 0");
-    rejects([&] { (void)load_scene(malformed, {}, codecs); });
+    rejects<std::invalid_argument>([&] { (void)load_scene(malformed, {}, codecs); },
+                                   "[json.exception.type_error.302] type must be boolean, but is number");
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     nodes[0].active = true;
     nodes[1].components[0].enabled = true;
     nodes[1].components[0].state = "malformed";
     const auto before = authored.size();
-    rejects([&] { (void)Prefab(nodes, codecs).instantiate(authored); });
+    rejects<std::invalid_argument>([&] { (void)Prefab(nodes, codecs).instantiate(authored); },
+                                   "Probe state must be an empty object");
     check(authored.size() == before && loaded_counts.enables == 1, "Failed loading published lifecycle hooks");
     // Callback backing counters outlive all scenes using them.
     copy.destroy();

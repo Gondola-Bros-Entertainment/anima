@@ -1,8 +1,11 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/prefab.hpp>
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
 namespace references_test {
 using namespace anima;
@@ -10,14 +13,7 @@ inline void check(bool value, const char *reason) {
     if (!value)
         throw std::runtime_error(reason);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid reference operation was accepted");
-}
+using rejection::rejects;
 inline std::string replace(std::string value, std::string_view from, std::string_view to) {
     const auto at = value.find(from);
     check(at != std::string::npos, "Missing reference test field");
@@ -81,14 +77,17 @@ inline void run() {
     auto cross = load_scene(serialize_scene(scene, {}, registry), {}, registry);
     check(cross->find(null_key).get_component<Link>()->target.key() == child_key,
           "Cross-root reference was not captured as part of the whole scene");
-    rejects([&] { (void)Prefab::capture(null, registry); });
+    rejects<std::invalid_argument>([&] { (void)Prefab::capture(null, registry); },
+                                   "Object reference is stale or outside the captured graph");
     null.get_component<Link>()->target = {};
     Scene foreign;
     auto outsider = foreign.create();
     null.get_component<Link>()->target = outsider;
-    rejects([&] { (void)serialize_scene(scene, {}, registry); });
+    rejects<std::invalid_argument>([&] { (void)serialize_scene(scene, {}, registry); },
+                                   "Object reference is stale or outside the captured graph");
     null.get_component<Link>()->target = retired;
-    rejects([&] { (void)serialize_scene(scene, {}, registry); });
+    rejects<std::invalid_argument>([&] { (void)serialize_scene(scene, {}, registry); },
+                                   "Object reference is stale or outside the captured graph");
     null.get_component<Link>()->target = {};
 
     auto prefab = Prefab::deserialize(Prefab::capture(root, registry).serialize({}), {}, registry);
@@ -116,15 +115,21 @@ inline void run() {
     const std::array objects{root, child};
     ObjectReferences references(objects);
     check(references.key({}) == ObjectKey{} && !references.resolve({}).valid(), "Null reference contract failed");
-    rejects([&] { (void)references.key(outsider); });
-    rejects([&] { (void)references.resolve(ObjectKey{99999}); });
-    rejects([&] { (void)registry.capture(root, {}); }); // no graph was supplied
+    rejects<std::invalid_argument>([&] { (void)references.key(outsider); },
+                                   "Object reference is stale or outside the captured graph");
+    rejects<std::invalid_argument>([&] { (void)references.resolve(ObjectKey{99999}); },
+                                   "Object reference target is missing or expired");
+    rejects<std::invalid_argument>([&] { (void)registry.capture(root, {}); },
+                                   "Object reference is stale or outside the captured graph"); // no graph was supplied
     const std::array duplicates{root, root};
-    rejects([&] { (void)ObjectReferences(duplicates); });
+    rejects<std::invalid_argument>([&] { (void)ObjectReferences(duplicates); },
+                                   "Invalid or duplicate object reference mapping");
     const std::array bad_entries{ObjectReferences::Entry{{1}, root}, ObjectReferences::Entry{{1}, child}};
-    rejects([&] { (void)ObjectReferences(bad_entries); });
+    rejects<std::invalid_argument>([&] { (void)ObjectReferences(bad_entries); },
+                                   "Invalid or duplicate object reference mapping");
     root.destroy();
-    rejects([&] { (void)references.resolve(root_key); });
+    rejects<std::invalid_argument>([&] { (void)references.resolve(root_key); },
+                                   "Object reference target is missing or expired");
     check(!scene.find(root_key).valid() && !scene.find(child_key).valid(), "Subtree removal left key lookup entries");
     ObjectReferences expired;
     GameObject handle;
@@ -137,7 +142,8 @@ inline void run() {
         expired = ObjectReferences(only);
     }
     check(!handle.valid(), "References kept scene alive");
-    rejects([&] { (void)expired.resolve(saved_key); });
+    rejects<std::invalid_argument>([&] { (void)expired.resolve(saved_key); },
+                                   "Object reference target is missing or expired");
 
     // Deleted high keys remain retired even after saving an empty scene.
     Scene history;
@@ -154,14 +160,14 @@ inline void run() {
     check(final.key().value == maximum, "Maximum persistent key lost precision");
     auto maximum_copy = load_scene(serialize_scene(*exhausted, {}), {});
     check(maximum_copy->find({maximum}).valid(), "Maximum object key did not survive document roundtrip");
-    rejects([&] { (void)maximum_copy->create(); });
-    rejects([&] { (void)exhausted->create(); });
+    rejects<std::overflow_error>([&] { (void)maximum_copy->create(); }, "Scene object keys exhausted");
+    rejects<std::overflow_error>([&] { (void)exhausted->create(); }, "Scene object keys exhausted");
     final.destroy();
     exhausted = load_scene(serialize_scene(*exhausted, {}), {});
-    rejects([&] { (void)exhausted->create(); });
+    rejects<std::overflow_error>([&] { (void)exhausted->create(); }, "Scene object keys exhausted");
     check(ObjectKey::parse(ObjectKey{maximum}.string()).value == maximum, "Key string roundtrip lost precision");
     for (const auto bad : {"", "01", "-1", "+1", " 1", "1 ", "1.0", "1e0", "18446744073709551616"})
-        rejects([&] { (void)ObjectKey::parse(bad); });
+        rejects<std::invalid_argument>([&] { (void)ObjectKey::parse(bad); }, "Invalid object key");
 
     // Missing links roll back every staged object/resource, preserving the destination.
     int live = 0;
@@ -182,29 +188,47 @@ inline void run() {
     nodes[0].components.push_back({"test.owned.v1", "", true});
     nodes[1].components[0].state = "999999";
     const auto before = destination.size();
-    rejects([&] { (void)Prefab(nodes, with_owner).instantiate(destination); });
+    rejects<std::invalid_argument>([&] { (void)Prefab(nodes, with_owner).instantiate(destination); },
+                                   "Object reference target is missing or expired");
     check(destination.size() == before && live == 1 && staged.size() == 1 && !staged[0].valid() &&
               !destination.find(staged_keys[0]).valid() && destination.find(existing.key()).id() == existing.id(),
           "Failed reference fixup leaked objects/resources or rebound to existing state");
     existing.destroy();
-    rejects([&] {
-        (void)load_scene(replace(document, "\"state\": \"" + child_key.string() + "\"", "\"state\": \"999999\""), {},
-                         registry);
-    });
+    rejects<std::invalid_argument>(
+        [&] {
+            (void)load_scene(replace(document, "\"state\": \"" + child_key.string() + "\"", "\"state\": \"999999\""),
+                             {}, registry);
+        },
+        "Object reference target is missing or expired");
     nodes[1].key = nodes[0].key;
-    rejects([&] { (void)Prefab(nodes, registry); });
+    rejects<std::invalid_argument>([&] { (void)Prefab(nodes, registry); }, "Duplicate prefab object key");
 
     Scene plain;
     auto a = plain.create(), b = plain.create();
     a.set_active(false);
     b.set_parent(a);
     const auto v3 = serialize_scene(plain, {});
-    for (const auto bad : {"0", "01", "-1", "18446744073709551616"})
-        rejects([&] { (void)load_scene(replace(v3, "\"key\": \"1\"", "\"key\": \"" + std::string(bad) + "\""), {}); });
-    rejects([&] { (void)load_scene(replace(v3, "\"key\": \"2\"", "\"key\": \"1\""), {}); });
-    rejects([&] { (void)load_scene(replace(v3, "\"key\": \"1\"", "\"key\": 1"), {}); });
-    rejects([&] { (void)load_scene(replace(v3, "\"key\": \"1\",", ""), {}); });
-    rejects([&] { (void)load_scene(replace(v3, "\"key\": \"1\"", "\"key\": \"1\", \"k\\u0065y\": \"2\""), {}); });
-    rejects([&] { (void)load_scene(replace(v3, "\"next_key\": \"3\"", "\"next_key\": \"2\""), {}); });
+    // Key 0 is well formed but null; the others are not keys at all.
+    const std::array<std::pair<const char *, std::string_view>, 4> bad_keys{
+        {{"0", "Null or duplicate document object key"},
+         {"01", "Invalid object key"},
+         {"-1", "Invalid object key"},
+         {"18446744073709551616", "Invalid object key"}}};
+    for (const auto &bad : bad_keys)
+        rejects<std::invalid_argument>(
+            [&] { (void)load_scene(replace(v3, "\"key\": \"1\"", "\"key\": \"" + std::string(bad.first) + "\""), {}); },
+            bad.second);
+    rejects<std::invalid_argument>([&] { (void)load_scene(replace(v3, "\"key\": \"2\"", "\"key\": \"1\""), {}); },
+                                   "Null or duplicate document object key");
+    rejects<std::invalid_argument>([&] { (void)load_scene(replace(v3, "\"key\": \"1\"", "\"key\": 1"), {}); },
+                                   "[json.exception.type_error.302] type must be string, but is number");
+    rejects<std::invalid_argument>([&] { (void)load_scene(replace(v3, "\"key\": \"1\",", ""), {}); },
+                                   "Missing JSON field: key");
+    rejects<std::invalid_argument>(
+        [&] { (void)load_scene(replace(v3, "\"key\": \"1\"", "\"key\": \"1\", \"k\\u0065y\": \"2\""), {}); },
+        "Duplicate JSON document field");
+    rejects<std::invalid_argument>(
+        [&] { (void)load_scene(replace(v3, "\"next_key\": \"3\"", "\"next_key\": \"2\""), {}); },
+        "Invalid scene next object key");
 }
 } // namespace references_test

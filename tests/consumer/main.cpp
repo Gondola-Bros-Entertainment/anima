@@ -47,6 +47,7 @@
 #include "environment.hpp"
 #include "foliage.hpp"
 #include "materials.hpp"
+#include "rejection.hpp"
 #include "replacement.hpp"
 #include "resources.hpp"
 #include <SDL3/SDL.h>
@@ -195,13 +196,8 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     capture("consumer-camera-restored");
     selection = cameras->components<anima::CameraView>().front();
     selection->camera = eye; // Stale selection must fail before renderer publication.
-    bool rejected = false;
-    try {
-        renderer.set_view(anima::view_matrix(scenes, aspect));
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    require(rejected, "Stale camera selection was accepted");
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_view(anima::view_matrix(scenes, aspect)); },
+                                              "Selected camera must be a live object in the scene selection");
     capture("consumer-camera-rejected");
     selection->camera = cameras->components<anima::Camera>().front().object();
     scenes.unload(instances);
