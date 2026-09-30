@@ -5,10 +5,16 @@
 // Environment.
 #include "gltf_fixture.hpp"
 #include "gpu_checks.hpp"
+#include "rejection.hpp"
 #include <anima/assets/asset.hpp>
 #include <anima/scene.hpp>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <numbers>
+#include <optional>
+#include <string_view>
+#include <utility>
 
 namespace material_test {
 inline void require(bool condition, const std::string &message) {
@@ -56,24 +62,37 @@ inline std::array<double, 3> default_view() {
 // Renders fixtures one at a time in one window and keeps each first frame by name.
 class Harness {
   public:
-    explicit Harness(const std::filesystem::path &output)
+    /// A camera at #position looking at #target.
+    struct Eye {
+        anima::Vec3 position, target;
+    };
+    /// Renders with RendererOptions::max_anisotropy @p anisotropy.
+    explicit Harness(const std::filesystem::path &output, float anisotropy = anima::RendererOptions{}.max_anisotropy)
         : window_(gpu_check::window("Anima material verification", 960, 640, SDL_WINDOW_HIGH_PIXEL_DENSITY)),
-          renderer_(window_.get(), options()), images(output) {
+          renderer_(window_.get(), options(anisotropy)), images(output) {
         renderer_.set_environment(anima::Environment{});
     }
-    /// Imports @p glb, places it at @p world, frames it and reads back its first frame as @p name.
+    /// Imports @p glb, places it at @p world, views it from @p eye or else frames it with an OrbitCamera, and reads
+    /// back its first frame as @p name.
     void render(const std::string &name, const std::vector<std::byte> &glb,
-                const anima::Mat4 &world = anima::identity()) {
+                const anima::Mat4 &world = anima::identity(), const std::optional<Eye> &eye = std::nullopt) {
         const auto asset = anima::load_asset(std::span<const std::byte>(glb));
         auto scene = std::make_shared<anima::Scene>();
         scene->set_transform(scene->add(anima::Mesh::compile(*asset)), world);
         renderer_.set_scenes({scene});
-        anima::OrbitCamera camera;
-        camera.frame(scene->bounds().minimum, scene->bounds().maximum);
         int width = 0, height = 0;
         require(SDL_GetWindowSizeInPixels(window_.get(), &width, &height) && width > 0 && height > 0,
                 "Material window has no drawable size");
-        renderer_.set_view(camera.matrix(float(width) / float(height)));
+        const auto aspect = float(width) / float(height);
+        if (eye) {
+            constexpr float near_plane = .05F, far_plane = 200;
+            renderer_.set_view(anima::operator*(anima::perspective(aspect, near_plane, far_plane),
+                                                anima::look_at(eye->position, eye->target)));
+        } else {
+            anima::OrbitCamera camera;
+            camera.frame(scene->bounds().minimum, scene->bounds().maximum);
+            renderer_.set_view(camera.matrix(aspect));
+        }
         renderer_.request_capture();
         const auto started = std::chrono::steady_clock::now();
         for (;;) {
@@ -93,11 +112,14 @@ class Harness {
         const auto stats = renderer_.shutdown();
         require(!stats.validation_errors && !stats.validation_warnings, "Material GPU validation failed");
     }
+    /// VulkanRenderer::max_anisotropy.
+    [[nodiscard]] float max_anisotropy() const noexcept { return renderer_.max_anisotropy(); }
 
   private:
-    static anima::RendererOptions options() {
+    static anima::RendererOptions options(float anisotropy) {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.max_anisotropy = anisotropy;
         return settings;
     }
     gpu_check::Video video_;
@@ -150,10 +172,10 @@ inline int expected_gray(double fraction, double u, double v) {
                        sun_over_pi * light[2] * ((1 - fresnel) * albedo + fresnel / (2 * (light[2] + view[2])));
     return int(std::nearbyint(255 * linear_to_srgb(value)));
 }
-inline int run_sampling(int argc, char **argv) {
-    require(argc == 3, "Usage: consumer --material-sampling OUTPUT");
-    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    Harness harness(argv[2]);
+// Checks sampling in one renderer with the default RendererOptions::max_anisotropy. The orbit camera sees each quad
+// nearly face on, where a pixel's footprint is barely stretched and anisotropy has little to sharpen.
+inline void check_filters(const std::filesystem::path &output) {
+    Harness harness(output);
     auto &images = harness.images;
     // Per-pixel sRGB decoding before filtering, nearest and linear filters, the three wrap modes and trilinear
     // minification, each against the closed form within 4 levels per channel.
@@ -199,8 +221,140 @@ inline int run_sampling(int argc, char **argv) {
     images.require_changed("min-reference-nearest", "min-reference-linear", least_change,
                            "The filter references do not discriminate minification");
     harness.finish();
-    std::cout << "PASS material sampling: per-pixel sRGB, nearest and linear filters, wrapping, mip minification "
-                 "and independent minification and magnification filters\n";
+}
+
+// A floor from -50 to 50 in X and Z, facing +Y, whose 64x64 texture alternates gray 0 and 255 every 4 texel
+// columns and repeats 64 times across it: stripes about 10 cm wide that run along Z. @p mag and @p min are glTF
+// filters.
+inline std::vector<std::byte> striped_floor(int mag, int min) {
+    constexpr unsigned size = 64, stripe = 4;
+    constexpr float half = 50, repeats = 64;
+    std::vector<std::uint8_t> pixels;
+    for (unsigned y = 0; y < size; ++y)
+        for (unsigned x = 0; x < size; ++x)
+            pixels.insert(pixels.end(), 3, std::uint8_t(x / stripe % 2 ? 255 : 0));
+    std::vector<float> vertices;
+    // Quad Y becomes -Z, which keeps the winding counterclockwise seen from +Y.
+    for (const auto &[x, y] : quad_corners)
+        vertices.insert(vertices.end(),
+                        {x * half, 0, -y * half, 0, 1, 0, (x + 1) * repeats / 2, (y + 1) * repeats / 2});
+    gltf_fixture::Builder builder;
+    const auto first = builder.interleaved(vertices, 8, {{"VEC3", 0}, {"VEC3", 3}, {"VEC2", 6}});
+    const auto image = builder.png(size, size, 3, pixels);
+    return builder.glb(R"("scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"textures":[{"source":)" +
+                       std::to_string(image) + R"(,"sampler":0}],"samplers":[{"magFilter":)" + std::to_string(mag) +
+                       R"(,"minFilter":)" + std::to_string(min) +
+                       R"(}],"materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0},)"
+                       R"("metallicFactor":0,"roughnessFactor":1}}],"meshes":[{"primitives":[{"attributes":{)"
+                       R"("POSITION":)" +
+                       std::to_string(first) + R"(,"NORMAL":)" + std::to_string(first + 1) + R"(,"TEXCOORD_0":)" +
+                       std::to_string(first + 2) + R"(},"material":0}]}])");
+}
+// The row of @p image that shows the floor @p distance ahead of an eye @p height above it that looks at the floor
+// @p aim ahead, through perspective()'s 45-degree vertical field of view.
+inline std::size_t floor_row(const gpu_check::Image &image, double height, double aim, double distance) {
+    const double cotangent = 1 + std::numbers::sqrt2; // 1 / tan(22.5 degrees)
+    const auto below = std::atan(height / distance) - std::atan(height / aim);
+    return std::size_t((1 + cotangent * std::tan(below)) * image.height / 2);
+}
+// The mean absolute deviation of green from each row's mean, over rows @p first to @p last and the middle half of
+// the columns: how much of the stripes' contrast those rows keep.
+inline double stripe_contrast(const gpu_check::Image &image, std::size_t first, std::size_t last) {
+    double deviation = 0;
+    std::size_t count = 0;
+    for (auto y = first; y <= last; ++y) {
+        double mean = 0;
+        for (auto x = image.width / 4; x < image.width * 3 / 4; ++x)
+            mean += gpu_check::pixel(image, x, y)[1];
+        mean /= double(image.width * 3 / 4 - image.width / 4);
+        for (auto x = image.width / 4; x < image.width * 3 / 4; ++x, ++count)
+            deviation += std::abs(gpu_check::pixel(image, x, y)[1] - mean);
+    }
+    return deviation / double(count);
+}
+// Draws the striped floor from 1 m above it with the default RendererOptions::max_anisotropy and with 1, and returns
+// the degree that the first renderer used. Between 12 and 30 m ahead, a pixel's footprint on the floor is 12 to 30
+// times longer than it is wide, so isotropic filtering blurs the stripes to gray, and anisotropic filtering, which
+// Vulkan requires to reach 16 wherever it is supported, keeps more of them. Nearest and unmipmapped floors must
+// not change.
+inline float check_anisotropy(const std::filesystem::path &output) {
+    constexpr double height = 1, aim = 20, farthest = 30, closest = 12, least_gain = 2;
+    const Harness::Eye eye{{0, float(height), float(aim)}, {0, 0, 0}};
+    const std::array<std::pair<std::string, std::vector<std::byte>>, 3> floors{
+        {{"floor-trilinear", striped_floor(linear, linear_mipmap_linear)},
+         {"floor-nearest", striped_floor(nearest, nearest)},
+         {"floor-unmipmapped", striped_floor(linear, linear)}}};
+    std::vector<std::pair<std::string, gpu_check::Image>> anisotropic;
+    float degree{};
+    {
+        Harness harness(output);
+        degree = harness.max_anisotropy();
+        for (const auto &[name, glb] : floors) {
+            harness.render(name, glb, anima::identity(), eye);
+            anisotropic.emplace_back(name + "-anisotropic", harness.images[name]);
+        }
+        harness.finish();
+    }
+    require(degree == 1 || degree == anima::RendererOptions{}.max_anisotropy,
+            "The default anisotropy is " + std::to_string(degree) + ", not 1 or the default option");
+    Harness harness(output, 1);
+    require(harness.max_anisotropy() == 1, "RendererOptions::max_anisotropy 1 did not filter isotropically");
+    auto &images = harness.images;
+    for (auto &[name, image] : anisotropic)
+        images.add(name, std::move(image));
+    for (const auto &[name, glb] : floors)
+        harness.render(name + "-isotropic", glb, anima::identity(), eye);
+    images.require_same("floor-nearest-anisotropic", "floor-nearest-isotropic",
+                        "Anisotropy changed a nearest-filtered texture");
+    images.require_same("floor-unmipmapped-anisotropic", "floor-unmipmapped-isotropic",
+                        "Anisotropy changed an unmipmapped texture");
+    if (degree == 1)
+        images.require_same("floor-trilinear-anisotropic", "floor-trilinear-isotropic",
+                            "A device without anisotropic filtering changed a trilinear texture");
+    else {
+        const auto &sharp = images["floor-trilinear-anisotropic"];
+        const auto first = floor_row(sharp, height, aim, farthest), last = floor_row(sharp, height, aim, closest);
+        const auto kept = stripe_contrast(sharp, first, last),
+                   isotropic = stripe_contrast(images["floor-trilinear-isotropic"], first, last);
+        std::cout << "Stripe contrast in rows " << first << " to " << last << ": " << kept << " anisotropic, "
+                  << isotropic << " isotropic\n";
+        images.require(kept > least_gain * isotropic,
+                       "Anisotropic filtering kept stripe contrast " + std::to_string(kept) + ", not more than " +
+                           std::to_string(least_gain) + " times the isotropic " + std::to_string(isotropic),
+                       {"floor-trilinear-anisotropic", "floor-trilinear-isotropic"});
+    }
+    harness.finish();
+    return degree;
+}
+// Rejects a RendererOptions::max_anisotropy that is not finite or is below 1, after an unknown failure stage and
+// before a missing window, so without a display or GPU.
+inline void reject_invalid_anisotropy() {
+    constexpr std::string_view invalid = "Maximum anisotropy must be finite and at least 1";
+    const auto construct = [](float anisotropy, anima::RendererFailureStage stage) {
+        anima::RendererOptions options;
+        options.max_anisotropy = anisotropy;
+        options.fail_after = stage;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    constexpr auto no_failure = anima::RendererFailureStage::none;
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    for (const auto value : {0.F, .5F, -1.F, -infinity, infinity, std::numeric_limits<float>::quiet_NaN()})
+        rejection::rejects<std::invalid_argument>([&] { construct(value, no_failure); }, invalid);
+    for (const auto value : {1.F, 16.F, 1000.F})
+        rejection::rejects<std::invalid_argument>([&] { construct(value, no_failure); },
+                                                  "Renderer requires an SDL window");
+    // The failure stage is checked first.
+    rejection::rejects<std::invalid_argument>([&] { construct(0, anima::RendererFailureStage::vertex); },
+                                              "Unknown initialization failure stage");
+}
+inline int run_sampling(int argc, char **argv) {
+    require(argc == 3, "Usage: consumer --material-sampling OUTPUT");
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    check_filters(argv[2]);
+    const auto degree = check_anisotropy(argv[2]);
+    std::cout << "PASS material sampling: per-pixel sRGB, nearest and linear filters, wrapping, mip minification, "
+                 "independent minification and magnification filters, and anisotropy "
+              << degree << " that sharpens only linear, mipmapped textures\n";
     return 0;
 }
 
