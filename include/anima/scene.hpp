@@ -67,7 +67,8 @@ struct SceneLifetime {
 /// whole vertex arrays, and hierarchy traversal is iterative, so depth does not consume the call
 /// stack. Creating an object takes amortized time independent of the scene's other objects, and
 /// destroying objects takes amortized time proportional to them and their components, apart from a
-/// term logarithmic in the number of free slots each time one is reused or freed.
+/// term logarithmic in the number of free slots each time one is reused or freed. Prefabs and
+/// documents add the terms that prefab.hpp states.
 ///
 /// Components are ordinary C++ types attached with GameObject::add_component. The scene calls
 /// these optional public hooks only while a component is active (enabled, on an object active in
@@ -150,9 +151,10 @@ class Scene {
     /// removed, disabled or deactivated during the call skips its remaining hooks. The call pins each
     /// participant's value, so one removed during the call is destroyed when the call ends; a
     /// component without hooks is not pinned. Order within a phase is unspecified. The call visits
-    /// only components whose types declare hooks, so other objects and components add no work.
-    /// @p seconds is passed through unchanged: the application owns accumulation, pausing and time
-    /// scale.
+    /// only components whose types declare hooks, so other objects and components add no work;
+    /// adding or removing such components can make the next call first sort them, in time
+    /// O(h log h) for h of them. @p seconds is passed through unchanged: the application owns
+    /// accumulation, pausing and time scale.
     ///
     /// Throws `std::invalid_argument` unless @p seconds is finite and nonnegative, and
     /// `std::logic_error` while the scene is running component hooks or cleanup, constructing a
@@ -176,7 +178,8 @@ class Scene {
     void synchronize_lifecycle();
     /// Every attachment of component type `T`, including disabled ones and those on inactive
     /// objects. It visits only attachments of `T`, so objects and components of other types add
-    /// no work.
+    /// no work; adding or removing attachments of `T` can make the next query first sort them, in
+    /// time O(k log k) for k of them.
     template <class T> [[nodiscard]] std::vector<ComponentRef<T>> components();
     /// Whether @p id names a live object of this scene.
     [[nodiscard]] bool contains(Id id) const noexcept;
