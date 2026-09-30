@@ -57,6 +57,9 @@ void create_world_image(GpuTexture &target) {
     image.samples = VK_SAMPLE_COUNT_1_BIT;
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
     image.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // Custom materials that read opaque color sample a copy of this image.
+    if (opaque_copies_supported())
+        image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     target.allocation_bytes = create_image(image, target.image, target.allocation, "Create linear world image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -212,6 +215,7 @@ void finish_world_writes() {
                          0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 void destroy_world_targets() noexcept {
+    destroy_opaque_inputs();
     world_target.reset();
     if (resolve_pipeline)
         vkDestroyPipeline(device, resolve_pipeline, nullptr);

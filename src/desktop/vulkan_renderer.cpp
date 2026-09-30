@@ -272,6 +272,8 @@ struct VulkanRenderer::Impl {
 #include "resource_renderer.inc"
 #include "shadow_renderer.inc"
 #include "world_renderer.inc"
+// Custom materials draw the resource renderer's instances, so their declarations follow it.
+#include "custom_renderer.inc"
 #endif
     std::array<float, 16> view_projection{};
     std::array<float, 4> view_origin{0, 0, -1, 0};
@@ -613,6 +615,7 @@ struct VulkanRenderer::Impl {
         check(vkCreatePipelineLayout(device, &layout, nullptr, &environment_pipeline_layout),
               "Create mesh pipeline layout");
         create_resource_layout();
+        create_custom_layout();
         make_shaders(shadow_resource_vertex_code, shadow_fragment_code, shadow_resource_vertex_shader,
                      shadow_fragment_shader);
         create_shadow_pass();
@@ -858,6 +861,9 @@ struct VulkanRenderer::Impl {
         pass.dependencyCount = 2;
         pass.pDependencies = dependencies.data();
         check(vkCreateRenderPass(device, &pass, nullptr, &render_pass), "Create render pass");
+#ifdef ANIMA_HAS_ASSETS
+        create_opaque_input_passes(pass);
+#endif
     }
     // blended_resource draws meshes as resource does, but composites premultiplied color over the target and
     // writes no depth.
@@ -1036,6 +1042,11 @@ struct VulkanRenderer::Impl {
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
         image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+#ifdef ANIMA_HAS_ASSETS
+        // Custom materials that read opaque depth sample a copy of this image.
+        if (opaque_copies_supported())
+            image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+#endif
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         [[maybe_unused]] const auto bytes = create_image(image, depth_image, depth_allocation, "Create depth image");
 #ifdef ANIMA_HAS_ASSETS
@@ -1089,8 +1100,8 @@ struct VulkanRenderer::Impl {
         material_samplers[key] = sampler;
         return sampler;
     }
-    void upload_textures(GpuMaterials &target, UploadBatch &upload, RendererFailureStage failure, bool initial,
-                         const MeshPreparation *prepared = nullptr) {
+    // Throws `std::runtime_error` unless the device samples 8-bit RGBA color and data images with linear filtering.
+    void require_texture_formats() const {
         const auto needed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
         for (const auto image_format : {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM}) {
             VkFormatProperties properties{};
@@ -1098,6 +1109,104 @@ struct VulkanRenderer::Impl {
             if ((properties.optimalTilingFeatures & needed) != needed)
                 throw std::runtime_error("GPU lacks filtered RGBA colour/data images");
         }
+    }
+    // Creates @p texture's image, view and shared sampler for @p source, then uploads @p mips through @p upload and
+    // waits for the copy. The first texture of an upload, @p first, fires the texture and upload stages of @p failure.
+    void upload_texture(GpuTexture &texture, const Texture &source, const std::vector<MipLevel> &mips,
+                        UploadBatch &upload, RendererFailureStage failure, bool initial, bool first) {
+        const auto &pixels = *source.image;
+        VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        image.imageType = VK_IMAGE_TYPE_2D;
+        image.format = source.encoding == TextureEncoding::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        image.extent = {pixels.width, pixels.height, 1};
+        image.mipLevels = static_cast<std::uint32_t>(mips.size());
+        image.arrayLayers = 1;
+        image.samples = VK_SAMPLE_COUNT_1_BIT;
+        image.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        texture.allocation_bytes = create_image(image, texture.image, texture.allocation, "Create texture image");
+        if (first)
+            inject_scene(failure, RendererFailureStage::texture, initial);
+        VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        view.image = texture.image;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = image.format;
+        view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.mipLevels, 0, 1};
+        check(vkCreateImageView(device, &view, nullptr, &texture.view), "Create texture view");
+        texture.shared_sampler = material_sampler(source.sampler, image.mipLevels);
+        texture.sampler = texture.shared_sampler->handle;
+        VkDeviceSize size = 0;
+        for (const auto &mip : mips)
+            size += mip.rgba.size();
+        VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        buffer.size = size;
+        buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        auto *mapped =
+            static_cast<char *>(create_buffer(buffer, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, upload.staging_buffer,
+                                              upload.staging_allocation, "Create texture staging buffer")
+                                    .pMappedData);
+        std::size_t offset = 0;
+        for (const auto &mip : mips) {
+            std::memcpy(mapped + offset, mip.rgba.data(), mip.rgba.size());
+            offset += mip.rgba.size();
+        }
+        check(vmaFlushAllocation(allocator, upload.staging_allocation, 0, VK_WHOLE_SIZE), "Flush texture staging");
+        check(vkResetCommandBuffer(upload.command, 0), "Reset texture upload command");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vkBeginCommandBuffer(upload.command, &begin), "Begin texture upload");
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = texture.image;
+        barrier.subresourceRange = view.subresourceRange;
+        vkCmdPipelineBarrier(upload.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+        std::vector<VkBufferImageCopy> copies;
+        offset = 0;
+        for (std::uint32_t level = 0; level < image.mipLevels; ++level) {
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = offset;
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            copy.imageExtent = {mips[level].width, mips[level].height, 1};
+            copies.push_back(copy);
+            offset += mips[level].rgba.size();
+        }
+        vkCmdCopyBufferToImage(upload.command, upload.staging_buffer, texture.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<std::uint32_t>(copies.size()),
+                               copies.data());
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(upload.command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
+        check(vkEndCommandBuffer(upload.command), "End texture upload");
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &upload.command;
+        check(vkResetFences(device, 1, &upload.fence), "Reset upload fence");
+        check(vkQueueSubmit(graphics_queue, 1, &submit, upload.fence), "Submit texture upload");
+        upload.pending = true;
+        if (first) {
+            inject_scene(failure, RendererFailureStage::texture_upload, initial);
+            if (failure == RendererFailureStage::upload_timeout)
+                throw VulkanFailure(VK_TIMEOUT, "Injected upload timeout");
+            if (failure == RendererFailureStage::device_lost) {
+                upload.simulate_device_loss = true;
+                throw std::runtime_error("Injected failure before device loss at upload retirement");
+            }
+        }
+        upload.wait();
+        upload.release_staging();
+    }
+    void upload_textures(GpuMaterials &target, UploadBatch &upload, RendererFailureStage failure, bool initial,
+                         const MeshPreparation *prepared = nullptr) {
+        require_texture_formats();
         const auto generated_plan = prepared
                                         ? MaterialTexturePlan{}
                                         : material_texture_plan(target.source->material_data, target.source->textures);
@@ -1115,96 +1224,7 @@ struct VulkanRenderer::Impl {
                                             : std::vector<MipLevel>{{pixels.width, pixels.height, pixels.rgba}};
             const auto &mips = prepared ? prepared->images().at(i) : generated_mips;
             total_mips += static_cast<std::uint32_t>(mips.size());
-            auto &texture = target.textures[i];
-            VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-            image.imageType = VK_IMAGE_TYPE_2D;
-            image.format =
-                source.encoding == TextureEncoding::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-            image.extent = {pixels.width, pixels.height, 1};
-            image.mipLevels = static_cast<std::uint32_t>(mips.size());
-            image.arrayLayers = 1;
-            image.samples = VK_SAMPLE_COUNT_1_BIT;
-            image.tiling = VK_IMAGE_TILING_OPTIMAL;
-            image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-            image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            texture.allocation_bytes = create_image(image, texture.image, texture.allocation, "Create texture image");
-            if (i == 0)
-                inject_scene(failure, RendererFailureStage::texture, initial);
-            VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-            view.image = texture.image;
-            view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            view.format = image.format;
-            view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.mipLevels, 0, 1};
-            check(vkCreateImageView(device, &view, nullptr, &texture.view), "Create texture view");
-            texture.shared_sampler = material_sampler(source.sampler, image.mipLevels);
-            texture.sampler = texture.shared_sampler->handle;
-            VkDeviceSize size = 0;
-            for (const auto &mip : mips)
-                size += mip.rgba.size();
-            VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-            buffer.size = size;
-            buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-            buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            auto *mapped =
-                static_cast<char *>(create_buffer(buffer, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, upload.staging_buffer,
-                                                  upload.staging_allocation, "Create texture staging buffer")
-                                        .pMappedData);
-            std::size_t offset = 0;
-            for (const auto &mip : mips) {
-                std::memcpy(mapped + offset, mip.rgba.data(), mip.rgba.size());
-                offset += mip.rgba.size();
-            }
-            check(vmaFlushAllocation(allocator, upload.staging_allocation, 0, VK_WHOLE_SIZE), "Flush texture staging");
-            check(vkResetCommandBuffer(upload.command, 0), "Reset texture upload command");
-            VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            check(vkBeginCommandBuffer(upload.command, &begin), "Begin texture upload");
-            VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = texture.image;
-            barrier.subresourceRange = view.subresourceRange;
-            vkCmdPipelineBarrier(upload.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                                 0, nullptr, 0, nullptr, 1, &barrier);
-            std::vector<VkBufferImageCopy> copies;
-            offset = 0;
-            for (std::uint32_t level = 0; level < image.mipLevels; ++level) {
-                VkBufferImageCopy copy{};
-                copy.bufferOffset = offset;
-                copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
-                copy.imageExtent = {mips[level].width, mips[level].height, 1};
-                copies.push_back(copy);
-                offset += mips[level].rgba.size();
-            }
-            vkCmdCopyBufferToImage(upload.command, upload.staging_buffer, texture.image,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<std::uint32_t>(copies.size()),
-                                   copies.data());
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            vkCmdPipelineBarrier(upload.command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
-            check(vkEndCommandBuffer(upload.command), "End texture upload");
-            VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &upload.command;
-            check(vkResetFences(device, 1, &upload.fence), "Reset upload fence");
-            check(vkQueueSubmit(graphics_queue, 1, &submit, upload.fence), "Submit texture upload");
-            upload.pending = true;
-            if (i == 0) {
-                inject_scene(failure, RendererFailureStage::texture_upload, initial);
-                if (failure == RendererFailureStage::upload_timeout)
-                    throw VulkanFailure(VK_TIMEOUT, "Injected upload timeout");
-                if (failure == RendererFailureStage::device_lost) {
-                    upload.simulate_device_loss = true;
-                    throw std::runtime_error("Injected failure before device loss at upload retirement");
-                }
-            }
-            upload.wait();
-            upload.release_staging();
+            upload_texture(target.textures[i], source, mips, upload, failure, initial, i == 0);
         }
         target.material_sets.resize(target.source->material_data.size() + 1);
         const auto count = static_cast<std::uint32_t>(target.material_sets.size());
@@ -1352,6 +1372,7 @@ struct VulkanRenderer::Impl {
         try {
             ensure_shadow_targets();
             update_environment();
+            update_custom_frame();
         } catch (const VulkanFailure &error) {
             if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
                 throw;
@@ -1409,6 +1430,8 @@ struct VulkanRenderer::Impl {
         if (!resource_scenes.empty()) {
             try {
                 prepare_resources(resource_scenes);
+                if (resource_opaque_inputs)
+                    ensure_opaque_inputs();
             } catch (const VulkanFailure &error) {
                 if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
                     throw;
@@ -1464,6 +1487,10 @@ struct VulkanRenderer::Impl {
         pass.framebuffer = image.framebuffer;
 #ifdef ANIMA_HAS_ASSETS
         pass.framebuffer = world_target->framebuffer;
+        // A frame whose custom materials read opaque depth or color splits the world pass around copies of them.
+        const bool split = !resource_scenes.empty() && resource_opaque_inputs;
+        if (split)
+            pass.renderPass = opaque_pass;
 #endif
         pass.renderArea.extent = extent;
         pass.clearValueCount = 2;
@@ -1484,6 +1511,17 @@ struct VulkanRenderer::Impl {
         }
         if (!resource_scenes.empty()) {
             record_resources();
+            if (split) {
+                vkCmdEndRenderPass(command);
+                copy_opaque_inputs();
+                pass.renderPass = composite_pass;
+                pass.clearValueCount = 0;
+                pass.pClearValues = nullptr;
+                vkCmdBeginRenderPass(command, &pass, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdSetViewport(command, 0, 1, &viewport);
+                vkCmdSetScissor(command, 0, 1, &scissor);
+                record_blended();
+            }
         } else
 #endif
             if (options.diagnostic_triangle) {
@@ -1667,8 +1705,20 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
             resource_instances.clear();
             resource_blended_draws.clear();
+            resource_custom_draws.clear();
+            resource_custom_shadow_draws.clear();
             resource_scenes.clear();
             resource_cache.clear();
+            custom_cache.clear();
+            custom_frame_buffer.reset();
+            if (custom_frame_pool)
+                vkDestroyDescriptorPool(device, custom_frame_pool, nullptr);
+            if (custom_pipeline_layout)
+                vkDestroyPipelineLayout(device, custom_pipeline_layout, nullptr);
+            if (custom_frame_layout)
+                vkDestroyDescriptorSetLayout(device, custom_frame_layout, nullptr);
+            if (custom_material_layout)
+                vkDestroyDescriptorSetLayout(device, custom_material_layout, nullptr);
             pose_buffer.reset();
             shadow_target.reset();
             detail_shadow_target.reset();
@@ -1854,6 +1904,16 @@ bool VulkanRenderer::draw() {
         impl_->fatal = true;
         throw RendererFatalError(error.what());
     }
+}
+void VulkanRenderer::set_time(float seconds) {
+    impl_->running();
+    if (!std::isfinite(seconds))
+        throw std::invalid_argument("Shader time must be finite");
+#ifdef ANIMA_HAS_ASSETS
+    impl_->shader_time = seconds;
+#else
+    throw std::logic_error("Custom materials require asset support");
+#endif
 }
 void VulkanRenderer::set_environment(const Environment &environment) {
     impl_->running();
