@@ -1,6 +1,7 @@
 // Custom materials without a GPU: SPIR-V validation against the documented interface, assignment to scene objects,
-// and persistence by name in scene, prefab, prefab variant and scene set documents. The modules are assembled here
-// word by word, so each test states exactly the interface it checks and no shader compiler is needed.
+// and persistence by name in scene, prefab, prefab variant and scene set documents, staged ones included. The
+// modules are assembled here word by word, so each test states exactly the interface it checks and no shader
+// compiler is needed.
 #include <anima/custom_material.hpp>
 #include <anima/prefab.hpp>
 #include <anima/prefab_variant.hpp>
@@ -8,7 +9,9 @@
 #include <anima/scene_set.hpp>
 #include <doctest/doctest.h>
 
+#include <atomic>
 #include <cstdint>
+#include <future>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -623,4 +626,110 @@ TEST_CASE("Documents reject custom materials that do not match their names or me
                R"("custom_materials":[null]}]})";
     CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes(), {}, library.materials()),
                          "Empty scene object has renderer state", std::invalid_argument);
+}
+
+TEST_CASE("Staging resolves each custom material name once on the staging thread") {
+    Library library;
+    const auto water = material("water"), lava = material("lava");
+    library.registered.emplace("water", water);
+    library.registered.emplace("lava", lava);
+    std::atomic<int> resolved{0};
+    const CustomMaterialResolver counting = [&](std::string_view name) {
+        ++resolved;
+        return library.materials()(name);
+    };
+    Scene scene;
+    auto pool = scene.create("pool", library.shape);
+    pool.renderer().set_custom_material(0, lava);
+    pool.renderer().set_custom_material(1, water);
+    auto fountain = scene.create("fountain", library.shape);
+    fountain.renderer().set_custom_material(1, water);
+    const auto document = serialize_scene(scene, library.names());
+    StagingProgress progress;
+    const auto staged = std::async(std::launch::async, [&] {
+                            return stage_scene(document, library.meshes(), counting, {{}, &progress});
+                        }).get();
+    // The parse, two objects, one mesh key and two custom material names.
+    CHECK(resolved == 2);
+    CHECK(progress.total() == 1 + 2 + 1 + 2);
+    CHECK(progress.completed() == progress.total());
+    const auto committed = load_scene(staged);
+    CHECK(committed->instance(committed->find(pool.key()).id()).custom_materials ==
+          std::vector<std::shared_ptr<const CustomMaterial>>{lava, water});
+    CHECK(serialize_scene(*committed, library.names()) == document);
+    CHECK(serialize_scene(*load_scene(document, library.meshes(), {}, library.materials()), library.names()) ==
+          document);
+    // Each object holds two custom material slots, and the materials themselves are shared.
+    Scene plain;
+    (void)plain.create("pool", library.shape);
+    (void)plain.create("fountain", library.shape);
+    const auto without = stage_scene(serialize_scene(plain, library.names()), library.meshes());
+    CHECK(staged.retained_bytes() - without.retained_bytes() == 4 * sizeof(std::shared_ptr<const CustomMaterial>));
+
+    SceneSet set;
+    (void)set.load("pool", staged);
+    const auto set_document = set.serialize(library.names());
+    resolved = 0;
+    const auto staged_set = stage_scene_set(set_document, library.meshes(), counting);
+    CHECK(resolved == 2);
+    SceneSet copy;
+    copy.restore(staged_set);
+    CHECK(copy.serialize(library.names()) == set_document);
+}
+
+TEST_CASE("A staged document naming a missing custom material is rejected as a synchronous load is") {
+    Library library;
+    Scene scene;
+    auto object = scene.create("pool", library.shape);
+    object.renderer().set_custom_material(0, material("water"));
+    const auto document = serialize_scene(scene, library.names());
+    const auto staged_elsewhere = [&](const CustomMaterialResolver &materials) {
+        return std::async(std::launch::async, [&] { return stage_scene(document, library.meshes(), materials); });
+    };
+    constexpr auto unresolved = "Scene custom material name could not be resolved";
+    CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes(), {}, library.materials()), unresolved,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)staged_elsewhere(library.materials()).get(), unresolved, std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes()), unresolved, std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)staged_elsewhere({}).get(), unresolved, std::invalid_argument);
+    library.registered.emplace("water", material("lava"));
+    constexpr auto renamed = "Scene custom material resolved to a material of another name";
+    CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes(), {}, library.materials()), renamed,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)staged_elsewhere(library.materials()).get(), renamed, std::invalid_argument);
+}
+
+TEST_CASE("A stop requested during custom material resolution cancels staging") {
+    Library library;
+    library.registered.emplace("water", material("water"));
+    library.registered.emplace("lava", material("lava"));
+    Scene scene;
+    auto object = scene.create("pool", library.shape);
+    object.renderer().set_custom_material(0, library.registered.at("lava"));
+    object.renderer().set_custom_material(1, library.registered.at("water"));
+    const auto document = serialize_scene(scene, library.names());
+    for (const bool set_document : {false, true}) {
+        CAPTURE(set_document);
+        SceneSet set;
+        if (set_document)
+            (void)set.load("pool", document, library.meshes(), {}, library.materials());
+        const auto text = set_document ? set.serialize(library.names()) : document;
+        StopSource stop;
+        std::atomic<int> resolved{0};
+        const CustomMaterialResolver stopping = [&](std::string_view name) {
+            ++resolved;
+            stop.request_stop();
+            return library.materials()(name);
+        };
+        const StagingOptions options{stop.get_token(), nullptr};
+        const auto staging = [&] {
+            if (set_document)
+                (void)stage_scene_set(text, library.meshes(), stopping, options);
+            else
+                (void)stage_scene(text, library.meshes(), stopping, options);
+        };
+        CHECK_THROWS_WITH_AS(std::async(std::launch::async, staging).get(), "Staging was cancelled", StagingCancelled);
+        // The first of the two names stopped the call before the second was resolved.
+        CHECK(resolved == 1);
+    }
 }

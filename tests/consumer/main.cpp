@@ -32,6 +32,7 @@
 #include "references.hpp"
 #include "scene_objects.hpp"
 #include "scene_set.hpp"
+#include "staging.hpp"
 #include "state_machine.hpp"
 #include <anima/assets/render_visibility.hpp>
 #include <anima/scene.hpp>
@@ -343,6 +344,7 @@ int main(int argc, char **argv) {
         lifecycle_test::run();
         references_test::run();
         scene_set_test::run();
+        staging_test::run();
         prefab_variant_test::run();
         prefab_composition_test::run();
         consume_audio_scene();

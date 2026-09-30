@@ -1,4 +1,5 @@
 #pragma once
+#include <anima/assets/staging.hpp>
 #include <anima/scene.hpp>
 #include <functional>
 
@@ -27,8 +28,20 @@
 /// reading, capturing and instantiating prefabs, and writing and loading scenes, take time
 /// O(n log n) in their n objects, apart from mesh, codec and parsing work and the costs that Scene
 /// states.
+///
+/// Loading a scene document has two parts. stage_scene parses and validates it and resolves its meshes and
+/// custom materials, and may run on any thread; load_scene(const StagedScene &, const ComponentCodecs &) and
+/// SceneSet create its objects and decode its components on the thread that owns the scene. The overloads that
+/// take a document run both parts on the calling thread. Readers and writers get the C locale's number
+/// separators from `localeconv()`, under one lock that they all share, and readers convert numbers with
+/// `strtod`, so the locale must not change while any of them runs. glibc's `localeconv()` rewrites one static
+/// buffer on every call, so on glibc no code outside Anima may call it while documents are read or written on
+/// another thread.
 
 namespace anima {
+namespace detail {
+struct SceneStage;
+} // namespace detail
 /// Returns the application's stable key for a mesh when writing a document.
 using MeshName = std::function<std::string(const std::shared_ptr<const Mesh> &)>;
 /// Returns the mesh for a key when reading a document; returning null rejects the document.
@@ -113,6 +126,13 @@ class Prefab {
     [[nodiscard]] std::string serialize(const MeshName &name) const;
     /// Reads an `anima.prefab` version 3 document, in which every object key is explicit, resolving
     /// custom material names through @p materials, and constructs a prefab that keeps @p codecs.
+    ///
+    /// Calls may run concurrently on any thread. Each reads @p document and the C locale, neither of which
+    /// may change during the call, takes the locale lock that the file comment describes, and runs
+    /// @p resolve and @p materials on the calling thread, once per distinct mesh key and custom material
+    /// name. No callback of @p codecs runs; several threads may copy one registry into @p codecs at once
+    /// while it does not change. The trial instantiation uses a private scene, whose construction shares only
+    /// an atomic counter with other scenes.
     static Prefab deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs = {},
                               const CustomMaterialResolver &materials = {});
 
@@ -151,10 +171,58 @@ class Prefab {
 /// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming
 /// fails, two different custom materials share a name or a limit is exceeded.
 [[nodiscard]] std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs = {});
+/// An `anima.scene` document that stage_scene parsed, validated and resolved, for
+/// load_scene(const StagedScene &, const ComponentCodecs &) and SceneSet to commit on the thread that owns
+/// the scene.
+///
+/// It holds the document's objects and `next_key`, with component payloads still encoded, and shares the
+/// meshes and custom materials that the resolvers returned; it references no Scene, SceneSet,
+/// ComponentCodecs or service. It never changes, so any thread may copy, read or destroy it, and it can be
+/// committed any number of times. Copies share its data, and moving it copies it, so no object is ever empty.
+class StagedScene {
+  public:
+    StagedScene(const StagedScene &) = default;
+    StagedScene &operator=(const StagedScene &) = default;
+    /// Bytes of decoded data held, excluding container overhead and the meshes and custom materials, which
+    /// are shared: for each object, `sizeof(Prefab::Node)`, the bytes of its name, `sizeof(Mat4)` per pose
+    /// matrix, `sizeof(Vec3)` per material factor, `sizeof(std::shared_ptr<const CustomMaterial>)` per custom
+    /// material slot, null or not, one byte per eight primitive visibility flags, rounded up, and for each
+    /// component `sizeof(ComponentData)` and the bytes of its type and payload. Copies share these bytes.
+    [[nodiscard]] std::size_t retained_bytes() const noexcept;
+
+  private:
+    friend struct detail::ScenePersistence;
+    explicit StagedScene(std::shared_ptr<const detail::SceneStage> data) : data_(std::move(data)) {}
+    std::shared_ptr<const detail::SceneStage> data_;
+};
+/// Parses and validates an `anima.scene` version 3 document, as load_scene does, and resolves each distinct
+/// mesh key and custom material name once, without creating a scene or decoding any component.
+///
+/// Calls may run concurrently on any thread. Each reads @p document and the C locale, neither of which may
+/// change during the call, takes the locale lock that the file comment describes, shares no other mutable
+/// state and runs no ComponentCodecs callback. @p resolve and @p materials run on the calling thread, once per
+/// distinct mesh key and custom material name, so they must allow calls from every thread that stages with
+/// them. @p options is checked before the parse, before each object and each @p resolve or @p materials call,
+/// and before the call returns; its steps are the parse, each object, each distinct mesh key and each distinct
+/// custom material name.
+///
+/// Throws `std::invalid_argument` for invalid content, with the messages that load_scene throws for it, what
+/// @p resolve or @p materials throws, and StagingCancelled when @p options reports a stop. The checks that need
+/// a scene or codecs run when the document is committed: component types, against the codecs given then;
+/// local and pose matrices that a scene rejects; and material factors, custom materials and primitive
+/// visibility flags that do not match their mesh.
+[[nodiscard]] StagedScene stage_scene(std::string_view document, const MeshResolver &resolve,
+                                      const CustomMaterialResolver &materials = {}, const StagingOptions &options = {});
+/// Builds a new scene from @p staged, keeping its object keys and `next_key`. @p codecs is borrowed for this
+/// call and must register every component type, which is checked before any object is created. The caller
+/// decides when to use the new scene. On failure no scene remains; side effects of decoders are not undone.
+[[nodiscard]] std::shared_ptr<Scene> load_scene(const StagedScene &staged, const ComponentCodecs &codecs = {});
 /// Builds a new scene from an `anima.scene` version 3 document, keeping its object keys and
 /// `next_key`, which must be `"0"` or greater than every object key. @p codecs is borrowed for this
 /// call and must register every component type, and @p materials resolves custom material names.
 /// The caller decides when to use the new scene.
+///
+/// Equivalent to load_scene(stage_scene(document, resolve, materials), codecs) on the calling thread.
 [[nodiscard]] std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver &resolve,
                                                 const ComponentCodecs &codecs = {},
                                                 const CustomMaterialResolver &materials = {});

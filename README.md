@@ -89,6 +89,7 @@ Anima supplies reusable mechanisms; applications supply content, rules and polic
 | Audio decoding, mixing, voice limits and output, input state and navigation queries | Sound selection and priorities, action responses, destinations and movement authority |
 | UI documents, layout, rendering and events | Screens, game data, commands and navigation |
 | Import and resource lifetime | Production assets, content recipes and deployment |
+| Load staging, cancellation and progress | Load threads, job systems and scheduling |
 
 The animation documents Anima reads, from model manifests and motion contracts to
 state machines and action, attachment and fitted catalogs, hold only what the engine
@@ -102,6 +103,14 @@ builds independent object assemblies through the same APIs, and a `SceneSet` own
 additive scenes. JSON is the storage format, not a second scene implementation:
 `ComponentCodecs` maps stable component keys to explicit codecs, and failed decoding
 rolls back everything it staged.
+
+Loading splits by thread. GLB import, mesh compilation, texture preparation and
+document staging (`stage_scene`, `stage_scene_set`) read only their inputs, so they
+may run on any thread. Staging starts no thread: the application runs these calls
+on its own threads or job system, then commits each staged document through
+`load_scene` or `SceneSet` on the thread that owns its scenes, where objects are
+created and components decoded. A `StopSource` cancels staging between steps, and a
+`StagingProgress` counts them.
 
 ### One frame
 

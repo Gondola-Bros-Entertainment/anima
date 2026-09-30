@@ -93,6 +93,8 @@ endif()
 if(NOT ANIMA_BUILD_ASSETS AND TARGET anima::assets)
     message(FATAL_ERROR "Core-only consumer imported asset dependencies")
 endif()
+# Applications that stage loads on their own threads link a thread library themselves.
+find_package(Threads REQUIRED)
 
 # Every application has its own translation unit and only its public target's
 # usage requirements, even when several applications share dependency objects.
@@ -127,6 +129,8 @@ function(add_anima_consumer mode target test_name)
         if(CONSUMER_MODE STREQUAL "assets")
             target_link_libraries(${target} PRIVATE anima::assets)
         endif()
+        # The staging check runs a worker thread.
+        target_link_libraries(${target} PRIVATE Threads::Threads)
         target_compile_definitions(${target} PRIVATE CONSUMER_ASSETS=1)
     endif()
     if(CONSUMER_MODE MATCHES "^(desktop|ui)$")

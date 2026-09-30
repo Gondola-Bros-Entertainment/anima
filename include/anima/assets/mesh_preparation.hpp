@@ -9,9 +9,10 @@
 namespace anima {
 /// Mip chains and material bindings for one compiled Mesh, computed on the CPU.
 ///
-/// Construction reads only the immutable Mesh, so it may run on a worker thread, and it filters
-/// exactly as a synchronous upload does. The object is move-only, shares ownership of the Mesh and
-/// owns its mip chains, including base texels, so keep only the preparations still needed.
+/// Construction reads the Mesh, its texels through Mesh::texel_images(), which is safe on any thread, and
+/// shares no other mutable state, so constructions may run concurrently on any thread, and it filters
+/// exactly as a synchronous upload does. The object is move-only, shares ownership of the Mesh and owns
+/// its mip chains, including base texels, so keep only the preparations still needed.
 class MeshPreparation {
   public:
     /// Plans and filters the textures of @p asset, reading their texels through Mesh::texel_images(); see
