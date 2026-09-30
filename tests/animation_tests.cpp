@@ -23,10 +23,10 @@ namespace {
 constexpr double tolerance = 1e-5; // Absolute error allowed in poses, times and quaternion norms.
 constexpr auto preview_test = "An exported manifest previews every declared clip";
 constexpr auto valid_manifest =
-    R"({"schema_version":2,"units":"meters","asset_id":"two-joint-body","model":"body.glb",)"
+    R"({"schema_version":3,"units":"meters","asset_id":"two-joint-body","model":"body.glb",)"
     R"("skeleton":{"id":"test.rig","joint_count":2,)"
     R"("bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},)"
-    R"("clips":[{"name":"test","loop":false,"events":[{"time_seconds":0.53,"event":"pulse\uD83D\uDCA1"}]}]})";
+    R"("clips":[{"name":"test","loop":false,"events":[{"time":0.53,"name":"pulse\uD83D\uDCA1"}]}]})";
 constexpr auto speed_range = "Clip reference speed must be finite and positive";
 constexpr auto invalid_blend = "Pose blend requires matching local poses and a weight in [0,1]";
 
@@ -141,66 +141,101 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
         CAPTURE(speed);
         CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"loop\":false",
                                                std::string("\"loop\":false,\"reference_speed\":") + speed)),
-                             speed_range, std::runtime_error);
+                             speed_range, std::invalid_argument);
     }
     auto infinite_speed =
         file.read(changed(valid_manifest, "\"loop\":false", "\"loop\":false,\"reference_speed\":3.2"));
     infinite_speed.clips.at(0).reference_speed = std::numeric_limits<double>::infinity();
-    CHECK_THROWS_WITH_AS(validate_manifest(infinite_speed, asset), speed_range, std::runtime_error);
+    CHECK_THROWS_WITH_AS(validate_manifest(infinite_speed, asset), speed_range, std::invalid_argument);
 
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", "../body.glb")),
-                         "Manifest model must be a filename beside the manifest: ../body.glb", std::runtime_error);
+                         "Manifest model must be a filename beside the manifest: ../body.glb", std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", "C:/body.glb")),
-                         "Manifest model must be a filename beside the manifest: C:/body.glb", std::runtime_error);
+                         "Manifest model must be a filename beside the manifest: C:/body.glb", std::invalid_argument);
     // what() ends at the NUL that the escape decodes to.
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", R"(body\u0000.glb)")),
-                         "Manifest model must be a filename beside the manifest: body", std::runtime_error);
+                         "Manifest model must be a filename beside the manifest: body", std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "body.glb", R"(folder\\body.glb)")),
-                         "Manifest model must be a filename beside the manifest: folder\\body.glb", std::runtime_error);
+                         "Manifest model must be a filename beside the manifest: folder\\body.glb",
+                         std::invalid_argument);
 
     CHECK_THROWS_WITH_AS(
-        file.read(changed(valid_manifest, "\"schema_version\":2", "\"schema_version\":2,\"schema_version\":2")),
-        "Invalid manifest JSON: Duplicate JSON document field", std::runtime_error);
+        file.read(changed(valid_manifest, "\"schema_version\":3", "\"schema_version\":3,\"schema_version\":3")),
+        "Invalid manifest JSON: Duplicate JSON document field", std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "0.53", "1e999")),
                          "Invalid manifest JSON: [json.exception.out_of_range.406] number overflow parsing '1e999'",
-                         std::runtime_error);
+                         std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "0.53", "01")),
-                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 278: "
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 270: "
                          "syntax error while parsing object - unexpected number literal; expected '}'",
-                         std::runtime_error);
+                         std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, R"(\uD83D\uDCA1)", R"(\uD83D)")),
-                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 302: "
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 293: "
                          "syntax error while parsing value - invalid string: surrogate U+D800..U+DBFF must be "
                          "followed by U+DC00..U+DFFF; last read: '\"pulse\\uD83D\"'",
-                         std::runtime_error);
+                         std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(std::string(valid_manifest) + "false"),
-                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 318: "
+                         "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 309: "
                          "syntax error while parsing value - unexpected false literal; expected end of input",
-                         std::runtime_error);
+                         std::invalid_argument);
     // The JSON library quotes the ill-formed byte as it read it.
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "two-joint-body", "invalid-\xC0\xAF")),
                          "Invalid manifest JSON: [json.exception.parse_error.101] parse error at line 1, column 58: "
                          "syntax error while parsing value - invalid string: ill-formed UTF-8 byte; last read: "
                          "'\"invalid-\xC0'",
-                         std::runtime_error);
+                         std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         file.read(changed(valid_manifest, "\"clips\":[",
                           "\"nested\":" + std::string(34, '[') + "0" + std::string(34, ']') + ",\"clips\":[")),
-        "Invalid manifest JSON: JSON document exceeds nesting limit", std::runtime_error);
+        "Invalid manifest JSON: JSON document exceeds nesting limit", std::invalid_argument);
 
-    // Version 1 manifests, which also listed equipment, have no compatibility reader.
-    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"schema_version\":2", "\"schema_version\":1")),
-                         "Manifest requires schema_version 2 and meter units", std::runtime_error);
+    // Earlier versions have no compatibility reader, and the version is checked first, so a version 2 manifest
+    // reports its version rather than the fields that version had.
+    constexpr auto unsupported = "Unsupported model manifest version";
+    for (const auto *version :
+         {"\"schema_version\":2,\"stage\":\"art\"", "\"schema_version\":3.0", "\"schema_version\":\"3\""}) {
+        CAPTURE(version);
+        CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"schema_version\":3", version)), unsupported,
+                             std::invalid_argument);
+    }
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"meters\"", "\"feet\"")), "Manifest units must be meters",
+                         std::invalid_argument);
+    // The event name without its escaped emoji, so the replacements below are plain ASCII.
+    const auto plain = changed(valid_manifest, R"(\uD83D\uDCA1)", "");
+    // Unknown fields are rejected at every level, including the event fields version 2 used.
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"units\"", "\"stage\":\"art\",\"units\"")),
+                         "Unknown JSON field: stage", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"joint_count\"", "\"root\":\"hips\",\"joint_count\"")),
+                         "Unknown JSON field: root", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"loop\":false", "\"loop\":false,\"speed\":1")),
+                         "Unknown JSON field: speed", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        file.read(changed(valid_manifest, "{\"time\":0.53,\"name\"", "{\"time_seconds\":0.53,\"event\"")),
+        "Missing JSON field: time", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        file.read(changed(plain, R"("clips":[{"name":"test","loop":false,"events":[{"time":0.53,"name":"pulse"}]}])",
+                          R"("clips":{})")),
+        "Manifest clips must be an array", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(file.read(changed(plain, R"("events":[{"time":0.53,"name":"pulse"}])", R"("events":{})")),
+                         "Manifest clip events must be an array", std::invalid_argument);
+    for (const auto *event : {"{\"time\":-0.1,\"name\":\"pulse\"}", "{\"time\":0.53,\"name\":\"\"}"}) {
+        CAPTURE(event);
+        CHECK_THROWS_WITH_AS(file.read(changed(plain, R"({"time":0.53,"name":"pulse"})", event)),
+                             "Invalid manifest clip event", std::invalid_argument);
+    }
+    CHECK_THROWS_WITH_AS(
+        file.read(changed(valid_manifest, "\"clips\"", "\"motion_contract\":\"../motion.json\",\"clips\"")),
+        "Manifest motion_contract must be a filename beside the manifest: ../motion.json", std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":2.5")),
-                         "Invalid manifest joint count", std::runtime_error);
+                         "Invalid manifest joint count", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         validate_manifest(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":3")), asset),
-        "Model skin does not match manifest joint count", std::runtime_error);
+        "Model skin does not match manifest joint count", std::invalid_argument);
     CHECK_THROWS_WITH_AS(validate_manifest(file.read(changed(valid_manifest, "0.53", "1.1")), asset),
-                         "Preview event outside clip: test", std::runtime_error);
+                         "Manifest clip event outside its clip: test", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         validate_manifest(file.read(changed(valid_manifest, "\"name\":\"test\"", "\"name\":\"missing\"")), asset),
-        "Manifest clip must name exactly one animation: missing", std::runtime_error);
+        "Manifest clip must name exactly one animation: missing", std::invalid_argument);
     // A clip name that two animations share names neither.
     auto doubled = asset;
     doubled.animations.push_back(doubled.animations[0]);
@@ -208,7 +243,7 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
     listed.clips.push_back(listed.clips.at(0));
     listed.clips.back().name = "other";
     CHECK_THROWS_WITH_AS(validate_manifest(listed, doubled), "Manifest clip must name exactly one animation: test",
-                         std::runtime_error);
+                         std::invalid_argument);
 }
 
 TEST_CASE("Lookups report a missing name as std::out_of_range and an ambiguous one as std::invalid_argument") {

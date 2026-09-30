@@ -22,9 +22,8 @@ constexpr auto float_range = "JSON number outside the float range";
 constexpr auto invalid_utf8 = "\xff"; // A lone continuation byte is never valid UTF-8.
 // Identifiers the JSON library puts in its messages, which the rethrown exceptions keep.
 constexpr auto wrong_type = "[json.exception.type_error.302]";
-constexpr auto missing_key = "[json.exception.out_of_range.403]";
 constexpr auto valid_manifest =
-    R"({"schema_version":2,"units":"meters","asset_id":"body","model":"body.glb","skeleton":{"id":"rig","joint_count":1,"bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"clips":[{"name":"idle","loop":false}]})";
+    R"({"schema_version":3,"units":"meters","asset_id":"body","model":"body.glb","skeleton":{"id":"rig","joint_count":1,"bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"clips":[{"name":"idle","loop":false}]})";
 struct Tag {};
 
 // Writes @p json to a manifest file that is removed when the object is destroyed.
@@ -88,12 +87,14 @@ TEST_CASE("A number outside the float range is rejected, not narrowed") {
                            std::invalid_argument);
 }
 
-TEST_CASE("Manifest fields that are missing or of the wrong JSON type are rejected as std::runtime_error") {
+TEST_CASE("Manifest fields that are missing or of the wrong JSON type are rejected as std::invalid_argument") {
     REQUIRE_NOTHROW((void)read_manifest(ManifestFile(valid_manifest).path));
     const ManifestFile mistyped(changed(valid_manifest, R"("loop":false)", R"("loop":"no")"));
-    REQUIRE_THROWS_WITH_AS((void)read_manifest(mistyped.path), doctest::Contains(wrong_type), std::runtime_error);
+    REQUIRE_THROWS_WITH_AS((void)read_manifest(mistyped.path),
+                           "[json.exception.type_error.302] type must be boolean, but is string",
+                           std::invalid_argument);
     const ManifestFile missing(changed(valid_manifest, R"("units":"meters",)", ""));
-    REQUIRE_THROWS_WITH_AS((void)read_manifest(missing.path), doctest::Contains(missing_key), std::runtime_error);
+    REQUIRE_THROWS_WITH_AS((void)read_manifest(missing.path), "Missing JSON field: units", std::invalid_argument);
 }
 
 TEST_CASE("A fitted model path must be a relative .glb path without '..'") {

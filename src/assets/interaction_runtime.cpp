@@ -17,15 +17,20 @@ struct InteractionRuntime::Impl {
             throw std::invalid_argument("Invalid coordinated interaction");
         id_ = text(document.at("id"));
         std::vector<anima::ActionPhase> phases;
+        if (!document.at("phases").is_array())
+            throw std::invalid_argument("Coordinated interaction phases must be an array");
         for (const auto &phase : document.at("phases")) {
             anima::detail::json_fields(phase, {"id", "duration"}, {"held", "cues"});
             anima::ActionPhase result{
                 text(phase.at("id")), phase.at("duration").get<double>(), phase.value("held", false), {}};
-            if (phase.contains("cues"))
+            if (phase.contains("cues")) {
+                if (!phase.at("cues").is_array())
+                    throw std::invalid_argument("Coordinated interaction cues must be an array");
                 for (const auto &cue : phase.at("cues")) {
                     anima::detail::json_fields(cue, {"id", "at"});
                     result.cues.push_back({text(cue.at("id")), cue.at("at").get<double>()});
                 }
+            }
             phases.push_back(std::move(result));
         }
         timeline_ = std::make_unique<anima::ActionTimeline>(std::move(phases));

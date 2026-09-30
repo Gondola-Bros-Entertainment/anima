@@ -231,7 +231,7 @@ std::filesystem::path write_preview_fixture(const std::filesystem::path &directo
     std::ofstream model(directory / "preview.glb", std::ios::binary);
     model.write(reinterpret_cast<const char *>(glb.data()), static_cast<std::streamsize>(glb.size()));
     const auto manifest = directory / "preview.asset.json";
-    std::ofstream(manifest) << R"({"schema_version":2,"units":"meters","asset_id":"test.preview",)"
+    std::ofstream(manifest) << R"({"schema_version":3,"units":"meters","asset_id":"test.preview",)"
                                R"("model":"preview.glb","skeleton":{"id":"test.rig","joint_count":1,"bind_signature":")"
                             << std::string(64, '0') << R"("},"clips":[{"name":"Idle","loop":true,"events":[]},)"
                             << R"({"name":"Walk","loop":true,"events":[]}]})" << '\n';

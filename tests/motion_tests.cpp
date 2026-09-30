@@ -362,6 +362,20 @@ TEST_CASE("Motion, action, actor and interaction documents report another versio
                          "Unsupported coordinated interaction version", std::invalid_argument);
 }
 
+TEST_CASE("Coordinated interaction phases and cues must be arrays") {
+    // Phases are read before the roles' actors are checked, so an actor without a model reaches them.
+    const InteractionRuntime::Actors actors{{"lead", {}}};
+    const auto document = [](const std::string &phases) {
+        return R"({"version":1,"id":"meet","phases":)" + phases +
+               R"(,"roles":{"lead":{}},"attachments":[],"contacts":[]})";
+    };
+    CHECK_THROWS_WITH_AS(InteractionRuntime(actors, document(R"({"approach":{"duration":1}})")),
+                         "Coordinated interaction phases must be an array", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        InteractionRuntime(actors, document(R"([{"id":"approach","duration":1,"cues":{"id":"touch","at":0.5}}])")),
+        "Coordinated interaction cues must be an array", std::invalid_argument);
+}
+
 TEST_CASE("An attachment instance replaces its item in a scene") {
     const MotionFixture fixture;
     const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
