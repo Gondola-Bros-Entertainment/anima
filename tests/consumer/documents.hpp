@@ -8,6 +8,8 @@
 #include <fstream>
 #endif
 #include <stdexcept>
+#include <string>
+#include <vector>
 namespace documents_consumer {
 class Renderer final : public Rml::RenderInterface {
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex>, Rml::Span<const int>) override {
@@ -111,6 +113,23 @@ inline void run() {
     panel.close();
     if (clicks != 1 || button.valid() || listener.connected())
         throw std::runtime_error("External document lifecycle failed");
+    // An application rebuilds a select's options from its own data, keeping the choice while it is still offered.
+    auto form = documents.from_memory("<rml><head></head><body><select id='mode'/></body></rml>");
+    auto mode = form.element("mode");
+    std::vector<std::string> changes;
+    auto changed = mode.on("change", [&](const anima::UiEvent &event) { changes.push_back(event.string("value")); });
+    const std::vector<anima::UiOption> offered{{"walk", "Walk"}, {"run", "Run & <jump>"}};
+    mode.set_options(offered);
+    mode.set_value("run");
+    const std::vector<anima::UiOption> narrowed{{"run", "Run"}, {"swim", "Swim"}};
+    mode.set_options(narrowed);
+    documents.check_events();
+    if (mode.value() != "run" || changes.empty() || changes.front() != "walk" || changes.back() != "run")
+        throw std::runtime_error("External select options lost the offered choice");
+    mode.set_options({});
+    if (!mode.value().empty() || !changes.back().empty())
+        throw std::runtime_error("External select options kept a value without options");
+    form.close();
 #ifdef CONSUMER_UI_SCENE
     scene_panels(documents);
 #endif

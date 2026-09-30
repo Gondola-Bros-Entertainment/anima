@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -44,6 +45,13 @@ struct UiEventState;
 /// UiDocuments::check_events rethrows it and drops later ones, and an interruptible event stops
 /// propagating at once.
 using UiCallback = std::function<void(const UiEvent &)>;
+/// One option of a `select` element; see UiElement::set_options.
+struct UiOption {
+    /// Value that selecting the option gives its select, as UiElement::value() reports it.
+    std::string value;
+    /// Text the option shows.
+    std::string label;
+};
 /// Checked, non-owning handle to one element of a UiDocument.
 ///
 /// It is valid while the element is in its document's tree and the document is open. Removing or
@@ -76,6 +84,15 @@ class UiElement {
     void set_value(std::string_view value);
     /// Value of a form control; throws as set_value() does.
     [[nodiscard]] std::string value() const;
+    /// Replaces the options of a `select` element with @p options, in order. Each label becomes
+    /// its option's only child, a text node that is never parsed as RML. Selects the option whose
+    /// value equals the current value(), or else the first option; with no options, value()
+    /// becomes empty. Then dispatches one `change` event, with the new value() as its `value`
+    /// parameter, even when that value is unchanged; its callbacks run before this returns.
+    /// Throws, changing nothing, `std::invalid_argument` for an element other than a `select` or
+    /// when two options share a value, and `std::runtime_error` when RmlUi cannot create an
+    /// option.
+    void set_options(std::span<const UiOption> options);
     /// Calls @p callback for each @p type event, such as `click`, that reaches this element,
     /// until the returned subscription disconnects. With @p capture, the listener runs in the
     /// capture phase instead of the bubble phase; either way it runs when this element is the

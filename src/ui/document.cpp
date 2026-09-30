@@ -1,6 +1,7 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
+#include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <algorithm>
 #include <anima/ui/document.hpp>
 #include <cstdio>
@@ -167,9 +168,54 @@ Rml::ElementFormControl &control(Rml::Element &node) {
         throw std::invalid_argument("UI element is not a form control");
     return *form;
 }
+Rml::ElementFormControlSelect &select_control(Rml::Element &node) {
+    auto *dropdown = dynamic_cast<Rml::ElementFormControlSelect *>(&node);
+    if (!dropdown)
+        throw std::invalid_argument("UI element is not a select");
+    return *dropdown;
+}
 } // namespace
 void UiElement::set_value(std::string_view value) { control(native()).SetValue(std::string(value)); }
 std::string UiElement::value() const { return control(native()).GetValue(); }
+void UiElement::set_options(std::span<const UiOption> options) {
+    auto &dropdown = select_control(native());
+    std::vector<std::string_view> values;
+    values.reserve(options.size());
+    for (const auto &option : options)
+        values.emplace_back(option.value);
+    std::ranges::sort(values);
+    if (const auto duplicate = std::ranges::adjacent_find(values); duplicate != values.end())
+        throw std::invalid_argument("Duplicate UI option value: " + std::string(*duplicate));
+    // Create every option before changing the select, so that a failure leaves it as it was.
+    auto &document = *dropdown.GetOwnerDocument();
+    std::vector<Rml::ElementPtr> created;
+    created.reserve(options.size());
+    for (const auto &option : options) {
+        auto element = document.CreateElement("option");
+        auto text = document.CreateTextNode(option.label);
+        if (!element || !text)
+            throw std::runtime_error("Unable to create UI option");
+        element->SetAttribute("value", option.value);
+        element->AppendChild(std::move(text));
+        created.push_back(std::move(element));
+    }
+    const auto kept = std::ranges::find(options, dropdown.GetValue(), &UiOption::value);
+    // RmlUi clears the selection when it removes the selected option, and selects an option that markup marks
+    // `selected` when it moves the select's children into its option list; either can dispatch `change`. Unmarking
+    // every option, including children not yet moved, keeps both silent, so the selection below dispatches the only
+    // event, once the new options are in place.
+    for (int child = 0; child < dropdown.GetNumChildren(); ++child)
+        dropdown.GetChild(child)->RemoveAttribute("selected");
+    for (int option = 0, count = dropdown.GetNumOptions(); option < count; ++option)
+        dropdown.GetOption(option)->RemoveAttribute("selected");
+    dropdown.RemoveAll();
+    for (auto &element : created)
+        dropdown.Add(std::move(element));
+    if (options.empty())
+        dropdown.SetValue({});
+    else
+        dropdown.SetSelection(kept == options.end() ? 0 : static_cast<int>(kept - options.begin()));
+}
 UiSubscription UiElement::on(std::string type, UiCallback callback, bool capture) const {
     if (type.empty() || !callback)
         throw std::invalid_argument("UI subscription needs event type and callback");
