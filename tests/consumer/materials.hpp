@@ -1,7 +1,8 @@
 #pragma once
 // Material checks: texture sampling (sRGB decoding, filters, wrap modes, minification), metallic-roughness
-// shading and glTF surface maps. Each fixture is a GLB built in memory and imported with anima::load_asset, then
-// rendered as the viewer shows a static asset: framed by an OrbitCamera, lit by the default Environment.
+// shading, glTF surface maps and single-sided culling. Each fixture is a GLB built in memory and imported with
+// anima::load_asset, then rendered as the viewer shows a static asset: framed by an OrbitCamera, lit by the default
+// Environment.
 #include "gltf_fixture.hpp"
 #include "gpu_checks.hpp"
 #include <anima/assets/asset.hpp>
@@ -60,11 +61,12 @@ class Harness {
           renderer_(window_.get(), options()), images(output) {
         renderer_.set_environment(anima::Environment{});
     }
-    /// Imports @p glb, frames it and reads back its first frame as @p name.
-    void render(const std::string &name, const std::vector<std::byte> &glb) {
+    /// Imports @p glb, places it at @p world, frames it and reads back its first frame as @p name.
+    void render(const std::string &name, const std::vector<std::byte> &glb,
+                const anima::Mat4 &world = anima::identity()) {
         const auto asset = anima::load_asset(std::span<const std::byte>(glb));
         auto scene = std::make_shared<anima::Scene>();
-        (void)scene->add(anima::Mesh::compile(*asset));
+        scene->set_transform(scene->add(anima::Mesh::compile(*asset)), world);
         renderer_.set_scenes({scene});
         anima::OrbitCamera camera;
         camera.frame(scene->bounds().minimum, scene->bounds().maximum);
@@ -402,6 +404,55 @@ inline int run_surface_maps(int argc, char **argv) {
     harness.finish();
     std::cout << "PASS surface maps: authored and derivative normal frames, linear surface maps, sRGB emission, "
                  "mixed texture encodings and the required unlit extension\n";
+    return 0;
+}
+
+// An untextured quad from -1 to 1 in X and Y. @p back reverses each triangle's corners and points the normal to -Z,
+// so the camera, on the +Z side, sees the quad's back; @p hidden masks every fragment out, leaving the background.
+inline std::vector<std::byte> sided_quad(bool back, bool double_sided, bool hidden = false) {
+    std::vector<float> vertices;
+    for (std::size_t i = 0; i < quad_corners.size(); ++i) {
+        const auto &[x, y] = quad_corners[back ? i / 3 * 3 + 2 - i % 3 : i];
+        vertices.insert(vertices.end(), {x, y, 0, 0, 0, back ? -1.F : 1.F});
+    }
+    gltf_fixture::Builder builder;
+    const auto first = builder.interleaved(vertices, 6, {{"VEC3", 0}, {"VEC3", 3}});
+    return builder.glb(R"("scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"materials":[{)"
+                       R"("pbrMetallicRoughness":{"baseColorFactor":[0.8,0.6,0.4,)" +
+                       std::string(hidden ? "0" : "1") + R"(],"metallicFactor":0,"roughnessFactor":0.6})" +
+                       (hidden ? R"(,"alphaMode":"MASK")" : "") + R"(,"doubleSided":)" +
+                       (double_sided ? "true" : "false") + R"(}],"meshes":[{"primitives":[{"attributes":{"POSITION":)" +
+                       std::to_string(first) + R"(,"NORMAL":)" + std::to_string(first + 1) + R"(},"material":0}]}])");
+}
+inline int run_sidedness(int argc, char **argv) {
+    require(argc == 3, "Usage: consumer --sidedness OUTPUT");
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    Harness harness(argv[2]);
+    auto &images = harness.images;
+    // Mirroring X winds the quad's outward faces clockwise; its normal still points to +Z.
+    auto mirrored = anima::identity();
+    mirrored[0] = -1;
+    harness.render("empty", sided_quad(false, false, true));
+    harness.render("front", sided_quad(false, false));
+    harness.render("back", sided_quad(true, false));
+    harness.render("double-sided-back", sided_quad(true, true));
+    harness.render("mirrored-front", sided_quad(false, false), mirrored);
+    harness.render("mirrored-back", sided_quad(true, false), mirrored);
+    constexpr int least_surface_difference = 32;
+    const auto background = sample(images["empty"], 1, 1), surface = sample(images["front"], 1, 1);
+    images.require(gpu_check::difference(background, surface) >= least_surface_difference,
+                   "The front of a single-sided quad shows " + gpu_check::text(surface) +
+                       " at its center, too close to the background " + gpu_check::text(background),
+                   {"empty", "front"});
+    // A single-sided back discards every fragment, a double-sided one is lit as its front, and a mirrored
+    // transform keeps its outward side.
+    images.require_parity("empty", "back");
+    images.require_parity("front", "double-sided-back");
+    images.require_parity("front", "mirrored-front");
+    images.require_parity("empty", "mirrored-back");
+    harness.finish();
+    std::cout << "PASS sidedness: single-sided backs culled, double-sided backs lit as their fronts, mirrored "
+                 "transforms keeping their outward sides\n";
     return 0;
 }
 } // namespace material_test

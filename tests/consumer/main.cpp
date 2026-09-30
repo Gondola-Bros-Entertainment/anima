@@ -329,6 +329,8 @@ int main(int argc, char **argv) {
             return material_test::run_pbr(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--surface-maps")
             return material_test::run_surface_maps(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--sidedness")
+            return material_test::run_sidedness(argc, argv);
 #endif
         anima::FixedStepClock clock;
         const std::array variants{anima::ActionVariant{"observe", {}}, anima::ActionVariant{"signal", {"beacon"}}};
