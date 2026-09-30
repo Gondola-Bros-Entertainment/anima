@@ -74,8 +74,11 @@ drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic sce
 through the public API. `consumer_desktop` runs one mode per check: its default
 instances check, `--allocations`, `--culling`, `--foliage`, `--environment`,
 `--resources`, `--replace`, `--material-sampling`, `--pbr`, `--surface-maps`,
-`--sidedness` and `--blending`, which compares blended materials with the renderer's
-documented compositing, fog, exposure, draw order and shadow policy. Each check opens a window,
+`--sidedness`, `--blending`, which compares blended materials with the renderer's
+documented compositing, fog, exposure, draw order and shadow policy, and
+`--custom-materials`, which draws the consumer's own water, effect and probe shaders,
+compiled by glslc in its build, and compares their frame inputs, passes, sorting, time,
+opaque depth and color, skinning and shadows with the renderer's contract. Each check opens a window,
 requires Khronos validation, compares its frames in memory, and fails on a pixel
 mismatch or any validation message. The checks run one at a time:
 

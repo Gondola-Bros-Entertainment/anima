@@ -139,6 +139,23 @@ function(add_anima_consumer mode target test_name)
         target_compile_definitions(${target} PRIVATE CONSUMER_DESKTOP=1)
         anima_copy_sdl_runtime(${target})
         anima_copy_sdl_runtime(${target}) # Idempotent for application helpers wrapping it.
+        # The application's custom material shaders, compiled to SPIR-V by the Vulkan SDK's glslc in its own build,
+        # against the interface declarations that Anima publishes beside custom_material.hpp.
+        find_package(Vulkan REQUIRED COMPONENTS glslc)
+        set(shader_directory "${CMAKE_CURRENT_BINARY_DIR}/${target}-shaders")
+        set(shader_outputs)
+        foreach(shader IN ITEMS custom_surface.vert custom_water.frag custom_effect.frag custom_probe.frag custom_shadow.vert)
+            set(output "${shader_directory}/${shader}.inc")
+            add_custom_command(OUTPUT "${output}"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${shader_directory}"
+                COMMAND Vulkan::glslc --target-env=vulkan1.1 -mfmt=c -I "${ANIMA_SOURCE_DIR}/include"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/${shader}" -o "${output}"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${shader}" "${ANIMA_SOURCE_DIR}/include/anima/custom_material.glsl"
+                VERBATIM)
+            list(APPEND shader_outputs "${output}")
+        endforeach()
+        target_sources(${target} PRIVATE ${shader_outputs})
+        target_include_directories(${target} PRIVATE "${shader_directory}")
     endif()
     if(CONSUMER_MODE STREQUAL "ui")
         target_link_libraries(${target} PRIVATE anima::ui anima::input_sdl)

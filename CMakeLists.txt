@@ -620,7 +620,7 @@ if(ANIMA_BUILD_TESTS)
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
         foreach(check_mode IN ITEMS allocations culling foliage environment resources material-sampling pbr
-            surface-maps sidedness blending)
+            surface-maps sidedness blending custom-materials)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})

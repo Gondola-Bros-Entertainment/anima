@@ -41,6 +41,7 @@
 #include "allocations.hpp"
 #include "blending.hpp"
 #include "culling.hpp"
+#include "custom_materials.hpp"
 #include "environment.hpp"
 #include "foliage.hpp"
 #include "materials.hpp"
@@ -317,6 +318,8 @@ int main(int argc, char **argv) {
             return material_test::run_sidedness(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--blending")
             return blending_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--custom-materials")
+            return custom_material_test::run(argc, argv);
 #endif
         anima::FixedStepClock clock;
         require(clock.advance(clock.step() * 3).steps == 3, "Public core target failed");
