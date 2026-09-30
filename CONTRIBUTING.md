@@ -52,6 +52,22 @@ cmake --build build/benchmarks --target anima_scene_benchmarks
 build/benchmarks/anima_scene_benchmarks --repetitions 5
 ```
 
+Timings are noisy, so CTest checks scaling by counting instead. `scene_scaling`
+compares the bytes that attaching, destroying, reusing slots and querying components
+allocate at 4,096 and 8,192 objects. Work that allocates nothing, such as a scan, is
+counted in instructions: where configuration finds Valgrind, which runs on Linux, and
+sanitizers are off, the `callgrind` label's `scene_scaling_instructions` runs the same
+scenarios under Callgrind at 16,384 and 32,768 objects, collecting only the measured
+operation. Doubling the objects may at most triple its instructions, since n log n
+work multiplies them by about 2.1 and quadratic work by 4; a component query, which
+should not grow with objects of other types, may grow by half. CI runs the label on
+the `ci-headless-release` leg; to run it yourself:
+
+```sh
+cmake --build build/benchmarks --target anima_scene_scaling_scenario
+ctest --test-dir build/benchmarks -L callgrind --verbose
+```
+
 ### Sanitizers
 
 `ANIMA_ENABLE_SANITIZERS=ON` instruments Anima and its source-built dependencies

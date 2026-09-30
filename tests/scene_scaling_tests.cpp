@@ -2,7 +2,7 @@
 // failed allocation leaves behind. This executable links allocation_counter.cpp, which replaces the
 // global allocation functions, so it counts, and can fail, every allocation the engine makes during a
 // measured operation. Work that allocates nothing, such as a scan, is invisible to these checks;
-// anima_scene_benchmarks times it.
+// scene_scaling_instructions.cmake counts its instructions under Callgrind.
 #include "allocation_counter.hpp"
 #include "scene_scaling_scenarios.hpp"
 #include <anima/input_scene.hpp>

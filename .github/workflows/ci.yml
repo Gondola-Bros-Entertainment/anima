@@ -141,6 +141,10 @@ jobs:
           if [[ "$PROFILE" == sanitizers ]]; then
             packages+=(clang llvm)
           fi
+          if [[ "$PRESET" == ci-headless-release ]]; then
+            # Callgrind counts the instructions of the scene scaling scenarios on this leg.
+            packages+=(valgrind)
+          fi
           if [[ "$PROFILE" == full ]]; then
             packages+=(libvulkan-dev glslc libx11-dev libxext-dev libxrandr-dev
                        libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libasound2-dev)
@@ -300,12 +304,16 @@ jobs:
       - name: Build
         run: cmake --build --preset "$PRESET"
       # The test preset reports failures' output and fails when a step selects no tests; each step adds its
-      # selection and time limit. The gpu label needs a display and a Vulkan driver, so only the lavapipe step
-      # below runs it.
+      # selection and time limit. The gpu label needs a display and a Vulkan driver, and the callgrind label
+      # Valgrind, so only their own steps below run them.
       - name: Test runtime and CLI
         run: >-
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-          --timeout 600 --label-exclude 'consumer|gpu'
+          --timeout 600 --label-exclude 'consumer|gpu|callgrind'
+      # Verbose, so the log shows every scenario's ratio when the check passes too.
+      - name: Count scene scaling instructions under Callgrind
+        if: runner.os == 'Linux' && matrix.preset == 'ci-headless-release'
+        run: ctest --preset "$PRESET" --verbose --timeout 1200 --label-regex '^callgrind$'
       - name: Check isolated consumer configurations
         run: >-
           ctest --preset "$PRESET" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
