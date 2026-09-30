@@ -140,6 +140,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/scene.cpp
     src/assets/scene_set.cpp
     src/assets/components.cpp
+    src/assets/custom_material.cpp
     src/assets/prefab.cpp
     src/assets/prefab_variant.cpp
     src/assets/prefab_composition.cpp
@@ -308,6 +309,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_texture_mip_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_texture_mip_tests)
         add_test(NAME texture_mips COMMAND anima_texture_mip_tests)
+        add_executable(anima_custom_material_tests tests/custom_material_tests.cpp)
+        target_link_libraries(anima_custom_material_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_custom_material_tests)
+        add_test(NAME custom_materials COMMAND anima_custom_material_tests)
         add_executable(anima_mesh_tests tests/mesh_tests.cpp)
         target_link_libraries(anima_mesh_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_mesh_tests)

@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/assets/scene_budget.hpp>
+#include <anima/custom_material.hpp>
 #include <anima/mesh.hpp>
 #include <compare>
 #include <cstdint>
@@ -92,7 +93,8 @@ class Scene {
     };
     /// Render state of one object's MeshRenderer. A renderer draws a primitive only when #visible,
     /// #active and its #primitive_visible entry are all true, and into the key light's shadow maps
-    /// only when #casts_shadows is also true and its material is lit and not AlphaMode::blend.
+    /// only when #casts_shadows is also true and its material is lit and not AlphaMode::blend, or, for
+    /// a primitive whose material slot has a custom material, when that material casts shadows.
     struct Instance {
         /// Shared immutable mesh.
         std::shared_ptr<const Mesh> asset;
@@ -100,6 +102,10 @@ class Scene {
         std::vector<Mat4> palette;
         /// Linear RGB factor per mesh material: the authored value or this object's override.
         std::vector<Vec3> factors;
+        /// Custom material per mesh material, which draws that material's primitives in place of it;
+        /// null keeps the mesh's Material. Primitives without a material (IndexedDraw::material -1)
+        /// always draw with the default Material.
+        std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
         /// Visibility per mesh primitive.
         std::vector<bool> primitive_visible;
         /// Conservative world bounds per mesh primitive.
@@ -197,6 +203,11 @@ class Scene {
     /// Restores the mesh's authored factor for material @p material. Throws as
     /// set_material_factor() does.
     void clear_material_factor(Id id, std::size_t material);
+    /// Draws the primitives of mesh material @p material of this object with @p custom, or with the
+    /// mesh's Material again when @p custom is null (Instance::custom_materials). The object's factor
+    /// for that material still reaches the custom shaders. Throws `std::out_of_range` for an index
+    /// outside the mesh's materials and `std::logic_error` when the object has no renderer.
+    void set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom);
     /// Shows or hides @p id's renderer and sets its MeshRenderer component's enabled flag to match.
     /// Per-primitive choices are kept. Throws `std::logic_error` when the object has no renderer.
     void set_visible(Id id, bool visible);
@@ -216,7 +227,8 @@ class Scene {
     /// when there are none.
     [[nodiscard]] RenderBounds bounds() const;
     /// Expands every renderer's current geometry into an owning MeshSnapshot on the CPU, for tools
-    /// and reference checks; rendering never uses it.
+    /// and reference checks; rendering never uses it. Primitives keep their mesh materials, since a
+    /// snapshot does not describe custom materials.
     ///
     /// Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
     /// included but marked invisible and left out of the snapshot bounds. Normals follow normal(), and
@@ -461,8 +473,8 @@ class MeshRenderer {
     /// Shared mesh being drawn.
     [[nodiscard]] std::shared_ptr<const Mesh> mesh() const;
     /// Replaces the mesh, keeping the object's transform and resetting the pose to rest, material
-    /// factors to authored values, the renderer and every primitive to visible, and shadow casting
-    /// on. Throws `std::invalid_argument` for a null mesh.
+    /// factors to authored values, custom materials to none, the renderer and every primitive to
+    /// visible, and shadow casting on. Throws `std::invalid_argument` for a null mesh.
     void set_mesh(std::shared_ptr<const Mesh> mesh);
     /// Sets the animation pose, keeping the object's placement; see Scene::set_pose.
     void set_pose(const Pose &pose);
@@ -472,6 +484,9 @@ class MeshRenderer {
     void set_material_factor(std::size_t material, Vec3 factor);
     /// Restores one authored material factor; see Scene::clear_material_factor.
     void clear_material_factor(std::size_t material);
+    /// Draws one mesh material's primitives with a custom material, or null for the mesh's own; see
+    /// Scene::set_custom_material.
+    void set_custom_material(std::size_t material, std::shared_ptr<const CustomMaterial> custom);
     /// Shows or hides one primitive; see Scene::set_primitive_visible.
     void set_primitive_visible(std::size_t primitive, bool visible);
     /// Sets whether the renderer casts shadows; see Scene::set_casts_shadows.

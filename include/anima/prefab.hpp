@@ -11,7 +11,9 @@
 /// other versions or kinds, before the other fields; then missing required and unknown fields.
 /// ObjectKey values are written as canonical decimal strings. A mesh is stored
 /// as an application-owned key of 1 to 4,096 bytes: MeshName names each distinct mesh once per call
-/// and two meshes cannot share a key, and MeshResolver runs once per distinct key. File access
+/// and two meshes cannot share a key, and MeshResolver runs once per distinct key. A custom material
+/// is stored as its CustomMaterial::name, never as shader code: two different materials cannot share
+/// a name in one document, and CustomMaterialResolver runs once per distinct name. File access
 /// belongs to the caller.
 ///
 /// Readers throw `std::invalid_argument` for invalid content, including malformed JSON and values
@@ -26,6 +28,10 @@ namespace anima {
 using MeshName = std::function<std::string(const std::shared_ptr<const Mesh> &)>;
 /// Returns the mesh for a key when reading a document; returning null rejects the document.
 using MeshResolver = std::function<std::shared_ptr<const Mesh>(std::string_view)>;
+/// Returns the custom material that the application registers under a name when reading a document.
+/// Returning null, or a material with another name, rejects the document, as does an empty resolver
+/// for a document that names any custom material.
+using CustomMaterialResolver = std::function<std::shared_ptr<const CustomMaterial>(std::string_view)>;
 class Prefab;
 /// Returns the immutable prefab for an application-owned resource key; returning null rejects the
 /// operation.
@@ -48,8 +54,8 @@ class Prefab {
         std::optional<std::size_t> parent;
         /// Matrix relative to the parent; the root's is multiplied by the instantiation placement.
         Mat4 local = identity();
-        /// Optional shared mesh; without one, #pose, #material_factors and #primitive_visible must be
-        /// empty and #visible and #casts_shadows true.
+        /// Optional shared mesh; without one, #pose, #material_factors, #custom_materials and
+        /// #primitive_visible must be empty and #visible and #casts_shadows true.
         std::shared_ptr<const Mesh> mesh;
         /// Initial Pose::world matrices, one per mesh node; empty uses the mesh's rest pose.
         std::optional<Pose> pose;
@@ -57,6 +63,10 @@ class Prefab {
         bool visible = true;
         /// One factor per mesh material, each channel in [0, 1]; empty keeps the authored factors.
         std::vector<Vec3> material_factors;
+        /// One custom material per mesh material, each null to keep the mesh's Material
+        /// (Scene::set_custom_material); empty keeps every Material. Capture leaves it empty when no
+        /// slot has a custom material.
+        std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
         /// One flag per mesh primitive; empty shows every primitive.
         std::vector<bool> primitive_visible;
         /// Whether the renderer casts shadows (Scene::Instance::casts_shadows).
@@ -96,9 +106,10 @@ class Prefab {
     /// Writes an `anima.prefab` version 3 document: exactly `version`, `kind` and `objects`, with
     /// objects as in serialize_scene and the root first. No codec runs.
     [[nodiscard]] std::string serialize(const MeshName &name) const;
-    /// Reads an `anima.prefab` version 3 document, in which every object key is explicit, and
-    /// constructs a prefab that keeps @p codecs.
-    static Prefab deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs = {});
+    /// Reads an `anima.prefab` version 3 document, in which every object key is explicit, resolving
+    /// custom material names through @p materials, and constructs a prefab that keeps @p codecs.
+    static Prefab deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs = {},
+                              const CustomMaterialResolver &materials = {});
 
   private:
     std::vector<Node> nodes_;
@@ -125,17 +136,21 @@ class Prefab {
 /// - `pose`: null, the default, or one 16-number Pose::world matrix per mesh node;
 /// - `visible`, `active` and `casts_shadows`: booleans, true by default;
 /// - `material_factors`: empty, the default, or one `[r, g, b]` per mesh material, each in [0, 1];
+/// - `custom_materials`: empty, the default, or one entry per mesh material, each null or a custom
+///   material name of 1 to 4,096 bytes;
 /// - `primitive_visible`: empty, the default, or one boolean per mesh primitive;
 /// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
 ///   `enabled` (ComponentData).
 ///
 /// An object without a mesh has a null `pose`, empty arrays, and `visible` and `casts_shadows` true. Throws
 /// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming
-/// fails or a limit is exceeded.
+/// fails, two different custom materials share a name or a limit is exceeded.
 [[nodiscard]] std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs = {});
 /// Builds a new scene from an `anima.scene` version 3 document, keeping its object keys and
 /// `next_key`, which must be `"0"` or greater than every object key. @p codecs is borrowed for this
-/// call and must register every component type. The caller decides when to use the new scene.
+/// call and must register every component type, and @p materials resolves custom material names.
+/// The caller decides when to use the new scene.
 [[nodiscard]] std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver &resolve,
-                                                const ComponentCodecs &codecs = {});
+                                                const ComponentCodecs &codecs = {},
+                                                const CustomMaterialResolver &materials = {});
 } // namespace anima
