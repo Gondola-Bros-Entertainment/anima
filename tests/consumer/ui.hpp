@@ -557,6 +557,9 @@ inline int run(int argc, char **argv) {
         press.type = SDL_EVENT_MOUSE_BUTTON_UP;
         require(!dispatch(press).consumed && clicks == clicks_before, "A relative-mode press clicked a document");
         require(SDL_SetWindowRelativeMouseMode(window.get(), false), "Relative mouse mode did not end");
+        // Leaving the mode warps the pointer back to SDL's last position. Cocoa reports no motion for the warp, but
+        // X11 reports it at the next pump, where it would follow a motion pushed now; route it first.
+        pump();
         over.motion.x = action_point.x;
         over.motion.y = action_point.y;
         over.motion.xrel = over.motion.yrel = 0;
