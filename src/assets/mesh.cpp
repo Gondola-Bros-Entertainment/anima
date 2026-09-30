@@ -1,4 +1,5 @@
 #include "alpha_coverage.hpp"
+#include "bc7.hpp"
 #include "surface_validation.hpp"
 #include <algorithm>
 #include <anima/scene.hpp>
@@ -58,6 +59,25 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             if (!oversized(texture))
                 return texture;
             auto &image = shrunk[{texture.image, texture.encoding, detail::mip_key(mip_options)}];
+            if (!image && texture.image->format != ImageFormat::rgba8) {
+                // Stored levels cannot be filtered again, so the first one that fits becomes the base level.
+                const auto &stored = *texture.image;
+                std::uint32_t level = 0;
+                while (level < stored.levels && std::max(std::max(stored.width >> level, 1U),
+                                                         std::max(stored.height >> level, 1U)) > texture_edge)
+                    ++level;
+                if (level == stored.levels)
+                    throw std::invalid_argument(
+                        "Block-compressed texture stores no mip level within the texture limit");
+                const auto skipped = detail::bc7_image_bytes(stored.width, stored.height, level);
+                image = std::make_shared<Image>(
+                    Image{std::max(stored.width >> level, 1U),
+                          std::max(stored.height >> level, 1U),
+                          {},
+                          stored.format,
+                          stored.levels - level,
+                          {stored.blocks.begin() + static_cast<std::ptrdiff_t>(skipped), stored.blocks.end()}});
+            }
             if (!image) {
                 auto mips = texture_mips(texture, mip_options);
                 const auto found = std::find_if(mips.begin(), mips.end(), [&](const auto &m) {
@@ -82,8 +102,9 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             const auto texture = [&](int &id, TextureMipOptions mip_options = {}) {
                 if (id < 0)
                     return;
-                if (!oversized(source.textures.at(id)))
-                    mip_options = {}; // Kept as authored, so every use shares one copy.
+                // Kept as authored, or reduced to stored levels, so every use shares one copy.
+                if (!oversized(source.textures.at(id)) || source.textures.at(id).image->format != ImageFormat::rgba8)
+                    mip_options = {};
                 auto [it, inserted] = textures.emplace(TextureUse{id, detail::mip_key(mip_options)},
                                                        static_cast<int>(batch.textures.size()));
                 if (inserted)

@@ -41,8 +41,11 @@ TexelHoldPtr hold_texels(std::vector<Texture> &textures, const char *released_me
     std::map<std::shared_ptr<const Image>, std::shared_ptr<const Image>> descriptions;
     for (auto &texture : textures) {
         auto &description = descriptions[texture.image];
-        if (!description)
-            description = std::make_shared<const Image>(Image{texture.image->width, texture.image->height, {}});
+        if (!description) {
+            const auto &source = *texture.image;
+            description =
+                std::make_shared<const Image>(Image{source.width, source.height, {}, source.format, source.levels, {}});
+        }
         sources.push_back(std::exchange(texture.image, description));
     }
     return TexelHoldPtr(std::make_unique<TexelHold>(std::move(sources), released_message));

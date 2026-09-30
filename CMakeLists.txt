@@ -152,6 +152,8 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/render_visibility.cpp
     src/assets/texture_mips.cpp
     src/assets/texel_hold.cpp
+    src/assets/bc7.cpp
+    src/assets/ktx2.cpp
     src/assets/material_textures.cpp
     src/assets/mesh_preparation.cpp
     src/assets/motion_runtime.cpp
@@ -332,6 +334,13 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_custom_material_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_custom_material_tests)
         add_test(NAME custom_materials COMMAND anima_custom_material_tests)
+        add_executable(anima_texture_compression_tests tests/texture_compression_tests.cpp)
+        target_include_directories(anima_texture_compression_tests SYSTEM PRIVATE third_party/stb)
+        target_compile_definitions(anima_texture_compression_tests
+            PRIVATE ANIMA_TEXTURE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/textures")
+        target_link_libraries(anima_texture_compression_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_texture_compression_tests)
+        add_test(NAME texture_compression COMMAND anima_texture_compression_tests)
         add_executable(anima_mesh_tests tests/mesh_tests.cpp)
         target_link_libraries(anima_mesh_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_mesh_tests)

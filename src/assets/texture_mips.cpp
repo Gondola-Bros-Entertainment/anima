@@ -101,6 +101,8 @@ MipLevel downsample(const MipLevel &previous, TextureEncoding encoding, bool wei
 std::vector<MipLevel> texture_mips(const Texture &texture, TextureMipOptions options) {
     // A texture without an image has no dimensions.
     const auto *image = texture.image.get();
+    if (image && image->format != ImageFormat::rgba8)
+        throw std::invalid_argument("Mip filtering requires an RGBA8 image");
     if (!image || !image->width || !image->height ||
         image->width > std::numeric_limits<std::size_t>::max() / channel_count / image->height ||
         image->rgba.size() != std::size_t(image->width) * image->height * channel_count)

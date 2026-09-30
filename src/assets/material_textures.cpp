@@ -18,8 +18,10 @@ MaterialTexturePlan material_texture_plan(std::span<const Material> materials, s
         for (std::size_t binding = 0; binding < bindings.size(); ++binding) {
             const auto source = sources[binding];
             TextureMipOptions options;
-            // Only a mip chain needs its own filtering; an unmipmapped image uploads its base level alone.
-            if (binding == 0 && source >= 0 && textures[source].sampler.mipmapped)
+            // Only a mip chain built here needs its own filtering: an unmipmapped image uploads its base level alone,
+            // and a block-compressed one its stored levels.
+            const auto *image = source >= 0 ? textures[source].image.get() : nullptr;
+            if (binding == 0 && image && image->format == ImageFormat::rgba8 && textures[source].sampler.mipmapped)
                 options = detail::base_color_mip_options(material);
             const auto [entry, inserted] =
                 images.try_emplace(Key{source, detail::mip_key(options)}, plan.images.size());
