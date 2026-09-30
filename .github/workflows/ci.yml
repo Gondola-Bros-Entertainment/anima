@@ -116,6 +116,8 @@ jobs:
           - {os: ubuntu-24.04, profile: sanitizers, preset: ci-sanitizers}
           - {os: macos-15, profile: sanitizers, preset: ci-sanitizers}
           - {os: windows-2022, profile: sanitizers, preset: ci-sanitizers-msvc}
+          # ThreadSanitizer cannot share a process with AddressSanitizer, so it builds the headless modules on its own.
+          - {os: ubuntu-24.04, profile: thread-sanitizer, preset: ci-thread-sanitizer}
     env:
       PROFILE: ${{ matrix.profile }}
       PRESET: ${{ matrix.preset }}
@@ -135,10 +137,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           packages=(ninja-build ccache)
-          if [[ "$PROFILE" != headless ]]; then
+          if [[ "$PROFILE" != headless && "$PROFILE" != thread-sanitizer ]]; then
             packages+=(libfreetype6-dev)
           fi
-          if [[ "$PROFILE" == sanitizers ]]; then
+          if [[ "$PROFILE" == sanitizers || "$PROFILE" == thread-sanitizer ]]; then
             packages+=(clang llvm)
           fi
           if [[ "$PRESET" == ci-headless-release ]]; then

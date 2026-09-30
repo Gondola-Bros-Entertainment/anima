@@ -86,6 +86,19 @@ On Windows, run `cmake --workflow --preset ci-sanitizers-msvc` from a Visual Stu
 developer environment. It builds `RelWithDebInfo`, because configuration rejects the
 MSVC debug options that ASan cannot use.
 
+`ANIMA_ENABLE_THREAD_SANITIZER=ON` instruments the same code with ThreadSanitizer
+instead, with GCC or Clang on Linux and macOS. It cannot share a build with
+AddressSanitizer, so its preset is a separate headless Clang build in Debug, which
+CI runs on Linux. In it, `anima_staging_concurrency_tests` stages loads on several
+threads while the owning thread updates and commits:
+
+```sh
+cmake --workflow --preset ci-thread-sanitizer
+```
+
+ThreadSanitizer sees only instrumented code, so it cannot find a race inside the C
+library, such as one on the static buffer that glibc's `localeconv()` rewrites.
+
 ### GPU and device checks
 
 CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
