@@ -1,8 +1,10 @@
 // Pins how scene work grows with the objects it touches, through the bytes it allocates, and what a
 // failed allocation leaves behind. This executable links allocation_counter.cpp, which replaces the
 // global allocation functions, so it counts, and can fail, every allocation the engine makes during a
-// measured operation.
+// measured operation. Work that allocates nothing, such as a scan, is invisible to these checks;
+// anima_scene_benchmarks times it.
 #include "allocation_counter.hpp"
+#include "scene_scaling_scenarios.hpp"
 #include <anima/input_scene.hpp>
 #include <anima/prefab.hpp>
 #include <anima/scene.hpp>
@@ -17,6 +19,10 @@
 #include <vector>
 
 namespace {
+using scene_scaling::Tag;
+using scene_scaling::Ticking;
+using scene_scaling::triangle;
+
 // Bytes allocated while @p operation runs.
 template <class Operation> std::size_t allocated_by(Operation &&operation) {
     allocation_counter::bytes = 0;
@@ -47,28 +53,23 @@ constexpr bool noexcept_constructors_allocate = true;
 constexpr bool noexcept_constructors_allocate = false;
 #endif
 
-// A one-triangle mesh with one node.
-std::shared_ptr<const anima::Mesh> triangle() {
-    anima::Asset source;
-    source.nodes.resize(1);
-    anima::SourcePrimitive primitive;
-    for (const auto corner : {anima::Vec3{0, 0, 0}, anima::Vec3{1, 0, 0}, anima::Vec3{0, 1, 0}}) {
-        anima::SourceVertex vertex;
-        vertex.position = corner;
-        vertex.normal = {0, 0, 1};
-        primitive.vertices.push_back(vertex);
-    }
-    source.primitives.push_back(primitive);
-    return anima::Mesh::compile(source);
-}
+// Measures a scaling scenario's operation by the bytes it allocates.
+constexpr auto allocations = [](auto &&operation) { return allocated_by(operation); };
 
-struct Tag {
-    int value{};
-};
-struct Ticking {
-    unsigned *updates;
-    void on_update(double) { ++*updates; }
-};
+// Doubling checks run an operation on this many objects and on twice as many. Doubling the objects
+// doubles the bytes of work linear in them and multiplies those of n log n work by
+// 2 log(2n) / log(n), 2.17 here, but quadruples those of quadratic work, so a check allows three
+// times the bytes.
+constexpr std::size_t doubled_objects = 4096;
+constexpr std::size_t doubling_limit = 3;
+
+// Checks that @p bytes_for, the bytes an operation on the given number of objects allocates, grows
+// at most doubling_limit times when the objects double. @p operation names it in a failure.
+template <class Scenario> void check_doubling(const std::string &operation, Scenario &&bytes_for) {
+    INFO(operation);
+    const auto small = bytes_for(doubled_objects), large = bytes_for(2 * doubled_objects);
+    CHECK(large <= doubling_limit * small);
+}
 
 // Bytes allocated by one update of a scene where @p count objects have only a component without
 // hooks and one more object has a component with an update hook.
@@ -134,6 +135,34 @@ TEST_CASE("Attaching children allocates no more per child as their parent grows"
     // per child at the larger count.
     const auto small = wide_attach_bytes(256), large = wide_attach_bytes(4096);
     CHECK(large <= 16 * small);
+}
+
+TEST_CASE("Building a chain allocates no more per link as it deepens") {
+    check_doubling("chain", [](std::size_t count) { return scene_scaling::chain(count, allocations); });
+}
+
+TEST_CASE("Destroying objects allocates no more per object as the scene grows") {
+    const auto mesh = triangle();
+    check_doubling("children one at a time",
+                   [](std::size_t count) { return scene_scaling::destroy_children(count, allocations); });
+    check_doubling("renderers one at a time",
+                   [&](std::size_t count) { return scene_scaling::destroy_renderers(count, mesh, allocations); });
+    check_doubling("wide subtree",
+                   [](std::size_t count) { return scene_scaling::destroy_subtree(count, false, allocations); });
+    check_doubling("deep subtree",
+                   [](std::size_t count) { return scene_scaling::destroy_subtree(count, true, allocations); });
+}
+
+TEST_CASE("Reusing free slots allocates no more per object as the scene grows") {
+    check_doubling("slot reuse", [](std::size_t count) { return scene_scaling::reuse_slots(count, allocations); });
+}
+
+TEST_CASE("A component query allocates nothing for objects and components of other types") {
+    // Collecting every attached component before selecting a type would allocate for each of the
+    // extra objects' transform and tag.
+    const auto small = scene_scaling::query(doubled_objects, allocations),
+               large = scene_scaling::query(2 * doubled_objects, allocations);
+    CHECK(large <= small);
 }
 
 TEST_CASE("An update allocates nothing for objects and components without hooks") {
