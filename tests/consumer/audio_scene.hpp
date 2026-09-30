@@ -3,7 +3,9 @@
 #include <anima/audio_scene.hpp>
 #include <anima/prefab.hpp>
 #include <array>
+#include <cmath>
 #include <stdexcept>
+#include <string_view>
 inline void consume_audio_scene() {
     anima::Audio mixer(8000, 2);
     const auto clip = anima::AudioClip::pcm({.25F, .25F}, 1, 8000);
@@ -23,30 +25,35 @@ inline void consume_audio_scene() {
     const auto document = anima::Prefab::capture(group, codecs).serialize({});
     group.destroy();
     auto loaded = anima::Prefab::deserialize(document, {}, codecs).instantiate(scene);
+    // The last frame of a block, past the one-frame delay of a voice that starts in it.
+    const auto last_frame = [&] {
+        std::array<float, 2 * anima::audio_block_frames> output{};
+        mixer.render(output);
+        return std::array{output[output.size() - 2], output.back()};
+    };
     anima::synchronize_audio(scene, mixer);
-    std::array<float, 2> samples{};
-    mixer.render(samples);
-    if (samples[0] != 0 || samples[1] != .25F)
+    // At the minimum distance on the listener's right: full gain there, and the 0.2 floor on the left.
+    auto samples = last_frame();
+    if (std::abs(samples[0] - .05F) > 1e-6F || std::abs(samples[1] - .25F) > 1e-6F)
         throw std::runtime_error("Independent scene audio spatial playback failed");
     auto source = loaded.children()[0].get_component<anima::AudioSource>();
     loaded.set_active(false);
     anima::synchronize_audio(scene, mixer);
-    mixer.render(samples);
+    samples = last_frame();
     if (source->playing() || !source.enabled() || samples[0] != 0 || samples[1] != 0)
         throw std::runtime_error("Inactive audio hierarchy retained playback");
     loaded.set_active(true);
     anima::synchronize_audio(scene, mixer);
-    mixer.render(samples);
-    if (!source->playing() || samples[1] != .25F)
+    samples = last_frame();
+    if (!source->playing() || std::abs(samples[1] - .25F) > 1e-6F)
         throw std::runtime_error("Reactivated audio hierarchy did not resume");
     source.set_enabled(false);
     anima::synchronize_audio(scene, mixer);
-    mixer.render(samples);
+    samples = last_frame();
     if (samples[0] != 0 || samples[1] != 0)
         throw std::runtime_error("Independent scene audio disablement failed");
     loaded.destroy();
-    auto voice1 = mixer.sound(clip), voice2 = mixer.sound(clip);
-    if (!mixer.owns(voice1) || !mixer.owns(voice2))
+    if (mixer.voice_count() != 0)
         throw std::runtime_error("Independent scene audio lifetime failed");
 }
 #endif

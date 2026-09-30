@@ -10,7 +10,6 @@ if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
 endif()
 option(ANIMA_BUILD_DESKTOP "Build the SDL3/Vulkan desktop library" ON)
-option(ANIMA_BUILD_AUDIO_OUTPUT "Build optional SDL audio device output without graphics" OFF)
 option(ANIMA_BUILD_INPUT_SDL "Build optional SDL event converter (headers only)" OFF)
 option(ANIMA_BUILD_ASSETS "Build the headless asset/animation library" ON)
 option(ANIMA_BUILD_PHYSICS2D "Build optional headless Box2D physics" OFF)
@@ -100,6 +99,7 @@ add_library(anima_core STATIC
     src/core/heightfield.cpp
     src/core/triangle_query.cpp
     src/runtime/audio.cpp
+    src/runtime/audio_clip.cpp
     src/runtime/navigation.cpp
     src/runtime/input.cpp
 )
@@ -335,6 +335,8 @@ if(ANIMA_BUILD_TESTS)
     add_test(NAME navigation_queries COMMAND anima_navigation_tests)
     add_executable(anima_audio_tests tests/audio_tests.cpp)
     target_link_libraries(anima_audio_tests PRIVATE anima::core anima_test_main)
+    target_compile_definitions(anima_audio_tests PRIVATE
+        ANIMA_AUDIO_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/tests/audio/assets")
     anima_target_defaults(anima_audio_tests)
     add_test(NAME audio_mixer COMMAND anima_audio_tests)
     add_executable(anima_core_tests tests/core_tests.cpp)
@@ -355,24 +357,9 @@ if(ANIMA_BUILD_TESTS)
     endif()
 endif()
 
-if(ANIMA_BUILD_DESKTOP OR ANIMA_BUILD_AUDIO_OUTPUT)
+# The SDL input converter needs only SDL's headers, which a fetched SDL provides.
+if(ANIMA_BUILD_DESKTOP OR (ANIMA_BUILD_INPUT_SDL AND ANIMA_FETCH_SDL))
     include(cmake/AnimaSdl.cmake)
-endif()
-
-if(ANIMA_BUILD_AUDIO_OUTPUT)
-    add_library(anima_audio_output STATIC src/audio_output/audio_output.cpp)
-    add_library(anima::audio_output ALIAS anima_audio_output)
-    target_include_directories(anima_audio_output PUBLIC include)
-    target_link_libraries(anima_audio_output PUBLIC anima::core PRIVATE SDL3::SDL3)
-    anima_target_defaults(anima_audio_output)
-    if(ANIMA_BUILD_TESTS)
-        add_executable(anima_audio_output_tests tests/audio_output_tests.cpp)
-        target_link_libraries(anima_audio_output_tests PRIVATE anima::audio_output SDL3::SDL3 anima_test_main)
-        anima_target_defaults(anima_audio_output_tests)
-        anima_copy_sdl_runtime(anima_audio_output_tests)
-        add_test(NAME audio_output COMMAND anima_audio_output_tests)
-        set_tests_properties(audio_output PROPERTIES ENVIRONMENT "SDL_AUDIO_DRIVER=dummy" TIMEOUT 20)
-    endif()
 endif()
 
 if(ANIMA_BUILD_DESKTOP)
@@ -532,9 +519,6 @@ endif()
 
 if(ANIMA_BUILD_TESTS)
     set(anima_consumer_modes core)
-    if(ANIMA_BUILD_AUDIO_OUTPUT)
-        list(APPEND anima_consumer_modes audio_output)
-    endif()
     if(ANIMA_BUILD_INPUT_SDL)
         list(APPEND anima_consumer_modes input_sdl)
     endif()
@@ -623,9 +607,6 @@ if(ANIMA_BUILD_TESTS)
             COMMAND "${anima_consumer_executable_dir}/consumer_${mode}${CMAKE_EXECUTABLE_SUFFIX}")
         set_tests_properties(consumer_${mode} PROPERTIES
             FIXTURES_REQUIRED consumer_build TIMEOUT 60 LABELS "consumer;consumer-runtime")
-        if(mode STREQUAL "audio_output")
-            set_tests_properties(consumer_${mode} PROPERTIES ENVIRONMENT "SDL_AUDIO_DRIVER=dummy" TIMEOUT 20)
-        endif()
     endforeach()
     # GPU checks of the desktop and UI consumers; see anima_add_gpu_check.
     set(anima_consumer_gpu_checks)

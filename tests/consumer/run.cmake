@@ -25,7 +25,7 @@ endif()
 # an external source dependency; no engine implementation enters this fixture.
 file(MAKE_DIRECTORY "${CONSUMER_BINARY_DIR}/source")
 foreach(file CMakeLists.txt main.cpp presentation.hpp replacement.hpp
-             camera.hpp lighting.hpp runtime.hpp scene_set.hpp prefab_variant.hpp prefab_composition.hpp references.hpp lifecycle.hpp audio_output.hpp audio_scene.hpp input.hpp resources.hpp reference.hpp allocations.hpp culling.hpp ui.hpp environment.hpp foliage.hpp scene_objects.hpp components.hpp physics.hpp physics2d.hpp navigation.hpp documents.hpp gpu_checks.hpp gltf_fixture.hpp materials.hpp rejection.hpp blending.hpp)
+             camera.hpp lighting.hpp runtime.hpp scene_set.hpp prefab_variant.hpp prefab_composition.hpp references.hpp lifecycle.hpp audio.hpp audio_scene.hpp input.hpp resources.hpp reference.hpp allocations.hpp culling.hpp ui.hpp environment.hpp foliage.hpp scene_objects.hpp components.hpp physics.hpp physics2d.hpp navigation.hpp documents.hpp gpu_checks.hpp gltf_fixture.hpp materials.hpp rejection.hpp blending.hpp)
     configure_file("${ANIMA_SOURCE_DIR}/tests/consumer/${file}" "${CONSUMER_BINARY_DIR}/source/${file}" COPYONLY)
 endforeach()
 set(configure_args -S "${CONSUMER_BINARY_DIR}/source" -B "${CONSUMER_BINARY_DIR}/build"
@@ -72,7 +72,9 @@ endif()
 if(CONSUMER_SDL_DIR AND NOT CONSUMER_SDL_DIR MATCHES "NOTFOUND$")
     list(APPEND configure_args "-DSDL3_DIR=${CONSUMER_SDL_DIR}")
 endif()
-if(CONSUMER_FETCH_SDL)
+# Only the desktop consumers build SDL. The input converter takes the parent's SDL headers, and fetching SDL for it
+# would bring SDL's runtime into consumers that must not have it.
+if(CONSUMER_FETCH_SDL AND consumer_modes MATCHES "(^|;)(desktop|ui)(;|$)")
     list(APPEND configure_args -DANIMA_FETCH_SDL=ON)
     if(CONSUMER_SDL_SOURCE)
         list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_SDL3=${CONSUMER_SDL_SOURCE}")
@@ -82,6 +84,9 @@ if(CONSUMER_FETCH_SDL)
             list(APPEND configure_args "-DSDL_${kind}=${CONSUMER_SDL_${kind}}")
         endif()
     endforeach()
+else()
+    # Stated rather than left unset, so a build directory configured before fetching was limited keeps no ON.
+    list(APPEND configure_args -DANIMA_FETCH_SDL=OFF)
 endif()
 if(consumer_modes MATCHES "(^|;)(ui|ui_documents|ui_scene)(;|$)" AND CONSUMER_RMLUI_SOURCE)
     list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_RMLUI=${CONSUMER_RMLUI_SOURCE}")

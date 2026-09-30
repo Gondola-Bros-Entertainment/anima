@@ -1,88 +1,166 @@
 #pragma once
 #include <anima/core/math.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <utility>
 #include <vector>
 
 /// @file
-/// PCM clips, mixing buses, voices and the stereo `float` mixer.
+/// Audio clips, mixing buses, voices and the Audio engine that mixes them.
 ///
-/// Part of `anima::core`, which depends on no other library. The mixer renders into caller
-/// buffers and opens no device; anima::AudioOutput plays it through SDL. Positions and distances
-/// are right-handed and Y-up in caller-consistent units, with every coordinate finite and within
-/// 1,000,000,000 of zero. Gains are linear factors in [0, 16]; a voice's gain, the gains of its
-/// bus chain and the master gain multiply.
+/// Part of `anima::core`. Decoding, mixing and device output run on a private copy of miniaudio 0.11.25 that
+/// `anima::core` compiles itself; no miniaudio type appears in this header. Positions and distances are
+/// right-handed and Y-up in caller-consistent units, with every coordinate finite and within 1,000,000,000 of
+/// zero. Gains are linear factors in [0, 16]; a voice's gain, the gains of its bus chain and the master gain
+/// multiply, and the mix is limited to [-1, 1], with non-finite values replaced by 0.
 ///
-/// Use a mixer, its buses and its voices from one thread: mutations and render() run on the
-/// caller's thread, and the mixer starts no thread, device or callback. Invalid arguments throw
-/// `std::invalid_argument`, and calling a member of a moved-from Audio or of an empty AudioBus or
-/// Sound throws `std::logic_error`, unless a member states otherwise. There is no streaming or
-/// compressed decoding, no effect processing such as reverb, Doppler or HRTF, and no capture.
+/// Use an Audio, its buses and its voices from one thread at a time. An engine made by Audio::open_device also
+/// mixes on miniaudio's device thread: every member of Audio, AudioBus and Sound locks the engine while it runs,
+/// and the device thread holds the same lock while it mixes each block of at most anima::audio_block_frames frames.
+/// Each call is therefore safe while the device plays, may wait for the block being mixed, and takes effect from the
+/// next block; getters report the state after the latest mixed block. An engine without a device mixes only in
+/// Audio::render, on the calling thread.
+///
+/// Invalid arguments throw `std::invalid_argument`, and calling a member of a moved-from Audio or of an empty
+/// AudioBus or Sound throws `std::logic_error`, unless a member states otherwise. A failure that miniaudio reports
+/// throws `std::runtime_error`, or `std::bad_alloc` when it runs out of memory. There is no effect processing such
+/// as reverb, Doppler or HRTF, and no capture.
 
 namespace anima {
-/// Immutable interleaved PCM samples, shared by any number of voices.
+/// Seconds over which a voice's gain, pan and pitch, a bus gain and the master gain move linearly to a new value.
 ///
-/// A clip has 1 or 2 channels (stereo interleaves left, then right), a sample rate in
-/// [8,000, 192,000] Hz and 1 to 33,554,432 finite samples in [-1, 1], counting every channel.
-/// Factories validate the whole input before creating a clip; file IO belongs to the caller.
-class AudioClip {
-  public:
-    /// Creates a clip from @p samples, which must hold whole frames of @p channels.
-    static std::shared_ptr<const AudioClip> pcm(std::vector<float> samples, unsigned channels, unsigned sample_rate);
-    /// Decodes a complete little-endian RIFF/WAVE file of at most 128 MiB into a clip.
-    ///
-    /// The RIFF size must equal the input length minus 8, odd-sized chunks need their pad byte,
-    /// and exactly one `fmt ` and one `data` chunk must be present; other chunks are skipped. Only
-    /// mono or stereo PCM16 (format tag 1) and IEEE float32 (format tag 3) with a consistent block
-    /// alignment and byte rate are accepted. PCM16 decodes as `value / 32768`; float samples must
-    /// already meet the clip limits.
-    static std::shared_ptr<const AudioClip> wav(std::span<const std::byte> bytes);
-    /// Interleaved samples.
-    std::span<const float> samples() const { return samples_; }
-    unsigned channels() const { return channels_; }
-    /// Frames per second.
-    unsigned sample_rate() const { return sample_rate_; }
-    /// Length in seconds.
-    double duration() const { return double(samples_.size() / channels_) / sample_rate_; }
+/// A change ramps only when a playing voice's audio passed through the voice, bus or master in the latest mixed
+/// block, so that a listener hears it; otherwise, and for a stopped or paused voice, it applies at once. A voice's
+/// ramps advance only while it plays, and bus and master ramps with output time.
+inline constexpr double audio_smoothing_seconds = .02;
+/// Most frames mixed at once. Mixing proceeds in blocks that never cross a multiple of this many output frames,
+/// counted from the engine's creation; the end of a render() call or a device period can end one early. Pitch ramps
+/// step at the start of each block that begins at such a multiple.
+inline constexpr unsigned audio_block_frames = 64;
 
-  private:
-    AudioClip(std::vector<float>, unsigned channels, unsigned sample_rate);
-    std::vector<float> samples_;
-    unsigned channels_, sample_rate_;
+/// How AudioClip::decode holds a clip's audio.
+enum class AudioLoadMode {
+    /// Decodes every sample when the clip is created, as Unity's Decompress On Load does; playing decodes
+    /// nothing.
+    decompress,
+    /// Keeps a copy of the encoded bytes, which each voice decodes while it plays, as Unity's Compressed In Memory
+    /// does. The clip never holds its decoded samples.
+    stream,
 };
+
+/// How a spatial voice's gain falls with its distance d from the listener, between the minimum and maximum
+/// attenuation distances of Sound::attenuation. Nearer than the minimum distance, a voice plays at full gain.
+enum class AudioRolloff {
+    /// `1 - (d - minimum) / (maximum - minimum)`, silent from the maximum distance on, like Unity's Linear
+    /// Rolloff and Unreal's linear attenuation.
+    linear,
+    /// `minimum / d`, held at `minimum / maximum` beyond the maximum distance: OpenAL's inverse distance clamped
+    /// model with a rolloff factor of 1. Requires a positive minimum distance.
+    inverse,
+};
+
+/// Where Audio::open_device sends its output.
+enum class AudioBackend {
+    /// The default playback device of the first miniaudio backend that opens, in miniaudio's order: WASAPI,
+    /// DirectSound, then WinMM on Windows, Core Audio on macOS, and PulseAudio, ALSA, then JACK on Linux. The null
+    /// backend never stands in for a missing device.
+    platform,
+    /// miniaudio's null backend: a device thread that consumes output at the device rate and discards it, for
+    /// tests and headless runs.
+    null,
+};
+
 namespace detail {
 struct AudioState;
 struct AudioBusState;
 struct VoiceState;
+struct AudioClipAccess;
 struct AudioSceneAccess;
 } // namespace detail
-/// Handle to a mixing bus of one Audio; copies share the bus.
+
+/// Immutable audio, shared by any number of voices of any number of engines.
 ///
-/// An empty handle (default-constructed or moved-from) stands for the master output when passed
-/// as a parent or target bus. A bus starts at gain 1, unmuted, and applies to every voice routed
-/// to it or to its descendants. Voices and child buses retain their whole parent chain, so
-/// dropping the application's handles changes nothing.
+/// A clip has 1 or 2 channels (stereo interleaves left, then right), a sample rate in [8,000, 192,000] Hz and at
+/// least one frame; a decompressed clip holds at most 33,554,432 samples, counting every channel. Factories
+/// validate their input before creating a clip; file IO belongs to the caller.
+class AudioClip {
+  public:
+    /// Creates a decompressed clip from interleaved @p samples, which must hold whole frames of @p channels and be
+    /// finite and in [-1, 1]. Throws `std::invalid_argument` with "Audio sample rate must be between 8000 and 192000
+    /// Hz", "Invalid PCM channels or sample count" or "PCM samples must be finite and normalized to [-1, 1]".
+    static std::shared_ptr<const AudioClip> pcm(std::vector<float> samples, unsigned channels, unsigned sample_rate);
+    /// Creates a clip from a complete WAV, FLAC, MP3 or Ogg Vorbis file of at most 128 MiB.
+    ///
+    /// The leading bytes choose the decoder: `RIFF`, `RIFX`, `RF64` or `riff` (Wave64) for WAV, `fLaC` for FLAC
+    /// and `OggS` for Ogg Vorbis; anything else is decoded as MP3. miniaudio decodes WAV, FLAC and MP3, and
+    /// stb_vorbis decodes Vorbis, to 32-bit float at the file's own channel count and rate. Throws
+    /// `std::invalid_argument` with "Invalid audio load mode", "Encoded audio exceeds 128 MiB", "Unsupported or
+    /// malformed audio data" when the decoder cannot open the input, "Audio clips must have 1 or 2 channels", the
+    /// sample rate message of pcm(), and "Audio data holds no samples".
+    ///
+    /// AudioLoadMode::decompress decodes the whole input now, and also throws "Malformed audio data" when decoding
+    /// fails partway, "Decoded audio exceeds 33554432 samples" and "Decoded audio samples must be finite". Decoded
+    /// samples may exceed 1 in magnitude, as lossy decoders produce. AudioLoadMode::stream opens the input only to
+    /// read its format and length, then copies it. Its length is the one the decoder reports from the file's header,
+    /// or for MP3 from its Xing or Info tag or else its frame headers; an input without one is decoded once to count
+    /// its frames. A voice that meets malformed data later ends there, and non-finite samples play as silence.
+    static std::shared_ptr<const AudioClip> decode(std::span<const std::byte> encoded,
+                                                   AudioLoadMode mode = AudioLoadMode::decompress);
+    /// Channels per frame: 1 or 2.
+    [[nodiscard]] unsigned channels() const noexcept { return channels_; }
+    /// Frames per second.
+    [[nodiscard]] unsigned sample_rate() const noexcept { return sample_rate_; }
+    /// Length in frames.
+    [[nodiscard]] std::uint64_t frames() const noexcept { return frames_; }
+    /// Length in seconds.
+    [[nodiscard]] double duration() const noexcept { return double(frames_) / sample_rate_; }
+    /// How the clip holds its audio; clips from pcm() are decompressed.
+    [[nodiscard]] AudioLoadMode load_mode() const noexcept { return mode_; }
+    /// Bytes of audio the clip holds: 4 per decoded sample, or the size of a streamed clip's encoded copy.
+    [[nodiscard]] std::size_t memory_bytes() const noexcept {
+        return samples_.size() * sizeof(float) + encoded_.size();
+    }
+
+  private:
+    friend struct detail::AudioClipAccess;
+    AudioClip() = default;
+    std::vector<float> samples_;
+    std::vector<std::byte> encoded_;
+    std::uint64_t frames_{};
+    unsigned channels_{}, sample_rate_{};
+    int encoding_{}; // The decoder a streamed clip's voices open.
+    AudioLoadMode mode_ = AudioLoadMode::decompress;
+};
+
+/// Handle to a mixing group of one Audio that mixes into its parent, as Unity's mixer groups and Unreal's sound
+/// classes do; copies share the bus.
+///
+/// An empty handle (default-constructed or moved-from) stands for the master output when passed as a parent or
+/// target bus. A bus starts at gain 1, unmuted, and applies to every voice routed to it or to its descendants.
+/// Voices and child buses retain their whole parent chain, so dropping the application's handles changes nothing.
 class AudioBus {
   public:
     AudioBus() = default;
-    /// Sets the bus gain, in [0, 16].
+    /// Sets the bus gain, in [0, 16], reached as #audio_smoothing_seconds describes.
     void volume(float gain);
-    /// Silences the bus and its descendants without pausing their voices, whose cursors and fades
-    /// keep advancing.
+    /// Silences the bus and its descendants, as a gain of 0 would, without pausing their voices, whose cursors and
+    /// fades keep advancing. Unmuting restores the gain of volume().
     void muted(bool value);
 
   private:
     friend class Audio;
     std::shared_ptr<detail::AudioBusState> state_;
 };
-/// Move-only owner of one mixer voice.
+
+/// Move-only owner of one voice: one playing instance of a clip, like a Unity AudioSource's playback or an Unreal
+/// active sound.
 ///
-/// A new voice is stopped at the start of its clip, with gain 1, pitch 1, pan 0, attenuation
-/// distances 1 to 100, looping and spatial mode off and its position at the origin. Destroying or
-/// reassigning the Sound stops the voice and frees its capacity slot. The voice retains its clip,
-/// bus chain and mixer state, so it never refers to a destroyed Audio.
+/// A new voice is stopped at the start of its clip, with gain 1, pitch 1, pan 0, priority 128, attenuation
+/// distances 1 to 100 with linear rolloff, looping and spatial mode off and its position at the origin. Only a
+/// playing voice counts against the engine's voice limit. Destroying or reassigning the Sound stops and releases
+/// the voice. The voice retains its clip, bus chain and engine, so it never refers to a destroyed Audio.
 class Sound {
   public:
     Sound() = default;
@@ -90,50 +168,71 @@ class Sound {
     Sound &operator=(Sound &&) noexcept = default;
     Sound(const Sound &) = delete;
     Sound &operator=(const Sound &) = delete;
-    /// Starts or resumes playback at the cursor; a voice at the end of its clip restarts from the
-    /// beginning.
-    void play();
-    /// Stops playback, keeping the cursor and any fade in progress.
+    /// Starts or resumes playback at the cursor and returns whether the voice plays. A voice at the end of its
+    /// clip restarts from the beginning.
+    ///
+    /// When the engine already plays Audio::maximum_voices other voices, the one with the lowest priority stops as
+    /// stop() stops it; among equal priorities, the one admitted by play() longest ago stops. When that voice's
+    /// priority is higher than this one's, nothing stops, this voice stays stopped and play() returns false. This
+    /// is Unreal's "stop lowest priority" concurrency rule; a stolen voice reports playing() as false.
+    bool play();
+    /// Stops playback, keeping the cursor, the gain and any fade in progress.
     void pause();
-    /// Stops playback, rewinds to the start and cancels any fade at its current gain.
+    /// Stops playback, rewinds to the start and cancels any fade at its current gain; a gain, pan or pitch ramp
+    /// still in progress completes at once.
     void stop();
-    /// Moves the cursor to @p seconds of clip time, in [0, AudioClip::duration()].
+    /// Moves the cursor to @p seconds of clip time, in [0, AudioClip::duration()], at the nearest frame; a playing
+    /// voice continues from there. For a streamed clip, a new decoder seeks on the calling thread before the engine
+    /// is locked to swap it in, so a playing device never waits for it; for MP3 that decodes the clip from its start
+    /// to the new position.
     void seek(double seconds);
-    /// Whether the voice is playing. A non-looping voice stops by itself at the end of its clip,
-    /// leaving the cursor at the clip duration.
-    bool playing() const;
-    /// Playback position in seconds of clip time; it advances by the pitch multiplier for each
-    /// rendered second.
-    double cursor() const;
-    /// Loops playback, interpolating across the end-to-start boundary.
+    /// Whether the voice is playing. A non-looping voice stops by itself at the end of its clip, leaving the cursor
+    /// at the clip duration.
+    [[nodiscard]] bool playing() const;
+    /// Playback position in seconds of clip time: the clip frames the voice has taken for mixing, which run up to two
+    /// clip frames ahead of its latest mixed output, held by its linear resampler.
+    [[nodiscard]] double cursor() const;
+    /// Loops playback, continuing from the start at the end of the clip.
     void looping(bool value);
-    /// Sets the voice gain, in [0, 16], and cancels any fade.
+    /// Sets the voice gain, in [0, 16], and replaces any fade; a playing voice reaches it as
+    /// #audio_smoothing_seconds describes.
     void volume(float gain);
-    /// Sets the playback-rate multiplier, in [0.01, 8], which scales both pitch and duration.
+    /// Sets the playback-rate multiplier, in [0.01, 8], which scales both pitch and duration; a playing voice
+    /// reaches it as #audio_smoothing_seconds and #audio_block_frames describe. Clips are resampled linearly to the
+    /// output rate, without low-pass filtering.
     void pitch(float rate);
-    /// Sets the pan of a nonspatial voice, in [-1, 1] from left to right.
+    /// Sets the pan of a nonspatial voice, in [-1, 1] from left to right, reached like volume().
     ///
-    /// Mono clips use equal-power gains, -3 dB on each channel at center. Stereo clips keep both
-    /// channels unchanged at center and attenuate the opposite channel as they pan.
+    /// Mono clips use equal-power gains, -3 dB on each channel at center: `sqrt((1 - pan) / 2)` on the left and
+    /// `sqrt((1 + pan) / 2)` on the right. Stereo clips keep both channels unchanged at center and attenuate the
+    /// opposite channel by `sqrt(1 - |pan|)` as they pan.
     void pan(float value);
-    /// Places the voice relative to the listener (see Audio::listener) instead of using pan().
+    /// Sets the priority that play() compares when the voice limit is reached, in [0, 255]; higher values are more
+    /// important, as in Unreal (Unity's AudioSource.priority runs the other way).
+    void priority(int value);
+    /// Places the voice relative to the listener (see Audio::listener) instead of panning it; switching mode
+    /// applies at once.
     ///
-    /// A spatial voice downmixes to mono and pans with equal power by the cosine between the
-    /// listener's right vector and the direction from the listener to the voice, centered when
-    /// the two positions coincide. Its gain is full within the minimum attenuation() distance and
-    /// falls linearly to silence at the maximum. Nonspatial voices ignore position() and
-    /// attenuation().
+    /// A spatial voice's gain falls with distance as attenuation() sets, and its output channels are weighted by
+    /// direction: with c the cosine between the listener's right vector and the direction from the listener to the
+    /// voice, the left channel takes `max(0.2, (1 - c) / 2)` and the right `max(0.2, (1 + c) / 2)`, so a voice
+    /// straight ahead plays at half gain on both sides. Within 0.001 of the listener, neither is weighted. A mono
+    /// clip feeds both channels and a stereo clip keeps its own. While the voice plays, these gains follow
+    /// position and listener changes through linear ramps of #audio_smoothing_seconds that restart at every block;
+    /// they take their current values at once when the voice starts, resumes or becomes spatial. Nonspatial voices
+    /// ignore position() and attenuation().
     void spatial(bool value);
     /// Position of a spatial voice, in the same space as the listener.
     void position(Vec3 value);
-    /// Sets the spatial distance range. @p minimum_distance must be at least 0 and less than
-    /// @p maximum_distance, which must be at most 1,000,000,000.
-    void attenuation(float minimum_distance, float maximum_distance);
-    /// Changes the voice gain linearly from its current value to @p target_gain, in [0, 16], over
-    /// @p seconds of rendered output, in [0, 86,400]; zero applies it at once.
+    /// Sets the spatial distance range and how gain falls within it. @p minimum_distance must be at least 0, and
+    /// positive for AudioRolloff::inverse, and less than @p maximum_distance, which must be at most
+    /// 1,000,000,000.
+    void attenuation(float minimum_distance, float maximum_distance, AudioRolloff rolloff = AudioRolloff::linear);
+    /// Changes the voice gain linearly from its current value to @p target_gain, in [0, 16], over @p seconds of
+    /// mixed output, in [0, 86,400]; zero applies it at once.
     ///
-    /// The fade advances only while the voice plays, independent of pitch. A new fade replaces it,
-    /// and volume() and stop() cancel it.
+    /// The fade advances only while the voice plays, independent of pitch. A new fade replaces it, volume()
+    /// replaces it with its own ramp, and stop() cancels it.
     void fade(float target_gain, double seconds);
 
   private:
@@ -141,59 +240,70 @@ class Sound {
     detail::VoiceState &state() const;
     std::shared_ptr<detail::VoiceState> state_;
 };
-/// The mixer: voice capacity, master gain, listener and rendering.
+
+/// An audio engine: a miniaudio engine with its buses, voices, listener and output, in the role of Unity's audio
+/// settings and listener or Unreal's audio device.
 ///
-/// Moving an Audio transfers the mixer to the destination. Voices, buses, anima::AudioOutput,
-/// anima::AudioSource and the codecs of anima::add_audio_component_codecs retain the mixer state,
-/// so moving or destroying the wrapper never invalidates them.
+/// Moving an Audio transfers the engine to the destination. Voices, buses, anima::AudioSource and the codecs of
+/// anima::add_audio_component_codecs retain the engine, so moving or destroying the wrapper never invalidates
+/// them; the engine and its device close when the last of them is destroyed.
 class Audio {
   public:
-    /// Creates a mixer rendering at @p sample_rate Hz, in [8,000, 192,000], with room for
-    /// @p maximum_voices voices, in [1, 4,096]. The master gain starts at 1 and the listener at
-    /// the origin, facing -Z with +Y up.
-    explicit Audio(unsigned sample_rate = 48000, unsigned maximum_voices = 256);
+    /// Creates an engine without a device, which mixes only in render(), for tests and offline or headless
+    /// rendering. It mixes at @p sample_rate Hz, in [8,000, 192,000], and plays at most @p maximum_voices voices
+    /// at once, in [1, 4,096]. The master gain starts at 1 and the listener at the origin, facing -Z with +Y up.
+    /// Throws `std::invalid_argument` with "Audio sample rate must be between 8000 and 192000 Hz" or "Audio voice
+    /// limit must be in [1, 4096]".
+    explicit Audio(unsigned sample_rate = 48000, unsigned maximum_voices = 64);
+    /// Creates an engine that plays through a device of @p backend at the device's own sample rate, as the
+    /// constructor describes otherwise. The device thread starts mixing before this returns; see the file comment.
+    /// Throws `std::invalid_argument` with the voice limit message of the constructor or "Invalid audio backend",
+    /// and `std::runtime_error` when no device of @p backend opens.
+    [[nodiscard]] static Audio open_device(AudioBackend backend = AudioBackend::platform, unsigned maximum_voices = 64);
     Audio(const Audio &) = delete;
     Audio &operator=(const Audio &) = delete;
     Audio(Audio &&) noexcept = default;
     Audio &operator=(Audio &&) noexcept = default;
-    /// Creates a bus under @p parent, or under the master output when @p parent is empty. The
-    /// parent must belong to this mixer and never changes; bus chains are at most 16 deep.
+    /// Creates a bus under @p parent, or under the master output when @p parent is empty. The parent must belong
+    /// to this engine and never changes; bus chains are at most 16 deep.
     AudioBus bus(const AudioBus &parent = {});
-    /// Creates a stopped voice for @p clip on @p bus, or on the master output when @p bus is empty.
-    /// Throws `std::invalid_argument` for a null clip or another mixer's bus, and
-    /// `std::length_error` when the mixer already holds its maximum number of voices; no voice is
-    /// stolen.
+    /// Creates a stopped voice for @p clip on @p bus, or on the master output when @p bus is empty. Throws
+    /// `std::invalid_argument` for a null clip or another engine's bus. The voice of a streamed clip opens its own
+    /// decoder over the clip's bytes.
     Sound sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus = {});
-    /// Whether @p sound holds a voice created by this mixer, including after either was moved.
-    /// False for an empty Sound or a moved-from mixer.
+    /// Whether @p sound holds a voice created by this engine, including after either was moved. False for an
+    /// empty Sound or a moved-from engine.
     [[nodiscard]] bool owns(const Sound &sound) const noexcept;
-    /// Whether this mixer can route to @p bus: the master output (an empty handle) or a bus it
-    /// created. False for every bus of a moved-from mixer.
+    /// Whether this engine can route to @p bus: the master output (an empty handle) or a bus it created. False
+    /// for every bus of a moved-from engine.
     [[nodiscard]] bool owns(const AudioBus &bus) const noexcept;
-    /// Sets the master gain, in [0, 16].
+    /// Sets the master gain, in [0, 16], reached as #audio_smoothing_seconds describes.
     void volume(float gain);
     /// Places the listener that spatial voices pan and attenuate against.
     ///
-    /// Right-handed, as for cameras: the default -Z forward with +Y up puts +X on the listener's
-    /// right, and facing +Z swaps left and right. Only @p position and the right vector,
-    /// `cross(forward, up)` normalized, affect the mix, so it does not distinguish front from back
-    /// or above from below. Throws when @p forward or @p up is shorter than 0.000001 or the two
-    /// are parallel.
+    /// Right-handed, as for cameras: the default -Z forward with +Y up puts +X on the listener's right, and facing
+    /// +Z swaps left and right. Only @p position and the right vector, `cross(forward, up)` normalized, affect the
+    /// mix, so it does not distinguish front from back or above from below. Throws when @p forward or @p up is
+    /// shorter than 0.000001 or the two are parallel.
     void listener(Vec3 position, Vec3 forward = view_forward, Vec3 up = world_up);
-    /// Output rate in frames per second.
-    unsigned sample_rate() const;
-    /// Mixes the next `output.size() / 2` stereo frames into @p output, overwriting it.
+    /// Output rate in frames per second: the constructor's, or the device's.
+    [[nodiscard]] unsigned sample_rate() const;
+    /// How many voices may play at once; see Sound::play.
+    [[nodiscard]] unsigned maximum_voices() const;
+    /// Voices of this engine that exist, playing or not: every Sound it created that has not been destroyed,
+    /// including those of AudioSource components.
+    [[nodiscard]] std::size_t voice_count() const;
+    /// Mixes the next `output.size() / 2` stereo frames into @p output, overwriting it. An engine with a device
+    /// mixes on its device thread instead, and throws `std::logic_error` here.
     ///
-    /// @p output holds interleaved left and right samples, so its size must be even. Voices and
-    /// fades advance by the rendered frames, not wall-clock time. Clips are resampled linearly to
-    /// the output rate, and the mix is hard-clipped to [-1, 1]. Parameter changes take effect at
-    /// the start of the next call, without smoothing. With no changes in between, rendering the
-    /// same frames as one block or as consecutive smaller blocks produces identical samples on the
-    /// same platform; cross-platform bitwise equality is not promised.
+    /// @p output holds interleaved left and right samples, so its size must be even. Voices, fades and ramps
+    /// advance by the mixed frames, not wall-clock time, and changes made before the call apply from its first
+    /// frame. With no changes in between, rendering the same frames in one call or in several produces identical
+    /// samples on the same platform, except while spatial gains ramp (see Sound::spatial); cross-platform bitwise
+    /// equality is not promised.
     void render(std::span<float> output);
 
   private:
-    friend class AudioOutput;
     friend struct detail::AudioSceneAccess;
     explicit Audio(std::shared_ptr<detail::AudioState> state) : state_(std::move(state)) {}
     detail::AudioState &state() const;

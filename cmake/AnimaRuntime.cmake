@@ -1,6 +1,6 @@
 include_guard(GLOBAL)
 
-# Call after linking an executable to anima::desktop or anima::audio_output. This
+# Call after linking an executable to anima::desktop. This
 # handles SDL's shared runtime on Windows; drivers and other dependencies are external.
 function(anima_copy_sdl_runtime target)
     if(NOT TARGET "${target}")

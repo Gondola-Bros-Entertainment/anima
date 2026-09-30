@@ -20,7 +20,7 @@ cmake --workflow --preset headless
 ```
 
 The `core` preset builds only the dependency-free library. The `desktop` preset adds
-the Vulkan renderer, SDL audio output and the `anima` viewer:
+the Vulkan renderer and the `anima` viewer:
 
 ```sh
 cmake --workflow --preset desktop
@@ -56,17 +56,18 @@ subdirectory, and compiler warning policy stays private to Anima's targets.
 
 | Module | Targets | Option | Provides |
 | --- | --- | --- | --- |
-| Core | `anima::core` | always built | Math, fixed-step timing, geometry queries, action input, A* navigation and audio mixing |
+| Core | `anima::core` | always built | Math, fixed-step timing, geometry queries, action input, A* navigation, and audio decoding, mixing and device output |
 | Assets and scenes | `anima::assets` | `ANIMA_BUILD_ASSETS` (on) | GLB import, meshes, scenes, objects, components, prefabs, animation, cameras and lighting |
 | Desktop | `anima::desktop` | `ANIMA_BUILD_DESKTOP` (on) | SDL3/Vulkan rendering: skinning, materials, culling, sky and directional shadows |
 | 3D physics | `anima::physics`, `anima::physics_scene` | `ANIMA_BUILD_PHYSICS` | Jolt simulation and queries; the scene target also needs assets |
 | 2D physics | `anima::physics2d`, `anima::physics2d_scene` | `ANIMA_BUILD_PHYSICS2D` | Box2D simulation and queries; the scene target also needs assets |
-| Audio output | `anima::audio_output` | `ANIMA_BUILD_AUDIO_OUTPUT` | SDL audio device output, with no graphics or assets |
 | SDL input | `anima::input_sdl` | `ANIMA_BUILD_INPUT_SDL` | SDL event conversion using SDL headers only |
 | UI | `anima::ui_documents`, `anima::ui_scene`, `anima::ui` | `ANIMA_BUILD_UI_DOCUMENTS`, `ANIMA_BUILD_UI` | Headless RmlUi documents, their scene integration, and desktop presentation (requires desktop) |
 
-Jolt, Box2D and the importers stay private implementation dependencies; `anima::ui`
-exposes RmlUi deliberately for native interoperability. The
+Jolt, Box2D, miniaudio and the importers stay private implementation dependencies;
+`anima::ui` exposes RmlUi deliberately for native interoperability. For audio,
+`anima::core` links the platform's thread library, and on macOS the Core Audio
+frameworks; Linux audio libraries load at run time. The
 [consumer suite](tests/consumer) builds each target as an external project with the
 engine's tools and tests off, which checks these dependency boundaries.
 
@@ -85,7 +86,7 @@ Anima supplies reusable mechanisms; applications supply content, rules and polic
 | Meshes, materials, lighting, visibility and rendering | Art direction, world layout, quality settings and gameplay effects |
 | Terrain queries, collision bodies, contacts, rays and sweeps | Movement, support rules, damage and collision response |
 | Pose evaluation, masked layers, contacts, action timelines, attachment placement and fitted meshes | Clip, action and handling choice, timing rules, item metadata and gameplay outcomes |
-| Audio mixing, input state and navigation queries | Sound selection, action responses, destinations and movement authority |
+| Audio decoding, mixing, voice limits and output, input state and navigation queries | Sound selection and priorities, action responses, destinations and movement authority |
 | UI documents, layout, rendering and events | Screens, game data, commands and navigation |
 | Import and resource lifetime | Production assets, content recipes and deployment |
 
@@ -122,7 +123,7 @@ for (std::uint32_t step = 0; step < batch.steps; ++step) {
 scenes.update(std::chrono::duration<double>(elapsed).count());
 anima::synchronize_audio(scenes, audio);
 anima::sync_ui_panels(scenes);
-// Then draw, and render or pump audio through the chosen output.
+// Then draw. An Audio with a device mixes on its own thread; render one without here.
 ```
 
 Navigation computes each agent's velocity without moving its object; a fixed-update

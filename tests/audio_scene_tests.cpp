@@ -16,17 +16,24 @@
 
 using namespace anima;
 namespace {
-constexpr double tolerance = 1e-6;
+constexpr double tolerance = 1e-4;
 constexpr auto pitch_range = "Audio pitch must be in [0.01, 8]";
 constexpr auto distances = "Invalid audio attenuation distances";
 constexpr auto missing_or_foreign = "Missing audio clip or foreign bus";
 constexpr auto duplicate_field = "Duplicate JSON document field";
 
 auto clip() { return AudioClip::pcm(std::vector<float>(16, .25F), 1, 8000); }
+// The last frame of the next block, which follows any voice started before it by more than its resampler's delay.
 std::array<float, 2> frame(Audio &audio) {
-    std::array<float, 2> result{};
-    audio.render(result);
-    return result;
+    std::array<float, 2 * audio_block_frames> output{};
+    audio.render(output);
+    return {output[output.size() - 2], output.back()};
+}
+// The last frame after 0.25 s of output, once spatial gains have settled after a move.
+std::array<float, 2> settle(Audio &audio) {
+    std::vector<float> output(4000);
+    audio.render(output);
+    return {output[output.size() - 2], output.back()};
 }
 ComponentCodecs codecs_for(Audio &audio, std::shared_ptr<const AudioClip> sound, const AudioBus &bus = {}) {
     ComponentCodecs codecs;
@@ -76,24 +83,25 @@ TEST_CASE("Sources follow the listener's world pose, their enablement and playba
     settings.maximum_distance = 4;
     auto source = emitter.add_component<AudioSource>(audio, clip(), settings);
     CHECK_FALSE(source->playing()); // Construction waits for synchronization.
-    CHECK(frame(audio)[1] == Near{0, tolerance});
+    CHECK(frame(audio)[1] == 0);
     synchronize_audio(scene, audio);
+    // Two units to the listener's right: half gain, all of it on the right and the 0.2 floor on the left.
     auto sample = frame(audio);
-    CHECK(sample[0] == Near{0, tolerance});
+    CHECK(sample[0] == Near{.025, tolerance});
     CHECK(sample[1] == Near{.125, tolerance});
     auto rotation = identity();
     rotation[0] = rotation[10] = -2;
     rotation[5] = 3;
-    listener.set_local_matrix(rotation); // World orientation, normalized scale.
+    listener.set_local_matrix(rotation); // World orientation, normalized scale: facing +Z.
     synchronize_audio(scene, audio);
-    sample = frame(audio);
+    sample = settle(audio);
     CHECK(sample[0] == Near{.125, tolerance});
-    CHECK(sample[1] == Near{0, tolerance});
+    CHECK(sample[1] == Near{.025, tolerance});
     const auto cursor = source->cursor();
     source.set_enabled(false);
     synchronize_audio(scene, audio);
-    CHECK(frame(audio)[0] == Near{0, tolerance});
-    CHECK(source->cursor() == Near{cursor, tolerance});
+    CHECK(frame(audio)[0] == 0);
+    CHECK(source->cursor() == Near{cursor, 1e-9});
     synchronize_audio(scene, audio);
     source.set_enabled(true);
     synchronize_audio(scene, audio);
@@ -123,19 +131,20 @@ TEST_CASE("Sources follow the listener's world pose, their enablement and playba
     synchronize_audio(scene, audio);
     ears.set_enabled(false);
     synchronize_audio(scene, audio); // No listener resets origin; emitter is 12 units away.
-    CHECK(frame(audio)[0] == Near{0, tolerance});
-    CHECK(frame(audio)[1] == Near{0, tolerance});
+    sample = settle(audio);
+    CHECK(sample[0] == Near{0, tolerance});
+    CHECK(sample[1] == Near{0, tolerance});
     listener.destroy();
     emitter.set_position({1, 0, 0});
     synchronize_audio(scene, audio);
-    CHECK(frame(audio)[1] == Near{.1875, tolerance});
+    CHECK(settle(audio)[1] == Near{.1875, tolerance});
     settings.looping = false;
     source->configure(settings);
     source->seek(source->clip()->duration() - 1. / 8000);
     (void)frame(audio);
     CHECK_FALSE(source->playing()); // The one-shot finished.
     synchronize_audio(scene, audio);
-    CHECK(frame(audio)[1] == Near{0, tolerance});
+    CHECK(frame(audio)[1] == 0);
     source->play();
     synchronize_audio(scene, audio);
     CHECK(source->playing()); // An explicit replay rewinds the completed clip.
@@ -143,7 +152,34 @@ TEST_CASE("Sources follow the listener's world pose, their enablement and playba
     emitter.destroy();
     CHECK_FALSE(source);
     CHECK_FALSE(ears);
-    CHECK(frame(audio)[1] == Near{0, tolerance});
+    CHECK(frame(audio)[1] == 0);
+    CHECK(audio.voice_count() == 0u);
+}
+
+TEST_CASE("A source's priority decides which source the voice limit stops") {
+    Audio audio(8000, 1);
+    Scene scene;
+    AudioSourceSettings quiet, important;
+    quiet.looping = important.looping = true;
+    quiet.priority = 10;
+    important.priority = 200;
+    auto low = scene.create().add_component<AudioSource>(audio, clip(), quiet);
+    auto high = scene.create().add_component<AudioSource>(audio, clip(), important);
+    low->play();
+    synchronize_audio(scene, audio);
+    CHECK(low->playing());
+    high->play();
+    synchronize_audio(scene, audio);
+    CHECK(high->playing());
+    CHECK_FALSE(low->playing()); // Stolen, and synchronization does not restart it.
+    synchronize_audio(scene, audio);
+    CHECK_FALSE(low->playing());
+    low->play();
+    synchronize_audio(scene, audio); // Refused: the request is consumed.
+    CHECK_FALSE(low->playing());
+    high->stop();
+    synchronize_audio(scene, audio);
+    CHECK_FALSE(low->playing());
 }
 
 TEST_CASE("Synchronization validates the whole scene before publishing any change") {
@@ -218,15 +254,24 @@ TEST_CASE("Invalid source settings, clips and buses are rejected without changin
     invalid = settings;
     invalid.minimum_distance = invalid.maximum_distance;
     CHECK_THROWS_WITH_AS(source->configure(invalid), distances, std::invalid_argument);
+    invalid = settings;
+    invalid.minimum_distance = 0;
+    invalid.rolloff = AudioRolloff::inverse;
+    CHECK_THROWS_WITH_AS(source->configure(invalid), distances, std::invalid_argument);
+    invalid = settings;
+    invalid.priority = 256;
+    CHECK_THROWS_WITH_AS(source->configure(invalid), "Audio priority must be in [0, 255]", std::invalid_argument);
+    CHECK(source->settings().priority == 128);
     CHECK_THROWS_WITH_AS(source->seek(-1), "Audio seek lies outside the clip", std::invalid_argument);
     auto empty = scene.create();
     CHECK_THROWS_WITH_AS(empty.add_component<AudioSource>(audio, nullptr), missing_or_foreign, std::invalid_argument);
     CHECK_THROWS_WITH_AS(empty.add_component<AudioSource>(audio, clip(), settings, foreign.bus()), missing_or_foreign,
                          std::invalid_argument);
     CHECK_FALSE(empty.has_component<AudioSource>()); // Failed construction left nothing attached.
+    CHECK(audio.voice_count() == 1u);
 }
 
-TEST_CASE("A mixer keeps its voices when moved, and its moved-from wrapper cannot synchronize") {
+TEST_CASE("An engine keeps its voices when moved, and its moved-from wrapper cannot synchronize") {
     Audio audio(8000), foreign(8000);
     Scene scene;
     scene.create().add_component<AudioSource>(audio, clip());
@@ -240,6 +285,7 @@ TEST_CASE("A mixer keeps its voices when moved, and its moved-from wrapper canno
     CHECK_FALSE(audio.owns(standalone));
     CHECK_THROWS_WITH_AS(synchronize_audio(scene, audio), "Moved-from audio mixer", std::logic_error);
     CHECK_NOTHROW(synchronize_audio(scene, moved));
+    CHECK(moved.voice_count() == 2u);
 }
 
 TEST_CASE("Prefabs and scenes persist source settings and enablement, not playback state") {
@@ -251,7 +297,7 @@ TEST_CASE("Prefabs and scenes persist source settings and enablement, not playba
     Scene scene;
     auto root = scene.create("emitter");
     root.set_position({3, 0, 0});
-    AudioSourceSettings settings{.5F, 2, -1, 2, 20, true, false, true};
+    AudioSourceSettings settings{.5F, 2, -1, 2, 20, true, false, true, 7, AudioRolloff::inverse};
     auto original = root.add_component<AudioSource>(audio, tone, settings);
     auto child = scene.create("listener");
     child.set_parent(root, ReparentMode::keep_local);
@@ -279,14 +325,15 @@ TEST_CASE("Prefabs and scenes persist source settings and enablement, not playba
     CHECK(restored_settings.looping);
     CHECK_FALSE(restored_settings.spatial);
     CHECK(restored_settings.play_on_start);
+    CHECK(restored_settings.priority == 7);
+    CHECK(restored_settings.rolloff == AudioRolloff::inverse);
     REQUIRE(copy_object.children().size() == 1u);
     CHECK_FALSE(copy_object.children()[0].get_component<AudioListener>().enabled());
     synchronize_audio(scene, audio);
-    CHECK(frame(audio)[0] == Near{0, tolerance});
+    CHECK(frame(audio)[0] == 0);
     copy.set_enabled(true);
     synchronize_audio(scene, audio);
-    CHECK(frame(audio)[0] == Near{.0625, tolerance}); // Explicit restored bus * voice * clip.
-    CHECK(original->cursor() != copy->cursor());
+    CHECK(frame(audio)[0] == Near{.0625, 1e-6}); // Explicit restored bus * voice * clip.
     const auto scene_data = serialize_scene(scene, {}, codecs);
     auto restored = load_scene(scene_data, {}, codecs);
     CHECK(restored->size() == 4u);
@@ -300,19 +347,41 @@ TEST_CASE("Prefabs and scenes persist source settings and enablement, not playba
     restored.reset();
     root.destroy();
     copy_object.destroy();
-    CHECK(frame(audio)[0] == Near{0, tolerance});
-    // Codecs retain the mixer context, even if the original wrapper is moved/destroyed.
+    CHECK(frame(audio)[0] == 0);
+    // Codecs retain the engine, even if the original wrapper is moved/destroyed.
     Audio retained(std::move(audio));
     auto again = prefab.instantiate(scene);
     again.get_component<AudioSource>().set_enabled(true);
     synchronize_audio(scene, retained);
-    CHECK(frame(retained)[0] == Near{.0625, tolerance});
+    CHECK(frame(retained)[0] == Near{.0625, 1e-6});
     const auto count = codecs.capture(again, {}).size();
     const auto name = [](const auto &) { return "tone"; };
     const auto resolve = [tone](auto) { return tone; };
     CHECK_THROWS_WITH_AS(add_audio_component_codecs(codecs, retained, name, resolve), "Duplicate component codec",
                          std::invalid_argument);
     CHECK(codecs.capture(again, {}).size() == count); // The failed registration changed nothing.
+}
+
+TEST_CASE("A source payload may omit its priority and rolloff, which then take their defaults") {
+    Audio audio(8000);
+    auto tone = clip();
+    auto codecs = codecs_for(audio, tone);
+    Scene scene;
+    auto object = scene.create();
+    AudioSourceSettings settings;
+    settings.priority = 3;
+    settings.rolloff = AudioRolloff::inverse;
+    object.add_component<AudioSource>(audio, tone, settings);
+    const auto prefab = Prefab::capture(object, codecs);
+    auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
+    auto &state = nodes[0].components[0].state;
+    REQUIRE(state.find(R"(,"priority":3)") != std::string::npos);
+    state.erase(state.find(R"(,"priority":3)"), std::string_view(R"(,"priority":3)").size());
+    REQUIRE(state.find(R"(,"rolloff":"inverse")") != std::string::npos);
+    state.erase(state.find(R"(,"rolloff":"inverse")"), std::string_view(R"(,"rolloff":"inverse")").size());
+    auto restored = Prefab(nodes, codecs).instantiate(scene).get_component<AudioSource>();
+    CHECK(restored->settings().priority == 128);
+    CHECK(restored->settings().rolloff == AudioRolloff::linear);
 }
 
 TEST_CASE("A failed restore rolls back its objects and voices, and teardown releases voices") {
@@ -342,6 +411,11 @@ TEST_CASE("A failed restore rolls back its objects and voices, and teardown rele
     replace(R"("pitch":1.0)", R"("pitch":1e100)", "JSON number outside the float range");
     replace(R"("looping":false)", R"("looping":0)", "Invalid audio source flag");
     replace(R"("volume":1.0)", R"("volume":"1")", "Invalid audio source number");
+    replace(R"("priority":128)", R"("priority":1.5)", "Invalid audio source priority");
+    replace(R"("priority":128)", R"("priority":300)", "Audio priority must be in [0, 255]");
+    replace(R"("priority":128)", R"("priority":18446744073709551615)", "Audio priority must be in [0, 255]");
+    replace(R"("rolloff":"linear")", R"("rolloff":"cubic")", "Invalid audio source rolloff");
+    replace(R"("rolloff":"linear")", R"("rolloff":1)", "Invalid audio source rolloff");
     invalids.emplace_back(std::string(64 * 1024 + 1, ' '), "JSON document exceeds byte limit");
     for (std::size_t i = 0; i < invalids.size(); ++i) {
         CAPTURE(i);
@@ -349,13 +423,9 @@ TEST_CASE("A failed restore rolls back its objects and voices, and teardown rele
         CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), invalids[i].second.c_str(),
                              std::invalid_argument);
         CHECK(scene.size() == 1u);
-        auto probe = audio.sound(tone); // Earlier decoded source must have released capacity.
-        CHECK(audio.owns(probe));
+        CHECK(audio.voice_count() == 1u); // The first restored source released its voice.
     }
     nodes[1].components[0].state = valid;
-    // The first source takes the mixer's last voice.
-    CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), "Audio voice limit exceeded", std::length_error);
-    CHECK(scene.size() == 1u);
     unsigned resolutions = 0;
     ComponentCodecs failing;
     add_audio_component_codecs(
@@ -368,8 +438,11 @@ TEST_CASE("A failed restore rolls back its objects and voices, and teardown rele
     CHECK_THROWS_WITH_AS(Prefab(nodes, failing).instantiate(scene), "Synthetic resolver failure", std::runtime_error);
     CHECK(resolutions == 2u);
     CHECK(scene.size() == 1u); // The source restored before the failure was rolled back.
+    CHECK(audio.voice_count() == 1u);
     auto temporary = prefab.instantiate(scene);
+    CHECK(audio.voice_count() == 2u);
     CHECK(temporary.remove_component<AudioSource>());
+    CHECK(audio.voice_count() == 1u);
     temporary.add_component<AudioSource>(audio, tone);
     temporary.destroy();
     existing.destroy();
@@ -377,11 +450,9 @@ TEST_CASE("A failed restore rolls back its objects and voices, and teardown rele
         Scene owned;
         owned.create().add_component<AudioSource>(audio, tone);
         owned.create().add_component<AudioSource>(audio, tone);
+        CHECK(audio.voice_count() == 2u);
     }
-    auto one = audio.sound(tone);
-    auto two = audio.sound(tone);
-    CHECK(audio.owns(one));
-    CHECK(audio.owns(two));
+    CHECK(audio.voice_count() == 0u);
 }
 
 TEST_CASE("Components and codecs can outlive their Audio") {
@@ -418,9 +489,9 @@ TEST_CASE("Invalid listener payloads are rejected without leaking objects") {
     }
 }
 
-// A bus of another mixer is rejected when the codecs are registered; accepting it made every later
+// A bus of another engine is rejected when the codecs are registered; accepting it made every later
 // restore throw from Audio::sound.
-TEST_CASE("Audio codecs reject a bus of another mixer") {
+TEST_CASE("Audio codecs reject a bus of another engine") {
     Audio audio(8000);
     Audio other(8000);
     const auto foreign = other.bus();

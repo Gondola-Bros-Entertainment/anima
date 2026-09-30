@@ -1,7 +1,7 @@
 include_guard(GLOBAL)
 
-# Shared runtime discovery for independently selected desktop and audio output.
-# The input event converter uses headers only and never includes this file.
+# SDL for the desktop library. A build that fetches SDL also includes this file for the
+# input event converter, which uses only the fetched headers.
 if(ANIMA_FETCH_SDL)
     include(FetchContent)
     set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)

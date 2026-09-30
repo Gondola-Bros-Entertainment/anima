@@ -1,9 +1,6 @@
 #ifdef CONSUMER_RUNTIME
 #include "runtime.hpp"
 #endif
-#ifdef CONSUMER_AUDIO_OUTPUT
-#include "audio_output.hpp"
-#endif
 #ifdef CONSUMER_PHYSICS2D
 #include "physics2d.hpp"
 #endif
@@ -18,7 +15,7 @@
 #endif
 // A complete tiny application using public targets/headers, copied out of the
 // repository by the consumer test. There are no includes of engine implementation.
-#include <anima/audio.hpp>
+#include "audio.hpp"
 #include <anima/core/fixed_step.hpp>
 #include <anima/core/heightfield.hpp>
 #include <array>
@@ -287,19 +284,10 @@ int main(int argc, char **argv) {
 
         consume_navigation();
         consume_input();
-#ifdef CONSUMER_AUDIO_OUTPUT
-        consume_audio_output();
-#endif
 #ifdef CONSUMER_PHYSICS2D
         consume_physics2d();
 #endif
-        anima::Audio audio(8000);
-        auto sound = audio.sound(anima::AudioClip::pcm({.25F, -.25F}, 2, 8000));
-        sound.play();
-        std::array<float, 2> mixed{};
-        audio.render(mixed);
-        require(mixed[0] == .25F && mixed[1] == -.25F && !sound.playing(),
-                "Independent core consumer could not mix stereo audio");
+        audio_consumer::run();
 #ifdef CONSUMER_UI
         ui_test::test_attribute_conversion();
         if (argc > 1 && std::string_view(argv[1]) == "--ui")
