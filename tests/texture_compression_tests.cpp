@@ -96,10 +96,11 @@ void check_against_reference(const Image &image, const std::string &name) {
         REQUIRE(left + int(decoded.width) <= reference.width);
         std::size_t mismatches = 0;
         for (std::uint32_t y = 0; y < decoded.height; ++y)
-            for (std::uint32_t x = 0; x < decoded.width; ++x)
-                mismatches += !std::equal(&decoded.rgba[(std::size_t(y) * decoded.width + x) * 4],
-                                          &decoded.rgba[(std::size_t(y) * decoded.width + x) * 4 + 4],
-                                          &reference.rgba[(std::size_t(y) * reference.width + left + x) * 4]);
+            for (std::uint32_t x = 0; x < decoded.width; ++x) {
+                const auto *texel = decoded.rgba.data() + (std::size_t(y) * decoded.width + x) * 4;
+                mismatches += !std::equal(texel, texel + 4,
+                                          reference.rgba.data() + (std::size_t(y) * reference.width + left + x) * 4);
+            }
         CHECK(mismatches == 0);
         left += int(decoded.width);
     }
