@@ -26,19 +26,21 @@ struct Manifest {
 };
 /// Reads the manifest file at @p path: JSON of 1 byte to 1 MiB with at most 32 nesting levels.
 ///
-/// Requires `schema_version` 2, `units` `"meters"`, `asset_id`, `model`, `skeleton` (`id`,
-/// `bind_signature` and an integer `joint_count`) and `clips`, and accepts a `motion_contract`.
-/// Filenames must name files beside the manifest, without directories. Each clip has a unique
-/// `name`, `loop`, an optional positive finite `reference_speed` and optional `events` of
-/// `time_seconds` (at least 0) and a nonempty `event` name, sorted by time. Duplicate fields are
-/// rejected and unknown fields ignored.
+/// Requires the integer `schema_version` 3, checked before any other field, then `units`
+/// `"meters"`, `asset_id`, `model`, `skeleton` (`id`, `bind_signature` and an integer
+/// `joint_count`) and `clips`, and accepts a `motion_contract`. Filenames must name files beside
+/// the manifest, without directories. Each clip has a unique `name`, `loop`, an optional positive
+/// finite `reference_speed` and optional `events`, each a `time` of at least 0 seconds and a
+/// nonempty `name`, as ClipEvent has them; the result lists them by time. Unknown and repeated
+/// fields are rejected.
 ///
-/// Throws `std::runtime_error` for an unreadable file or invalid content, including missing fields
-/// and fields of the wrong JSON type.
+/// Throws `std::invalid_argument` for a missing, empty or oversized file and for invalid content,
+/// including missing, unknown and mistyped fields, and `std::runtime_error` when an opened file
+/// cannot be read.
 [[nodiscard]] Manifest read_manifest(const std::filesystem::path &path);
 /// Checks @p asset against @p manifest: one skin of Manifest::joint_count joints, as many clips as
 /// the manifest, each manifest clip naming exactly one of them, events inside their clips and
-/// positive finite reference speeds. Throws `std::runtime_error` otherwise.
+/// positive finite reference speeds. Throws `std::invalid_argument` otherwise.
 void validate_manifest(const Manifest &manifest, const Asset &asset);
 /// Pairs each joint node of @p fitted's skin with the @p body joint node of the same name, as
 /// (fitted node, body node) in @p fitted's joint order, so that @p fitted can copy @p body's pose.
