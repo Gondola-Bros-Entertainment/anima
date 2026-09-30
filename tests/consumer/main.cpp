@@ -43,6 +43,7 @@
 #include "navigation.hpp"
 #ifdef CONSUMER_DESKTOP
 #include "allocations.hpp"
+#include "blending.hpp"
 #include "culling.hpp"
 #include "environment.hpp"
 #include "foliage.hpp"
@@ -327,6 +328,8 @@ int main(int argc, char **argv) {
             return material_test::run_surface_maps(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--sidedness")
             return material_test::run_sidedness(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--blending")
+            return blending_test::run(argc, argv);
 #endif
         anima::FixedStepClock clock;
         const std::array variants{anima::ActionVariant{"observe", {}}, anima::ActionVariant{"signal", {"beacon"}}};

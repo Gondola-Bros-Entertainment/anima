@@ -1,6 +1,7 @@
 #pragma once
 #include <anima/assets/asset.hpp>
 #include <optional>
+#include <utility>
 
 namespace anima::detail {
 // Texture-space cutoff whose coverage the base-color mips of @p material preserve, or none when its
@@ -17,5 +18,17 @@ inline std::optional<float> alpha_coverage_cutoff(const Material &material) {
     if (cutoff > 0 && cutoff <= 1)
         return cutoff;
     return std::nullopt;
+}
+// Mip options for the base-color map of @p material: a masked material's coverage cutoff, or alpha-weighted color
+// for a blended one, so that its fully transparent texels add no color to smaller levels. The upload plan and
+// static texture shrinking share this rule too.
+inline TextureMipOptions base_color_mip_options(const Material &material) {
+    return {.alpha_coverage_cutoff = alpha_coverage_cutoff(material),
+            .alpha_weighted_color = material.alpha_mode == AlphaMode::blend};
+}
+// TextureMipOptions as an ordered map key, for images filtered alike; the rules above never give a NaN cutoff.
+using MipKey = std::pair<std::optional<float>, bool>;
+inline MipKey mip_key(const TextureMipOptions &options) {
+    return {options.alpha_coverage_cutoff, options.alpha_weighted_color};
 }
 } // namespace anima::detail

@@ -43,20 +43,20 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
         const auto oversized = [&](const Texture &texture) {
             return texture_edge && std::max(texture.image->width, texture.image->height) > texture_edge;
         };
-        // A texture and the alpha-coverage cutoff of one of its uses. An oversized texture shrinks once per
-        // cutoff its uses need, so each shrunk level keeps the coverage that its upload's mips preserve.
-        using TextureUse = std::pair<int, std::optional<float>>;
-        // Mips depend only on the image, the encoding and the cutoff, so textures that share an image and an
+        // A texture and the mip options of one of its uses. An oversized texture shrinks once per set of options
+        // its uses need, so each shrunk level keeps the coverage and color weighting that its upload's mips use.
+        using TextureUse = std::pair<int, detail::MipKey>;
+        // Mips depend only on the image, the encoding and the options, so textures that share an image and an
         // encoding also share each shrunk image. Keys hold the shared pointer, which orders by identity.
-        using ShrunkImage = std::tuple<std::shared_ptr<const Image>, TextureEncoding, std::optional<float>>;
+        using ShrunkImage = std::tuple<std::shared_ptr<const Image>, TextureEncoding, detail::MipKey>;
         std::map<ShrunkImage, std::shared_ptr<const Image>> shrunk;
-        const auto fitted = [&](const TextureUse &use) {
-            auto texture = source.textures.at(use.first);
+        const auto fitted = [&](int id, const TextureMipOptions &mip_options) {
+            auto texture = source.textures.at(id);
             if (!oversized(texture))
                 return texture;
-            auto &image = shrunk[{texture.image, texture.encoding, use.second}];
+            auto &image = shrunk[{texture.image, texture.encoding, detail::mip_key(mip_options)}];
             if (!image) {
-                auto mips = texture_mips(texture, {.alpha_coverage_cutoff = use.second});
+                auto mips = texture_mips(texture, mip_options);
                 const auto found = std::find_if(mips.begin(), mips.end(), [&](const auto &m) {
                     return std::max(m.width, m.height) <= texture_edge;
                 });
@@ -76,15 +76,15 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
             batch.primitives = std::move(pending);
             std::map<int, int> materials;
             std::map<TextureUse, int> textures;
-            const auto texture = [&](int &id, std::optional<float> cutoff = std::nullopt) {
+            const auto texture = [&](int &id, TextureMipOptions mip_options = {}) {
                 if (id < 0)
                     return;
                 if (!oversized(source.textures.at(id)))
-                    cutoff.reset(); // Kept as authored, so every use shares one copy.
-                const TextureUse use{id, cutoff};
-                auto [it, inserted] = textures.emplace(use, static_cast<int>(batch.textures.size()));
+                    mip_options = {}; // Kept as authored, so every use shares one copy.
+                auto [it, inserted] = textures.emplace(TextureUse{id, detail::mip_key(mip_options)},
+                                                       static_cast<int>(batch.textures.size()));
                 if (inserted)
-                    batch.textures.push_back(fitted(use));
+                    batch.textures.push_back(fitted(id, mip_options));
                 id = it->second;
             };
             for (auto &primitive : batch.primitives) {
@@ -94,7 +94,7 @@ std::vector<std::shared_ptr<const Mesh>> Mesh::compile_static(const Asset &sourc
                 auto [it, inserted] = materials.emplace(primitive.material, static_cast<int>(batch.materials.size()));
                 if (inserted) {
                     auto material = source.materials.at(primitive.material);
-                    texture(material.texture, detail::alpha_coverage_cutoff(material));
+                    texture(material.texture, detail::base_color_mip_options(material));
                     texture(material.normal_texture);
                     texture(material.metallic_roughness_texture);
                     texture(material.emissive_texture);

@@ -71,9 +71,13 @@ MSVC debug options that ASan cannot use.
 
 CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
 drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic scenes
-through the public API. Each check opens a window, requires Khronos validation,
-compares its frames in memory, and fails on a pixel mismatch or any validation
-message. The checks run one at a time:
+through the public API. `consumer_desktop` runs one mode per check: its default
+instances check, `--allocations`, `--culling`, `--foliage`, `--environment`,
+`--resources`, `--replace`, `--material-sampling`, `--pbr`, `--surface-maps`,
+`--sidedness` and `--blending`, which compares blended materials with the renderer's
+documented compositing, fog, exposure, draw order and shadow policy. Each check opens a window,
+requires Khronos validation, compares its frames in memory, and fails on a pixel
+mismatch or any validation message. The checks run one at a time:
 
 ```sh
 ctest --preset full -L gpu

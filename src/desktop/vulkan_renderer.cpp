@@ -760,6 +760,7 @@ struct VulkanRenderer::Impl {
         create_pipeline(PipelineKind::diagnostic, pipeline);
 #ifdef ANIMA_HAS_ASSETS
         create_pipeline(PipelineKind::resource, resource_pipeline);
+        create_pipeline(PipelineKind::blended_resource, blended_resource_pipeline);
         create_pipeline(PipelineKind::sky, sky_pipeline);
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
@@ -858,11 +859,14 @@ struct VulkanRenderer::Impl {
         pass.pDependencies = dependencies.data();
         check(vkCreateRenderPass(device, &pass, nullptr, &render_pass), "Create render pass");
     }
-    enum class PipelineKind { diagnostic, ui, resource, sky, shadow_resource };
+    // blended_resource draws meshes as resource does, but composites premultiplied color over the target and
+    // writes no depth.
+    enum class PipelineKind { diagnostic, ui, resource, blended_resource, sky, shadow_resource };
     void create_pipeline(PipelineKind mode, VkPipeline &output) {
         const bool shadow = mode == PipelineKind::shadow_resource;
+        const bool blended = mode == PipelineKind::blended_resource;
 #ifdef ANIMA_HAS_ASSETS
-        const bool resource = mode == PipelineKind::resource || mode == PipelineKind::shadow_resource;
+        const bool resource = mode == PipelineKind::resource || blended || shadow;
 #endif
         const bool ui = mode == PipelineKind::ui, sky = mode == PipelineKind::sky;
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
@@ -881,6 +885,12 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         if (resource)
             stages[1].module = mesh_fragment_shader;
+        // mesh.frag's constant 0 selects premultiplied output.
+        const VkBool32 premultiplied = VK_TRUE;
+        const VkSpecializationMapEntry premultiplied_entry{0, 0, sizeof(premultiplied)};
+        const VkSpecializationInfo premultiplied_output{1, &premultiplied_entry, sizeof(premultiplied), &premultiplied};
+        if (blended)
+            stages[1].pSpecializationInfo = &premultiplied_output;
         if (sky) {
             stages[0].module = sky_vertex_shader;
             stages[1].module = sky_fragment_shader;
@@ -922,7 +932,8 @@ struct VulkanRenderer::Impl {
 #endif
         VkPipelineDepthStencilStateCreateInfo depth_state{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depth_state.depthTestEnable = !ui;
-        depth_state.depthWriteEnable = !ui && !sky;
+        // Blended surfaces are hidden by nearer opaque and masked ones, and hide nothing themselves.
+        depth_state.depthWriteEnable = !ui && !sky && !blended;
         depth_state.depthCompareOp = sky ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -936,8 +947,9 @@ struct VulkanRenderer::Impl {
         raster.lineWidth = 1.0F;
         VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        // UI and blended meshes composite premultiplied linear color with the "over" operator.
         VkPipelineColorBlendAttachmentState blend_attachment{};
-        blend_attachment.blendEnable = ui;
+        blend_attachment.blendEnable = ui || blended;
         blend_attachment.srcColorBlendFactor = blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blend_attachment.dstColorBlendFactor = blend_attachment.dstAlphaBlendFactor =
             VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -1616,6 +1628,9 @@ struct VulkanRenderer::Impl {
         if (resource_pipeline)
             vkDestroyPipeline(device, resource_pipeline, nullptr);
         resource_pipeline = VK_NULL_HANDLE;
+        if (blended_resource_pipeline)
+            vkDestroyPipeline(device, blended_resource_pipeline, nullptr);
+        blended_resource_pipeline = VK_NULL_HANDLE;
         if (sky_pipeline)
             vkDestroyPipeline(device, sky_pipeline, nullptr);
         sky_pipeline = VK_NULL_HANDLE;
@@ -1651,6 +1666,7 @@ struct VulkanRenderer::Impl {
             destroy_swapchain();
 #ifdef ANIMA_HAS_ASSETS
             resource_instances.clear();
+            resource_blended_draws.clear();
             resource_scenes.clear();
             resource_cache.clear();
             pose_buffer.reset();

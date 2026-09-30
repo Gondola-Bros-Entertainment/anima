@@ -123,6 +123,36 @@ TEST_CASE("Material factors outside [0, 1] are rejected") {
     }
 }
 
+TEST_CASE("Every alpha mode checks the alpha factor and cutoff, and other modes are rejected") {
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN(), infinity = std::numeric_limits<float>::infinity();
+    for (const auto mode : {anima::AlphaMode::opaque, anima::AlphaMode::mask, anima::AlphaMode::blend}) {
+        CAPTURE(static_cast<int>(mode));
+        anima::Material material;
+        material.alpha_mode = mode;
+        material.alpha = .5F;
+        CHECK_NOTHROW(anima::validate_material(material, {}));
+        for (const float alpha : {nan, -.1F, 1.1F, infinity}) {
+            CAPTURE(alpha);
+            auto invalid = material;
+            invalid.alpha = alpha;
+            CHECK_THROWS_WITH_AS(anima::validate_material(invalid, {}), material_factors, std::invalid_argument);
+        }
+        for (const float cutoff : {nan, infinity, -infinity, -.1F}) {
+            CAPTURE(cutoff);
+            auto invalid = material;
+            invalid.alpha_cutoff = cutoff;
+            CHECK_THROWS_WITH_AS(anima::validate_material(invalid, {}), "Invalid material surface parameters",
+                                 std::invalid_argument);
+        }
+    }
+    for (const int mode : {-1, 3}) {
+        CAPTURE(mode);
+        anima::Material material;
+        material.alpha_mode = static_cast<anima::AlphaMode>(mode);
+        CHECK_THROWS_WITH_AS(anima::validate_material(material, {}), "Invalid alpha mode", std::invalid_argument);
+    }
+}
+
 TEST_CASE("Textures must match their dimensions and use known sampler values") {
     CHECK_THROWS_WITH_AS(anima::validate_scene(edited([](auto &s) { s.textures[0].image.reset(); })),
                          texture_dimensions, std::invalid_argument);

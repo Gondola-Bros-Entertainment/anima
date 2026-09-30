@@ -232,6 +232,36 @@ TEST_CASE("Shrunk textures keep the alpha coverage that each material's upload p
     }
 }
 
+TEST_CASE("A shrunk blended base color weights its color by alpha, as its upload's mips do") {
+    Asset source;
+    source.nodes.resize(1);
+    source.textures.push_back(cutout());
+    Material blended, plain;
+    blended.name = "blended";
+    plain.name = "plain";
+    blended.texture = plain.texture = 0;
+    blended.alpha_mode = AlphaMode::blend;
+    source.materials = {blended, plain};
+    source.primitives = {triangle(0), triangle(1)};
+    const auto plan = material_texture_plan(source.materials, source.textures);
+    const auto planned = [&](std::size_t index) {
+        const auto &image = plan.images.at(plan.bindings.at(index + 1)[base_color_binding]);
+        return texture_mips(source.textures.at(image.source), image.mips).at(cutout_level).rgba;
+    };
+    REQUIRE(planned(0) != planned(1)); // Otherwise the check below could not tell the weighting apart.
+    CHECK(planned(0) == texture_mips(source.textures[0], {.alpha_weighted_color = true}).at(cutout_level).rgba);
+    const auto meshes = Mesh::compile_static(source, {.max_texture_edge = cutout_limit});
+    REQUIRE(meshes.size() == 1);
+    const auto &snapshot = *meshes.front()->materials();
+    CHECK(snapshot.textures.size() == 2); // One copy per set of mip options.
+    for (const auto &material : snapshot.material_data) {
+        CAPTURE(material.name);
+        const auto &shrunk = *snapshot.textures.at(material.texture).image;
+        CHECK(shrunk.width == cutout_limit);
+        CHECK(shrunk.rgba == planned(material.name == "blended" ? 0 : 1));
+    }
+}
+
 TEST_CASE("A texture within the limit keeps its texels once for every cutoff") {
     const auto source = coverage_source();
     const auto meshes = Mesh::compile_static(source, {.max_texture_edge = cutout_edge});

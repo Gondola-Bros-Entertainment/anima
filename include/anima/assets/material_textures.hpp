@@ -13,7 +13,7 @@ inline constexpr std::uint32_t material_texture_count = 5;
 struct MaterialTextureImage {
     /// Source texture index, or -1 for the shared 1x1 white fallback.
     int source = -1;
-    /// Mip options; set for a masked base-color map.
+    /// Mip options; set for a masked or blended base-color map.
     TextureMipOptions mips;
 };
 /// Deduplicated images and the image each material binding uses.
@@ -27,9 +27,10 @@ struct MaterialTexturePlan {
 /// Plans the images that @p materials need, without decoding or uploading anything.
 ///
 /// Uses of one texture with the same mip options share an image, unreferenced textures get none
-/// and absent maps bind the white fallback. A masked base-color map on a mipmapped texture gets
-/// its own image with the cutoff `alpha_cutoff / alpha` when that is in (0, 1]. Throws
-/// `std::invalid_argument` for a material that validate_material rejects.
+/// and absent maps bind the white fallback. On a mipmapped texture, a masked base-color map gets
+/// its own image with the cutoff `alpha_cutoff / alpha` when that is in (0, 1], and a blended one
+/// gets its own image with TextureMipOptions::alpha_weighted_color. Throws `std::invalid_argument`
+/// for a material that validate_material rejects.
 [[nodiscard]] MaterialTexturePlan material_texture_plan(std::span<const Material> materials,
                                                         std::span<const Texture> textures);
 } // namespace anima

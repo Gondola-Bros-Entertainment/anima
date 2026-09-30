@@ -222,9 +222,10 @@ struct ResourceStats {
 
 /// Renders selected scenes into one borrowed SDL window through a fixed pipeline.
 ///
-/// Each frame renders the shadow regions, then the optional sky and the opaque and masked meshes into a linear
-/// `RGBA16F` target, converts it for display and composites UI last. Custom shaders, material layouts and
-/// render passes are not supported. The window must outlive the renderer, which never destroys it.
+/// Each frame renders the shadow regions, then the optional sky, the opaque and masked meshes and the blended
+/// meshes into a linear `RGBA16F` target, converts it for display and composites UI last. Blending is a fixed
+/// mode of that pass: custom shaders, material layouts and render passes are not supported. The window must
+/// outlive the renderer, which never destroys it.
 ///
 /// Use the renderer from the application's SDL video thread, with no concurrent calls. Scenes and settings
 /// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. One frame
@@ -240,7 +241,7 @@ struct ResourceStats {
 /// because the window is not drawable releases nothing. Selection, culling and visibility never evict, and
 /// there is no size budget.
 ///
-/// Materials render double-sided with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
+/// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`
 /// reflectance for dielectrics. Base color is the base color texture, decoded from sRGB before filtering,
 /// times the vertex color and material factor, clamped to [0, 1]. The metallic and roughness factors multiply
@@ -257,8 +258,34 @@ struct ResourceStats {
 /// Triangles wound counterclockwise on screen face the viewer, and a back face shades with its normal
 /// reversed. A matrix with a negative determinant, such as a scale of (-1, 1, 1), reverses the winding of the
 /// triangles it places, as glTF specifies for mirrored nodes, so a mirrored draw shades as the mirror image of
-/// its original; in a skinned triangle, the first vertex's blended matrix decides. Nothing is culled by facing,
-/// so shadow casting does not depend on it.
+/// its original; in a skinned triangle, the first vertex's blended matrix decides. A single-sided material
+/// (Material::double_sided false) discards the fragments of faces turned away from the viewer. The rasterizer
+/// culls nothing by facing, and shadows are cast from both sides.
+///
+/// Blended materials (AlphaMode::blend) draw in the same pass, after every opaque and masked draw of every
+/// selected scene. They test depth with `LESS` and write none, so nearer opaque and masked surfaces hide them and
+/// they hide nothing. Their alpha is the product that masking tests. The shader shades the straight
+/// (unpremultiplied) albedo as it shades an opaque material, fog included, which applies at the surface's own
+/// distance, then writes its color times alpha with that alpha, blended as `ONE, ONE_MINUS_SRC_ALPHA`: the glTF
+/// "over" operator, applied to the whole shaded color, emission included, in linear light. For this fog model,
+/// fogging each surface before blending equals fogging the path from the eye through it to what lies behind.
+/// Exposure scales the composite, so it commutes with blending; tone mapping, which is not linear, applies to the
+/// composite. Texels stay straight alpha: mip chains of blended base-color maps weight color by alpha
+/// (TextureMipOptions::alpha_weighted_color), but filtering within a level interpolates straight color, so the
+/// color of transparent texels still reaches the edges between them and opaque ones. Blended materials cast no
+/// shadows, since shadow maps hold depth only; lit ones receive shadows.
+///
+/// Each frame the blended draws of all selected scenes sort together, back to front, by one key per draw of each
+/// instance: the squared distance from the eye to the center of the draw's world bounds
+/// (Scene::Instance::primitive_bounds) in a perspective view, or that center's distance along the view direction
+/// in an orthographic one. Draws with equal keys keep selection, instance and draw order, so their order does not
+/// flicker. Sorting whole draws has limits:
+/// - Triangles within a draw blend in index order, so where visible triangles of one draw overlap on screen, as
+///   the near and far sides of a closed double-sided mesh do, a farther triangle can cover a nearer one.
+/// - Where two draws intersect, the order is correct on only one side of the intersection.
+/// - Only bounds centers are compared, so a large draw can sort wrongly against a small one near it, such as a
+///   water plane and an object floating on it.
+/// - Mesh::compile_static can split one primitive into several draws, which sort separately.
 ///
 /// Swapchains follow the window's pixel size with FIFO presentation. Recreation after a resize or an
 /// out-of-date or suboptimal result waits for the device to go idle, so it can stall briefly. Display output is
