@@ -75,10 +75,10 @@ SceneRef SceneSet::create(std::string key) {
     return append(std::move(key), std::make_shared<Scene>());
 }
 SceneRef SceneSet::load(std::string key, std::string_view document, const MeshResolver &resolve,
-                        const ComponentCodecs &codecs) {
+                        const ComponentCodecs &codecs, const CustomMaterialResolver &materials) {
     const Mutation mutation(*this);
     check_key(key);
-    return append(std::move(key), load_scene(document, resolve, codecs));
+    return append(std::move(key), load_scene(document, resolve, codecs, materials));
 }
 // One link that a remaining member's component reported into a scene being retired.
 struct SceneSet::Link {
@@ -111,12 +111,12 @@ std::vector<SceneSet::Link> SceneSet::links_into(const Scene &retired, const Com
     return result;
 }
 SceneRef SceneSet::replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
-                           const ComponentCodecs &codecs) {
+                           const ComponentCodecs &codecs, const CustomMaterialResolver &materials) {
     const Mutation mutation(*this);
     const auto slot = index(target);
     auto old = scenes_[slot];
-    auto next = std::make_shared<detail::SceneRecord>(
-        detail::SceneRecord{old->key, detail::load_scene_member(document, *this, old->key, resolve, codecs), true});
+    auto next = std::make_shared<detail::SceneRecord>(detail::SceneRecord{
+        old->key, detail::load_scene_member(document, *this, old->key, resolve, materials, codecs), true});
     const auto links = links_into(*old->scene, codecs);
     std::vector<GameObject> rebound;
     rebound.reserve(links.size());
@@ -141,9 +141,10 @@ std::string SceneSet::serialize(const MeshName &name, const ComponentCodecs &cod
     const detail::SceneDriver::Scope scope(*this);
     return detail::serialize_scene_set(*this, name, codecs);
 }
-void SceneSet::restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs) {
+void SceneSet::restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs,
+                       const CustomMaterialResolver &materials) {
     const Mutation mutation(*this);
-    auto staged = detail::json_step([&] { return detail::load_scene_set(document, resolve, codecs); });
+    auto staged = detail::json_step([&] { return detail::load_scene_set(document, resolve, materials, codecs); });
     // Publication cannot allocate. The staged owner now retires the old set;
     // cleanup callbacks observe the complete committed replacement.
     scenes_.swap(staged->scenes_);

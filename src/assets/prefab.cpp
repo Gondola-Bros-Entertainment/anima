@@ -31,6 +31,9 @@ struct ScenePersistence {
         if (node.mesh) {
             node.visible = source.value.visible;
             node.material_factors = source.value.factors;
+            const auto &custom = source.value.custom_materials;
+            if (std::any_of(custom.begin(), custom.end(), [](const auto &material) { return bool(material); }))
+                node.custom_materials = custom;
             node.primitive_visible = source.value.primitive_visible;
             node.casts_shadows = source.value.casts_shadows;
         }
@@ -44,6 +47,7 @@ constexpr unsigned document_version = 3;
 constexpr std::string_view scene_kind = "anima.scene", prefab_kind = "anima.prefab";
 constexpr std::size_t maximum_objects = 65'536, maximum_document_bytes = 16 * 1024 * 1024;
 constexpr std::size_t maximum_components = 1024, maximum_mesh_key_bytes = 4096;
+static_assert(CustomMaterial::max_name_bytes == 4096, "prefab.hpp documents the custom material name limit");
 constexpr unsigned scene_set_version = 1;
 constexpr std::string_view scene_set_kind = "anima.scene-set";
 constexpr std::size_t maximum_scenes = 1024, maximum_namespace_bytes = 4096;
@@ -73,8 +77,8 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
         require(node.components.size() <= maximum_components, "Invalid serialized component count");
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
-        require(node.mesh || (!node.pose && node.material_factors.empty() && node.primitive_visible.empty() &&
-                              node.visible && node.casts_shadows),
+        require(node.mesh || (!node.pose && node.material_factors.empty() && node.custom_materials.empty() &&
+                              node.primitive_visible.empty() && node.visible && node.casts_shadows),
                 "Empty scene object has renderer state");
     }
 }
@@ -130,11 +134,26 @@ std::vector<Prefab::Node> capture_nodes(std::span<const GameObject> roots, const
     capture_components(captured, codecs, references);
     return std::move(captured.nodes);
 }
-struct MeshNames {
+// Names written into one document.
+struct ResourceNames {
     std::map<const Mesh *, std::string> names;
     std::map<std::string, const Mesh *, std::less<>> identities;
+    std::map<std::string, const CustomMaterial *, std::less<>> materials;
 };
-Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, MeshNames &resources) {
+Json encode_custom_materials(std::span<const std::shared_ptr<const CustomMaterial>> custom, ResourceNames &resources) {
+    auto result = Json::array();
+    for (const auto &material : custom) {
+        if (!material) {
+            result.push_back(nullptr);
+            continue;
+        }
+        const auto [existing, inserted] = resources.materials.emplace(material->name(), material.get());
+        require(inserted || existing->second == material.get(), "Different custom materials share a document name");
+        result.push_back(material->name());
+    }
+    return result;
+}
+Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, ResourceNames &resources) {
     auto objects = Json::array();
     for (const auto &node : nodes) {
         Json mesh = nullptr, parent = nullptr, pose = nullptr;
@@ -169,6 +188,7 @@ Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, Mes
                            {"visible", node.visible},
                            {"active", node.active},
                            {"material_factors", factors},
+                           {"custom_materials", encode_custom_materials(node.custom_materials, resources)},
                            {"primitive_visible", node.primitive_visible},
                            {"casts_shadows", node.casts_shadows},
                            {"components", components}});
@@ -177,7 +197,7 @@ Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, Mes
 }
 std::string encode(std::span<const Prefab::Node> nodes, std::string_view kind, const MeshName &name,
                    std::uint64_t next_key = 1) {
-    MeshNames resources;
+    ResourceNames resources;
     Json value{{"version", document_version}, {"kind", kind}, {"objects", encode_nodes(nodes, name, resources)}};
     if (kind == scene_kind)
         value["next_key"] = ObjectKey{next_key}.string();
@@ -189,18 +209,44 @@ struct Decoded {
     std::vector<Prefab::Node> nodes;
     std::uint64_t next_key = 1;
 };
-using MeshResources = std::map<std::string, std::shared_ptr<const Mesh>, std::less<>>;
+// Resources resolved while reading one document, each once per key or name.
+struct Resources {
+    std::map<std::string, std::shared_ptr<const Mesh>, std::less<>> meshes;
+    std::map<std::string, std::shared_ptr<const CustomMaterial>, std::less<>> materials;
+};
+std::vector<std::shared_ptr<const CustomMaterial>>
+decode_custom_materials(const Json &custom, const CustomMaterialResolver &resolve, Resources &resources) {
+    require(custom.is_array(), "Invalid scene custom materials");
+    std::vector<std::shared_ptr<const CustomMaterial>> result;
+    for (const auto &entry : custom) {
+        if (entry.is_null()) {
+            result.emplace_back();
+            continue;
+        }
+        const auto name = entry.get<std::string>();
+        require(!name.empty() && name.size() <= CustomMaterial::max_name_bytes, "Invalid scene custom material name");
+        auto found = resources.materials.find(name);
+        if (found == resources.materials.end()) {
+            auto material = resolve ? resolve(name) : nullptr;
+            require(bool(material), "Scene custom material name could not be resolved");
+            require(material->name() == name, "Scene custom material resolved to a material of another name");
+            found = resources.materials.emplace(name, std::move(material)).first;
+        }
+        result.push_back(found->second);
+    }
+    return result;
+}
 std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, const MeshResolver &resolve,
-                                       MeshResources &resources) {
+                                       const CustomMaterialResolver &materials, Resources &resources) {
     require(objects.is_array() && objects.size() <= maximum_objects, "Invalid scene object count");
     std::vector<Prefab::Node> nodes;
     nodes.reserve(objects.size());
     // Resource resolution is explicit and cached once per key. No scene is mutated here.
     for (const auto &value : objects) {
         // An omitted setting takes the default that Prefab::Node declares.
-        anima::detail::json_fields(
-            value, {"key", "name", "parent", "local", "mesh"},
-            {"pose", "visible", "active", "material_factors", "primitive_visible", "casts_shadows", "components"});
+        anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh"},
+                                   {"pose", "visible", "active", "material_factors", "custom_materials",
+                                    "primitive_visible", "casts_shadows", "components"});
         Prefab::Node node;
         node.key = ObjectKey::parse(value.at("key").get<std::string>());
         node.active = value.value("active", node.active);
@@ -219,11 +265,11 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
             const auto key = mesh.get<std::string>();
             require(!key.empty() && key.size() <= maximum_mesh_key_bytes && bool(resolve),
                     "Scene loading needs a mesh resolver and key");
-            auto found = resources.find(key);
-            if (found == resources.end()) {
+            auto found = resources.meshes.find(key);
+            if (found == resources.meshes.end()) {
                 auto resource = resolve(key);
                 require(bool(resource), "Scene mesh key could not be resolved");
-                found = resources.emplace(key, std::move(resource)).first;
+                found = resources.meshes.emplace(key, std::move(resource)).first;
             }
             node.mesh = found->second;
         }
@@ -245,6 +291,8 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
                 node.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
             }
         }
+        if (value.contains("custom_materials"))
+            node.custom_materials = decode_custom_materials(value.at("custom_materials"), materials, resources);
         if (value.contains("primitive_visible"))
             node.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
         node.casts_shadows = value.value("casts_shadows", node.casts_shadows);
@@ -270,7 +318,8 @@ std::uint64_t decode_next_key(const Json &value, std::span<const Prefab::Node> n
         require(!next_key || next_key > node.key.value, "Invalid scene next object key");
     return next_key;
 }
-Decoded decode_document(const Json &parsed, std::string_view kind, const MeshResolver &resolve) {
+Decoded decode_document(const Json &parsed, std::string_view kind, const MeshResolver &resolve,
+                        const CustomMaterialResolver &materials) {
     require(parsed.is_object() && parsed.contains("version"), "Invalid scene document");
     anima::detail::json_version(parsed, "version", document_version, "Unsupported scene document version");
     require(parsed.contains("kind") && parsed.at("kind").is_string() &&
@@ -280,15 +329,16 @@ Decoded decode_document(const Json &parsed, std::string_view kind, const MeshRes
         anima::detail::json_fields(parsed, {"version", "kind", "objects", "next_key"});
     else
         anima::detail::json_fields(parsed, {"version", "kind", "objects"});
-    MeshResources resources;
-    auto nodes = decode_nodes(parsed.at("objects"), kind == prefab_kind, resolve, resources);
+    Resources resources;
+    auto nodes = decode_nodes(parsed.at("objects"), kind == prefab_kind, resolve, materials, resources);
     std::uint64_t next_key = 1;
     if (kind == scene_kind)
         next_key = decode_next_key(parsed.at("next_key"), nodes);
     return {std::move(nodes), next_key};
 }
-Decoded decode(std::string_view document, std::string_view kind, const MeshResolver &resolve) {
-    return decode_document(detail::parse_json(document, maximum_document_bytes), kind, resolve);
+Decoded decode(std::string_view document, std::string_view kind, const MeshResolver &resolve,
+               const CustomMaterialResolver &materials) {
+    return decode_document(detail::parse_json(document, maximum_document_bytes), kind, resolve, materials);
 }
 std::shared_ptr<Scene> instantiate_scene(const Decoded &decoded, const ComponentCodecs &codecs) {
     for (const auto &node : decoded.nodes)
@@ -313,7 +363,8 @@ struct DecodedSet {
     std::optional<std::size_t> active;
     std::vector<Reference> references;
 };
-DecodedSet decode_scene_set(const Json &parsed, const MeshResolver &resolve, const ComponentCodecs &codecs) {
+DecodedSet decode_scene_set(const Json &parsed, const MeshResolver &resolve, const CustomMaterialResolver &materials,
+                            const ComponentCodecs &codecs) {
     detail::json_version(parsed, "version", scene_set_version, "Unsupported scene set document version");
     require(parsed.contains("kind") && parsed.at("kind").is_string() &&
                 parsed.at("kind").get_ref<const std::string &>() == scene_set_kind,
@@ -328,7 +379,7 @@ DecodedSet decode_scene_set(const Json &parsed, const MeshResolver &resolve, con
     std::map<std::string, std::size_t, std::less<>> namespaces;
     std::vector<std::set<ObjectKey>> unmapped;
     unmapped.reserve(documents.size());
-    MeshResources resources;
+    Resources resources;
     std::size_t object_count = 0;
     for (const auto &value : documents) {
         detail::json_fields(value, {"key", "next_key", "objects"});
@@ -339,7 +390,7 @@ DecodedSet decode_scene_set(const Json &parsed, const MeshResolver &resolve, con
         const auto &objects = value.at("objects");
         require(objects.is_array() && objects.size() <= maximum_objects - object_count,
                 "Scene set exceeds the object limit");
-        auto nodes = decode_nodes(objects, false, resolve, resources);
+        auto nodes = decode_nodes(objects, false, resolve, materials, resources);
         object_count += nodes.size();
         std::set<ObjectKey> keys;
         for (const auto &node : nodes) {
@@ -412,11 +463,15 @@ std::vector<GameObject> instantiate_prefab_nodes(Scene &scene, std::span<const P
             const auto &instance = scene.instance(object.id());
             require(node.material_factors.empty() || node.material_factors.size() == instance.factors.size(),
                     "Prefab material factors do not match the mesh");
+            require(node.custom_materials.empty() || node.custom_materials.size() == instance.custom_materials.size(),
+                    "Prefab custom materials do not match the mesh");
             require(node.primitive_visible.empty() ||
                         node.primitive_visible.size() == instance.primitive_visible.size(),
                     "Prefab primitive visibility does not match the mesh");
             for (std::size_t i = 0; i < node.material_factors.size(); ++i)
                 renderer.set_material_factor(i, node.material_factors[i]);
+            for (std::size_t i = 0; i < node.custom_materials.size(); ++i)
+                renderer.set_custom_material(i, node.custom_materials[i]);
             for (std::size_t i = 0; i < node.primitive_visible.size(); ++i)
                 renderer.set_primitive_visible(i, node.primitive_visible[i]);
             renderer.set_casts_shadows(node.casts_shadows);
@@ -484,17 +539,20 @@ GameObject Prefab::instantiate(GameObject parent, const Mat4 &placement, const C
     return create(parent.scene(), &parent, placement, codecs);
 }
 std::string Prefab::serialize(const MeshName &name) const { return encode(nodes_, prefab_kind, name); }
-Prefab Prefab::deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs) {
-    return Prefab(detail::json_step([&] { return decode(document, prefab_kind, resolve); }).nodes, std::move(codecs));
+Prefab Prefab::deserialize(std::string_view document, const MeshResolver &resolve, ComponentCodecs codecs,
+                           const CustomMaterialResolver &materials) {
+    return Prefab(detail::json_step([&] { return decode(document, prefab_kind, resolve, materials); }).nodes,
+                  std::move(codecs));
 }
 std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs) {
     const auto nodes = capture_nodes(scene.roots(), codecs);
     validate_nodes(nodes, false);
     return encode(nodes, scene_kind, name, detail::ScenePersistence::next_key(scene));
 }
-std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver &resolve,
-                                  const ComponentCodecs &codecs) {
-    return instantiate_scene(detail::json_step([&] { return decode(document, scene_kind, resolve); }), codecs);
+std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs,
+                                  const CustomMaterialResolver &materials) {
+    return instantiate_scene(detail::json_step([&] { return decode(document, scene_kind, resolve, materials); }),
+                             codecs);
 }
 
 namespace detail {
@@ -526,7 +584,7 @@ std::string serialize_scene_set(SceneSet &scenes, const MeshName &name, const Co
         }
     const ObjectReferences references(entries);
     auto documents = Json::array();
-    MeshNames resources;
+    ResourceNames resources;
     for (std::size_t i = 0; i < selected.size(); ++i) {
         capture_components(captured[i], codecs, references);
         validate_nodes(captured[i].nodes, false);
@@ -548,8 +606,8 @@ std::string serialize_scene_set(SceneSet &scenes, const MeshName &name, const Co
 }
 
 std::unique_ptr<SceneSet> load_scene_set(std::string_view document, const MeshResolver &resolve,
-                                         const ComponentCodecs &codecs) {
-    const auto decoded = decode_scene_set(parse_json(document, maximum_document_bytes), resolve, codecs);
+                                         const CustomMaterialResolver &materials, const ComponentCodecs &codecs) {
+    const auto decoded = decode_scene_set(parse_json(document, maximum_document_bytes), resolve, materials, codecs);
     // A complete owner provides cross-scene rollback: all staged identities die
     // before any decoded component is released, including cyclic object links.
     auto staged = std::make_unique<SceneSet>();
@@ -576,13 +634,15 @@ std::unique_ptr<SceneSet> load_scene_set(std::string_view document, const MeshRe
 }
 
 std::shared_ptr<Scene> load_scene_member(std::string_view document, const SceneSet &scenes, std::string_view key,
-                                         const MeshResolver &resolve, const ComponentCodecs &codecs) {
+                                         const MeshResolver &resolve, const CustomMaterialResolver &materials,
+                                         const ComponentCodecs &codecs) {
     const auto parsed = json_step([&] { return parse_json(document, maximum_document_bytes); });
     const bool set_document = parsed.is_object() && parsed.contains("kind") && parsed.at("kind").is_string() &&
                               parsed.at("kind").get_ref<const std::string &>() == scene_set_kind;
     if (!set_document)
-        return instantiate_scene(json_step([&] { return decode_document(parsed, scene_kind, resolve); }), codecs);
-    const auto decoded = json_step([&] { return decode_scene_set(parsed, resolve, codecs); });
+        return instantiate_scene(json_step([&] { return decode_document(parsed, scene_kind, resolve, materials); }),
+                                 codecs);
+    const auto decoded = json_step([&] { return decode_scene_set(parsed, resolve, materials, codecs); });
     const auto member = std::find_if(decoded.scenes.begin(), decoded.scenes.end(),
                                      [&](const DecodedSet::Member &candidate) { return candidate.key == key; });
     require(member != decoded.scenes.end(), "Replaced scene namespace is missing");

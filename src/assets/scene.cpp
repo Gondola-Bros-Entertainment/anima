@@ -384,6 +384,7 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
         next_pose = *initial_pose;
     for (const auto &material : next.asset->materials_->material_data)
         next.factors.push_back(material.factor);
+    next.custom_materials.resize(next.factors.size());
     next.primitive_visible.resize(next.asset->draws_.size(), true);
     pose(next, next_pose ? *next_pose : next.asset->rest_, entry.world);
     // Allocate before publishing. Replacement keeps the object's transform, but
@@ -723,6 +724,9 @@ void MeshRenderer::set_material_factor(std::size_t material, Vec3 factor) {
 void MeshRenderer::clear_material_factor(std::size_t material) {
     object_.scene().clear_material_factor(object_.id_, material);
 }
+void MeshRenderer::set_custom_material(std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
+    object_.scene().set_custom_material(object_.id_, material, std::move(custom));
+}
 void MeshRenderer::set_primitive_visible(std::size_t primitive, bool visible) {
     object_.scene().set_primitive_visible(object_.id_, primitive, visible);
 }
@@ -738,6 +742,12 @@ void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
 void Scene::clear_material_factor(Id id, std::size_t material) {
     auto &value = get(id);
     value.factors.at(material) = value.asset->materials_->material_data.at(material).factor;
+}
+void Scene::set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
+    auto &slots = get(id).custom_materials;
+    if (material >= slots.size())
+        throw std::out_of_range("Custom material slot is outside the mesh's materials");
+    slots[material] = std::move(custom);
 }
 void Scene::set_visible(Id id, bool visible) {
     get(id).visible = visible;

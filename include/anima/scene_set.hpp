@@ -105,14 +105,15 @@ class SceneSet {
     /// Adds a scene loaded from @p document, as load_scene does, under namespace @p key. On failure
     /// the set is unchanged. Throws as create() and load_scene do.
     [[nodiscard]] SceneRef load(std::string key, std::string_view document, const MeshResolver &resolve,
-                                const ComponentCodecs &codecs = {});
+                                const ComponentCodecs &codecs = {}, const CustomMaterialResolver &materials = {});
     /// Replaces @p target with a scene loaded from @p document, keeping its namespace, position and
     /// selection and the links between it and the other members, and returns the new member's
     /// handle. @p codecs is borrowed for this call.
     ///
     /// @p document is either an `anima.scene` document, loaded as load_scene loads it, or an
     /// `anima.scene-set` document such as serialize() writes. A set document is validated as
-    /// restore() validates it, and each of its mesh keys resolves once, but only its member with
+    /// restore() validates it, and each of its mesh keys and custom material names resolves once,
+    /// through @p resolve and @p materials, but only its member with
     /// @p target's namespace is loaded; its `active` field is ignored. That member's components
     /// decode through the document's reference table: rows in its own namespace map to the
     /// replacement's objects, and rows in other namespaces map to the objects that SceneSet::find
@@ -135,7 +136,7 @@ class SceneSet {
     /// document without @p target's namespace, and when the replacement lacks the key of a linked
     /// object. A link callback's exception propagates.
     [[nodiscard]] SceneRef replace(SceneRef target, std::string_view document, const MeshResolver &resolve,
-                                   const ComponentCodecs &codecs = {});
+                                   const ComponentCodecs &codecs = {}, const CustomMaterialResolver &materials = {});
     /// Writes every member into one `anima.scene-set` version 1 JSON document, with the rules of
     /// serialize_scene and @p codecs borrowed for this call.
     ///
@@ -147,19 +148,21 @@ class SceneSet {
     /// document-wide key, numbered from 1), `scene` and `object` (the key within that scene), and
     /// the rows map every object exactly once. Linked payloads store document-wide keys, so a
     /// member's `objects` cannot be loaded as a scene document. Limits are 16 MiB, 1,024 scenes and
-    /// 65,536 objects in total, and no two meshes in the set may share a key. Throws
-    /// `std::logic_error` unless the set and its members are idle.
+    /// 65,536 objects in total, and no two meshes in the set may share a key, nor two custom
+    /// materials a name. Throws `std::logic_error` unless the set and its members are idle.
     [[nodiscard]] std::string serialize(const MeshName &name, const ComponentCodecs &codecs = {});
     /// Replaces the whole membership and selection with those of an `anima.scene-set` document,
     /// borrowing @p codecs for this call.
     ///
     /// Every member and native object is staged before components decode through one set-wide
-    /// ObjectReferences, so links may point to later members. Each mesh key resolves once. On
+    /// ObjectReferences, so links may point to later members. Each mesh key resolves once through
+    /// @p resolve, and each custom material name once through @p materials. On
     /// failure the set and all handles are unchanged. On success the new members are published,
     /// then every old handle is invalidated before the old components are cleaned up; both sets
     /// exist meanwhile. Renderers keep the old, now empty scenes until given render_scenes() again.
     /// Throws `std::invalid_argument` for invalid content, as load_scene does.
-    void restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs = {});
+    void restore(std::string_view document, const MeshResolver &resolve, const ComponentCodecs &codecs = {},
+                 const CustomMaterialResolver &materials = {});
     /// Removes @p scene, then releases it, and returns the links it cleared. If it was active(), the
     /// first remaining member becomes active. @p codecs is borrowed for this call.
     ///
