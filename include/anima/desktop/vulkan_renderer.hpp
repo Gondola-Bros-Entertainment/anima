@@ -441,8 +441,9 @@ class VulkanRenderer {
     /// including failed Vulkan calls, InjectedRendererFailure as ResourcePreparationOptions::fail_after
     /// requests, and RendererFatalError for device loss or a fence timeout.
     void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, ResourcePreparationOptions options = {});
-    /// Uploads MeshPreparation::asset() as prepare_meshes() does, using the preparation's mip chains instead of
-    /// computing them here, so it reads no texels from the Mesh. Allocation and upload still run synchronously on
+    /// Uploads MeshPreparation::asset() as prepare_meshes() does, using the preparation's mip chains and
+    /// block-compressed images instead of reading texels from the Mesh, so it also uploads a Mesh whose
+    /// TexelRetention::until_upload texels an earlier upload let go. Allocation and upload still run synchronously on
     /// this thread. @p preparation is read only during the call, and not at all if the mesh is already cached.
     void prepare_mesh(const MeshPreparation &preparation, ResourcePreparationOptions options = {});
     /// Current cache and allocation sizes with the latest frame counters; all zero without asset support.

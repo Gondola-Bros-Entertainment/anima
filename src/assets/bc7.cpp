@@ -78,10 +78,12 @@ unsigned expand(unsigned value, unsigned bits) { return (value << (8 - bits)) | 
 // Reads a block's fields from its least significant bit up.
 class BitReader {
   public:
-    explicit BitReader(const std::uint8_t *block) {
-        for (unsigned i = 0; i < 8; ++i) {
+    explicit BitReader(std::span<const std::uint8_t, detail::bc7_block_bytes> block) {
+        // The first half of the block's bytes, little-endian, then the second.
+        constexpr auto half = detail::bc7_block_bytes / 2;
+        for (std::size_t i = 0; i < half; ++i) {
             low_ |= std::uint64_t{block[i]} << (8 * i);
-            high_ |= std::uint64_t{block[8 + i]} << (8 * i);
+            high_ |= std::uint64_t{block[half + i]} << (8 * i);
         }
     }
     // The next @p count bits, at most 8.
@@ -105,8 +107,9 @@ class BitReader {
 };
 } // namespace
 
-std::array<std::uint8_t, 64> detail::decode_bc7_block(const std::uint8_t *block) {
-    std::array<std::uint8_t, 64> texels{};
+std::array<std::uint8_t, detail::bc7_decoded_bytes>
+detail::decode_bc7_block(std::span<const std::uint8_t, bc7_block_bytes> block) {
+    std::array<std::uint8_t, bc7_decoded_bytes> texels{};
     unsigned mode_number = 0;
     while (mode_number < modes.size() && !(block[0] & (1U << mode_number)))
         ++mode_number;
@@ -169,13 +172,13 @@ std::array<std::uint8_t, 64> detail::decode_bc7_block(const std::uint8_t *block)
         return false;
     };
     // An anchor's index stores one bit fewer; its highest bit is zero.
-    std::array<unsigned, 16> primary{}, secondary{};
+    std::array<unsigned, bc7_block_texels> primary{}, secondary{};
     for (unsigned texel = 0; texel < primary.size(); ++texel)
         primary[texel] = bits.read(mode.index_bits - (anchor(texel) ? 1 : 0));
     if (mode.secondary_index_bits)
         for (unsigned texel = 0; texel < secondary.size(); ++texel)
             secondary[texel] = bits.read(mode.secondary_index_bits - (texel == 0 ? 1 : 0));
-    for (unsigned texel = 0; texel < 16; ++texel) {
+    for (unsigned texel = 0; texel < primary.size(); ++texel) {
         const auto subset = subset_of(texel);
         const auto &from = endpoints[2 * subset];
         const auto &to = endpoints[2 * subset + 1];
@@ -192,13 +195,13 @@ std::array<std::uint8_t, 64> detail::decode_bc7_block(const std::uint8_t *block)
                 alpha_bits = mode.secondary_index_bits;
             }
         }
-        auto *out = &texels[4 * texel];
-        for (unsigned channel = 0; channel < 3; ++channel)
+        auto *out = &texels[rgba_texel_bytes * texel];
+        for (std::size_t channel = 0; channel < rgba_alpha; ++channel)
             out[channel] = interpolate(from[channel], to[channel], weight(color_bits, color_index));
-        out[3] = interpolate(from[3], to[3], weight(alpha_bits, alpha_index));
+        out[rgba_alpha] = interpolate(from[rgba_alpha], to[rgba_alpha], weight(alpha_bits, alpha_index));
         // Rotation swaps alpha with red, green or blue.
         if (rotation)
-            std::swap(out[3], out[rotation - 1]);
+            std::swap(out[rgba_alpha], out[rotation - 1]);
     }
     return texels;
 }
@@ -209,7 +212,10 @@ std::uint32_t detail::full_mip_levels(std::uint32_t width, std::uint32_t height)
     return levels;
 }
 std::size_t detail::bc7_level_bytes(std::uint32_t width, std::uint32_t height) {
-    return (std::size_t{width} + 3) / 4 * ((std::size_t{height} + 3) / 4) * bc7_block_bytes;
+    const auto blocks = [](std::uint32_t texels) {
+        return (std::size_t{texels} + bc7_block_edge - 1) / bc7_block_edge;
+    };
+    return blocks(width) * blocks(height) * bc7_block_bytes;
 }
 std::size_t detail::bc7_image_bytes(std::uint32_t width, std::uint32_t height, std::uint32_t levels) {
     std::size_t bytes = 0;
@@ -218,23 +224,29 @@ std::size_t detail::bc7_image_bytes(std::uint32_t width, std::uint32_t height, s
     return bytes;
 }
 
-std::vector<MipLevel> decode_image(const Image &image) {
+std::vector<MipLevel> decode_image(const Image &image) { return decode_image(image, image.levels); }
+std::vector<MipLevel> decode_image(const Image &image, std::uint32_t levels) {
     (void)detail::validate_image(&image, detail::Texels::required);
+    if (levels == 0 || levels > image.levels)
+        throw std::invalid_argument("Decoded level count must be from 1 to the image's levels");
     if (image.format == ImageFormat::rgba8)
         return {{image.width, image.height, image.rgba}};
+    using detail::bc7_block_edge, detail::rgba_texel_bytes;
     std::vector<MipLevel> result;
-    const auto *block = image.blocks.data();
-    for (std::uint32_t level = 0; level < image.levels; ++level) {
+    std::span<const std::uint8_t> blocks(image.blocks);
+    for (std::uint32_t level = 0; level < levels; ++level) {
         MipLevel decoded{std::max(image.width >> level, 1U), std::max(image.height >> level, 1U), {}};
-        decoded.rgba.resize(std::size_t{decoded.width} * decoded.height * 4);
+        decoded.rgba.resize(std::size_t{decoded.width} * decoded.height * rgba_texel_bytes);
         // Blocks run row by row; texels past the level's edge in its last blocks are dropped.
-        for (std::uint32_t top = 0; top < decoded.height; top += 4)
-            for (std::uint32_t left = 0; left < decoded.width; left += 4, block += detail::bc7_block_bytes) {
-                const auto texels = detail::decode_bc7_block(block);
-                for (auto y = top; y < std::min(top + 4, decoded.height); ++y)
-                    for (auto x = left; x < std::min(left + 4, decoded.width); ++x)
-                        std::copy_n(&texels[((y - top) * 4 + (x - left)) * 4], 4,
-                                    &decoded.rgba[(std::size_t{y} * decoded.width + x) * 4]);
+        for (std::uint32_t top = 0; top < decoded.height; top += bc7_block_edge)
+            for (std::uint32_t left = 0; left < decoded.width; left += bc7_block_edge) {
+                const auto texels = detail::decode_bc7_block(blocks.first<detail::bc7_block_bytes>());
+                blocks = blocks.subspan(detail::bc7_block_bytes);
+                for (auto y = top; y < std::min(top + bc7_block_edge, decoded.height); ++y)
+                    for (auto x = left; x < std::min(left + bc7_block_edge, decoded.width); ++x)
+                        std::copy_n(&texels[((y - top) * bc7_block_edge + (x - left)) * rgba_texel_bytes],
+                                    rgba_texel_bytes,
+                                    &decoded.rgba[(std::size_t{y} * decoded.width + x) * rgba_texel_bytes]);
             }
         result.push_back(std::move(decoded));
     }

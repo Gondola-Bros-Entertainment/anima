@@ -1255,10 +1255,8 @@ struct VulkanRenderer::Impl {
                     levels.push_back({width, height, std::span(pixels.blocks).subspan(offset, bytes)});
                     offset += bytes;
                 }
-            } else {
-                built = decode_image(pixels);
-                built.resize(count);
-            }
+            } else
+                built = decode_image(pixels, count);
         } else if (prepared)
             for (const auto &mip : *prepared)
                 levels.push_back({mip.width, mip.height, mip.rgba});
@@ -1272,8 +1270,7 @@ struct VulkanRenderer::Impl {
         return static_cast<std::uint32_t>(levels.size());
     }
     // Uploads the images of @p target's material plan, or of @p prepared's, and writes its material descriptors.
-    // @p texels holds the image of each source texture with its texels (Mesh::texel_images), which only a preparation
-    // of RGBA8 images does without.
+    // Without @p prepared, @p texels holds the image of each source texture with its texels (Mesh::texel_images).
     void upload_textures(GpuMaterials &target, UploadBatch &upload, RendererFailureStage failure, bool initial,
                          std::span<const std::shared_ptr<const anima::Image>> texels,
                          const MeshPreparation *prepared = nullptr) {
@@ -1287,16 +1284,19 @@ struct VulkanRenderer::Impl {
         const Texture white{std::make_shared<anima::Image>(anima::Image{1, 1, {255, 255, 255, 255}}), {}};
         for (std::size_t i = 0; i < target.textures.size(); ++i) {
             const auto &planned = plan.images[i];
-            // The texture's sampler and encoding, with the image that holds its texels when they were read.
+            // The texture's sampler and encoding, with the image that holds its texels.
             auto source = white;
-            if (planned.source >= 0) {
+            const std::vector<MipLevel> *mips = nullptr;
+            if (planned.source >= 0)
                 source = target.source->textures[planned.source];
-                if (!texels.empty())
-                    source.image = texels[planned.source];
-            }
-            // A preparation filtered RGBA8 images already; block-compressed ones upload the levels they store.
-            const auto *mips =
-                prepared && source.image->format == ImageFormat::rgba8 ? &prepared->images().at(i) : nullptr;
+            if (prepared) {
+                // A preparation filtered RGBA8 images already and holds the block-compressed ones.
+                if (const auto &image = prepared->compressed_images().at(i))
+                    source.image = image;
+                else
+                    mips = &prepared->images().at(i);
+            } else if (planned.source >= 0)
+                source.image = texels[planned.source];
             total_mips +=
                 upload_image(target.textures[i], source, mips, planned.mips, upload, failure, initial, i == 0);
         }

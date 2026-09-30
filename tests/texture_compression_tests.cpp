@@ -71,14 +71,36 @@ std::uint32_t get32(const std::vector<std::byte> &bytes, std::size_t offset) {
         value |= std::to_integer<std::uint32_t>(bytes[offset + i]) << (8 * i);
     return value;
 }
-// Header fields: format, type size, width, height, depth, layers, faces, levels, supercompression; then the data
-// format descriptor's offset, the key/value data's offset and length, the supercompression global data's length,
-// and the first level index entry.
+// The KTX 2.0 layout, written out here independently of the reader. Header fields: format, type size, width,
+// height, depth, layers, faces, levels, supercompression; then the data format descriptor's offset and length, the
+// key/value data's offset and length, the supercompression global data's length, and the first level index entry.
 constexpr std::size_t format_field = 12, type_size_field = 16, width_field = 20, height_field = 24, depth_field = 28,
                       layers_field = 32, faces_field = 36, levels_field = 40, supercompression_field = 44,
                       dfd_field = 48, dfd_length_field = 52, kvd_field = 56, kvd_length_field = 60,
                       sgd_length_field = 72, first_level = 80;
-constexpr std::uint32_t r8g8b8a8_unorm = 37;
+// Each level index entry: byteOffset, byteLength and uncompressedByteLength.
+constexpr std::size_t level_entry = 24, level_length = 8, level_uncompressed_length = 16;
+// Fields of the data format descriptor, from its dfdTotalSize: the basic block's vendor and descriptor type, its
+// version number and size, color model, transfer function, first texel block dimension and bytesPlane0.
+constexpr std::size_t dfd_type = 4, dfd_version = 8, dfd_model = 12, dfd_transfer = 14, dfd_dimension = 16,
+                      dfd_bytes_plane0 = 20;
+// The fixtures' basic block: a 24-byte header and one 16-byte sample, after the 4-byte dfdTotalSize. Its size
+// shares a word with the version number, in the upper 16 bits.
+constexpr std::uint32_t basic_block_bytes = 24 + 16, block_size_shift = 16;
+// Values from the Vulkan and Khronos data format headers.
+constexpr std::uint32_t vk_format_undefined = 0, r8g8b8a8_unorm = 37, khr_df_versionnumber_1_2 = 1,
+                        khr_df_versionnumber_1_3 = 2;
+constexpr std::uint8_t khr_df_model_bc1a = 128, khr_df_transfer_linear = 1;
+constexpr std::uint32_t basislz = 1, zstandard = 2, zlib = 3;
+// A texel block dimension of 8, stored minus one; BC1's 8-byte plane; the type size of 32-bit components; the faces
+// of a cube map; a descriptor block from a vendor other than Khronos.
+constexpr std::uint8_t eight_texel_dimension = 7, bc1_bytes_plane0 = 8;
+constexpr std::uint32_t r32_type_size = 4, cube_faces = 6, other_vendor = 1;
+// The reader's limits.
+constexpr std::size_t maximum_file_bytes = 64 * 1024 * 1024;
+constexpr std::uint32_t maximum_edge = 8192, maximum_texels = 16 * 1024 * 1024;
+// Bytes of one BC7 block.
+constexpr std::uint32_t bc7_block_bytes = 16;
 
 // Every level of @p image against the reference decode beside the fixture: the levels decoded by basisu, side by
 // side from the base level, whose whole blocks ImageMagick decodes identically (see tests/textures/README.md).
@@ -94,6 +116,7 @@ void check_against_reference(const Image &image, const std::string &name) {
         CHECK(decoded.width == std::max(image.width >> level, 1U));
         CHECK(decoded.height == std::max(image.height >> level, 1U));
         REQUIRE(left + int(decoded.width) <= reference.width);
+        REQUIRE(int(decoded.height) <= reference.height);
         std::size_t mismatches = 0;
         for (std::uint32_t y = 0; y < decoded.height; ++y)
             for (std::uint32_t x = 0; x < decoded.width; ++x) {
@@ -211,6 +234,21 @@ TEST_CASE("BC7 blocks decode exactly as two independent decoders decode them") {
     CHECK(coverage.partitions[3].size() == 64);
 }
 
+TEST_CASE("Decoding the first levels of an image decodes them as decoding every level does") {
+    const auto image = load_ktx2(fixtures / "pattern-bc7.ktx2", TextureEncoding::srgb);
+    const auto every = decode_image(*image);
+    for (std::uint32_t levels = 1; levels <= image->levels; ++levels) {
+        CAPTURE(levels);
+        const auto first = decode_image(*image, levels);
+        REQUIRE(first.size() == levels);
+        for (std::uint32_t level = 0; level < levels; ++level)
+            CHECK(first[level].rgba == every[level].rgba);
+    }
+    constexpr auto message = "Decoded level count must be from 1 to the image's levels";
+    CHECK_THROWS_WITH_AS((void)decode_image(*image, 0), message, std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)decode_image(*image, image->levels + 1), message, std::invalid_argument);
+}
+
 TEST_CASE("A reserved BC7 block decodes to zero, and RGBA8 images decode as they are") {
     const Image reserved{4, 4, {}, ImageFormat::bc7, 1, std::vector<std::uint8_t>(16)};
     const auto levels = decode_image(reserved);
@@ -311,67 +349,105 @@ TEST_CASE("KTX2 files outside the supported subset are rejected with the rule th
     CHECK_THROWS_WITH_AS((void)load_ktx2(valid, static_cast<TextureEncoding>(2)), "Unknown texture encoding",
                          std::invalid_argument);
     rejects({}, "KTX2 must be between 1 byte and 64 MiB");
+    // Bytes after the levels are allowed, up to the file limit.
+    auto largest = valid;
+    largest.resize(maximum_file_bytes);
+    CHECK(load_ktx2(largest, TextureEncoding::srgb)->blocks.size() ==
+          load_ktx2(valid, TextureEncoding::srgb)->blocks.size());
+    largest.push_back({});
+    rejects(largest, "KTX2 must be between 1 byte and 64 MiB");
     rejects(std::vector<std::byte>(valid.begin(), valid.begin() + 79), "Not a KTX 2.0 file");
     rejects(with([](auto &b) { b[5] = std::byte{'1'}; }), "Not a KTX 2.0 file");
-    rejects(with([](auto &b) { put32(b, format_field, 0); }),
+    rejects(with([](auto &b) { put32(b, format_field, vk_format_undefined); }),
             "KTX2 format must be VK_FORMAT_BC7_SRGB_BLOCK or VK_FORMAT_BC7_UNORM_BLOCK");
     rejects(with([](auto &b) { put32(b, format_field, r8g8b8a8_unorm); }),
             "KTX2 format must be VK_FORMAT_BC7_SRGB_BLOCK or VK_FORMAT_BC7_UNORM_BLOCK");
     rejects(valid, "KTX2 format VK_FORMAT_BC7_SRGB_BLOCK does not match a linear texture", TextureEncoding::linear);
     rejects(read_file(fixtures / "pattern-linear-bc7.ktx2"),
             "KTX2 format VK_FORMAT_BC7_UNORM_BLOCK does not match an sRGB texture");
-    rejects(with([](auto &b) { put32(b, type_size_field, 4); }),
+    rejects(with([](auto &b) { put32(b, type_size_field, r32_type_size); }),
             "KTX2 type size must be 1 for a block-compressed format");
     for (const auto &[field, value] :
          {std::pair{height_field, 0U}, std::pair{width_field, 0U}, std::pair{depth_field, 1U},
-          std::pair{layers_field, 2U}, std::pair{faces_field, 6U}}) {
+          std::pair{layers_field, 2U}, std::pair{faces_field, cube_faces}}) {
         CAPTURE(field);
         rejects(with([&](auto &b) { put32(b, field, value); }),
                 "KTX2 must hold one 2D image, not an array, cube map or volume");
     }
-    rejects(with([](auto &b) { put32(b, width_field, 8193); }), "KTX2 image exceeds import dimensions or texel limit");
+    rejects(with([](auto &b) { put32(b, width_field, maximum_edge + 1); }),
+            "KTX2 image exceeds import dimensions or texel limit");
+    rejects(with([](auto &b) { put32(b, height_field, maximum_edge + 1); }),
+            "KTX2 image exceeds import dimensions or texel limit");
     rejects(with([](auto &b) {
-                put32(b, width_field, 8192);
-                put32(b, height_field, 4096);
+                put32(b, width_field, maximum_edge);
+                put32(b, height_field, maximum_texels / maximum_edge + 1);
             }),
             "KTX2 image exceeds import dimensions or texel limit");
     rejects(with([](auto &b) { put32(b, levels_field, 0); }),
             "KTX2 level count 0 asks for generated mip levels, which BC7 images cannot have");
-    rejects(with([](auto &b) { put32(b, levels_field, 8); }), "KTX2 level count exceeds the image's mip chain");
-    for (const std::uint32_t scheme : {1U, 2U, 3U}) {
+    const auto levels = get32(valid, levels_field);
+    rejects(with([&](auto &b) { put32(b, levels_field, levels + 1); }),
+            "KTX2 level count exceeds the image's mip chain");
+    for (const auto scheme : {basislz, zstandard, zlib}) {
         CAPTURE(scheme);
         rejects(with([&](auto &b) { put32(b, supercompression_field, scheme); }),
                 "KTX2 supercompression is unsupported");
     }
-    rejects(with([](auto &b) { put64(b, sgd_length_field, 16); }),
+    rejects(with([](auto &b) { put64(b, sgd_length_field, 1); }),
             "KTX2 has supercompression global data without supercompression");
-    rejects(std::vector<std::byte>(valid.begin(), valid.begin() + first_level + 24 * 6),
+    rejects(std::vector<std::byte>(valid.begin(), valid.begin() + first_level + level_entry * (levels - 1)),
             "KTX2 level index exceeds the file");
     const auto dfd = get32(valid, dfd_field);
     rejects(with([](auto &b) { put32(b, dfd_length_field, 0); }), "Invalid KTX2 data format descriptor");
-    rejects(with([&](auto &b) { put32(b, dfd, 40); }), "Invalid KTX2 data format descriptor");
+    // A dfdTotalSize that leaves out its own field.
+    rejects(with([&](auto &b) { put32(b, dfd, basic_block_bytes); }), "Invalid KTX2 data format descriptor");
     rejects(with([&](auto &b) { put32(b, dfd_field, std::uint32_t(b.size())); }),
             "Invalid KTX2 data format descriptor");
-    rejects(with([&](auto &b) { put32(b, dfd + 8, 1 | (40U << 16)); }),
+    const auto version = [](std::uint32_t number, std::uint32_t size) { return number | (size << block_size_shift); };
+    rejects(with([&](auto &b) { put32(b, dfd + dfd_version, version(khr_df_versionnumber_1_2, basic_block_bytes)); }),
             "KTX2 data format descriptor must be one basic block");
-    rejects(with([&](auto &b) { put32(b, dfd + 4, 1); }), "KTX2 data format descriptor must be one basic block");
-    rejects(with([&](auto &b) { b[dfd + 12] = std::byte{128}; }), "KTX2 data format descriptor does not describe BC7");
-    rejects(with([&](auto &b) { b[dfd + 16] = std::byte{7}; }), "KTX2 data format descriptor does not describe BC7");
-    rejects(with([&](auto &b) { b[dfd + 20] = std::byte{8}; }), "KTX2 data format descriptor does not describe BC7");
-    rejects(with([&](auto &b) { b[dfd + 14] = std::byte{1}; }),
-            "KTX2 data format descriptor's transfer function does not match its format");
+    rejects(with([&](auto &b) { put32(b, dfd + dfd_type, other_vendor); }),
+            "KTX2 data format descriptor must be one basic block");
+    // A basic block that claims a second sample the descriptor does not hold.
+    rejects(with([&](auto &b) {
+                put32(b, dfd + dfd_version, version(khr_df_versionnumber_1_3, basic_block_bytes + bc7_block_bytes));
+            }),
+            "KTX2 data format descriptor must be one basic block");
+    // A descriptor of its dfdTotalSize and one more word, too short for a basic block: at the end of the file,
+    // reading the block would pass the end.
     rejects(with([](auto &b) {
-                put32(b, kvd_field, 64);
+                constexpr std::uint32_t short_descriptor = 2 * sizeof(std::uint32_t);
+                const auto end = std::uint32_t(b.size());
+                b.resize(b.size() + short_descriptor);
+                put32(b, end, short_descriptor);
+                put32(b, dfd_field, end);
+                put32(b, dfd_length_field, short_descriptor);
+            }),
+            "Invalid KTX2 data format descriptor");
+    rejects(with([&](auto &b) { b[dfd + dfd_model] = std::byte{khr_df_model_bc1a}; }),
+            "KTX2 data format descriptor does not describe BC7");
+    rejects(with([&](auto &b) { b[dfd + dfd_dimension] = std::byte{eight_texel_dimension}; }),
+            "KTX2 data format descriptor does not describe BC7");
+    rejects(with([&](auto &b) { b[dfd + dfd_bytes_plane0] = std::byte{bc1_bytes_plane0}; }),
+            "KTX2 data format descriptor does not describe BC7");
+    rejects(with([&](auto &b) { b[dfd + dfd_transfer] = std::byte{khr_df_transfer_linear}; }),
+            "KTX2 data format descriptor's transfer function does not match its format");
+    // Key/value data from the level index past the end of the file.
+    rejects(with([](auto &b) {
+                put32(b, kvd_field, first_level);
                 put32(b, kvd_length_field, std::uint32_t(b.size()));
             }),
             "KTX2 key/value data exceed the file");
-    const auto level_offset = [&](std::size_t level) { return first_level + 24 * level; };
-    rejects(with([&](auto &b) { put64(b, level_offset(0), get32(b, level_offset(0)) + 4); }),
+    const auto level_offset = [&](std::size_t level) { return first_level + level_entry * level; };
+    rejects(with([&](auto &b) { put64(b, level_offset(0), get32(b, level_offset(0)) + bc7_block_bytes / 2); }),
             "KTX2 mip level 0 is not aligned to 16 bytes");
-    rejects(with([&](auto &b) { put64(b, level_offset(3), 16); }), "KTX2 mip level 3 overlaps the header");
-    rejects(with([&](auto &b) { put64(b, level_offset(1) + 8, 16); }),
+    rejects(with([&](auto &b) { put64(b, level_offset(3), first_level); }), "KTX2 mip level 3 overlaps the header");
+    rejects(with([&](auto &b) { put64(b, level_offset(1) + level_length, bc7_block_bytes); }),
             "KTX2 mip level 1 does not hold exactly its BC7 blocks");
-    rejects(with([&](auto &b) { put64(b, level_offset(6) + 16, 32); }),
+    rejects(with([&](auto &b) {
+                put64(b, level_offset(6) + level_uncompressed_length,
+                      get32(b, level_offset(6) + level_length) + bc7_block_bytes);
+            }),
             "KTX2 mip level 6 has an uncompressed length other than its length");
     rejects(with([&](auto &b) { put64(b, level_offset(0), b.size()); }), "KTX2 mip level 0 exceeds the file");
     CHECK_THROWS_WITH_AS((void)load_ktx2(fixtures / "absent.ktx2", TextureEncoding::srgb), "Cannot open KTX2 file",

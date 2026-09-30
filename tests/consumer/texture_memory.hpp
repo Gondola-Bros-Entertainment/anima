@@ -26,6 +26,9 @@
 namespace texture_memory_test {
 using rejection::rejects;
 constexpr auto released_message = "Mesh texture texels were released after upload";
+// The last stage that can fail before an upload lets texels go.
+constexpr auto late_failure = anima::RendererFailureStage::descriptors;
+constexpr auto late_failure_message = "Injected resource preparation failure after descriptors";
 
 inline void require(bool condition, const std::string &message) {
     if (!condition)
@@ -191,6 +194,14 @@ inline int run(int argc, char **argv) {
         const anima::MeshPreparation prepared(late);
         harness.renderer().prepare_mesh(prepared);
         require(late_image.expired(), "A prepared upload must also let the texels go");
+        // A failed upload keeps the texels, so the retry that the failure allows can read them.
+        const auto retried = anima::Mesh::compile(*textured_quad(ramp()), anima::TexelRetention::until_upload);
+        const std::weak_ptr<const anima::Image> retried_image = retried->texel_images().at(0);
+        rejects<anima::InjectedRendererFailure>(
+            [&] { harness.renderer().prepare_meshes(std::span(&retried, 1), {late_failure}); }, late_failure_message);
+        require(!retried_image.expired(), "A failed upload must keep the texels");
+        harness.renderer().prepare_meshes(std::span(&retried, 1));
+        require(retried_image.expired(), "The retried upload must let the texels go");
         kept_frame = harness.images["kept"];
         harness.finish();
     }

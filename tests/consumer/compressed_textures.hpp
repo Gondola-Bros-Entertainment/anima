@@ -10,6 +10,7 @@
 #include "texture_memory.hpp"
 #include <algorithm>
 #include <anima/assets/ktx2.hpp>
+#include <anima/assets/mesh_preparation.hpp>
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/scene.hpp>
 #include <array>
@@ -153,6 +154,10 @@ inline int run(int argc, char **argv) {
     const auto close_rgba = anima::Mesh::compile(*close), far_rgba = anima::Mesh::compile(*far);
     const auto close_bc7 = anima::Mesh::compile(*substituted(*close, srgb)),
                far_bc7 = anima::Mesh::compile(*substituted(*far, srgb));
+    // A preparation of a mesh that holds its BC7 texels only until upload, from a copy that nothing else keeps: the
+    // first renderer's upload lets the mesh's texels go, and the preparation still uploads to the second.
+    const auto prepared_bc7 = anima::MeshPreparation(anima::Mesh::compile(
+        *substituted(*close, std::make_shared<const anima::Image>(*srgb)), anima::TexelRetention::until_upload));
     // The linear pair samples the texels as data through the consumer's effect shader, on the close quad.
     const auto effect = [&](std::shared_ptr<const anima::Image> image) {
         auto definition = custom_material_test::effect_definition("pattern", anima::CustomBlend::opaque, {{1, 1, 1}});
@@ -179,6 +184,10 @@ inline int run(int argc, char **argv) {
         harness.select({std::move(scene)});
         harness.render(name);
     };
+    const auto prepare = [&](Harness &harness, const std::string &name) {
+        harness.renderer().prepare_mesh(prepared_bc7);
+        draw(harness, name, texture_memory_test::scene_of(prepared_bc7.asset()));
+    };
 
     gpu_check::Captures captures(output);
     std::uint64_t rgba_device{}, bc7_device{}, decoded_device{};
@@ -191,9 +200,10 @@ inline int run(int argc, char **argv) {
         draw(harness, "far_bc7", texture_memory_test::scene_of(far_bc7));
         draw(harness, "effect_rgba8", effect_rgba);
         draw(harness, "effect_bc7", effect_bc7);
+        prepare(harness, "prepared_bc7");
         rgba_device = memory(harness, false);
         bc7_device = memory(harness, true);
-        for (const auto *name : {"close_rgba8", "close_bc7", "far_bc7", "effect_rgba8", "effect_bc7"})
+        for (const auto *name : {"close_rgba8", "close_bc7", "far_bc7", "effect_rgba8", "effect_bc7", "prepared_bc7"})
             captures.add(name, harness.images[name]);
         harness.finish();
     }
@@ -204,8 +214,9 @@ inline int run(int argc, char **argv) {
         draw(harness, "close_decoded", texture_memory_test::scene_of(close_bc7));
         draw(harness, "far_decoded", texture_memory_test::scene_of(far_bc7));
         draw(harness, "effect_decoded", effect_bc7);
+        prepare(harness, "prepared_decoded");
         decoded_device = memory(harness, true);
-        for (const auto *name : {"close_decoded", "far_decoded", "effect_decoded"})
+        for (const auto *name : {"close_decoded", "far_decoded", "effect_decoded", "prepared_decoded"})
             captures.add(name, harness.images[name]);
         harness.finish();
     }
@@ -221,6 +232,9 @@ inline int run(int argc, char **argv) {
     require_within(captures, "far_bc7", "far_decoded", path_tolerance, "BC7 sampled against BC7 decoded, minified");
     require_within(captures, "effect_bc7", "effect_decoded", path_tolerance,
                    "BC7 sampled against BC7 decoded, custom material");
+    captures.require_same("close_bc7", "prepared_bc7", "A prepared BC7 upload drew differently");
+    captures.require_same("close_decoded", "prepared_decoded",
+                          "A preparation drew differently after an earlier upload let its mesh's texels go");
     const auto rgba_bytes = measured(false)->rgba.size(), bc7_bytes = measured(true)->blocks.size();
     std::cout << "COMPRESSED TEXTURES " << measured_edge << "x" << measured_edge << " texture with mips, device bytes: "
               << "RGBA8 " << rgba_device << ", BC7 " << bc7_device << (sampled ? " sampled" : " decoded")
