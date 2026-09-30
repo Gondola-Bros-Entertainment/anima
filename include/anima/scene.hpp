@@ -192,7 +192,10 @@ class Scene {
     ///
     /// Only Pose::world is used: one affine matrix per mesh node, matching the mesh's node count.
     /// Compute it with sample_pose or pose_from_local; changing Pose::local alone has no effect.
-    /// Throws `std::logic_error` when the object has no renderer.
+    /// The renderer keeps a copy of @p pose in storage it reuses: once it has held a pose with at
+    /// least as many Pose::local and Pose::world entries since its mesh was set, the call allocates
+    /// only as a transform change does (see GameObject). Throws `std::logic_error` when the object
+    /// has no renderer.
     void set_pose(Id id, const Pose &pose, const Mat4 &world = identity());
     /// Sets @p id's world matrix, as GameObject::set_world_matrix does.
     void set_transform(Id id, const Mat4 &world);

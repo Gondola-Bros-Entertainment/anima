@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <set>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -521,9 +522,22 @@ void Scene::remove(Id id) {
 void Scene::set_pose(Id id, const Pose &value, const Mat4 &world) {
     auto &entry = slot(id);
     (void)get(id);
-    Pose next = value;
-    update_transform(id, to_local(id, world), world, &next);
-    entry.pose = std::move(next);
+    // A stored pose with room for this one takes the copy in place. Otherwise the copy is made
+    // first, so a failed allocation publishes nothing.
+    const bool fits = entry.pose && entry.pose->local.capacity() >= value.local.size() &&
+                      entry.pose->world.capacity() >= value.world.size();
+    std::optional<Pose> copy;
+    if (!fits)
+        copy.emplace(value);
+    update_transform(id, to_local(id, world), world, &value);
+    if (copy)
+        entry.pose = std::move(copy);
+    else {
+        // Within capacity, copying these trivially copyable elements neither allocates nor throws.
+        static_assert(std::is_trivially_copyable_v<Transform> && std::is_trivially_copyable_v<Mat4>);
+        entry.pose->local = value.local;
+        entry.pose->world = value.world;
+    }
 }
 void Scene::set_transform(Id id, const Mat4 &world) { update_transform(id, to_local(id, world), world); }
 Mat4 Scene::to_local(Id id, const Mat4 &world) const {
