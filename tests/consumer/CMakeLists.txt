@@ -116,6 +116,8 @@ function(add_anima_consumer mode target test_name)
             target_compile_options(${target} PRIVATE
                 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
         endif()
+    elseif(ANIMA_ENABLE_THREAD_SANITIZER)
+        target_compile_options(${target} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
     endif()
     target_compile_features(${target} PRIVATE cxx_std_20)
     if(MSVC)

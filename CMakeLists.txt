@@ -240,10 +240,14 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_scene_object_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_scene_object_tests)
         add_test(NAME scene_objects COMMAND anima_scene_object_tests)
-        add_executable(anima_scene_scaling_tests tests/scene_scaling_tests.cpp tests/allocation_counter.cpp)
-        target_link_libraries(anima_scene_scaling_tests PRIVATE anima::assets anima_test_main)
-        anima_target_defaults(anima_scene_scaling_tests)
-        add_test(NAME scene_scaling COMMAND anima_scene_scaling_tests)
+        # ThreadSanitizer's runtime defines the global allocation functions that allocation_counter.cpp replaces,
+        # in a static library on Linux, so the executable would not link; its counts measure no race either.
+        if(NOT ANIMA_ENABLE_THREAD_SANITIZER)
+            add_executable(anima_scene_scaling_tests tests/scene_scaling_tests.cpp tests/allocation_counter.cpp)
+            target_link_libraries(anima_scene_scaling_tests PRIVATE anima::assets anima_test_main)
+            anima_target_defaults(anima_scene_scaling_tests)
+            add_test(NAME scene_scaling COMMAND anima_scene_scaling_tests)
+        endif()
         add_executable(anima_scene_lifecycle_tests tests/scene_lifecycle_tests.cpp)
         target_link_libraries(anima_scene_lifecycle_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_scene_lifecycle_tests)
@@ -348,6 +352,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_staging_tests PRIVATE anima::assets anima_test_main Threads::Threads)
         anima_target_defaults(anima_staging_tests)
         add_test(NAME staging COMMAND anima_staging_tests)
+        add_executable(anima_staging_concurrency_tests tests/staging_concurrency_tests.cpp)
+        target_link_libraries(anima_staging_concurrency_tests PRIVATE anima::assets anima_test_main Threads::Threads)
+        anima_target_defaults(anima_staging_concurrency_tests)
+        add_test(NAME staging_concurrency COMMAND anima_staging_concurrency_tests)
         add_executable(anima_mesh_tests tests/mesh_tests.cpp)
         target_link_libraries(anima_mesh_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_mesh_tests)
@@ -610,6 +618,7 @@ if(ANIMA_BUILD_TESTS)
                 "-DCONSUMER_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
                 "-DCONSUMER_C_COMPILER=${CMAKE_C_COMPILER}"
                 "-DCONSUMER_SANITIZERS=${ANIMA_ENABLE_SANITIZERS}"
+                "-DCONSUMER_THREAD_SANITIZER=${ANIMA_ENABLE_THREAD_SANITIZER}"
                 "-DCONSUMER_MSVC_DEBUG_INFORMATION_FORMAT=${CMAKE_MSVC_DEBUG_INFORMATION_FORMAT}"
                 "-DCONSUMER_DISABLE_PRECOMPILE_HEADERS=${CMAKE_DISABLE_PRECOMPILE_HEADERS}"
                 "-DCONSUMER_PREFIX_PATH=${CMAKE_PREFIX_PATH}"

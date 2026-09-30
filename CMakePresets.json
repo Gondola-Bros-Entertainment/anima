@@ -117,6 +117,14 @@
       "inherits": "ci-sanitizer-modules",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "CMAKE_CONFIGURATION_TYPES": "RelWithDebInfo" }
+    },
+    {
+      "name": "ci-thread-sanitizer",
+      "displayName": "CI: ThreadSanitizer with Clang, headless, Debug (Linux / macOS)",
+      "inherits": ["ci", "headless"],
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "environment": { "CC": "clang", "CXX": "clang++" },
+      "cacheVariables": { "ANIMA_ENABLE_THREAD_SANITIZER": true }
     }
   ],
   "buildPresets": [
@@ -129,7 +137,8 @@
     { "name": "ci-full-debug", "configurePreset": "ci-full-debug" },
     { "name": "ci-full-release", "configurePreset": "ci-full-release" },
     { "name": "ci-sanitizers", "configurePreset": "ci-sanitizers", "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
-    { "name": "ci-sanitizers-msvc", "configurePreset": "ci-sanitizers-msvc", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } }
+    { "name": "ci-sanitizers-msvc", "configurePreset": "ci-sanitizers-msvc", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+    { "name": "ci-thread-sanitizer", "configurePreset": "ci-thread-sanitizer", "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" } }
   ],
   "testPresets": [
     {
@@ -164,6 +173,14 @@
       "configurePreset": "ci-sanitizers-msvc",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "environment": { "ASAN_OPTIONS": "continue_on_error=0:strict_string_checks=1" }
+    },
+    {
+      "name": "ci-thread-sanitizer",
+      "description": "The first report of a data race, deadlock or thread misuse fails the test.",
+      "inherits": "defaults",
+      "configurePreset": "ci-thread-sanitizer",
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1" }
     }
   ],
   "workflowPresets": [
@@ -245,6 +262,14 @@
         { "type": "configure", "name": "ci-sanitizers-msvc" },
         { "type": "build", "name": "ci-sanitizers-msvc" },
         { "type": "test", "name": "ci-sanitizers-msvc" }
+      ]
+    },
+    {
+      "name": "ci-thread-sanitizer",
+      "steps": [
+        { "type": "configure", "name": "ci-thread-sanitizer" },
+        { "type": "build", "name": "ci-thread-sanitizer" },
+        { "type": "test", "name": "ci-thread-sanitizer" }
       ]
     }
   ]
