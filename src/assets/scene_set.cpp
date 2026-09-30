@@ -186,7 +186,7 @@ void SceneSet::restore(const StagedSceneSet &staged, const ComponentCodecs &code
     restore_members(staged, codecs);
 }
 void SceneSet::restore_members(const StagedSceneSet &staged, const ComponentCodecs &codecs) {
-    auto built = detail::json_step([&] { return detail::load_scene_set(staged, codecs); });
+    auto built = detail::load_scene_set(staged, codecs);
     // Publication cannot allocate. The built owner now retires the old set;
     // cleanup callbacks observe the complete committed replacement.
     scenes_.swap(built->scenes_);

@@ -45,8 +45,8 @@ class StopToken {
 class StopSource {
   public:
     /// Creates a state with no stop requested. Throws `std::bad_alloc` when memory runs out. A moved-from
-    /// source has no state: its tokens never report a stop, and request_stop() and stop_requested() return
-    /// false.
+    /// source has no state: tokens it returns afterwards never report a stop, and request_stop() and
+    /// stop_requested() return false. Tokens taken before the move observe the source it moved to.
     StopSource();
     /// Token that observes this source's state.
     [[nodiscard]] StopToken get_token() const noexcept { return StopToken(state_); }
@@ -65,7 +65,7 @@ class StopSource {
 /// It derives only from `std::exception`, so handlers of `std::invalid_argument` or `std::runtime_error`
 /// for rejected content do not catch it. what() returns `"Staging was cancelled"`. The call returns no
 /// result and leaves no side effects other than the application callbacks it already made, such as
-/// MeshResolver calls.
+/// MeshResolver calls, and the steps it already added to a StagingProgress.
 class StagingCancelled : public std::exception {
   public:
     [[nodiscard]] const char *what() const noexcept override;

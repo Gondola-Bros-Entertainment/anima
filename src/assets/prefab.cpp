@@ -1,8 +1,10 @@
+#include "../detail/component_data.hpp"
 #include "../detail/json.hpp"
 #include "../detail/prefab_instantiation.hpp"
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_persistence.hpp"
 #include "../detail/staging.hpp"
+#include <algorithm>
 #include <anima/prefab.hpp>
 #include <map>
 #include <set>
@@ -13,7 +15,6 @@ namespace detail {
 struct SceneStage {
     std::vector<Prefab::Node> nodes;
     std::uint64_t next_key = 1;
-    std::size_t retained_bytes{};
 };
 // A validated scene set document before any scene exists.
 struct SceneSetStage {
@@ -28,7 +29,6 @@ struct SceneSetStage {
     std::vector<Member> scenes;
     std::optional<std::size_t> active;
     std::vector<Reference> references;
-    std::size_t retained_bytes{};
 };
 struct ScenePersistence {
     static GameObject create(Scene &scene, ObjectKey key, const std::string &name,
@@ -105,6 +105,7 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
         const auto &node = nodes[i];
         require(node.key.value && keys.insert(node.key).second, "Null or duplicate document object key");
         require(node.components.size() <= maximum_components, "Invalid serialized component count");
+        detail::require_distinct_component_types(node.components);
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
         require(node.mesh || (!node.pose && node.material_factors.empty() && node.custom_materials.empty() &&
@@ -421,8 +422,7 @@ SceneStage decode_document(const Json &parsed, std::string_view kind, const Mesh
     std::uint64_t next_key = 1;
     if (kind == scene_kind)
         next_key = decode_next_key(parsed.at("next_key"), nodes);
-    const auto bytes = retained_bytes(nodes);
-    return {std::move(nodes), next_key, bytes};
+    return {std::move(nodes), next_key};
 }
 std::shared_ptr<Scene> instantiate_scene(const SceneStage &decoded, const ComponentCodecs &codecs) {
     for (const auto &node : decoded.nodes)
@@ -433,7 +433,7 @@ std::shared_ptr<Scene> instantiate_scene(const SceneStage &decoded, const Compon
     return scene;
 }
 SceneSetStage decode_scene_set(const Json &parsed, const MeshResolver &resolve, const CustomMaterialResolver &materials,
-                               const StagingSteps &steps) {
+                               const StagingSteps &steps = {}) {
     detail::json_version(parsed, "version", scene_set_version, "Unsupported scene set document version");
     require(parsed.contains("kind") && parsed.at("kind").is_string() &&
                 parsed.at("kind").get_ref<const std::string &>() == scene_set_kind,
@@ -471,9 +471,7 @@ SceneSetStage decode_scene_set(const Json &parsed, const MeshResolver &resolve, 
             object_keys.insert(node.key);
         const auto next_key = decode_next_key(value.at("next_key"), nodes);
         unmapped.push_back(std::move(object_keys));
-        const auto bytes = key.size() + retained_bytes(nodes);
-        result.retained_bytes += bytes;
-        result.scenes.push_back({std::move(key), {std::move(nodes), next_key, bytes}});
+        result.scenes.push_back({std::move(key), {std::move(nodes), next_key}});
     }
     const auto &active = parsed.at("active");
     if (result.scenes.empty())
@@ -498,7 +496,6 @@ SceneSetStage decode_scene_set(const Json &parsed, const MeshResolver &resolve, 
         require(unmapped[found->second].erase(object) == 1, "Missing or duplicate scene set reference target");
         result.references.push_back({key, object, found->second});
     }
-    result.retained_bytes += result.references.size() * (2 * sizeof(ObjectKey) + sizeof(std::size_t));
     return result;
 }
 // Checks every component type of @p staged against @p codecs before anything is created.
@@ -633,8 +630,15 @@ std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentC
     validate_nodes(nodes, false);
     return encode(nodes, scene_kind, name, detail::ScenePersistence::next_key(scene));
 }
-std::size_t StagedScene::retained_bytes() const noexcept { return data_->retained_bytes; }
-std::size_t StagedSceneSet::retained_bytes() const noexcept { return data_->retained_bytes; }
+std::size_t StagedScene::retained_bytes() const noexcept { return anima::retained_bytes(data_->nodes); }
+std::size_t StagedSceneSet::retained_bytes() const noexcept {
+    // A reference row keeps its key, its object's key and its member's index.
+    constexpr std::size_t reference_bytes = 2 * sizeof(ObjectKey) + sizeof(std::size_t);
+    auto bytes = data_->references.size() * reference_bytes;
+    for (const auto &member : data_->scenes)
+        bytes += member.key.size() + anima::retained_bytes(member.content.nodes);
+    return bytes;
+}
 StagedScene stage_scene(std::string_view document, const MeshResolver &resolve, const CustomMaterialResolver &materials,
                         const StagingOptions &options) {
     const StagingSteps steps(options);
@@ -737,24 +741,10 @@ std::unique_ptr<SceneSet> load_scene_set(const StagedSceneSet &staged, const Com
     return built;
 }
 
-std::shared_ptr<Scene> load_scene_member(std::string_view document, const SceneSet &scenes, std::string_view key,
-                                         const MeshResolver &resolve, const CustomMaterialResolver &materials,
+namespace {
+// Loads member @p key of @p decoded as the StagedSceneSet overload describes.
+std::shared_ptr<Scene> load_scene_member(const SceneSetStage &decoded, const SceneSet &scenes, std::string_view key,
                                          const ComponentCodecs &codecs) {
-    const auto parsed = json_step([&] { return parse_json(document, maximum_document_bytes); });
-    const bool set_document = parsed.is_object() && parsed.contains("kind") && parsed.at("kind").is_string() &&
-                              parsed.at("kind").get_ref<const std::string &>() == scene_set_kind;
-    if (!set_document)
-        return load_scene(ScenePersistence::staged(
-                              json_step([&] { return decode_document(parsed, scene_kind, resolve, materials); })),
-                          codecs);
-    return load_scene_member(ScenePersistence::staged(json_step(
-                                 [&] { return decode_scene_set(parsed, resolve, materials, StagingSteps{}); })),
-                             scenes, key, codecs);
-}
-
-std::shared_ptr<Scene> load_scene_member(const StagedSceneSet &staged, const SceneSet &scenes, std::string_view key,
-                                         const ComponentCodecs &codecs) {
-    const auto &decoded = ScenePersistence::stage(staged);
     validate_components(decoded, codecs);
     const auto member = std::find_if(decoded.scenes.begin(), decoded.scenes.end(),
                                      [&](const SceneSetStage::Member &candidate) { return candidate.key == key; });
@@ -782,6 +772,24 @@ std::shared_ptr<Scene> load_scene_member(const StagedSceneSet &staged, const Sce
     for (std::size_t i = 0; i < nodes.size(); ++i)
         codecs.restore(objects[i], nodes[i].components, references);
     return scene;
+}
+} // namespace
+
+std::shared_ptr<Scene> load_scene_member(std::string_view document, const SceneSet &scenes, std::string_view key,
+                                         const MeshResolver &resolve, const CustomMaterialResolver &materials,
+                                         const ComponentCodecs &codecs) {
+    const auto parsed = json_step([&] { return parse_json(document, maximum_document_bytes); });
+    const bool set_document = parsed.is_object() && parsed.contains("kind") && parsed.at("kind").is_string() &&
+                              parsed.at("kind").get_ref<const std::string &>() == scene_set_kind;
+    if (!set_document)
+        return instantiate_scene(json_step([&] { return decode_document(parsed, scene_kind, resolve, materials); }),
+                                 codecs);
+    return load_scene_member(json_step([&] { return decode_scene_set(parsed, resolve, materials); }), scenes, key,
+                             codecs);
+}
+std::shared_ptr<Scene> load_scene_member(const StagedSceneSet &staged, const SceneSet &scenes, std::string_view key,
+                                         const ComponentCodecs &codecs) {
+    return load_scene_member(ScenePersistence::stage(staged), scenes, key, codecs);
 }
 } // namespace detail
 } // namespace anima

@@ -1,7 +1,7 @@
+#include "../detail/component_data.hpp"
 #include "../detail/json.hpp"
 #include <algorithm>
 #include <anima/components.hpp>
-#include <set>
 
 namespace anima {
 namespace {
@@ -210,16 +210,22 @@ std::vector<ComponentData> ComponentCodecs::capture(GameObject object, const Obj
     std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) { return a.type < b.type; });
     return result;
 }
+void detail::require_distinct_component_types(std::span<const ComponentData> data) {
+    // A single component cannot repeat a type, so most objects need no sorted copy.
+    if (data.size() < 2)
+        return;
+    std::vector<std::string_view> types(data.size());
+    std::ranges::transform(data, types.begin(), &ComponentData::type);
+    std::ranges::sort(types);
+    if (std::ranges::adjacent_find(types) != types.end())
+        throw std::invalid_argument("Duplicate serialized component");
+}
 void ComponentCodecs::validate(std::span<const ComponentData> data) const {
-    std::set<std::string_view> seen;
-    for (const auto &component : data) {
-        if (!seen.insert(component.type).second)
-            throw std::invalid_argument("Duplicate serialized component");
-        const auto codec = std::find_if(codecs_.begin(), codecs_.end(),
-                                        [&](const auto &entry) { return entry.second.key == component.type; });
-        if (codec == codecs_.end())
+    detail::require_distinct_component_types(data);
+    for (const auto &component : data)
+        if (std::none_of(codecs_.begin(), codecs_.end(),
+                         [&](const auto &entry) { return entry.second.key == component.type; }))
             throw std::invalid_argument("Unknown serialized component type");
-    }
 }
 ComponentCodecs::CollectedLinks ComponentCodecs::collect_links(std::type_index type, void *component) const {
     const auto found = codecs_.find(type);

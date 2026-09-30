@@ -396,6 +396,8 @@ TEST_CASE("Another thread reads progress while staging runs") {
 
 TEST_CASE("Each staged rejection crosses threads with the synchronous type and message") {
     Documents documents(1);
+    // The Counted component's type, the last of its sorted fields, which a second component of that type can follow.
+    const auto counted_type = "\"type\": \"" + std::string(counted_key) + '"';
     const std::pair<std::string, const char *> scenes[]{
         {"[]", "Invalid scene document"},
         {substitute(documents.scene, "\"version\": 3", "\"version\": 2"), "Unsupported scene document version"},
@@ -405,6 +407,9 @@ TEST_CASE("Each staged rejection crosses threads with the synchronous type and m
         {substitute(documents.scene, "\"name\": \"root-0\"", "\"name\": 0"),
          "[json.exception.type_error.302] type must be string, but is number"},
         {substitute(documents.scene, "\"one\"", "\"missing\""), "Scene mesh key could not be resolved"},
+        {substitute(documents.scene, counted_type,
+                    counted_type + "}, {\"enabled\": true, \"state\": \"\", " + counted_type),
+         "Duplicate serialized component"},
         {std::string(maximum_document_bytes, ' ') + documents.scene, "JSON document exceeds byte limit"},
     };
     for (const auto &[text, expected] : scenes) {

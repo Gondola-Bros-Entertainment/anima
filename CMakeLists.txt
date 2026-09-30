@@ -285,7 +285,7 @@ if(ANIMA_BUILD_ASSETS)
         # Callgrind counts the instructions of scene work that allocates nothing (CONTRIBUTING.md).
         # Valgrind cannot run sanitized programs.
         find_program(ANIMA_VALGRIND valgrind)
-        if(ANIMA_VALGRIND AND NOT ANIMA_ENABLE_SANITIZERS)
+        if(ANIMA_VALGRIND AND NOT ANIMA_ENABLE_SANITIZERS AND NOT ANIMA_ENABLE_THREAD_SANITIZER)
             add_executable(anima_scene_scaling_scenario tests/scene_scaling_scenario.cpp)
             target_link_libraries(anima_scene_scaling_scenario PRIVATE anima::assets)
             anima_target_defaults(anima_scene_scaling_scenario)
