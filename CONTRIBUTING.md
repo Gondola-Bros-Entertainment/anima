@@ -42,13 +42,16 @@ sources; an RmlUi override must already carry the patch described in
 ### Benchmarks
 
 `anima_scene_benchmarks` times hierarchy construction, bulk destruction and per-frame
-scene work. CTest runs it at 1,024 objects to check each scenario's result. Measure a
-Release build at its default 65,536 objects, the scene document limit, and record the
-machine and configuration with the numbers:
+scene work. CTest runs it at 1,024 objects to check each scenario's result. To show
+how a change scales, measure a Release build at 16,384 objects and at its default
+65,536, the scene document limit: work linear in the objects keeps its time per
+object, and quadratic work quadruples it. Record the machine, configuration and
+commit with the numbers:
 
 ```sh
 cmake -S . -B build/benchmarks -G Ninja -DCMAKE_BUILD_TYPE=Release -DANIMA_BUILD_DESKTOP=OFF
 cmake --build build/benchmarks --target anima_scene_benchmarks
+build/benchmarks/anima_scene_benchmarks --objects 16384 --repetitions 5
 build/benchmarks/anima_scene_benchmarks --repetitions 5
 ```
 
