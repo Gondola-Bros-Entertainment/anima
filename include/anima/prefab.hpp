@@ -22,6 +22,11 @@
 /// failure destroys every object they created; side effects of application callbacks are not
 /// undone, and keys allocated by a failed instantiation are not reused. Instantiated and loaded
 /// components receive their first `on_enable()` at the next lifecycle reconciliation.
+///
+/// Object keys are checked, and object links mapped, through ordered containers, so constructing,
+/// reading, capturing and instantiating prefabs, and writing and loading scenes, take time
+/// O(n log n) in their n objects, apart from mesh, codec and parsing work and the costs that Scene
+/// states.
 
 namespace anima {
 /// Returns the application's stable key for a mesh when writing a document.
