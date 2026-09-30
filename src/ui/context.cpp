@@ -332,6 +332,8 @@ struct UiContext::Impl {
     // request for all windows, so a capture already in effect belongs to whoever took it, the application or
     // SDL's own capture while buttons are held, and only a capture requested here is released here.
     bool captured_mouse{};
+    // Set once RmlUi has left the pointer for relative mouse mode, which hides it; see relative_mode().
+    bool pointer_hidden{};
     Impl(SDL_Window *w, VulkanRenderer &r, std::string n)
         : window(w), renderer(r), name(std::move(n)), system(w, stats) {}
     ~Impl() {
@@ -397,8 +399,14 @@ struct UiContext::Impl {
         return system.focused && focus && focus->IsVisible(true) && focus->GetOwnerDocument() &&
                focus != focus->GetOwnerDocument() && edits_with_keyboard(*focus);
     }
+    // Whether the application put the window in SDL's relative mouse mode. SDL then hides the pointer, whose position
+    // only accumulates the reported motion within the window's bounds, so the UI hit tests nothing: the pointer is
+    // gameplay's until the mode ends.
+    bool relative_mode() const { return SDL_GetWindowRelativeMouseMode(window); }
     void synchronize_focus() {
-        if (!buttons.empty() && (!pointer_owner || !pointer_owner->IsVisible(true))) {
+        const bool relative = relative_mode();
+        // Entering relative mode cancels a document press as hiding its document does.
+        if (!buttons.empty() && (relative || !pointer_owner || !pointer_owner->IsVisible(true))) {
             (void)context->ProcessMouseLeave();
             for (int button : buttons) {
                 (void)context->ProcessMouseButtonUp(button, 0);
@@ -408,6 +416,9 @@ struct UiContext::Impl {
             pointer_owner.reset();
             release_mouse();
         }
+        if (relative && !pointer_hidden)
+            (void)context->ProcessMouseLeave(); // Nothing stays hovered under the hidden pointer.
+        pointer_hidden = relative;
         if (auto *focus = context->GetFocusElement(); focus && !focus->IsVisible(true))
             focus->Blur();
         if (!keyboard_capture())
@@ -416,8 +427,8 @@ struct UiContext::Impl {
     UiInputResult input_state() const {
         running();
         UiInputResult result;
-        result.pointer =
-            system.focused && (!buttons.empty() || (world_buttons.empty() && context->IsMouseInteracting()));
+        result.pointer = system.focused && !relative_mode() &&
+                         (!buttons.empty() || (world_buttons.empty() && context->IsMouseInteracting()));
         result.keyboard = keyboard_capture();
         result.text = result.keyboard && SDL_TextInputActive(window);
         return result;
@@ -467,11 +478,16 @@ struct UiContext::Impl {
             throw std::invalid_argument("Invalid UI wheel delta");
         synchronize_focus();
         const auto before = input_state();
-        const bool owned_pointer = !buttons.empty();
+        const bool owned_pointer = !buttons.empty(), relative = pointer_hidden;
         bool world_pointer = !world_buttons.empty();
-        bool propagate = true, pointer_event = false, keyboard_event = false, lost = false;
+        bool propagate = true, pointer_event = false, keyboard_event = false, lost = false, cancelled_release = false;
         const auto mods = modifiers(SDL_GetModState());
         const auto move = [&] { return context->ProcessMouseMove(position.x, position.y, mods); };
+        // RmlUi keeps focus when a press misses every document; leave the control.
+        const auto blur_control = [&] {
+            if (auto *focus = context->GetFocusElement(); focus && focus != focus->GetOwnerDocument())
+                focus->Blur();
+        };
         switch (event.type) {
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             focus_lost();
@@ -493,6 +509,8 @@ struct UiContext::Impl {
         case SDL_EVENT_MOUSE_MOTION:
             if (system.focused) {
                 pointer_event = true;
+                if (relative)
+                    break;
                 if (world_pointer)
                     (void)context->ProcessMouseLeave();
                 else
@@ -506,12 +524,24 @@ struct UiContext::Impl {
                 const int button = RmlSDL::ConvertMouseButton(event.button.button);
                 if (button < 0)
                     break;
+                // The release of a cancelled document press stays with the UI, whatever gameplay holds since.
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && cancelled_buttons.erase(button)) {
-                    propagate = false;
+                    cancelled_release = true;
                     break;
                 }
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
                     cancelled_buttons.erase(button);
+                if (relative) {
+                    // Nothing is hit tested, so a press is gameplay's, as one outside every document is. RmlUi saw
+                    // no hover since the mode began, so a release clicks nothing.
+                    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                        world_buttons.insert(button);
+                        world_pointer = true;
+                        blur_control();
+                    } else if (world_buttons.erase(button))
+                        (void)context->ProcessMouseButtonUp(button, mods);
+                    break;
+                }
                 if (world_pointer) {
                     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
                         world_buttons.insert(button);
@@ -540,9 +570,7 @@ struct UiContext::Impl {
                     } else {
                         world_buttons.insert(button);
                         world_pointer = true;
-                        // RmlUi keeps focus when a click misses every document; leave the control.
-                        if (auto *focus = context->GetFocusElement(); focus && focus != focus->GetOwnerDocument())
-                            focus->Blur();
+                        blur_control();
                     }
                 } else {
                     propagate = context->ProcessMouseButtonUp(button, mods);
@@ -557,7 +585,7 @@ struct UiContext::Impl {
         case SDL_EVENT_MOUSE_WHEEL:
             if (system.focused) {
                 pointer_event = true;
-                if (world_pointer)
+                if (world_pointer || relative)
                     break;
                 // SDL's x is positive to the right and its y positive for scrolling up; RmlUi scrolls right and
                 // down for positive values, so only y flips. The values already follow the platform's natural
@@ -599,9 +627,9 @@ struct UiContext::Impl {
         }
         synchronize_focus();
         auto result = input_state();
-        result.consumed =
-            !(pointer_event && world_pointer) && (!propagate || (pointer_event && (owned_pointer || result.pointer)) ||
-                                                  (keyboard_event && (before.keyboard || result.keyboard)));
+        result.consumed = cancelled_release || (!(pointer_event && world_pointer) &&
+                                                (!propagate || (pointer_event && (owned_pointer || result.pointer)) ||
+                                                 (keyboard_event && (before.keyboard || result.keyboard))));
         if (keyboard_event && event.key.scancode != SDL_SCANCODE_UNKNOWN &&
             (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)) {
             // Like a pointer press, a key keeps its starting ownership: a release whose press reached
