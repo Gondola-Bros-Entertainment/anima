@@ -49,6 +49,7 @@
 #include "rejection.hpp"
 #include "replacement.hpp"
 #include "resources.hpp"
+#include "texture_memory.hpp"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <anima/desktop/vulkan_renderer.hpp>
@@ -321,6 +322,8 @@ int main(int argc, char **argv) {
             return blending_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--custom-materials")
             return custom_material_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--texture-memory")
+            return texture_memory_test::run(argc, argv);
 #endif
         anima::FixedStepClock clock;
         require(clock.advance(clock.step() * 3).steps == 3, "Public core target failed");
