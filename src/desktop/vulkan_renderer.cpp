@@ -133,6 +133,9 @@ struct VulkanRenderer::Impl {
     // Whether BC7 images upload as BC7: the device samples BC7 with linear filtering and RendererOptions::decode_bc7
     // is off. Otherwise they upload decoded to RGBA8.
     bool bc7_sampled{};
+    // Anisotropy of linear, mipmapped material samplers: RendererOptions::max_anisotropy within the device's limit, or
+    // 1 without the samplerAnisotropy feature.
+    float anisotropy = 1;
     VkCommandPool command_pool{};
     VkCommandBuffer command{};
     VkFence frame_fence{};
@@ -350,6 +353,8 @@ struct VulkanRenderer::Impl {
         default:
             throw std::invalid_argument(unknown_stage);
         }
+        if (!std::isfinite(options.max_anisotropy) || options.max_anisotropy < 1)
+            throw std::invalid_argument("Maximum anisotropy must be finite and at least 1");
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -542,6 +547,13 @@ struct VulkanRenderer::Impl {
             vkGetPhysicalDeviceFormatProperties(physical, bc7_format, &properties);
             bc7_sampled = bc7_sampled && (properties.optimalTilingFeatures & bc7_features) == bc7_features;
         }
+        // Anisotropic filtering is an optional feature, and its degree is limited by the device.
+        if (available.samplerAnisotropy && options.max_anisotropy > 1) {
+            enabled.samplerAnisotropy = VK_TRUE;
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(physical, &properties);
+            anisotropy = std::min(options.max_anisotropy, properties.limits.maxSamplerAnisotropy);
+        }
         info.pEnabledFeatures = &enabled;
         if (present_fences)
             info.pNext = &maintenance;
@@ -557,6 +569,7 @@ struct VulkanRenderer::Impl {
         std::cout << "Presentation retirement: "
                   << (present_fences ? "EXT_swapchain_maintenance1 fences" : "Vulkan 1.1 wait-idle fallback") << '\n';
         std::cout << "BC7 textures: " << (bc7_sampled ? "sampled as BC7" : "decoded to RGBA8 on the CPU") << '\n';
+        std::cout << "Texture anisotropy: " << anisotropy << '\n';
     }
     void create_frame_resources() {
         VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -1108,7 +1121,13 @@ struct VulkanRenderer::Impl {
         // always magnify, applying magFilter instead.
         constexpr float unmipmapped_max_lod = .25F;
         info.maxLod = source.mipmapped ? static_cast<float>(levels - 1) : unmipmapped_max_lod;
-        info.maxAnisotropy = 1;
+        // Anisotropic filtering samples a finer mip level several times along the footprint's long axis. Vulkan
+        // leaves the scheme to the implementation, including how it combines with nearest filters, so only linear,
+        // mipmapped samplers use it and nearest and unmipmapped ones keep glTF's exact filters.
+        const bool anisotropic =
+            anisotropy > 1 && source.mag == Filter::linear && source.min == Filter::linear && source.mipmapped;
+        info.anisotropyEnable = anisotropic ? VK_TRUE : VK_FALSE;
+        info.maxAnisotropy = anisotropic ? anisotropy : 1;
         auto sampler = std::make_shared<GpuSampler>();
         sampler->device = device;
         check(vkCreateSampler(device, &info, nullptr, &sampler->handle), "Create material sampler");
@@ -1915,6 +1934,7 @@ void VulkanRenderer::request_capture() {
 }
 std::optional<CapturedImage> VulkanRenderer::take_capture() { return std::exchange(impl_->captured_image, {}); }
 bool VulkanRenderer::samples_bc7() const noexcept { return impl_->bc7_sampled; }
+float VulkanRenderer::max_anisotropy() const noexcept { return impl_->anisotropy; }
 void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
     impl_->running();
     for (float value : view_projection)

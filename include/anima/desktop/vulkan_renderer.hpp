@@ -67,6 +67,12 @@ struct RendererOptions {
     /// Uploads ImageFormat::bc7 images decoded to RGBA8, as on a device that cannot sample BC7, even where the
     /// device can; see VulkanRenderer::samples_bc7.
     bool decode_bc7 = false;
+    /// Most samples that a material texture's filter takes along the direction in which a pixel's footprint on the
+    /// texture is longest, as Vulkan's `maxAnisotropy`; 1 filters isotropically, choosing a mip level by the longest
+    /// axis alone, which blurs surfaces seen at a glancing angle. Must be finite and at least 1, or construction
+    /// throws `std::invalid_argument`. The renderer uses at most the device's limit; see
+    /// VulkanRenderer::max_anisotropy.
+    float max_anisotropy = 16;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -270,7 +276,9 @@ struct ResourceStats {
 /// reflectance for dielectrics. Base color is the base color texture, decoded from sRGB before filtering,
 /// times the vertex color and material factor, clamped to [0, 1]. The metallic and roughness factors multiply
 /// the blue and green channels of the metallic-roughness texture, occlusion (red) scales only ambient light,
-/// and emission is added before fog. Textures use their Sampler filters and wrap modes. ImageFormat::rgba8 images
+/// and emission is added before fog. Textures use their Sampler filters and wrap modes, and a texture whose
+/// magnification and minification filters are linear and that samples a mip chain also filters anisotropically, up
+/// to max_anisotropy() samples; nearest and unmipmapped textures never do. ImageFormat::rgba8 images
 /// get mip chains built on the CPU when mipmapped. ImageFormat::bc7 images upload the levels they store, or only
 /// the base level for an unmipmapped texture, and a single stored level samples as an unmipmapped texture does: as
 /// `VK_FORMAT_BC7_SRGB_BLOCK` or `VK_FORMAT_BC7_UNORM_BLOCK` by the texture's encoding where samples_bc7() is true,
@@ -351,10 +359,12 @@ class VulkanRenderer {
     /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that
     /// supports swapchains and can present to the window; the first draw() with a drawable window creates the
     /// swapchain. Throws `std::invalid_argument` for a RendererOptions::fail_after stage that the option says
-    /// construction rejects, before anything else, and for a null @p window; RendererUnavailableError when no
-    /// driver or device can present to the window; what set_scenes() throws for the initial selection;
-    /// InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for other failures,
-    /// including failed Vulkan calls. Completed stages are released before the exception propagates.
+    /// construction rejects, before anything else, then for a RendererOptions::max_anisotropy that is not finite or
+    /// is below 1 ("Maximum anisotropy must be finite and at least 1") and for a null @p window;
+    /// RendererUnavailableError when no driver or device can present to the window; what set_scenes() throws for
+    /// the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
+    /// other failures, including failed Vulkan calls. Completed stages are released before the exception
+    /// propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -454,6 +464,12 @@ class VulkanRenderer {
     /// them to RGBA8 on the CPU. Desktop GPUs sample BC7; an application that would rather load other images than
     /// pay for decoding can ask here first.
     [[nodiscard]] bool samples_bc7() const noexcept;
+    /// The anisotropy that textures filter with, which the constructor decides once: the smaller of
+    /// RendererOptions::max_anisotropy and the device's `maxSamplerAnisotropy`, or 1 on a device without the
+    /// `samplerAnisotropy` feature. Only textures whose magnification and minification filters are linear and that
+    /// sample a mip chain use it, custom material textures included; changing it requires a new renderer, since
+    /// every material's descriptors hold its samplers.
+    [[nodiscard]] float max_anisotropy() const noexcept;
     /// Prepares, records, submits and presents one frame; does not advance simulation or animation.
     ///
     /// Returns false while the window is hidden, minimized or zero-sized, when no image is acquired within
