@@ -1,4 +1,5 @@
 #pragma once
+#include "rejection.hpp"
 #include <algorithm>
 #include <anima/prefab_variant.hpp>
 #include <array>
@@ -12,14 +13,7 @@ inline void check(bool value, const char *reason) {
     if (!value)
         throw std::runtime_error(reason);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid prefab variant operation was accepted");
-}
+using rejection::rejects;
 inline std::shared_ptr<const Mesh> mesh(float extent = 1) {
     Asset asset;
     asset.nodes.resize(1);
@@ -123,7 +117,7 @@ inline void native_and_resources() {
               !rendered.visible && !rendered.primitive_visible[0] && rendered.factors[0].x == 0.2F &&
               !rendered.casts_shadows,
           "Resolved variant did not instantiate its native state or placement");
-    rejects([&] { (void)children[0].renderer(); });
+    rejects<std::logic_error>([&] { (void)children[0].renderer(); }, "GameObject has no MeshRenderer");
 
     nodes[0].name = "edited base root";
     nodes[0].local[12] = 12;
@@ -140,16 +134,23 @@ inline void native_and_resources() {
           "Empty variant failed to inherit its entire base");
     nodes[1].key = {100};
     base = std::make_shared<const Prefab>(nodes);
-    rejects([&] { (void)restored.resolve(resolve, {}); });
-    rejects([&] { (void)restored.resolve({}, {}); });
-    rejects([&] { (void)restored.resolve([](auto) -> std::shared_ptr<const Prefab> { return {}; }, {}); });
-    rejects([&] { (void)PrefabVariant::deserialize(document, {}); });
-    rejects(
-        [&] { (void)PrefabVariant::deserialize(document, [](auto) -> std::shared_ptr<const Mesh> { return {}; }); });
-    rejects([&] { (void)variant.serialize([](const auto &) { return ""; }); });
+    rejects<std::invalid_argument>([&] { (void)restored.resolve(resolve, {}); }, "Unknown prefab variant object key");
+    rejects<std::invalid_argument>([&] { (void)restored.resolve({}, {}); },
+                                   "Prefab variant resolution needs a base resolver");
+    rejects<std::invalid_argument>(
+        [&] { (void)restored.resolve([](auto) -> std::shared_ptr<const Prefab> { return {}; }, {}); },
+        "Prefab variant base key could not be resolved");
+    rejects<std::invalid_argument>([&] { (void)PrefabVariant::deserialize(document, {}); },
+                                   "Prefab variant loading needs a mesh resolver");
+    rejects<std::invalid_argument>(
+        [&] { (void)PrefabVariant::deserialize(document, [](auto) -> std::shared_ptr<const Mesh> { return {}; }); },
+        "Prefab variant mesh key could not be resolved");
+    rejects<std::invalid_argument>([&] { (void)variant.serialize([](const auto &) { return ""; }); },
+                                   "Invalid prefab variant resource or component key");
     other.renderer->mesh = mesh();
     const PrefabVariant collision("props/base", {root, other});
-    rejects([&] { (void)collision.serialize([](const auto &) { return "same-key"; }); });
+    rejects<std::invalid_argument>([&] { (void)collision.serialize([](const auto &) { return "same-key"; }); },
+                                   "Different meshes share a prefab variant resource key");
 }
 struct Counts {
     int live{}, enabled{};
@@ -217,7 +218,7 @@ inline void links_and_bindings() {
     check(source_counts.live == 0 && destination_counts.live == 0 && destination_counts.decoded.empty() &&
               base->serialize({}) == before,
           "Variant resolution executed codecs, retained source bindings or changed the base");
-    rejects([&] { (void)variant.resolve(resolve, {}); });
+    rejects<std::invalid_argument>([&] { (void)variant.resolve(resolve, {}); }, "Unknown serialized component type");
     Scene scene, other_scene;
     auto first = result.instantiate(scene), second = result.instantiate(scene);
     const auto first_children = first.children(), second_children = second.children();
@@ -244,10 +245,10 @@ inline void links_and_bindings() {
     check(destination_counts.enabled == 6, "Variant changed inherited component enablement");
     auto sentinel = scene.create();
     const auto count_before = scene.size();
-    const auto failed_instance = [&](const PrefabVariant &bad) {
+    const auto failed_instance = [&](const PrefabVariant &bad, std::string_view expected) {
         const auto decoded_before = destination_counts.decoded.size();
         const auto prefab = bad.resolve(resolve, destination);
-        rejects([&] { (void)prefab.instantiate(scene); });
+        rejects<std::invalid_argument>([&] { (void)prefab.instantiate(scene); }, expected);
         check(scene.size() == count_before && sentinel.valid() && first.valid() && second.valid() &&
                   destination_counts.live == 8,
               "Failed variant decoder leaked objects/resources or changed existing instances");
@@ -258,20 +259,28 @@ inline void links_and_bindings() {
     };
     auto bad_link = last;
     bad_link.set_components.push_back({"test.a-link.v1", "99999", true});
-    failed_instance(PrefabVariant("linked/base", {root, child, bad_link}));
+    failed_instance(PrefabVariant("linked/base", {root, child, bad_link}),
+                    "Object reference target is missing or expired");
     auto late_failure = child;
     late_failure.remove_components.clear();
     late_failure.set_components = {{"test.z-marker.v1", "fail", true}};
-    failed_instance(PrefabVariant("linked/base", {root, late_failure, last}));
+    failed_instance(PrefabVariant("linked/base", {root, late_failure, last}),
+                    "Variant fixture rejected a late component payload");
     auto unknown_type = root;
     unknown_type.set_components = {{"test.unknown.v1", "", true}};
-    rejects([&] { (void)PrefabVariant("linked/base", {unknown_type}).resolve(resolve, destination); });
+    rejects<std::invalid_argument>(
+        [&] { (void)PrefabVariant("linked/base", {unknown_type}).resolve(resolve, destination); },
+        "Unknown serialized component type");
     auto unknown_removed = child;
     unknown_removed.remove_components = {"test.absent.v1"};
-    rejects([&] { (void)PrefabVariant("linked/base", {unknown_removed}).resolve(resolve, destination); });
+    rejects<std::invalid_argument>(
+        [&] { (void)PrefabVariant("linked/base", {unknown_removed}).resolve(resolve, destination); },
+        "Unknown prefab variant component removal");
     auto unknown_target = root;
     unknown_target.key = {9999};
-    rejects([&] { (void)PrefabVariant("linked/base", {unknown_target}).resolve(resolve, destination); });
+    rejects<std::invalid_argument>(
+        [&] { (void)PrefabVariant("linked/base", {unknown_target}).resolve(resolve, destination); },
+        "Unknown prefab variant object key");
     check(base->serialize({}) == before && authored.serialize({}) == variant.serialize({}),
           "Resolving or instantiating variants mutated authored state");
 }
@@ -364,7 +373,8 @@ inline void composed_transforms() {
     const auto unscaled = std::make_shared<const Prefab>(unscaled_nodes);
     const auto unscaled_before = unscaled->serialize({});
     const PrefabVariant overflowing_pose("base", {child});
-    rejects([&] { (void)overflowing_pose.resolve([&](auto) { return unscaled; }, {}); });
+    rejects<std::invalid_argument>([&] { (void)overflowing_pose.resolve([&](auto) { return unscaled; }, {}); },
+                                   "Non-finite render bounds");
     check(unscaled->serialize({}) == unscaled_before, "Failed world-space pose validation changed the resolved base");
 }
 inline void deferred_renderer_bounds() {
@@ -388,7 +398,8 @@ inline void deferred_renderer_bounds() {
 
     change.renderer->pose->world[0] = identity();
     const PrefabVariant overflowing("base", {change});
-    rejects([&] { (void)overflowing.resolve([&](auto) { return base; }, {}); });
+    rejects<std::invalid_argument>([&] { (void)overflowing.resolve([&](auto) { return base; }, {}); },
+                                   "Non-finite render bounds");
     check(instance.valid() && scene.size() == 1 && !base->nodes()[0].mesh,
           "Deferred variant bounds validation accepted overflow or changed existing authored/runtime state");
 }

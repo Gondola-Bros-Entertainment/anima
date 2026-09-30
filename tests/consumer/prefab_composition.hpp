@@ -1,4 +1,5 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/prefab_composition.hpp>
 #include <array>
 #include <cmath>
@@ -11,14 +12,7 @@ inline void check(bool value, const char *reason) {
     if (!value)
         throw std::runtime_error(reason);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid prefab composition operation was accepted");
-}
+using rejection::rejects;
 inline Mat4 translated(float x) {
     auto result = identity();
     result[12] = x;
@@ -176,19 +170,22 @@ inline void linked_parts() {
     auto sentinel = scene.create();
     const auto existing = scene.size();
     const auto validation_failure = [&](const PrefabComposition &invalid, const PrefabResolver &resolver,
-                                        const ComponentCodecs &registry) {
+                                        const ComponentCodecs &registry, std::string_view expected) {
         const auto before_decodes = destination_counts.decoded.size();
-        rejects([&] { (void)invalid.instantiate(scene, resolver, registry); });
+        rejects<std::invalid_argument>([&] { (void)invalid.instantiate(scene, resolver, registry); }, expected);
         check(scene.size() == existing && sentinel.valid() && first.valid() && second.valid() &&
                   destination_counts.live == 24 && destination_counts.decoded.size() == before_decodes,
               "Composition validation created objects, ran decoders or changed destination state");
     };
-    validation_failure(composition, {}, destination);
-    validation_failure(composition, [](auto) -> std::shared_ptr<const Prefab> { return {}; }, destination);
-    validation_failure(composition, resolve, {});
+    constexpr std::string_view unresolved = "Prefab composition resource key could not be resolved";
+    constexpr std::string_view unknown_component = "Unknown serialized component type";
+    validation_failure(composition, {}, destination, "Prefab composition instantiation needs a resource resolver");
+    validation_failure(composition, [](auto) -> std::shared_ptr<const Prefab> { return {}; }, destination, unresolved);
+    validation_failure(composition, resolve, {}, unknown_component);
     auto invalid_mount = parts();
     invalid_mount[2].parent->object = {99999};
-    validation_failure(PrefabComposition(invalid_mount), resolve, destination);
+    validation_failure(PrefabComposition(invalid_mount), resolve, destination,
+                       "Prefab composition mount object is missing");
     auto unknown_nodes = authored;
     unknown_nodes.back().components.push_back({"test.extra.v1", "", true});
     const auto unknown_type = std::make_shared<const Prefab>(unknown_nodes, source);
@@ -196,21 +193,23 @@ inline void linked_parts() {
     different_parts.back().prefab = "different";
     validation_failure(
         PrefabComposition(different_parts),
-        [&](std::string_view key) { return key == "different" ? std::shared_ptr<const Prefab>{} : base; }, destination);
+        [&](std::string_view key) { return key == "different" ? std::shared_ptr<const Prefab>{} : base; }, destination,
+        unresolved);
     validation_failure(
         PrefabComposition(different_parts),
-        [&](std::string_view key) { return key == "different" ? unknown_type : base; }, destination);
+        [&](std::string_view key) { return key == "different" ? unknown_type : base; }, destination, unknown_component);
     auto next = scene.create();
     check(next.key().value == sentinel.key().value + 1,
           "Composition validation consumed destination identities before rejecting");
     next.destroy();
 
-    const auto failed_decode = [&](const PrefabComposition &invalid, const PrefabResolver &resolver) {
+    const auto failed_decode = [&](const PrefabComposition &invalid, const PrefabResolver &resolver,
+                                   std::string_view expected) {
         const auto before_decodes = destination_counts.decoded.size();
         destination_counts.expected_objects = existing + 12;
         destination_counts.retirement_start = before_decodes;
         destination_counts.check_retirement = true;
-        rejects([&] { (void)invalid.instantiate(scene, resolver, destination); });
+        rejects<std::invalid_argument>([&] { (void)invalid.instantiate(scene, resolver, destination); }, expected);
         destination_counts.check_retirement = false;
         check(scene.size() == existing && sentinel.valid() && first.valid() && second.valid() &&
                   destination_counts.live == 24 && destination_counts.all_native_ready &&
@@ -220,26 +219,30 @@ inline void linked_parts() {
             check(!destination_counts.decoded[i].valid(), "Composition rollback left a staged part alive");
     };
     destination_counts.fail_after_links = destination_counts.decoded.size() + 9;
-    failed_decode(composition, resolve);
+    failed_decode(composition, resolve, "Late composition fixture decoder failure");
     destination_counts.fail_after_links = 0;
     auto broken_nodes = authored;
     broken_nodes.back().components[0].state = "99999";
     const auto broken = std::make_shared<const Prefab>(broken_nodes, source);
     int shared_calls = 0, different_calls = 0;
-    failed_decode(PrefabComposition(different_parts), [&](std::string_view key) {
-        if (key == "different") {
-            ++different_calls;
-            return broken;
-        }
-        ++shared_calls;
-        return base;
-    });
+    failed_decode(
+        PrefabComposition(different_parts),
+        [&](std::string_view key) {
+            if (key == "different") {
+                ++different_calls;
+                return broken;
+            }
+            ++shared_calls;
+            return base;
+        },
+        "Object reference target is missing or expired");
     check(shared_calls == 1 && different_calls == 1 && composition.serialize() == document &&
               source_counts.decoded.empty(),
           "Failed composition lost resource caching, changed authored state or invoked source-bound codecs");
     auto stale = other_scene.create();
     stale.destroy();
-    rejects([&] { (void)composition.instantiate(stale, resolve, alternate); });
+    rejects<std::out_of_range>([&] { (void)composition.instantiate(stale, resolve, alternate); },
+                               "Expired GameObject handle");
 }
 inline void composed_bounds() {
     Asset asset;
@@ -284,7 +287,8 @@ inline void composed_bounds() {
     mount.local = identity();
     anchor = std::make_shared<const Prefab>(std::vector{mount});
     const auto before = scene.size();
-    rejects([&] { (void)PrefabComposition(graph).instantiate(scene, resolve, {}); });
+    rejects<std::invalid_argument>([&] { (void)PrefabComposition(graph).instantiate(scene, resolve, {}); },
+                                   "Non-finite render bounds");
     check(scene.size() == before && first.valid() && second.valid() && child.valid() && second_child.valid(),
           "Composition accepted overflowing final bounds or failed to retire its partially staged native graph");
 
@@ -303,8 +307,8 @@ inline void composed_bounds() {
               direct.parent()->id() == parent.id() && composed.parent()->id() == parent.id(),
           "Prefab or composition staged renderer bounds before applying its external-parent placement");
     const auto external_before = external_scene.size();
-    rejects([&] { (void)visual->instantiate(parent); });
-    rejects([&] { (void)single.instantiate(parent, resolve, {}); });
+    rejects<std::invalid_argument>([&] { (void)visual->instantiate(parent); }, "Non-finite render bounds");
+    rejects<std::invalid_argument>([&] { (void)single.instantiate(parent, resolve, {}); }, "Non-finite render bounds");
     check(external_scene.size() == external_before && parent.valid() && direct.valid() && composed.valid() &&
               parent.children().size() == 2,
           "Uncompensated external-parent overflow leaked staged prefab objects or altered existing children");

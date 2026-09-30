@@ -1,6 +1,7 @@
 #pragma once
 #include "gpu_checks.hpp"
 #include "reference.hpp"
+#include "rejection.hpp"
 #include "resources.hpp"
 #include <anima/lighting.hpp>
 #include <anima/scene_set.hpp>
@@ -595,13 +596,13 @@ inline int run(int argc, char **argv) {
     capture("scene-light-restored");
     settings = authored->find(settings_key).get_component<anima::SceneEnvironment>();
     settings->sun = sun;
-    resource_test::rejects<std::invalid_argument>(
-        [&] { renderer.set_environment(anima::lighting_environment(lighting)); });
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_environment(anima::lighting_environment(lighting)); },
+                                              "Selected light must be a live object in the scene selection");
     capture("scene-light-rejected");
     settings->sun = authored->find(sun_key);
     settings->sun.set_active(false);
-    resource_test::rejects<std::invalid_argument>(
-        [&] { renderer.set_environment(anima::lighting_environment(lighting)); });
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_environment(anima::lighting_environment(lighting)); },
+                                              "Selected light must have an active DirectionalLightComponent");
     capture("scene-light-inactive");
     // Subsequent checks use the same accepted immediate environment as before.
     renderer.set_environment(environment);
@@ -624,10 +625,13 @@ inline int run(int argc, char **argv) {
     renderer.set_frustum_culling(false);
     capture("multi-scene-unculled");
     renderer.set_frustum_culling(true);
-    resource_test::rejects<std::invalid_argument>([&] { renderer.set_scenes({scene, scene}); });
-    resource_test::rejects<std::invalid_argument>([&] { renderer.set_scenes({scene, nullptr}); });
-    resource_test::rejects<std::runtime_error>(
-        [&] { renderer.set_scenes({caster.render_scene()}, {anima::RendererFailureStage::ready}); });
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_scenes({scene, scene}); },
+                                              "Renderer selection contains a duplicate scene");
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_scenes({scene, nullptr}); },
+                                              "Renderer selection contains a null scene");
+    rejection::rejects<std::runtime_error>(
+        [&] { renderer.set_scenes({caster.render_scene()}, {anima::RendererFailureStage::ready}); },
+        "Injected resource preparation failure after ready");
     capture("multi-scene-rejected");
     layers.unload(caster);
     capture("multi-scene-unloaded");
@@ -639,7 +643,8 @@ inline int run(int argc, char **argv) {
     renderer.set_frustum_culling(true);
     auto bad = environment;
     bad.exposure = std::numeric_limits<float>::quiet_NaN();
-    resource_test::rejects<std::invalid_argument>([&] { renderer.set_environment(bad); });
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_environment(bad); },
+                                              "Invalid environment exposure or fog density");
     capture("invalid-preserved");
     renderer.set_scenes({reference_test::scene(anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset)))});
     capture("reference-shadowed");
@@ -680,7 +685,8 @@ inline int run(int argc, char **argv) {
     renderer.set_scenes({scene});
     bad = environment;
     bad.detail_shadow.resolution = std::numeric_limits<std::uint32_t>::max();
-    resource_test::rejects<std::invalid_argument>([&] { renderer.set_environment(bad); });
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_environment(bad); },
+                                              "Shadow resolution exceeds device capabilities");
     capture("detail-invalid-preserved");
     environment.detail_shadow.center.x = .0001F;
     renderer.set_environment(environment);

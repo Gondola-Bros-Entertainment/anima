@@ -1,10 +1,12 @@
 #pragma once
 #include "gpu_checks.hpp"
 #include "reference.hpp"
+#include "rejection.hpp"
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/ui/context.hpp>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -12,6 +14,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace ui_test {
 inline void require(bool value, const char *message) {
@@ -141,13 +144,8 @@ inline int run(int argc, char **argv) {
     anima::UiContext ui(window.get(), renderer);
     // Exact pixel comparisons below require a stationary scroll position.
     ui.context().SetDefaultScrollBehavior(Rml::ScrollBehavior::Instant, 1.F);
-    bool duplicate_rejected = false;
-    try {
-        anima::UiContext duplicate(window.get(), renderer, "duplicate");
-    } catch (const std::logic_error &) {
-        duplicate_rejected = true;
-    }
-    require(duplicate_rejected, "Second live RmlUi owner was accepted");
+    rejection::rejects<std::logic_error>([&] { anima::UiContext duplicate(window.get(), renderer, "duplicate"); },
+                                         "Only one live Anima UI context is supported");
     ui.load_font(assets / "LatoLatin-Regular.ttf");
     auto document = ui.open_document(assets / "controls.rml");
     auto &doc = document.native();
@@ -566,7 +564,11 @@ inline int run(int argc, char **argv) {
         again.shutdown();
     }
     unsigned rejected_features = 0, unsupported_warnings = 0;
-    for (const auto *style : {"filter: blur(2px);", "transform: rotate(15deg); overflow: hidden;"}) {
+    constexpr std::array<std::pair<const char *, const char *>, 2> unsupported_styles{
+        {{"filter: blur(2px);", "Unsupported RmlUi render feature: filters"},
+         {"transform: rotate(15deg); overflow: hidden;",
+          "Unsupported RmlUi render feature: clip masks/rounded or transformed clipping"}}};
+    for (const auto &[style, failure] : unsupported_styles) {
         anima::UiContext unsupported(window.get(), renderer);
         auto invalid = unsupported.documents().from_memory(
             std::string(
@@ -576,15 +578,9 @@ inline int run(int argc, char **argv) {
         require(invalid.valid(), "Unsupported-feature fixture did not load");
         invalid.show();
         unsupported.update();
-        for (unsigned attempt = 0; attempt < 2; ++attempt) {
-            bool rejected = false;
-            try {
-                (void)unsupported.render();
-            } catch (const anima::UiUnsupportedFeature &) {
-                rejected = true;
-            }
-            require(rejected, "Unsupported render feature was silently accepted or ceased failing");
-        }
+        // The context keeps reporting the feature rather than rendering past it.
+        for (unsigned attempt = 0; attempt < 2; ++attempt)
+            rejection::rejects<anima::UiUnsupportedFeature>([&] { (void)unsupported.render(); }, failure);
         ++rejected_features;
         unsupported_warnings += unsupported.stats().log_warnings;
         require(!unsupported.stats().log_errors, "Unsupported-feature fixture emitted an RmlUi error");
@@ -649,13 +645,9 @@ inline int run(int argc, char **argv) {
         failing.update();
         anima::SceneReplacementOptions device_loss;
         device_loss.fail_after = anima::RendererFailureStage::device_lost;
-        bool fatal = false;
-        try {
-            renderer.set_scenes({reference_test::scene(*mesh)}, device_loss);
-        } catch (const anima::RendererFatalError &) {
-            fatal = true;
-        }
-        require(fatal, "Injected device loss did not make the renderer fatal");
+        rejection::rejects<anima::RendererFatalError>(
+            [&] { renderer.set_scenes({reference_test::scene(*mesh)}, device_loss); },
+            "Device lost while retiring resource upload");
         std::string drawn, rendered;
         try {
             (void)renderer.draw();

@@ -1,5 +1,6 @@
 #pragma once
 #include "components.hpp"
+#include "rejection.hpp"
 #include <anima/animation.hpp>
 #include <anima/prefab.hpp>
 #include <anima/terrain.hpp>
@@ -11,14 +12,7 @@ inline void require(bool value, const char *message) {
     if (!value)
         throw std::runtime_error(message);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid object operation was accepted");
-}
+using rejection::rejects;
 inline std::shared_ptr<const anima::Asset> source() {
     auto asset = std::make_shared<anima::Asset>();
     asset->nodes.resize(1);
@@ -73,10 +67,11 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
     const auto accepted = child.world_matrix();
     child.set_parent(root);
     require(root.children().size() == 1 && child.world_matrix() == accepted, "Repeated parenting duplicated a child");
-    rejects([&] { root.set_parent(tip); });
-    rejects([&] { child.set_parent(child); });
-    rejects([&] { child.set_parent(foreign.create()); });
-    rejects([&] { child.set_parent({}); });
+    rejects<std::invalid_argument>([&] { root.set_parent(tip); }, "GameObject parenting would create a cycle");
+    rejects<std::invalid_argument>([&] { child.set_parent(child); }, "GameObject parenting would create a cycle");
+    rejects<std::invalid_argument>([&] { child.set_parent(foreign.create()); },
+                                   "GameObject parent belongs to another scene");
+    rejects<std::out_of_range>([&] { child.set_parent({}); }, "Expired GameObject handle");
     require(!root.parent() && child.world_matrix() == accepted && root.children().size() == 1,
             "Rejected parent changed accepted hierarchy");
     child.clear_parent();
@@ -100,10 +95,12 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
 
     auto collapsed = scene.create("Collapsed");
     collapsed.transform().set({.scale = {0, 1, 1}});
-    rejects([&] { child.set_parent(collapsed); });
+    rejects<anima::MathError>([&] { child.set_parent(collapsed); },
+                              anima::math_error_message(anima::MathErrorCode::singular_matrix));
     child.set_parent(collapsed, ReparentMode::keep_local);
     (void)animator.update(.1); // Pose-only changes need no parent inverse.
-    rejects([&] { child.set_position({1, 0, 0}); });
+    rejects<anima::MathError>([&] { child.set_position({1, 0, 0}); },
+                              anima::math_error_message(anima::MathErrorCode::singular_matrix));
     child.transform().set_local_position({3, 2, 0});
     require(child.local_position().x == 3 && child.position().x == 0,
             "Singular parents prevented explicit local-space updates");
@@ -116,13 +113,14 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
     const auto before = scene.instance(large.id()).palette;
     auto overflow = identity();
     overflow[0] = std::numeric_limits<float>::max();
-    rejects([&] { group.set_world_matrix(overflow); });
+    rejects<std::invalid_argument>([&] { group.set_world_matrix(overflow); }, "Non-finite instance transform");
     require(group.world_matrix() == identity() && large.local_matrix()[0] == 2 &&
                 scene.instance(large.id()).palette == before,
             "Descendant overflow partially published a hierarchy transform");
     auto huge_parent = scene.create("Huge parent");
     huge_parent.set_world_matrix(overflow);
-    rejects([&] { group.set_parent(huge_parent, ReparentMode::keep_local); });
+    rejects<std::invalid_argument>([&] { group.set_parent(huge_parent, ReparentMode::keep_local); },
+                                   "Non-finite instance transform");
     require(!group.parent() && huge_parent.children().empty() && group.world_matrix() == identity(),
             "Failed reparenting changed parent links or root placement");
     group.destroy();
@@ -222,36 +220,45 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
     const auto restored = Prefab::deserialize(saved, resolve);
     const auto restored_root = restored.instantiate(*loaded);
     require(restored_root.children().front().children().front().name() == "Socket", "Serialized prefab lost nesting");
-    rejects([&] { (void)load_scene(saved, resolve); });
-    rejects([&] { (void)Prefab::deserialize(document, resolve); });
-    rejects([&] { (void)load_scene(document, {}); });
-    rejects([&] { (void)load_scene(document, [](auto) { return std::shared_ptr<const Mesh>{}; }); });
+    rejects<std::invalid_argument>([&] { (void)load_scene(saved, resolve); }, "Invalid scene document kind");
+    rejects<std::invalid_argument>([&] { (void)Prefab::deserialize(document, resolve); },
+                                   "Invalid scene document kind");
+    rejects<std::invalid_argument>([&] { (void)load_scene(document, {}); },
+                                   "Scene loading needs a mesh resolver and key");
+    rejects<std::invalid_argument>(
+        [&] { (void)load_scene(document, [](auto) { return std::shared_ptr<const Mesh>{}; }); },
+        "Scene mesh key could not be resolved");
     auto invalid_version = document;
     const auto version = invalid_version.find("\"version\": 3");
     require(version != std::string::npos, "Missing serialized scene version");
     invalid_version.replace(version, 12, "\"version\": null");
-    rejects([&] { (void)load_scene(invalid_version, resolve); });
+    rejects<std::invalid_argument>([&] { (void)load_scene(invalid_version, resolve); },
+                                   "Unsupported scene document version");
     auto duplicate_version = document;
     duplicate_version.replace(version, 12, "\"version\": 3, \"version\": 3");
-    rejects([&] { (void)load_scene(duplicate_version, resolve); });
+    rejects<std::invalid_argument>([&] { (void)load_scene(duplicate_version, resolve); },
+                                   "Duplicate JSON document field");
     auto cyclic = saved;
     const auto parent = cyclic.find("\"parent\": null");
     cyclic.replace(parent, 14, "\"parent\": 0");
-    rejects([&] { (void)Prefab::deserialize(cyclic, resolve); });
-    rejects([&] { (void)load_scene(std::string(20, '[') + std::string(20, ']'), resolve); });
+    rejects<std::invalid_argument>([&] { (void)Prefab::deserialize(cyclic, resolve); },
+                                   "Scene parent must precede its child");
+    rejects<std::invalid_argument>([&] { (void)load_scene(std::string(20, '[') + std::string(20, ']'), resolve); },
+                                   "JSON document exceeds nesting limit");
     Scene no_objects;
     require(load_scene(serialize_scene(no_objects, {}), {})->size() == 0, "Empty scene failed to roundtrip");
     auto another_mesh = target.create("Different resource", Mesh::compile(*asset));
-    rejects([&] { (void)serialize_scene(target, [](const auto &) { return "duplicate-key"; }); });
+    rejects<std::invalid_argument>([&] { (void)serialize_scene(target, [](const auto &) { return "duplicate-key"; }); },
+                                   "Different meshes share a scene resource key");
     another_mesh.destroy();
 
-    rejects([&] { Prefab invalid({}); });
+    rejects<std::invalid_argument>([&] { Prefab invalid({}); }, "Invalid prefab object count");
     Prefab::Node invalid_node;
     invalid_node.parent = 0;
-    rejects([&] { Prefab invalid({invalid_node}); });
+    rejects<std::invalid_argument>([&] { Prefab invalid({invalid_node}); }, "Scene parent must precede its child");
     invalid_node.parent.reset();
     invalid_node.local[3] = 1;
-    rejects([&] { Prefab invalid({invalid_node}); });
+    rejects<std::invalid_argument>([&] { Prefab invalid({invalid_node}); }, "Instance transform must be affine");
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     nodes[1].local[0] = 2;
     const Prefab large(nodes);
@@ -261,7 +268,7 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
     huge.set_world_matrix(huge_matrix);
     const auto count = target.size();
     const auto palette = target.instance(part.id()).palette;
-    rejects([&] { (void)large.instantiate(huge); });
+    rejects<std::invalid_argument>([&] { (void)large.instantiate(huge); }, "Non-finite instance transform");
     require(target.size() == count && huge.children().empty() && target.instance(part.id()).palette == palette,
             "Failed prefab instantiation leaked objects or changed the existing scene");
     first.destroy();
@@ -269,8 +276,8 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
 
     auto health = root.add_component<components_test::Health>(42);
     health.set_enabled(false);
-    rejects([&] { (void)Prefab::capture(root); });
-    rejects([&] { (void)serialize_scene(source, name); });
+    rejects<std::invalid_argument>([&] { (void)Prefab::capture(root); }, "Component has no persistence codec");
+    rejects<std::invalid_argument>([&] { (void)serialize_scene(source, name); }, "Component has no persistence codec");
     ComponentCodecs codecs;
     const auto encode_health = [](const components_test::Health &value, const ObjectReferences &) {
         return std::to_string(value.value);
@@ -284,7 +291,9 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
             throw std::invalid_argument("Health state must contain only an integer");
     };
     codecs.add<components_test::Health>("consumer.health.v1", encode_health, decode_health);
-    rejects([&] { codecs.add<components_test::Health>("duplicate", encode_health, decode_health); });
+    rejects<std::invalid_argument>(
+        [&] { codecs.add<components_test::Health>("duplicate", encode_health, decode_health); },
+        "Duplicate component codec");
     const auto composed = Prefab::capture(root, codecs);
     const auto encoded = composed.serialize(name);
     const auto restored_components = Prefab::deserialize(encoded, resolve, codecs);
@@ -298,14 +307,16 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
     auto component_scene = load_scene(saved_components, resolve, codecs);
     require(component_scene->components<components_test::Health>().front()->value == 42,
             "Scene roundtrip dropped a user-defined component");
-    rejects([&] { (void)load_scene(saved_components, resolve); });
+    rejects<std::invalid_argument>([&] { (void)load_scene(saved_components, resolve); },
+                                   "Unknown serialized component type");
     nodes.assign(composed.nodes().begin(), composed.nodes().end());
     nodes[0].components[0].state = "42trailing";
     const auto before_decodes = decodes;
     const auto failing = Prefab::deserialize(Prefab(nodes, codecs).serialize(name), resolve, codecs);
     require(decodes == before_decodes, "Prefab validation ran application component constructors");
     const auto before_failure = target.size();
-    rejects([&] { (void)failing.instantiate(target); });
+    rejects<std::invalid_argument>([&] { (void)failing.instantiate(target); },
+                                   "Health state must contain only an integer");
     require(decodes == before_decodes + 1 && target.size() == before_failure && custom_health->value == 7,
             "Failed component restoration leaked a prefab or changed another instance");
 }
@@ -329,12 +340,12 @@ inline void run() {
     renderer.set_material_factor(0, {.2F, .7F, .9F});
     require(scene.instance(other.id()).factors[0].x == 1 && mesh->materials()->material_data[0].factor.x == 1,
             "Per-object material override mutated another object or resource");
-    rejects([&] { (void)foreign.object(empty.id()); });
-    rejects([&] { (void)empty.add_mesh(mesh); });
+    rejects<std::out_of_range>([&] { (void)foreign.object(empty.id()); }, "Stale or foreign GameObject handle");
+    rejects<std::logic_error>([&] { (void)empty.add_mesh(mesh); }, "GameObject already has a MeshRenderer");
     auto broken = identity();
     broken[12] = std::numeric_limits<float>::infinity();
     const auto accepted = scene.instance(empty.id()).palette;
-    rejects([&] { empty.set_world_matrix(broken); });
+    rejects<std::invalid_argument>([&] { empty.set_world_matrix(broken); }, "Non-finite instance transform");
     require(scene.instance(empty.id()).palette == accepted && empty.position().x == 4,
             "Rejected transform changed accepted object state");
     Animator animator(empty, asset), independent(other, asset);
@@ -346,28 +357,29 @@ inline void run() {
     empty.set_position({8, 0, 0});
     require(scene.instance(empty.id()).palette[0][13] == 2 && scene.instance(empty.id()).palette[0][12] == 8,
             "Moving an animated object reset its pose");
-    rejects([&] { animator.play("Missing"); });
+    rejects<std::out_of_range>([&] { animator.play("Missing"); }, "Missing animation: Missing");
     require(animator.playback().time() == .5, "Rejected clip changed playback");
     auto wrong_rig = std::make_shared<Asset>(*asset);
     wrong_rig->nodes[0].name = "Other rig";
-    rejects([&] { Animator invalid_animator(empty, wrong_rig); });
+    rejects<std::invalid_argument>([&] { Animator invalid_animator(empty, wrong_rig); },
+                                   "Animator source does not match the object's mesh hierarchy and bind");
     const auto copy = empty;
     empty.remove_mesh();
     require(empty.valid() && !empty.has_renderer() && empty.position().x == 8, "Removing mesh removed the object");
-    rejects([&] { renderer.set_visible(false); });
-    rejects([&] { (void)animator.update(.1); });
+    rejects<std::logic_error>([&] { renderer.set_visible(false); }, "GameObject has no MeshRenderer");
+    rejects<std::logic_error>([&] { (void)animator.update(.1); }, "GameObject has no MeshRenderer");
     empty.destroy();
     auto reused = scene.create("Reused", mesh);
     require(!copy.valid() && reused.id().slot == copy.id().slot && reused.id().generation != copy.id().generation,
             "A recycled slot revived a stale object handle");
-    rejects([&] { (void)copy.position(); });
+    rejects<std::out_of_range>([&] { (void)copy.position(); }, "Expired GameObject handle");
     GameObject expired;
     {
         Scene temporary;
         expired = temporary.create("Temporary");
     }
     require(!expired.valid(), "Handle kept a destroyed scene alive");
-    rejects([&] { expired.set_position({}); });
+    rejects<std::out_of_range>([&] { expired.set_position({}); }, "Expired GameObject handle");
 
     const auto data = std::make_shared<TerrainData>(Heightfield{2, 2, 0, 0, 1, 1, {0, 0, 0, 1}});
     Terrain terrain(data);
@@ -382,9 +394,11 @@ inline void run() {
     TerrainAppearance invalid;
     const std::array bad_normals{Vec3{0, 1, 0}};
     invalid.normals = bad_normals;
-    rejects([&] { (void)Terrain::compile(data->view(), invalid); });
+    rejects<std::invalid_argument>([&] { (void)Terrain::compile(data->view(), invalid); },
+                                   "Invalid terrain appearance");
     const auto heights = data->view().heights;
-    rejects([&] { (void)Terrain::compile(TerrainGrid{2, 2, 1e30, 0, 1, 1, heights}); });
+    rejects<std::invalid_argument>([&] { (void)Terrain::compile(TerrainGrid{2, 2, 1e30, 0, 1, 1, heights}); },
+                                   "Terrain samples collapse at render precision");
     const auto left = Terrain::compile(TerrainGrid{2, 2, -44, -68, 1. / 3., 1. / 3., heights, 1000, 0});
     const auto right = Terrain::compile(TerrainGrid{2, 2, -44, -68, 1. / 3., 1. / 3., heights, 1001, 0});
     require(left->vertices()[left->indices()[2]].position.x == right->vertices()[right->indices()[0]].position.x,
@@ -396,8 +410,10 @@ inline void run() {
     const auto pieces = Mesh::compile_static(static_asset, {3, 0});
     require(pieces.size() == 2 && pieces[0]->indices().size() == 3 && pieces[1]->indices().size() == 3,
             "Static mesh preparation ignored its caller's geometry limit");
-    rejects([&] { (void)Mesh::compile_static(static_asset, {2, 0}); });
-    rejects([&] { (void)Mesh::compile_static(*asset, {3, 0}); });
+    rejects<std::invalid_argument>([&] { (void)Mesh::compile_static(static_asset, {2, 0}); },
+                                   "Mesh vertex limit must fit at least one triangle");
+    rejects<std::runtime_error>([&] { (void)Mesh::compile_static(*asset, {3, 0}); },
+                                "Static mesh preparation requires static geometry.");
     // Both textures share one image: texture 0 reads it as data, texture 1 as color.
     Asset textured = static_asset;
     const auto pixels = std::make_shared<Image>(Image{4, 4, std::vector<std::uint8_t>(4 * 4 * 4, 255)});

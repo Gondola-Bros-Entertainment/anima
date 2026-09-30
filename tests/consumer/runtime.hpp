@@ -1,4 +1,5 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/audio_scene.hpp>
 #include <anima/core/fixed_step.hpp>
 #include <anima/input_scene.hpp>
@@ -20,14 +21,7 @@ inline void check(bool value, const char *reason) {
     if (!value)
         throw std::runtime_error(reason);
 }
-template <class F> void rejects(F call) {
-    try {
-        call();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid multi-scene operation accepted");
-}
+using rejection::rejects;
 struct Tick {
     int *ticks;
     void on_fixed_update(double) { ++*ticks; }
@@ -38,12 +32,19 @@ struct Reentry {
     physics2d::World *plane;
     Audio *audio;
     void on_fixed_update(double seconds) {
-        rejects([&] { input::begin_frame(*scenes); });
-        rejects([&] { input::dispatch(*scenes, {input::EventType::control, {input::ControlKind::key, 44, 0}, 1}); });
-        rejects([&] { navigation::update_agents(*scenes, seconds); });
-        rejects([&] { physics::step(*scenes, *volume, seconds); });
-        rejects([&] { physics2d::step(*scenes, *plane, seconds); });
-        rejects([&] { synchronize_audio(*scenes, *audio); });
+        rejects<std::logic_error>([&] { input::begin_frame(*scenes); },
+                                  "Scene drivers cannot run during set mutation or scheduling");
+        rejects<std::logic_error>(
+            [&] { input::dispatch(*scenes, {input::EventType::control, {input::ControlKind::key, 44, 0}, 1}); },
+            "Scene drivers cannot run during set mutation or scheduling");
+        rejects<std::logic_error>([&] { navigation::update_agents(*scenes, seconds); },
+                                  "Scene drivers cannot run during set mutation or scheduling");
+        rejects<std::logic_error>([&] { physics::step(*scenes, *volume, seconds); },
+                                  "Scene drivers cannot run during set mutation or scheduling");
+        rejects<std::logic_error>([&] { physics2d::step(*scenes, *plane, seconds); },
+                                  "Scene drivers cannot run during set mutation or scheduling");
+        rejects<std::logic_error>([&] { synchronize_audio(*scenes, *audio); },
+                                  "Scene drivers cannot run during set mutation or scheduling");
     }
 };
 struct FrameCounts {
@@ -199,7 +200,8 @@ inline void prefab_destinations() {
         synchronize_audio(transferred, destination_audio);
         check(relocated.children().front().get_component<AudioSource>()->playing(),
               "Destination prefab voice did not bind to the selected mixer");
-        rejects([&] { synchronize_audio(transferred, source_audio); });
+        rejects<std::invalid_argument>([&] { synchronize_audio(transferred, source_audio); },
+                                       "Audio source belongs to another mixer");
         const auto retained = asset.instantiate(captured);
         check(source_volume.owns(retained.get_component<physics::RigidBody>()->body()) && source_volume.size() == 3 &&
                   source_plane.size() == 3,
@@ -211,7 +213,7 @@ inline void prefab_destinations() {
           "Temporary destination instances leaked physics resources");
     Scene destination;
     const auto existing = destination.create();
-    rejects([&] { (void)prefab.instantiate(destination); });
+    rejects<std::out_of_range>([&] { (void)prefab.instantiate(destination); }, "Rigid body codec world expired");
     check(destination.size() == 1, "Expired captured physics bindings leaked a staged instance");
     auto restored = prefab.instantiate(destination, identity(), destination_codecs);
     synchronize_audio(destination, destination_audio);
@@ -259,12 +261,16 @@ inline void prefab_destinations() {
          {"nested", "runtime-base", PrefabComposition::Mount{"root", base->nodes()[1].key}, identity()}});
     // The second part exceeds the destination's one-voice capacity after both
     // physics backends and the earlier part's voice have allocated resources.
-    rejects([&] { (void)paired.instantiate(destination, resolve, destination_codecs); });
+    rejects<std::length_error>([&] { (void)paired.instantiate(destination, resolve, destination_codecs); },
+                               "Audio voice limit exceeded");
     const auto failing = make_codecs(destination_volume, destination_plane, destination_audio, true);
-    rejects([&] { (void)prefab.instantiate(destination, identity(), failing); });
+    rejects<std::runtime_error>([&] { (void)prefab.instantiate(destination, identity(), failing); },
+                                "Destination prefab decoder failed");
     const auto failing_variant = variant.resolve(resolve, failing);
-    rejects([&] { (void)failing_variant.instantiate(destination); });
-    rejects([&] { (void)paired.instantiate(destination, resolve, failing); });
+    rejects<std::runtime_error>([&] { (void)failing_variant.instantiate(destination); },
+                                "Destination prefab decoder failed");
+    rejects<std::runtime_error>([&] { (void)paired.instantiate(destination, resolve, failing); },
+                                "Destination prefab decoder failed");
     std::array<float, 2> samples{};
     destination_audio.render(samples);
     const auto available_voice = destination_audio.sound(clip);
@@ -391,7 +397,8 @@ inline void scene_set_persistence() {
         check(head.get_component<AudioSource>()->playing() && !tail.get_component<AudioSource>()->playing() &&
                   head.position().y < saved3.y && tail.position().y < saved2.y && destination_counts.links_ready,
               "Restored systems failed to advance on the next application tick");
-        rejects([&] { synchronize_audio(restored, source_audio); });
+        rejects<std::invalid_argument>([&] { synchronize_audio(restored, source_audio); },
+                                       "Audio source belongs to another mixer");
     };
     drive();
     std::array<float, 2> samples{};
@@ -413,7 +420,7 @@ inline void scene_set_persistence() {
     };
     const auto failing =
         make_codecs(destination_volume, destination_plane, destination_audio, destination_counts, true);
-    rejects([&] { restored.restore(document, {}, failing); });
+    rejects<std::runtime_error>([&] { restored.restore(document, {}, failing); }, "Late scene-set decoder failed");
     check(destination_counts.failed_decodes == 1, "Scene-set rollback did not reach the later decoder");
     unchanged();
     {
@@ -425,7 +432,8 @@ inline void scene_set_persistence() {
         // Existing voices plus this reservation leave room only for the first
         // staged scene, so the second scene's source must fail before commit.
         auto reserved = destination_audio.sound(clip);
-        rejects([&] { restored.restore(document, {}, destination_codecs); });
+        rejects<std::length_error>([&] { restored.restore(document, {}, destination_codecs); },
+                                   "Audio voice limit exceeded");
         unchanged();
         auto available = destination_audio.sound(clip);
         check(destination_audio.owns(reserved) && destination_audio.owns(available),
@@ -511,8 +519,10 @@ inline void run() {
     ground2.set_position({10, -1, 0});
     object3.set_position({2e6F, 3, 0});
     object2.set_position({2e6F, 3, 7});
-    rejects([&] { physics::step(scenes, volume, tick); });
-    rejects([&] { physics2d::step(scenes, plane, tick); });
+    rejects<std::invalid_argument>([&] { physics::step(scenes, volume, tick); },
+                                   "Physics position outside supported range");
+    rejects<std::invalid_argument>([&] { physics2d::step(scenes, plane, tick); },
+                                   "2D physics position outside supported range");
     check(stationary3.pose().position.x == 0 && stationary2.pose().position.x == 0 &&
               body3.pose().position.y == before3.position.y && body2.pose().position.y == before2.position.y,
           "Invalid later scene partially changed a shared world");
@@ -538,7 +548,8 @@ inline void run() {
     auto duplicate = marker.add_component<AudioListener>();
     listener.set_position({100, 0, 0});
     emitter.set_active(false);
-    rejects([&] { synchronize_audio(scenes, audio); });
+    rejects<std::invalid_argument>([&] { synchronize_audio(scenes, audio); },
+                                   "Audio scene has multiple enabled listeners");
     check(source->playing(), "Invalid listener selection partially paused sources");
     audio.render(samples);
     check(std::abs(samples[1] - sample_value / 2) < 1e-6F, "Rejected audio snapshot changed listener");
@@ -557,8 +568,10 @@ inline void run() {
     foreign2.set_enabled(false);
     ground3.set_active(false);
     ground2.set_active(false);
-    rejects([&] { physics::step(scenes, volume, tick); });
-    rejects([&] { physics2d::step(scenes, plane, tick); });
+    rejects<std::invalid_argument>([&] { physics::step(scenes, volume, tick); },
+                                   "Rigid body belongs to another or expired world");
+    rejects<std::invalid_argument>([&] { physics2d::step(scenes, plane, tick); },
+                                   "2D body belongs to another or expired world");
     check(stationary3.enabled() && stationary2.enabled(), "Foreign later binding partially disabled earlier bodies");
     marker.remove_component<physics::RigidBody>();
     marker.remove_component<physics2d::RigidBody>();
@@ -568,7 +581,7 @@ inline void run() {
     auto foreign_source = marker.add_component<AudioSource>(other_audio, clip);
     foreign_source.set_enabled(false);
     emitter.set_active(false);
-    rejects([&] { synchronize_audio(scenes, audio); });
+    rejects<std::invalid_argument>([&] { synchronize_audio(scenes, audio); }, "Audio source belongs to another mixer");
     check(source->playing(), "Foreign later source partially changed an earlier source");
     marker.remove_component<AudioSource>();
     emitter.set_active(true);
@@ -582,7 +595,7 @@ inline void run() {
     check(std::abs(object3.position().y) < .04F && std::abs(object2.position().y) < .04F,
           "Bodies did not collide with the other scene's floor");
     const auto views = scenes.render_scenes();
-    rejects([&] { (void)scenes.replace(level, "{}", {}); });
+    rejects<std::invalid_argument>([&] { (void)scenes.replace(level, "{}", {}); }, "Invalid scene document");
     check(level && body3.valid() && body2.valid() && source->playing(), "Failed transition changed live systems");
     ComponentCodecs codecs;
     physics::add_component_codec(codecs, volume);

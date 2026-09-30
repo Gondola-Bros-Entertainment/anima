@@ -1,4 +1,5 @@
 #include "near.hpp"
+#include <anima/assets/fitted.hpp>
 #include <anima/assets/preview.hpp>
 // This suite supplies its own main, which reads the optional manifest argument.
 #define DOCTEST_CONFIG_IMPLEMENT
@@ -454,6 +455,15 @@ TEST_CASE("A fitted model that does not match the body's rig is rejected with it
     fitted.nodes[1].name = "another_hand";
     CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted), "Fitted joint missing from the body: another_hand",
                          std::runtime_error);
+}
+
+TEST_CASE("A fitted model follows the body pose, so it cannot bring clips of its own") {
+    const auto asset = fixture();
+    CHECK_THROWS_WITH_AS(FittedAsset(asset, std::make_shared<const Asset>(asset)),
+                         "Fitted models follow the body pose and cannot own motion", std::invalid_argument);
+    auto still = asset;
+    still.animations.clear();
+    CHECK(FittedAsset(asset, std::make_shared<const Asset>(still)).joints.size() == 2);
 }
 
 TEST_CASE("Base-color mipmaps average in linear light and keep odd edges") {

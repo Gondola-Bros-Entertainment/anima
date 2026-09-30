@@ -1,6 +1,7 @@
 #pragma once
 // This application's own generated actors and documents. No game assets,
 // third-party JSON API, or engine implementation headers are used.
+#include "rejection.hpp"
 #include <anima/assets/actor_presentation.hpp>
 #include <anima/assets/attachments.hpp>
 #include <anima/assets/fitted.hpp>
@@ -10,6 +11,7 @@
 #include <locale>
 #include <sstream>
 #include <string_view>
+#include <tuple>
 
 namespace presentation_test {
 using namespace anima;
@@ -17,25 +19,7 @@ inline void check(bool ok, const char *why) {
     if (!ok)
         throw std::runtime_error(why);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid presentation contract accepted");
-}
-// Requires operation to throw an Error whose message is exactly expected.
-template <class Error, class F> void rejects_as(F operation, const std::string &expected) {
-    try {
-        operation();
-    } catch (const Error &error) {
-        if (error.what() == expected)
-            return;
-        throw std::runtime_error("Expected \"" + expected + "\", got \"" + error.what() + "\"");
-    }
-    throw std::runtime_error("Expected rejection: " + expected);
-}
+using rejection::rejects;
 // text with its first from replaced by to; the fixture must contain from.
 inline std::string with_first(std::string text, std::string_view from, std::string_view to) {
     const auto at = text.find(from);
@@ -317,13 +301,19 @@ inline void run() {
             check(fit_pose.world.at(fit) == baseline.world.at(owner), "Fitted mesh lost its owner pose");
         auto animated_fit = std::make_shared<Asset>(*shell->source);
         animated_fit->animations.emplace_back();
-        rejects([&] { FittedAsset invalid(*actor.actor.asset, animated_fit); });
+        rejects<std::invalid_argument>([&] { FittedAsset invalid(*actor.actor.asset, animated_fit); },
+                                       "Fitted models follow the body pose and cannot own motion");
         auto wrong_fit = std::make_shared<Asset>(*shell->source);
         wrong_fit->skins.front().inverse_bind.front()[12] += .1F;
-        rejects([&] { FittedAsset invalid(*actor.actor.asset, wrong_fit); });
+        // The skin's first joint is the root, whose inverse bind has no translation, so the error is exactly .1.
+        rejects<std::runtime_error>([&] { FittedAsset invalid(*actor.actor.asset, wrong_fit); },
+                                    "Fitted inverse-bind mismatch at " + fixture.names.front() +
+                                        " (max error 0.100000); export the fitted model for this body");
         auto wrong_manifest = actor.manifest;
         wrong_manifest.bind_signature = std::string(64, 'b');
-        rejects([&] { FittedLibrary invalid(actor.actor.asset, wrong_manifest, "consumer.profile", fits); });
+        rejects<std::invalid_argument>(
+            [&] { FittedLibrary invalid(actor.actor.asset, wrong_manifest, "consumer.profile", fits); },
+            "Fitted model belongs to a different body bind");
         {
             // An application-defined frame driver and native late follower compose
             // without depending on the order of component types inside a phase.
@@ -371,7 +361,7 @@ inline void run() {
             set->replace({"shell"});
             check(set->instances().front().object.id() == object.id() && scene.size() == 2,
                   "Unchanged fitted membership recreated its object");
-            rejects([&] { set->replace({"shell.alt", "shell.broken"}); });
+            rejects<std::runtime_error>([&] { set->replace({"shell.alt", "shell.broken"}); }, "Cannot open GLB file");
             check(scene.size() == 2 && set->instances().front().object.id() == object.id() &&
                       scene.instance(object.id()).palette == reference.instance(expected).palette,
                   "Failed replacement changed the accepted fitted set");
@@ -413,8 +403,8 @@ inline void run() {
             const auto last_fit = set->instances().front().object;
             scene.remove(body.id());
             const auto reused = scene.create("Reused body slot", actor.render);
-            rejects([&] { set->sync(); });
-            rejects([&] { set->replace({}); });
+            rejects<std::out_of_range>([&] { set->sync(); }, "Expired GameObject handle");
+            rejects<std::out_of_range>([&] { set->replace({}); }, "Expired GameObject handle");
             set.reset();
             check(reused.valid() && !last_fit.valid() && second_object.valid(),
                   "Fitted cleanup destroyed a reused owner slot or another set");
@@ -422,10 +412,11 @@ inline void run() {
             auto wrong_body = std::make_shared<Asset>(*actor.actor.asset);
             wrong_body->nodes.front().name += ".other";
             auto foreign = scene.create("Incompatible owner", Mesh::compile(*wrong_body));
-            rejects([&] { FittedSet invalid(foreign, fitted); });
+            rejects<std::invalid_argument>([&] { FittedSet invalid(foreign, fitted); },
+                                           "Fitted library does not match the body mesh");
             second.renderer().set_mesh(Mesh::compile(*actor.actor.asset));
-            rejects([&] { independent.sync(); });
-            rejects([&] { FittedSet invalid(GameObject{}, fitted); });
+            rejects<std::invalid_argument>([&] { independent.sync(); }, "Fitted set requires its original body mesh");
+            rejects<std::out_of_range>([&] { FittedSet invalid(GameObject{}, fitted); }, "Expired GameObject handle");
         }
         {
             auto scene = std::make_unique<Scene>();
@@ -434,7 +425,7 @@ inline void run() {
             const auto object = set->instances().front().object;
             scene.reset();
             check(!object.valid(), "Fitted objects extended scene lifetime");
-            rejects([&] { set->sync(); });
+            rejects<std::out_of_range>([&] { set->sync(); }, "Expired GameObject handle");
             set.reset();
         }
         shell.reset();
@@ -442,30 +433,30 @@ inline void run() {
         const std::array<std::string_view, 2> layer_clips{"layer.port", "layer.starboard"};
         const auto carried = motion->compose_layers("drift", .5, layer_clips);
         check(carried.world[0] == baseline.world[0], "Layer clips replaced root locomotion");
-        rejects([&] {
-            const std::array<std::string_view, 2> overlap{"layer.port", "layer.port"};
-            motion->validate_layers(overlap);
-        });
+        rejects<std::invalid_argument>(
+            [&] {
+                const std::array<std::string_view, 2> overlap{"layer.port", "layer.port"};
+                motion->validate_layers(overlap);
+            },
+            "Motion layers have overlapping joint ownership");
         auto wrong = actor.manifest;
         wrong.bind_signature = std::string(64, 'b');
-        rejects([&] { MotionRuntime invalid(actor.actor.asset, wrong, fixture.contract); });
-        rejects([&] { MotionRuntime invalid({}, actor.manifest, fixture.contract); });
+        rejects<std::invalid_argument>([&] { MotionRuntime invalid(actor.actor.asset, wrong, fixture.contract); },
+                                       "Motion rig/skin contract mismatch");
+        rejects<std::invalid_argument>([&] { MotionRuntime invalid({}, actor.manifest, fixture.contract); },
+                                       "Motion runtime requires an asset");
         // Unknown fields are rejected at every level, as in the other presentation documents.
-        using Edit = std::pair<std::string_view, std::string_view>;
-        const std::array misspellings{Edit{R"("reference_speed":0.2)", R"("reference_sped":0.2)"},
-                                      Edit{R"({"version":3,)", R"({"version":3,"extra":1,)"}};
-        for (const auto &[from, to] : misspellings) {
+        using Edit = std::tuple<std::string_view, std::string_view, std::string_view>;
+        const std::array misspellings{
+            Edit{R"("reference_speed":0.2)", R"("reference_sped":0.2)", "Unknown JSON field: reference_sped"},
+            Edit{R"({"version":3,)", R"({"version":3,"extra":1,)", "Unknown JSON field: extra"}};
+        for (const auto &[from, to, message] : misspellings) {
             auto contract = fixture.contract;
             const auto at = contract.find(from);
             check(at != std::string::npos, "Motion contract fixture changed");
             contract.replace(at, from.size(), to);
-            bool rejected = false;
-            try {
-                MotionRuntime invalid(actor.actor.asset, actor.manifest, contract);
-            } catch (const std::invalid_argument &) {
-                rejected = true;
-            }
-            check(rejected, "Motion contract accepted an unknown field");
+            rejects<std::invalid_argument>([&] { MotionRuntime invalid(actor.actor.asset, actor.manifest, contract); },
+                                           message);
         }
         AttachmentLibrary library(decode_attachment_catalog(fixture.catalog, fixture.directory));
         const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.asset);
@@ -485,13 +476,16 @@ inline void run() {
         attachment_owner.set_position({5, 0, 0});
         check(std::abs(scene.object(bound).position().x - held_world[12] - 2) < 1e-5F,
               "Held attachment did not follow owner movement");
-        rejects([&] { attachments.add(attachment_owner); });
+        rejects<std::invalid_argument>([&] { attachments.add(attachment_owner); },
+                                       "Attachment set must be prepared and not already added");
         Scene wrong_scene;
-        rejects([&] { attachments.remove(wrong_scene); });
+        rejects<std::invalid_argument>([&] { attachments.remove(wrong_scene); },
+                                       "Attachment set belongs to another scene");
         check(scene.contains(bound) && scene.instances().size() == 3,
               "Repeated/foreign attachment operation lost objects");
         const auto before = scene.instances().size();
-        rejects([&] { AttachmentSet::prepare(library, sockets, {{"unknown", "missing"}}); });
+        rejects<std::out_of_range>([&] { AttachmentSet::prepare(library, sockets, {{"unknown", "missing"}}); },
+                                   "Missing presentation reference: missing");
         check(scene.instances().size() == before, "Invalid preparation changed the live scene");
         const auto &visual = library.visual("instrument");
         const auto resource = library.load("instrument");
@@ -500,7 +494,8 @@ inline void run() {
         const auto tip0 = point(attachment_marker(visual, resource->source.get(), &rest_prop, "tip"), {});
         const auto tip1 = point(attachment_marker(visual, resource->source.get(), &end_prop, "tip"), {});
         check(std::abs(tip1.z - tip0.z - .25F) < 1e-5F, "Animated attachment marker did not move");
-        rejects([&] { sample_attachment_pose(*resource, visual, "missing", .5); });
+        rejects<std::invalid_argument>([&] { sample_attachment_pose(*resource, visual, "missing", .5); },
+                                       "Attachment visual lacks required track: missing");
         const auto binding =
             animated_attachment_binding(attachments.roles.at("probe").binding, visual, *resource->source, end_prop);
         const auto placement = attachment_placement(baseline, binding);
@@ -520,9 +515,12 @@ inline void run() {
             R"({"version":1,"sets":{"operator":{"use":[{"action":"signal","requires":["can.signal"]}]}}})", runtime);
         check(choices.resolve("operator", "use", actor.capabilities) == "signal",
               "Independent capabilities did not select an action");
-        rejects([&] {
-            resolve_action(std::array{ActionVariant{"a", {"x"}}, ActionVariant{"b", {"y"}}}, Capabilities{"x", "y"});
-        });
+        rejects<std::invalid_argument>(
+            [&] {
+                resolve_action(std::array{ActionVariant{"a", {"x"}}, ActionVariant{"b", {"y"}}},
+                               Capabilities{"x", "y"});
+            },
+            "No unique compatible action variant");
         validate_attachment_action(runtime, library, attachments, "signal");
         const std::string handling = "port"; // This consumer's choice among the action's profiles.
         const auto holding = runtime.sample(carried, {"signal", 1, .7, {}, {}}, handling);
@@ -541,37 +539,39 @@ inline void run() {
         check(late.advance("signal", 1, timeline, .9, .8).empty(), "Late consumer replayed old cues");
         auto missing = attachments;
         missing.roles.erase("beacon");
-        rejects([&] { validate_attachment_action(runtime, library, missing, "signal"); });
-        rejects([&] { ActionRuntime invalid(motion, R"({"schema_version":1,"schema_version":1,"actions":[]})"); });
-        rejects_as<std::out_of_range>([&] { (void)runtime.definition("absent"); }, "Unknown action: absent");
-        rejects_as<std::out_of_range>([&] { (void)motion->clip("absent"); }, "Missing animation: absent");
-        rejects_as<std::out_of_range>([&] { (void)motion->metadata("absent"); }, "Unknown base motion/action: absent");
-        rejects_as<std::out_of_range>([&] { (void)motion->layer_mask("absent"); }, "Unknown motion layer: absent");
-        rejects_as<std::out_of_range>([&] { (void)motion->contact_end_node("absent"); },
-                                      "Unknown motion chain: absent");
+        rejects<std::invalid_argument>([&] { validate_attachment_action(runtime, library, missing, "signal"); },
+                                       "Missing or incompatible required action role: beacon");
+        rejects<std::invalid_argument>(
+            [&] { ActionRuntime invalid(motion, R"({"schema_version":1,"schema_version":1,"actions":[]})"); },
+            "Duplicate JSON document field");
+        rejects<std::out_of_range>([&] { (void)runtime.definition("absent"); }, "Unknown action: absent");
+        rejects<std::out_of_range>([&] { (void)motion->clip("absent"); }, "Missing animation: absent");
+        rejects<std::out_of_range>([&] { (void)motion->metadata("absent"); }, "Unknown base motion/action: absent");
+        rejects<std::out_of_range>([&] { (void)motion->layer_mask("absent"); }, "Unknown motion layer: absent");
+        rejects<std::out_of_range>([&] { (void)motion->contact_end_node("absent"); }, "Unknown motion chain: absent");
         MotionLayer unknown_layer;
         unknown_layer.clip = "drift";
         unknown_layer.mask = "absent";
         MotionControls unknown_mask;
         unknown_mask.layers.push_back(unknown_layer);
-        rejects_as<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_mask); },
-                                      "Unknown motion mask: absent");
+        rejects<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_mask); },
+                                   "Unknown motion mask: absent");
         MotionControls unknown_joint;
         unknown_joint.offsets.push_back({.joint = "absent"});
-        rejects_as<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_joint); },
-                                      "Unknown evaluation joint: absent");
-        rejects_as<std::out_of_range>([&] { (void)choices.resolve("absent", "use", actor.capabilities); },
-                                      "Missing presentation reference: absent");
-        rejects_as<std::invalid_argument>(
+        rejects<std::out_of_range>([&] { (void)motion->evaluate(baseline, unknown_joint); },
+                                   "Unknown evaluation joint: absent");
+        rejects<std::out_of_range>([&] { (void)choices.resolve("absent", "use", actor.capabilities); },
+                                   "Missing presentation reference: absent");
+        rejects<std::invalid_argument>(
             [&] { ActionRuntime unknown(motion, with_first(actions, R"("clip":"signal")", R"("clip":"absent")")); },
             "Missing animation: absent");
-        rejects_as<std::invalid_argument>(
+        rejects<std::invalid_argument>(
             [&] {
                 ActionRuntime unknown(
                     motion, with_first(actions, R"("props":[)", R"("contacts":{"absent":[[0,1],[1,1]]},"props":[)"));
             },
             "Unknown motion chain: absent");
-        rejects_as<std::invalid_argument>(
+        rejects<std::invalid_argument>(
             [&] {
                 ActionSetCatalog unknown(
                     R"({"version":1,"sets":{"operator":{"use":[{"action":"absent","requires":[]}]}}})", runtime);
@@ -608,7 +608,7 @@ inline void run() {
                weights + "}]}";
     };
     InteractionRuntime interaction(actors, interaction_document(edge));
-    rejects_as<std::invalid_argument>(
+    rejects<std::invalid_argument>(
         [&] {
             InteractionRuntime unknown(
                 actors, with_first(interaction_document(edge), R"("chain":"starboard")", R"("chain":"absent")"));
@@ -635,9 +635,12 @@ inline void run() {
     const std::string reverse =
         R"({"child":"crawler","parent":"pilot","child_socket":"port","parent_socket":"port","weights":)" + weights +
         "}";
-    rejects([&] { InteractionRuntime cycle(actors, interaction_document(edge + "," + reverse)); });
+    rejects<std::invalid_argument>(
+        [&] { InteractionRuntime cycle(actors, interaction_document(edge + "," + reverse)); },
+        "Invalid interaction role or attachment count");
     worlds.erase("pilot");
-    rejects([&] { interaction.sample(.5, {}, worlds); });
+    rejects<std::invalid_argument>([&] { interaction.sample(.5, {}, worlds); },
+                                   "Every interaction role needs a free placement");
     std::cout << "PASS standalone presentation: independent 7/13-joint actors, separate motion, two attachments, "
                  "capabilities, held/released actions, markers, contacts, coordinated actors and rejection gates\n";
 }

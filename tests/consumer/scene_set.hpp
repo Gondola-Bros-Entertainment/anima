@@ -1,7 +1,9 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/audio_scene.hpp>
 #include <anima/scene_set.hpp>
 #include <stdexcept>
+#include <string_view>
 
 namespace scene_set_test {
 using namespace anima;
@@ -9,14 +11,7 @@ inline void check(bool value, const char *reason) {
     if (!value)
         throw std::runtime_error(reason);
 }
-template <class F> void rejects(F operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid scene set operation accepted");
-}
+using rejection::rejects;
 struct Counts {
     int enabled{}, disabled{}, destroyed{}, invalid{}, updates{}, rejected{};
 };
@@ -32,23 +27,27 @@ struct Probe {
         ++counts->disabled;
         if (!owner.valid() && !other.valid())
             ++counts->invalid;
+        // A callback cannot propagate an exception, so it counts the rejections that have the expected message.
         try {
             set->clear();
-        } catch (const std::logic_error &) {
-            ++counts->rejected;
+        } catch (const std::logic_error &error) {
+            if (std::string_view(error.what()) == "Scene membership changes cannot be nested")
+                ++counts->rejected;
         }
     }
     void on_update(double) {
         ++counts->updates;
-        rejects([&] { set->clear(); });
-        rejects([&] { (void)set->create("during-update"); });
-        rejects([&] { set->set_active(set->active()); });
+        rejects<std::logic_error>([&] { set->clear(); }, "Scene membership changes cannot be nested");
+        rejects<std::logic_error>([&] { (void)set->create("during-update"); },
+                                  "Scene membership changes cannot be nested");
+        rejects<std::logic_error>([&] { set->set_active(set->active()); }, "Scene membership changes cannot be nested");
     }
 };
 struct Construct {
     Construct(GameObject object, SceneSet &set) {
-        rejects([&] { set.unload(set.active()); });
-        rejects([&] { set.active()->synchronize_lifecycle(); });
+        rejects<std::logic_error>([&] { set.unload(set.active()); },
+                                  "Scene membership cannot change during scene callbacks");
+        rejects<std::logic_error>([&] { set.active()->synchronize_lifecycle(); }, "Component updates cannot be nested");
         object.set_name("constructed");
     }
 };
@@ -67,9 +66,9 @@ struct PhaseProbe {
     bool add;
     void on_update(double) {
         ++counts->frame;
-        rejects([&] { set->update(0); });
-        rejects([&] { peer->update(0); });
-        rejects([&] { set->unload(peer); });
+        rejects<std::logic_error>([&] { set->update(0); }, "Scene membership changes cannot be nested");
+        rejects<std::logic_error>([&] { peer->update(0); }, "Component updates cannot be nested");
+        rejects<std::logic_error>([&] { set->unload(peer); }, "Scene membership changes cannot be nested");
         if (add) {
             destination.add_component<Added>(counts);
             dormant.set_active(true);
@@ -90,10 +89,12 @@ struct PinnedCleanup {
         : owner(object), set(&scenes), counts(&values) {}
     void on_update(double) { owner.remove_component<PinnedCleanup>(); }
     ~PinnedCleanup() {
+        // A destructor cannot propagate an exception, so it counts the rejection that has the expected message.
         try {
             set->clear();
-        } catch (const std::logic_error &) {
-            ++counts->cleanup_rejected;
+        } catch (const std::logic_error &error) {
+            if (std::string_view(error.what()) == "Scene membership changes cannot be nested")
+                ++counts->cleanup_rejected;
         }
     }
 };
@@ -131,9 +132,10 @@ inline ComponentCodecs persistence_codecs(PersistenceCounts &counts, SceneSet *d
         [](const SetOwned &value, const ObjectReferences &) { return value.accepted ? "ok" : "fail"; },
         [&counts, destination](GameObject object, std::string_view state, const ObjectReferences &) {
             if (destination) {
-                rejects([&] { destination->clear(); });
-                rejects([&] { destination->update(0); });
-                rejects([&] { (void)destination->serialize({}); });
+                rejects<std::logic_error>([&] { destination->clear(); }, "Scene membership changes cannot be nested");
+                rejects<std::logic_error>([&] { destination->update(0); }, "Scene membership changes cannot be nested");
+                rejects<std::logic_error>([&] { (void)destination->serialize({}); },
+                                          "Scene drivers cannot run during set mutation or scheduling");
             }
             object.add_component<SetOwned>(counts);
             counts.decoded.push_back(object);
@@ -192,13 +194,14 @@ inline void persistence() {
     };
     const auto document = authored.serialize(
         [&](const auto &resource) {
-            rejects([&] { authored.clear(); });
-            rejects([&] { alpha->update(0); });
+            rejects<std::logic_error>([&] { authored.clear(); }, "Scene membership changes cannot be nested");
+            rejects<std::logic_error>([&] { alpha->update(0); }, "Component updates cannot be nested");
             return name(resource);
         },
         codecs);
     check(named == 1, "Set capture named one shared resource more than once");
-    rejects([&] { (void)serialize_scene(alpha.get(), name, codecs); });
+    rejects<std::invalid_argument>([&] { (void)serialize_scene(alpha.get(), name, codecs); },
+                                   "Object reference is stale or outside the captured graph");
     bad_payload->accepted = false;
     const auto failed_document = authored.serialize(name, codecs);
     bad_payload->accepted = true;
@@ -212,12 +215,16 @@ inline void persistence() {
     const auto old_address = destination.address(old_a);
     const auto old_view = old_alpha.render_scene();
     auto destination_codecs = persistence_codecs(restored_counts, &destination);
-    rejects([&] {
-        destination.restore(document, [](auto) -> std::shared_ptr<const Mesh> { return {}; }, destination_codecs);
-    });
-    rejects([&] { destination.restore(document, resolve); });
+    rejects<std::invalid_argument>(
+        [&] {
+            destination.restore(document, [](auto) -> std::shared_ptr<const Mesh> { return {}; }, destination_codecs);
+        },
+        "Scene mesh key could not be resolved");
+    rejects<std::invalid_argument>([&] { destination.restore(document, resolve); },
+                                   "Unknown serialized component type");
     restored_counts.check_invalidation = true;
-    rejects([&] { destination.restore(failed_document, resolve, destination_codecs); });
+    rejects<std::invalid_argument>([&] { destination.restore(failed_document, resolve, destination_codecs); },
+                                   "Rejected scene set fixture payload");
     check(old_alpha && old_beta && old_a.valid() && old_b.valid() && destination.active().key() == "beta" &&
               destination.find(old_address).id() == old_a.id() && old_view->size() == 1 &&
               retired_counts.disabled == 0 && restored_counts.live == 0 && restored_counts.destroyed == 2 &&
@@ -261,10 +268,12 @@ inline void persistence() {
 
     Scene outside;
     a.get_component<SetLink>()->target = outside.create();
-    rejects([&] { (void)authored.serialize(name, codecs); });
+    rejects<std::invalid_argument>([&] { (void)authored.serialize(name, codecs); },
+                                   "Object reference is stale or outside the captured graph");
     a.get_component<SetLink>()->target = b;
     auto collision = empty->create("different shared key", persistence_mesh());
-    rejects([&] { (void)authored.serialize([](const auto &) { return "same-key"; }, codecs); });
+    rejects<std::invalid_argument>([&] { (void)authored.serialize([](const auto &) { return "same-key"; }, codecs); },
+                                   "Different meshes share a scene resource key");
     collision.destroy();
     SceneSet vacant;
     const auto vacant_document = vacant.serialize({});
@@ -303,7 +312,8 @@ inline void cross_member_links() {
 
     Scene vacant;
     const auto vacant_document = serialize_scene(vacant, {});
-    rejects([&] { (void)set.replace(level, vacant_document, {}, codecs); });
+    rejects<std::invalid_argument>([&] { (void)set.replace(level, vacant_document, {}, codecs); },
+                                   "Replacement lacks a linked object key");
     check(level && door.valid() && linked().id() == door.id() && set.serialize({}, codecs) == saved,
           "A replacement that lacks a linked key changed the set");
 
@@ -345,7 +355,7 @@ inline void phases() {
     };
     auto throwing = first.add_component<Throwing>();
     counts.frame = counts.late = 0;
-    rejects([&] { set.update(0); });
+    rejects<std::runtime_error>([&] { set.update(0); }, "callback");
     first.remove_component<Throwing>();
     counts.frame = counts.late = 0;
     set.update(0);
@@ -362,9 +372,9 @@ inline void run() {
     Counts counts, cleared;
     SceneSet set;
     check(set.size() == 0 && !set.active() && set.scenes().empty(), "Scene set not initially empty");
-    rejects([&] { (void)set.create(""); });
-    rejects([&] { (void)set.create(std::string("bad\0key", 7)); });
-    rejects([&] { (void)set.create(std::string(4097, 'x')); });
+    rejects<std::invalid_argument>([&] { (void)set.create(""); }, "Invalid scene namespace");
+    rejects<std::invalid_argument>([&] { (void)set.create(std::string("bad\0key", 7)); }, "Invalid scene namespace");
+    rejects<std::invalid_argument>([&] { (void)set.create(std::string(4097, 'x')); }, "Invalid scene namespace");
     auto level = set.create("level"), overlay = set.create("overlay");
     check(set.active().key() == "level" && set.size() == 2, "Additive loading changed selection");
     auto a = level->create(), b = overlay->create();
@@ -378,13 +388,14 @@ inline void run() {
     check(counts.updates == 2 && counts.enabled == 2, "Caller could not drive additive scenes");
     set.set_active(overlay);
     check(a.active_in_hierarchy() && b.active_in_hierarchy(), "Selection changed object activation");
-    rejects([&] { (void)set.create("level"); });
+    rejects<std::invalid_argument>([&] { (void)set.create("level"); }, "Duplicate scene namespace");
     SceneSet other;
     auto foreign = other.create("level");
-    rejects([&] { set.unload(foreign); });
-    rejects([&] { set.set_active(foreign); });
-    rejects([&] { (void)set.address(foreign->create()); });
-    rejects([&] { (void)set.address({}); });
+    rejects<std::invalid_argument>([&] { set.unload(foreign); }, "Foreign scene handle");
+    rejects<std::invalid_argument>([&] { set.set_active(foreign); }, "Foreign scene handle");
+    rejects<std::invalid_argument>([&] { (void)set.address(foreign->create()); },
+                                   "Object is stale or outside this scene set");
+    rejects<std::invalid_argument>([&] { (void)set.address({}); }, "Object is stale or outside this scene set");
     check(!set.find(SceneAddress{"missing", a.key()}).valid() && !set.find(SceneAddress{"level", {}}).valid(),
           "Missing address unexpectedly bound");
     auto render_view = level.render_scene();
@@ -395,10 +406,10 @@ inline void run() {
               !set.find(address).valid() && counts.destroyed == 1 && counts.disabled == 1 && counts.invalid == 1 &&
               counts.rejected == 1,
           "Unload retained owned state or invalidated another scene");
-    rejects([&] { (void)level.get(); });
-    rejects([&] { (void)level.render_scene(); });
-    rejects([&] { set.unload(level); });
-    rejects([&] { (void)set.address(a); });
+    rejects<std::out_of_range>([&] { (void)level.get(); }, "Expired scene handle");
+    rejects<std::out_of_range>([&] { (void)level.render_scene(); }, "Expired scene handle");
+    rejects<std::out_of_range>([&] { set.unload(level); }, "Expired scene handle");
+    rejects<std::invalid_argument>([&] { (void)set.address(a); }, "Object is stale or outside this scene set");
     auto reloaded = set.create("level");
     auto again = reloaded->create();
     check(set.find(address).id() == again.id() && !a.valid() && !level,
@@ -410,8 +421,8 @@ inline void run() {
     Scene authored;
     auto original = authored.create("new object");
     const auto document = serialize_scene(authored, {});
-    rejects([&] { (void)set.replace(reloaded, "{}", {}); });
-    rejects([&] { (void)set.load("broken", "{}", {}); });
+    rejects<std::invalid_argument>([&] { (void)set.replace(reloaded, "{}", {}); }, "Invalid scene document");
+    rejects<std::invalid_argument>([&] { (void)set.load("broken", "{}", {}); }, "Invalid scene document");
     check(set.size() == 1 && again.valid() && set.active().key() == "level", "Invalid document changed live scenes");
     auto replacement = set.replace(reloaded, document, {});
     check(!reloaded && !again.valid() && replacement && replacement.key() == "level" &&
@@ -433,7 +444,7 @@ inline void run() {
         "test.failure.v1",
         [](const Failure &value, const ObjectReferences &) { return value.valid ? "{}" : "malformed"; },
         [&](GameObject object, std::string_view state, const ObjectReferences &) {
-            rejects([&] { set.unload(extra); });
+            rejects<std::logic_error>([&] { set.unload(extra); }, "Scene membership changes cannot be nested");
             object.add_component<Failure>();
             if (state != "{}")
                 throw std::invalid_argument("Fixture state must be an empty object");
@@ -445,7 +456,8 @@ inline void run() {
     failure->valid = false;
     const auto failed_document = serialize_scene(sound_scene, {}, codecs);
     source_object.destroy();
-    rejects([&] { (void)set.replace(replacement, failed_document, {}, codecs); });
+    rejects<std::invalid_argument>([&] { (void)set.replace(replacement, failed_document, {}, codecs); },
+                                   "Fixture state must be an empty object");
     check(replacement && extra && set.active().key() == "level", "Decode failure changed published membership");
     auto playing = set.load("audio", audio_document, {}, codecs);
     check(playing->components<Failure>().size() == 1 && playing->components<Failure>()[0]->valid,

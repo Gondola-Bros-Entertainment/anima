@@ -2,6 +2,7 @@
 #include <anima/input.hpp>
 #include <stdexcept>
 #ifdef CONSUMER_ASSETS
+#include "rejection.hpp"
 #include <anima/input_scene.hpp>
 #include <anima/prefab.hpp>
 #include <anima/scene_set.hpp>
@@ -62,14 +63,9 @@ inline void consume_input() {
         throw std::runtime_error("Independent persisted identity did not match its gamepad");
     auto session_jump = jump;
     session_jump.control.device = 11;
-    bool rejected = false;
-    try {
-        (void)i::serialize_map({{"jump", i::ActionType::button, {session_jump}}});
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    if (!rejected)
-        throw std::runtime_error("Independent input configuration persisted a device ID");
+    rejection::rejects<std::invalid_argument>(
+        [&] { (void)i::serialize_map({{"jump", i::ActionType::button, {session_jump}}}); },
+        "Input configuration cannot persist a device ID");
     anima::SceneSet scenes;
     auto persistent = scenes.create("persistent"), level = scenes.create("level");
     auto object = persistent->create("independent action input");

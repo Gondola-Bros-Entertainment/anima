@@ -1,4 +1,5 @@
 #pragma once
+#include "rejection.hpp"
 #include <anima/animation.hpp>
 #include <functional>
 
@@ -8,14 +9,7 @@ inline void check(bool value, const char *reason) {
     if (!value)
         throw std::runtime_error(reason);
 }
-template <class F> void rejects(F &&operation) {
-    try {
-        operation();
-    } catch (const std::exception &) {
-        return;
-    }
-    throw std::runtime_error("Invalid component operation was accepted");
-}
+using rejection::rejects;
 struct Health {
     int value;
 };
@@ -91,10 +85,13 @@ inline void run(const std::shared_ptr<const Asset> &source, const std::shared_pt
     check(!scene.instance(object.id()).visible, "Disabling a renderer component left it visible");
     renderer->set_visible(true);
     check(renderer.enabled(), "Renderer visibility and component enabled state diverged");
-    rejects([&] { transform.set_enabled(false); });
-    rejects([&] { (void)object.add_component<Health>(1); });
-    rejects([&] { (void)object.add_component<ObjectTransform>(); });
-    rejects([&] { (void)object.remove_component<ObjectTransform>(); });
+    rejects<std::logic_error>([&] { transform.set_enabled(false); }, "The GameObject transform cannot be disabled");
+    rejects<std::logic_error>([&] { (void)object.add_component<Health>(1); },
+                              "GameObject already has this component type");
+    rejects<std::logic_error>([&] { (void)object.add_component<ObjectTransform>(); },
+                              "Every GameObject already has a transform");
+    rejects<std::logic_error>([&] { (void)object.remove_component<ObjectTransform>(); },
+                              "The GameObject transform cannot be removed");
     object.remove_component<MeshRenderer>();
     check(!renderer && !object.has_renderer(), "Removing the mesh component left render membership");
     (void)object.add_mesh(mesh);
@@ -113,15 +110,17 @@ inline void run(const std::shared_ptr<const Asset> &source, const std::shared_pt
     driver.set_enabled(true);
     check(scene.components<Driver>().size() == 1 && scene.components<Health>().size() == 1,
           "Typed component query lost live components");
-    rejects([&] { scene.update(-1); });
-    rejects([&] { (void)object.add_component<Throwing>(); });
-    rejects([&] { (void)object.add_component<Recursive>(); });
+    rejects<std::invalid_argument>([&] { scene.update(-1); }, "Invalid component time step");
+    rejects<std::runtime_error>([&] { (void)object.add_component<Throwing>(); }, "Constructor failure");
+    rejects<std::logic_error>([&] { (void)object.add_component<Recursive>(); },
+                              "GameObject already has this component type");
     check(!object.has_component<Throwing>() && !object.has_component<Recursive>(),
           "Failed construction retained a type reservation");
     (void)object.add_component<GrowingConstructor>(scene);
     check(object.has_component<GrowingConstructor>(), "Component construction lost its owner after scene growth");
     auto doomed = scene.create();
-    rejects([&] { (void)doomed.add_component<DestroyingConstructor>(); });
+    rejects<std::logic_error>([&] { (void)doomed.add_component<DestroyingConstructor>(); },
+                              "Component owner or attachment was removed during construction");
     check(!doomed.valid(), "Component construction revived its destroyed owner");
     int destroyed = 0;
     bool finished = false;
@@ -154,7 +153,7 @@ inline void run(const std::shared_ptr<const Asset> &source, const std::shared_pt
     mutations.update(.1);
     check(added->frames == 1 && added->late == 1, "New component did not start on the next update");
     callback->callback = [&] { mutations.fixed_update(.01); };
-    rejects([&] { mutations.update(.1); });
+    rejects<std::logic_error>([&] { mutations.update(.1); }, "Component updates cannot be nested");
     callback.set_enabled(false);
     mutations.update(.1);
     check(added->frames == 2, "Callback exception left the scene update locked");
@@ -170,7 +169,7 @@ inline void run(const std::shared_ptr<const Asset> &source, const std::shared_pt
     check(animator->playback().time() == .5, "Fixed update double-advanced frame animation");
     object.destroy();
     check(!health && !transform && !driver, "Destroyed object retained valid component handles");
-    rejects([&] { (void)health->value; });
+    rejects<std::out_of_range>([&] { (void)health->value; }, "Expired component handle");
     ComponentRef<Health> expired;
     {
         Scene temporary;
