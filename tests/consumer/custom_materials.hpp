@@ -1,15 +1,17 @@
 #pragma once
 // Custom materials through the public API, supplied as an application supplies them: GLSL of its own
-// (custom_surface.vert, custom_water.frag, custom_effect.frag, custom_probe.frag and custom_shadow.vert), compiled
-// to SPIR-V by glslc in this application's build, for a water that reads opaque depth and color, an effect whose
-// intensity follows the caller's time, and a probe that writes the frame inputs as colors. Every expected pixel
-// follows from those shaders and the renderer's contract: the frame inputs are the renderer's settings, opaque
-// custom materials draw with the opaque meshes, blended and additive ones sort with the blended meshes, opaque
-// inputs are copied only on frames that draw a material that reads them, skinned draws blend their joints, and
-// only a depth-only variant casts shadows.
+// (custom_surface.vert, custom_water.frag, custom_effect.frag, custom_probe.frag, custom_shadow.vert and the
+// custom_fade shaders), compiled to SPIR-V by glslc in this application's build, for a water that reads opaque depth
+// and color, an effect whose intensity follows the caller's time, a probe that writes the frame inputs as colors, and
+// a surface that fades across its visibility range. Every expected pixel follows from those shaders and the
+// renderer's contract: the frame inputs are the renderer's settings, opaque custom materials draw with the opaque
+// meshes, blended and additive ones sort with the blended meshes, opaque inputs are copied only on frames that draw a
+// material that reads them, skinned draws blend their joints, only a depth-only variant casts shadows, and the fading
+// helpers dissolve and cast as the standard material does.
 #include "blending.hpp"
 #include "gpu_checks.hpp"
 #include "rejection.hpp"
+#include <algorithm>
 #include <anima/custom_material.hpp>
 #include <anima/scene.hpp>
 #include <array>
@@ -43,6 +45,15 @@ constexpr std::uint32_t shadow_vertex[] =
     ;
 constexpr std::uint32_t probe_fragment[] =
 #include "custom_probe.frag.inc"
+    ;
+constexpr std::uint32_t fade_vertex[] =
+#include "custom_fade.vert.inc"
+    ;
+constexpr std::uint32_t fade_fragment[] =
+#include "custom_fade.frag.inc"
+    ;
+constexpr std::uint32_t fade_shadow_vertex[] =
+#include "custom_fade_shadow.vert.inc"
     ;
 using blending_test::Color;
 using blending_test::over;
@@ -609,6 +620,139 @@ inline void check_placements(Harness &harness) {
     harness.images.discard({"placed-separate", "placed-together"});
 }
 
+// Quads of a custom material that fades through animaVisibility() and animaDissolved(), as custom_fade.vert and
+// custom_fade.frag do, dissolve exactly the pixels that the standard material dissolves at the same distances, as
+// separate objects and as placed copies, and its depth-only variant custom_fade_shadow.vert, which casts while more
+// than half of a quad draws, leaves exactly the standard material's shadows. Each quad sits midway between two of the
+// dither's thresholds, so rounding in either shader cannot move a pixel across one.
+inline void check_fading(Harness &harness) {
+    const auto aspect = harness.aspect();
+    const anima::Vec3 eye{0, 2, 0};
+    const auto view = [&] {
+        using anima::operator*;
+        return anima::perspective(aspect, .1F, 100) * anima::look_at(eye, {0, 2, -1});
+    }();
+    // Whole to 24 m, then dissolving until it is gone at 40 m.
+    const anima::VisibilityRange range{0, 40, 0, 16};
+    // Whole at 20 m; then 13.75, 9.75, 7.75, 5.75, 3.75 and 1.75 sixteenths visible, where 7.75 is too little to cast;
+    // then hidden beyond the end.
+    constexpr std::array<float, 8> distances{20, 26.25F, 30.25F, 32.25F, 34.25F, 36.25F, 38.25F, 42};
+    // A sun from the upper left behind the camera: each quad, which faces the camera, shadows the ground behind it,
+    // which the camera sees beneath the quad.
+    anima::Environment lighting;
+    lighting.sun.direction = {-1, 1, 1};
+    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.radiance = {};
+    lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
+    lighting.shadow.enabled = true;
+    lighting.shadow.center = {0, 0, -30};
+    lighting.shadow.extent = 30;
+    lighting.shadow.depth = 120;
+    auto unshadowed = lighting;
+    unshadowed.shadow.enabled = false;
+
+    anima::CustomMaterialDefinition definition;
+    definition.name = "fade";
+    definition.vertex_shader = words(fade_vertex);
+    definition.fragment_shader = words(fade_fragment);
+    definition.shadow_vertex_shader = words(fade_shadow_vertex);
+    const auto fade = std::make_shared<const anima::CustomMaterial>(std::move(definition));
+    // A unit quad, which each object or placement scales to cover the same angle at its distance.
+    const auto quad = blending_test::facing(blending_test::opaque({.9, .25, .2}, true), {0, 0, 0}, 1, 1);
+    const auto ground = blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, -30}, 30, 30);
+    std::vector<anima::Mat4> placed;
+    for (std::size_t i = 0; i < distances.size(); ++i) {
+        const float angle = (float(i) - 3.5F) * .12F, d = distances[i];
+        auto m = anima::identity();
+        m[0] = m[5] = m[10] = .04F * d;
+        anima::set_translation(m, {eye.x + d * std::sin(angle), eye.y, eye.z - d * std::cos(angle)});
+        placed.push_back(m);
+    }
+    auto empty = std::make_shared<anima::Scene>(), standard = std::make_shared<anima::Scene>(),
+         separate = std::make_shared<anima::Scene>(), together = std::make_shared<anima::Scene>();
+    for (const auto &scene : {empty, standard, separate, together})
+        (void)scene->add(ground);
+    std::vector<anima::Scene::Id> plain;
+    for (const auto &m : placed) {
+        plain.push_back(standard->add(quad));
+        standard->set_transform(plain.back(), m);
+        standard->set_visibility_range(plain.back(), range);
+        const auto custom = add(*separate, quad, fade);
+        separate->set_transform(custom, m);
+        separate->set_visibility_range(custom, range);
+    }
+    const auto field = add(*together, quad, fade);
+    together->set_placements(field, anima::MeshPlacements::create(quad, placed));
+    together->set_visibility_range(field, range);
+
+    // Without shadows, a capture differs from the frame without quads only where a quad draws.
+    harness.render("fade-empty", {empty}, view, unshadowed);
+    const auto covered = [&](const std::string &name) {
+        const auto &image = harness.images[name], &nothing = harness.images["fade-empty"];
+        std::vector<bool> mask(image.width * image.height);
+        for (std::size_t y = 0; y < image.height; ++y)
+            for (std::size_t x = 0; x < image.width; ++x)
+                mask[y * image.width + x] = gpu_check::pixel(image, x, y) != gpu_check::pixel(nothing, x, y);
+        return mask;
+    };
+    for (const auto id : plain)
+        standard->set_visibility_range(id, {});
+    harness.render("fade-whole", {standard}, view, unshadowed);
+    const auto whole = covered("fade-whole");
+    for (const auto id : plain)
+        standard->set_visibility_range(id, range);
+    harness.render("fade-standard", {standard}, view, unshadowed);
+    const auto culled = harness.stats.range_culled;
+    const auto quads = covered("fade-standard");
+    const auto drawn = std::count(quads.begin(), quads.end(), true);
+    harness.images.require(drawn > 0 && drawn < std::count(whole.begin(), whole.end(), true),
+                           "The visibility range dissolved no pixel of the standard quads", {"fade-standard"});
+    harness.render("fade-separate", {separate}, view, unshadowed);
+    require(culled == 1 && harness.stats.range_culled == 1, "The quad beyond the range's end was not culled whole");
+    harness.render("fade-placed", {together}, view, unshadowed);
+    for (const std::string name : {"fade-separate", "fade-placed"}) {
+        const auto mask = covered(name);
+        std::size_t mismatched = 0;
+        for (std::size_t i = 0; i < mask.size(); ++i)
+            mismatched += mask[i] != quads[i];
+        std::cout << "CUSTOM fading: " << name << " covers " << std::count(mask.begin(), mask.end(), true)
+                  << " pixels, the standard material " << drawn << ", " << mismatched << " differently\n";
+        harness.images.require(mismatched == 0,
+                               name + " dissolves " + std::to_string(mismatched) +
+                                   " pixels differently from the standard material",
+                               {"fade-standard", name});
+    }
+
+    // With shadows, the pixels outside the quads differ from the unshadowed frame only by shadows on the ground,
+    // which every material must leave alike.
+    harness.render("fade-standard-shadowed", {standard}, view, lighting);
+    harness.render("fade-separate-shadowed", {separate}, view, lighting);
+    harness.render("fade-placed-shadowed", {together}, view, lighting);
+    const auto &without = harness.images["fade-standard"], &reference = harness.images["fade-standard-shadowed"];
+    std::size_t shadowed = 0;
+    for (std::size_t y = 0; y < reference.height; ++y)
+        for (std::size_t x = 0; x < reference.width; ++x)
+            shadowed +=
+                !quads[y * reference.width + x] && gpu_check::pixel(reference, x, y) != gpu_check::pixel(without, x, y);
+    harness.images.require(shadowed > 0, "The standard quads cast no shadow", {"fade-standard-shadowed"});
+    for (const std::string name : {"fade-separate-shadowed", "fade-placed-shadowed"}) {
+        const auto &image = harness.images[name];
+        std::size_t mismatched = 0;
+        for (std::size_t y = 0; y < image.height; ++y)
+            for (std::size_t x = 0; x < image.width; ++x)
+                mismatched +=
+                    !quads[y * image.width + x] && gpu_check::pixel(image, x, y) != gpu_check::pixel(reference, x, y);
+        std::cout << "CUSTOM fading: outside the quads, " << name << " differs from the standard material in "
+                  << mismatched << " pixels, where the standard quads shadow " << shadowed << '\n';
+        harness.images.require(mismatched == 0,
+                               name + " casts shadows that differ from the standard material's in " +
+                                   std::to_string(mismatched) + " pixels",
+                               {"fade-standard-shadowed", name});
+    }
+    harness.images.discard({"fade-empty", "fade-whole", "fade-standard", "fade-separate", "fade-placed",
+                            "fade-standard-shadowed", "fade-separate-shadowed", "fade-placed-shadowed"});
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3, "Usage: consumer --custom-materials OUTPUT");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
@@ -622,10 +766,12 @@ inline int run(int argc, char **argv) {
     check_skinning(harness);
     check_shadows(harness);
     check_placements(harness);
+    check_fading(harness);
     harness.finish();
     std::cout << "PASS custom materials: application SPIR-V reading the frame inputs, in the opaque pass and sorted "
                  "with blended draws, a time-driven effect, water that reads opaque depth and color copied only when "
-                 "drawn, skinning, shadows only from a depth-only variant, and placed copies\n";
+                 "drawn, skinning, shadows only from a depth-only variant, placed copies, and fading that dissolves "
+                 "and casts as the standard material does\n";
     return 0;
 }
 } // namespace custom_material_test

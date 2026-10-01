@@ -168,6 +168,20 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     if (texel_retention == TexelRetention::until_upload)
         result->texels_ = detail::hold_texels(materials->textures, "Mesh texture texels were released after upload");
     result->materials_ = std::move(materials);
+    // The rest pose's palette places each bounds part, as Scene::append_pose does for an object at the origin.
+    std::vector<Mat4> rest_palette(result->rest_.world.begin(), result->rest_.world.end());
+    for (const auto &skin : result->skins_)
+        for (std::size_t j = 0; j < skin.joints.size(); ++j)
+            rest_palette.push_back(result->rest_.world[skin.joints[j]] * skin.inverse_bind[j]);
+    for (const auto &parts : result->bounds_)
+        for (const auto &part : parts)
+            for (unsigned corner = 0; corner < 8; ++corner) {
+                const auto &b = part.bound;
+                expand(result->rest_bounds_,
+                       point(rest_palette[part.palette],
+                             {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
+                              corner & 4 ? b.maximum.z : b.minimum.z}));
+            }
     return result;
 }
 std::vector<std::shared_ptr<const Image>> Mesh::texel_images() const {
@@ -791,6 +805,12 @@ void MeshRenderer::set_primitive_visible(std::size_t primitive, bool visible) {
     object_.scene().set_primitive_visible(object_.id_, primitive, visible);
 }
 void MeshRenderer::set_casts_shadows(bool casts) { object_.scene().set_casts_shadows(object_.id_, casts); }
+VisibilityRange MeshRenderer::visibility_range() const {
+    return object_.scene().instance(object_.id_).visibility_range;
+}
+void MeshRenderer::set_visibility_range(const VisibilityRange &range) {
+    object_.scene().set_visibility_range(object_.id_, range);
+}
 std::shared_ptr<const MeshPlacements> MeshRenderer::placements() const {
     return object_.scene().instance(object_.id_).placements;
 }
@@ -826,6 +846,18 @@ void Scene::set_primitive_visible(Id id, std::size_t primitive, bool visible) {
     get(id).primitive_visible.at(primitive) = visible;
 }
 void Scene::set_casts_shadows(Id id, bool casts) { get(id).casts_shadows = casts; }
+void validate_visibility_range(const VisibilityRange &range) {
+    const auto finite_nonnegative = [](float v) { return std::isfinite(v) && v >= 0; };
+    require(finite_nonnegative(range.begin) && finite_nonnegative(range.begin_margin) &&
+                finite_nonnegative(range.end_margin) && !std::isnan(range.end) && range.end > range.begin &&
+                double(range.begin_margin) + range.end_margin <= double(range.end) - range.begin,
+            "A visibility range requires 0 <= begin < end and margins that fit between them");
+}
+void Scene::set_visibility_range(Id id, const VisibilityRange &range) {
+    auto &value = get(id);
+    validate_visibility_range(range);
+    value.visibility_range = range;
+}
 void Scene::set_placements(Id id, std::shared_ptr<const MeshPlacements> placements) {
     auto &entry = slot(id);
     auto &value = get(id);

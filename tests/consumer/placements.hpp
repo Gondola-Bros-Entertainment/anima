@@ -188,6 +188,22 @@ inline int run(int argc, char **argv) {
     (void)compare("moved");
     captures.require_changed("whole-placed", "moved-placed", .01, "Moving the object did not move its copies");
 
+    // One visibility range on every separate object and on the placed copies draws the same frame: from this view the
+    // far rows lie beyond its end and are hidden, the rows within its 15 m margin dissolve by the same dither, and the
+    // rest draw whole. Separate objects outside the range are culled whole on the CPU.
+    const anima::VisibilityRange range{0, 95, 0, 15};
+    for (const auto id : copies)
+        separate->set_visibility_range(id, range);
+    field_object.renderer().set_visibility_range(range);
+    const auto [ranged_apart, ranged] = compare("ranged");
+    require(ranged_apart.range_culled > 0, "No separate object fell outside the visibility range");
+    captures.require_changed("moved-placed", "ranged-placed", .002, "The visibility range hid no copy");
+    std::cout << "RANGE {\"separate_range_culled\":" << ranged_apart.range_culled
+              << ",\"placed_range_culled\":" << ranged.range_culled << "}\n";
+    for (const auto id : copies)
+        separate->set_visibility_range(id, {});
+    field_object.renderer().set_visibility_range({});
+
     // Without placements the object draws its one copy at its own place.
     field_object.renderer().set_placements(nullptr);
     const auto single = draw(placed, "single");
@@ -234,7 +250,8 @@ inline int run(int argc, char **argv) {
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Placement validation failed");
     std::cout << "PASS placements: " << placed_copies.size()
-              << " copies through one object match separate objects with shadows, culled by cluster; "
+              << " copies through one object match separate objects with shadows and visibility ranges, culled by "
+                 "cluster; "
                  "validation_warnings=0 validation_errors=0\n";
     return 0;
 }

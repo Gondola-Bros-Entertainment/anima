@@ -64,8 +64,8 @@ constexpr std::array<Member, 13> frame_members{{{0, "mat4"},
                                                 {256, "vec4"},
                                                 {272, "vec4"},
                                                 {288, "float"}}};
-constexpr std::array<Member, 6> draw_members{
-    {{0, "mat4"}, {64, "uint"}, {68, "uint"}, {72, "uint"}, {76, "uint"}, {80, "vec4"}}};
+constexpr std::array<Member, 7> draw_members{
+    {{0, "mat4"}, {64, "uint"}, {68, "uint"}, {72, "uint"}, {76, "uint"}, {80, "vec4"}, {96, "uint"}}};
 // The SourceVertex attributes, then the three placement rows.
 constexpr std::array<std::string_view, 11> attribute_types{"vec3", "vec3",  "vec3", "vec2", "uvec4", "vec4",
                                                            "vec4", "float", "vec4", "vec4", "vec4"};

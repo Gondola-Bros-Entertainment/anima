@@ -73,7 +73,8 @@ class Prefab {
         /// Matrix relative to the parent; the root's is multiplied by the instantiation placement.
         Mat4 local = identity();
         /// Optional shared mesh; without one, #pose, #material_factors, #custom_materials,
-        /// #primitive_visible and #placements must be empty and #visible and #casts_shadows true.
+        /// #primitive_visible and #placements must be empty, #visible and #casts_shadows true, and
+        /// #visibility_range the default.
         std::shared_ptr<const Mesh> mesh;
         /// Initial Pose::world matrices, one per mesh node; empty uses the mesh's rest pose.
         std::optional<Pose> pose;
@@ -92,6 +93,8 @@ class Prefab {
         /// Copies drawn in place of the one at the object (Scene::set_placements), or null; they must copy
         /// #mesh, and #pose must be empty.
         std::shared_ptr<const MeshPlacements> placements;
+        /// Distances at which the renderer draws (Scene::set_visibility_range).
+        VisibilityRange visibility_range;
         /// Encoded components, at most 1,024, each type at most once.
         std::vector<ComponentData> components;
         /// Authored activation (GameObject::active_self), independent of the parent.
@@ -171,10 +174,13 @@ class Prefab {
 ///   affine matrix, column-major, relative to the object, for an object with a mesh and a null `pose`. The
 ///   document byte limit allows about 95,000. Writing keeps MeshPlacements::transforms() order, which reading
 ///   keeps;
+/// - `visibility_range`: null, the default, for every distance, or an object with exactly `begin`, `end` (null for
+///   no end), `begin_margin` and `end_margin` (VisibilityRange);
 /// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
 ///   `enabled` (ComponentData).
 ///
-/// An object without a mesh has null `pose` and `placements`, empty arrays, and `visible` and `casts_shadows` true.
+/// An object without a mesh has null `pose`, `placements` and `visibility_range`, empty arrays, and `visible` and
+/// `casts_shadows` true.
 /// Throws
 /// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming
 /// fails, two different custom materials share a name or a limit is exceeded.

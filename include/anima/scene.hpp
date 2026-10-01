@@ -5,6 +5,7 @@
 #include <anima/mesh_placements.hpp>
 #include <compare>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <span>
 #include <typeindex>
@@ -33,6 +34,32 @@ class MeshRenderer;
 class ObjectTransform;
 class Scene;
 class SceneSet;
+/// Distances from the eye at which an object draws, in metres, measured to the center of its mesh's rest bounds
+/// (Mesh::rest_bounds()) as its world matrix places it or, for an object with placements, as each copy is placed, as
+/// Godot's visibility ranges measure to the center of an instance's bounds.
+///
+/// Outside [#begin, #end] the object, or the copy, does not draw in any pass. Within #begin_margin of #begin and
+/// #end_margin of #end it dissolves with an ordered dither instead of popping: it is whole from `begin +
+/// begin_margin` to `end - end_margin` and gone at #begin and #end, and in between a share of its pixels proportional
+/// to the distance into the margin is discarded, so it costs no blending or sorting. It casts shadows while more than
+/// half of it draws. Ranges apply to perspective views; an orthographic view draws every object whole. A custom
+/// material dissolves only through the helpers in `anima/custom_material.glsl`; without them it draws whole inside the
+/// range.
+struct VisibilityRange {
+    /// Nearest distance at which the object draws; 0, the default, draws it however near.
+    float begin = 0;
+    /// Farthest distance at which the object draws; infinity, the default, draws it however far.
+    float end = std::numeric_limits<float>::infinity();
+    /// Width over which it dissolves in beyond #begin; 0 makes it appear at once.
+    float begin_margin = 0;
+    /// Width over which it dissolves out before #end; 0 makes it vanish at once.
+    float end_margin = 0;
+    bool operator==(const VisibilityRange &) const = default;
+};
+/// Throws `std::invalid_argument` unless VisibilityRange::begin and the margins of @p range are finite and
+/// nonnegative, its end is greater than its begin, and the margins fit between them ("A visibility range requires
+/// 0 <= begin < end and margins that fit between them").
+void validate_visibility_range(const VisibilityRange &range);
 /// Persistent identity of an object within one scene; zero is null.
 ///
 /// Keys are unique within their scene and do not change when an object is renamed, reparented,
@@ -127,6 +154,8 @@ class Scene {
         std::shared_ptr<const MeshPlacements> placements;
         /// The object's world matrix, which places #placements.
         Mat4 world = identity();
+        /// Distances at which the object, or each of its copies, draws; see set_visibility_range().
+        VisibilityRange visibility_range;
     };
     Scene();
     /// Invalidates every handle to the scene, then sends `on_disable()` to each component that
@@ -241,6 +270,9 @@ class Scene {
     /// material of the renderer does not read them (CustomMaterial::reads_placements(): "A custom material that
     /// draws placements must read them").
     void set_placements(Id id, std::shared_ptr<const MeshPlacements> placements);
+    /// Draws @p id's renderer only at the distances @p range allows, as VisibilityRange describes. Throws
+    /// `std::logic_error` when the object has no renderer and what validate_visibility_range() throws.
+    void set_visibility_range(Id id, const VisibilityRange &range);
     /// Render state of @p id's renderer, borrowed until the scene next changes. Throws
     /// `std::logic_error` when the object has no renderer.
     [[nodiscard]] const Instance &instance(Id id) const;
@@ -501,8 +533,9 @@ class MeshRenderer {
     /// Shared mesh being drawn.
     [[nodiscard]] std::shared_ptr<const Mesh> mesh() const;
     /// Replaces the mesh, keeping the object's transform and resetting the pose to rest, material
-    /// factors to authored values, custom materials and placements to none, the renderer and every
-    /// primitive to visible, and shadow casting on. Throws `std::invalid_argument` for a null mesh.
+    /// factors to authored values, custom materials and placements to none, the visibility range to
+    /// every distance, the renderer and every primitive to visible, and shadow casting on. Throws
+    /// `std::invalid_argument` for a null mesh.
     void set_mesh(std::shared_ptr<const Mesh> mesh);
     /// Sets the animation pose, keeping the object's placement; see Scene::set_pose.
     void set_pose(const Pose &pose);
@@ -523,6 +556,10 @@ class MeshRenderer {
     [[nodiscard]] std::shared_ptr<const MeshPlacements> placements() const;
     /// Draws a copy at each placement, or one copy at the object for null; see Scene::set_placements.
     void set_placements(std::shared_ptr<const MeshPlacements> placements);
+    /// Distances at which the renderer draws; see Scene::set_visibility_range.
+    [[nodiscard]] VisibilityRange visibility_range() const;
+    /// Draws only at the distances @p range allows; see Scene::set_visibility_range.
+    void set_visibility_range(const VisibilityRange &range);
     /// Union of all primitive bounds in world space, including hidden primitives and every copy.
     [[nodiscard]] RenderBounds bounds() const;
 

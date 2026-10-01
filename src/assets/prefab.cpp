@@ -4,6 +4,7 @@
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_persistence.hpp"
 #include "../detail/staging.hpp"
+#include "../detail/visibility_range_json.hpp"
 #include <algorithm>
 #include <anima/prefab.hpp>
 #include <map>
@@ -59,6 +60,7 @@ struct ScenePersistence {
             node.primitive_visible = source.value.primitive_visible;
             node.casts_shadows = source.value.casts_shadows;
             node.placements = source.value.placements;
+            node.visibility_range = source.value.visibility_range;
         }
         return node;
     }
@@ -110,10 +112,12 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
         require(node.mesh || (!node.pose && node.material_factors.empty() && node.custom_materials.empty() &&
-                              node.primitive_visible.empty() && node.visible && node.casts_shadows && !node.placements),
+                              node.primitive_visible.empty() && node.visible && node.casts_shadows &&
+                              !node.placements && node.visibility_range == VisibilityRange{}),
                 "Empty scene object has renderer state");
         require(!node.placements || (node.placements->mesh() == node.mesh && !node.pose),
                 "Scene placements must copy the object's mesh, which has no pose");
+        validate_visibility_range(node.visibility_range);
     }
 }
 std::vector<GameObject> instantiate_nodes(Scene &scene, std::span<const Prefab::Node> nodes, const GameObject *parent,
@@ -228,6 +232,7 @@ Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, Res
                            {"primitive_visible", node.primitive_visible},
                            {"casts_shadows", node.casts_shadows},
                            {"placements", placements},
+                           {"visibility_range", detail::encode_visibility_range(node.visibility_range)},
                            {"components", components}});
     }
     return objects;
@@ -335,7 +340,8 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
         // An omitted setting takes the default that Prefab::Node declares.
         anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh"},
                                    {"pose", "visible", "active", "material_factors", "custom_materials",
-                                    "primitive_visible", "casts_shadows", "placements", "components"});
+                                    "primitive_visible", "casts_shadows", "placements", "visibility_range",
+                                    "components"});
         Prefab::Node node;
         node.key = ObjectKey::parse(value.at("key").get<std::string>());
         node.active = value.value("active", node.active);
@@ -397,6 +403,9 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
                 transforms.push_back(matrix_value(transform));
             node.placements = MeshPlacements::create(node.mesh, transforms);
         }
+        node.visibility_range =
+            detail::decode_visibility_range(value.contains("visibility_range") ? value.at("visibility_range") : omitted,
+                                            "Invalid scene visibility range");
         if (value.contains("components")) {
             const auto &components = value.at("components");
             require(components.is_array() && components.size() <= maximum_components,
@@ -571,6 +580,7 @@ std::vector<GameObject> instantiate_prefab_nodes(Scene &scene, std::span<const P
             renderer.set_casts_shadows(node.casts_shadows);
             if (node.placements)
                 renderer.set_placements(node.placements);
+            renderer.set_visibility_range(node.visibility_range);
         }
     } catch (...) {
         destroy_prefab_objects(objects);

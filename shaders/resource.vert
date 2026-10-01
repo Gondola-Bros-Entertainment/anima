@@ -18,22 +18,41 @@ layout(location = 1) out vec3 baseColor;
 layout(location = 2) out vec2 texcoord;
 layout(location = 3) out vec3 worldPosition;
 layout(location = 6) flat out float orientation;
+layout(location = 7) flat out float visibility;
 layout(set = 2, binding = 0, std430) readonly buffer Poses { mat4 matrices[]; }
 poses;
 layout(push_constant) uniform Draw {
     layout(offset = 0) mat4 viewProjection;
+    // The eye with w 1, or in an orthographic view the direction toward the camera with w 0.
+    layout(offset = 64) vec4 origin;
     layout(offset = 96) uvec4 indices;
     layout(offset = 112) vec4 factor;
 }
 draw;
+// The share of an object, or of a placed copy, that its visibility range draws at the distance from the eye to
+// center, the center of its mesh's rest bounds as placed: 1 whole, 0 gone, dissolving across the margins. range holds
+// its begin, begin margin, end and end margin. An orthographic view, whose origin has w 0, draws everything whole.
+float visibilityAt(vec3 center, vec4 range) {
+    if (draw.origin.w == 0.0)
+        return 1.0;
+    float d = distance(center, draw.origin.xyz);
+    float rise = range.y > 0.0 ? clamp((d - range.x) / range.y, 0.0, 1.0) : (d >= range.x ? 1.0 : 0.0);
+    float fall = range.w > 0.0 ? clamp((range.z - d) / range.w, 0.0, 1.0) : (d < range.z ? 1.0 : 0.0);
+    return min(rise, fall);
+}
 void main() {
-    // indices: the draw's first palette matrix, whether it is skinned, and with placements, the object's world matrix
-    // and 1, when the palette matrix is the node's in the rest pose.
+    // indices: the draw's first palette matrix; whether it is skinned; with placements or a visibility range, the
+    // object's world matrix, followed by a matrix whose first column is its range and whose second holds the center
+    // of its mesh's rest bounds; and flags, 1 with placements, when the palette matrix is the node's in the rest pose,
+    // and 2 with a range.
     mat4 transform = poses.matrices[draw.indices.x];
-    if (draw.indices.w != 0u)
-        transform = poses.matrices[draw.indices.z] *
-                    transpose(mat4(placement0, placement1, placement2, vec4(0, 0, 0, 1))) * transform;
-    else if (draw.indices.y != 0) {
+    bool placed = (draw.indices.w & 1u) != 0u, ranged = (draw.indices.w & 2u) != 0u;
+    // The object's world matrix, or with placements this copy's.
+    mat4 object = placed || ranged ? poses.matrices[draw.indices.z] : mat4(1.0);
+    if (placed) {
+        object = object * transpose(mat4(placement0, placement1, placement2, vec4(0, 0, 0, 1)));
+        transform = object * transform;
+    } else if (draw.indices.y != 0) {
         transform = mat4(0.0);
         for (uint i = 0; i < 4; ++i)
             if (weights[i] != 0.0)
@@ -56,6 +75,14 @@ void main() {
     vertexAlpha = alpha;
     worldPosition = mat3(transform) * position + transform[3].xyz;
     gl_Position = draw.viewProjection * vec4(worldPosition, 1.0);
+    visibility = 1.0;
+    if (ranged) {
+        mat4 range = poses.matrices[draw.indices.z + 1u];
+        visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0]);
+    }
+    // A copy that its range hides draws nothing: every corner leaves the view volume.
+    if (visibility <= 0.0)
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     baseColor = color * draw.factor.rgb;
     texcoord = uv;
 }

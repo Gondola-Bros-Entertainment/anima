@@ -37,7 +37,8 @@ class MeshPlacements {
         std::uint32_t first{};
         /// Number of placements, from 1 to #cluster_size.
         std::uint32_t count{};
-        /// Bounds of every primitive of the cluster's copies, hidden ones included, relative to the object.
+        /// Bounds of every primitive of the cluster's copies, hidden ones included, and of each copy's center of
+        /// Mesh::rest_bounds(), which visibility ranges measure to, relative to the object.
         RenderBounds bounds;
     };
 

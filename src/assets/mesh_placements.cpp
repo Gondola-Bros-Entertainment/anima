@@ -104,6 +104,10 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
                 points[c] = point(node, {c & 1 ? b.maximum.x : b.minimum.x, c & 2 ? b.maximum.y : b.minimum.y,
                                          c & 4 ? b.maximum.z : b.minimum.z});
         }
+    // The center of the mesh's rest bounds, which visibility ranges measure each copy to; a cluster's bounds hold it
+    // for every copy, so culling a cluster by its bounds never hides a copy that its range still draws.
+    const auto &rest_bounds = mesh->rest_bounds_;
+    const auto center = (rest_bounds.minimum + rest_bounds.maximum) * .5F;
 
     auto result = std::shared_ptr<MeshPlacements>(new MeshPlacements);
     result->mesh_ = std::move(mesh);
@@ -123,6 +127,8 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
                         expand(cluster.bounds, v);
                         expand(result->primitive_bounds_[i], v);
                     }
+            if (rest_bounds.valid)
+                expand(cluster.bounds, point(placement, center));
         }
         pad(cluster.bounds);
         result->clusters_.push_back(cluster);

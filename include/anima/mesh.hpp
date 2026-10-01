@@ -135,6 +135,9 @@ class Mesh {
     [[nodiscard]] const Pose &rest_pose() const { return rest_; }
     /// Matrices in each instance palette: one per source node, then one per joint of each skin, in order.
     [[nodiscard]] std::size_t palette_size() const { return palette_size_; }
+    /// Bounds of every draw, hidden or not, in the rest pose and the mesh's own space, before an object places it;
+    /// invalid when no draw has a vertex. VisibilityRange measures to its center.
+    [[nodiscard]] const RenderBounds &rest_bounds() const noexcept { return rest_bounds_; }
     /// Whether @p source can animate this mesh: the same node names and parents in the same order, and rest
     /// world transforms within `0.00001` per element. Animator requires it. Throws as sample_pose() does when
     /// the rest pose of @p source cannot be evaluated.
@@ -156,6 +159,7 @@ class Mesh {
     std::vector<AssetSkin> skins_;
     std::vector<std::vector<BoundPart>> bounds_;
     std::size_t palette_size_{};
+    RenderBounds rest_bounds_;
     TexelRetention texel_retention_ = TexelRetention::keep;
     detail::TexelHoldPtr texels_;
 };
