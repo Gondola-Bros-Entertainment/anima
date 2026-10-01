@@ -199,6 +199,8 @@ struct ResourceStats {
     std::uint64_t resident_geometry_bytes{};
     /// Device allocation bytes of cached material images, custom materials' included.
     std::uint64_t resident_texture_bytes{};
+    /// Device allocation bytes of cached placements (MeshPlacements), 48 bytes per placement before alignment.
+    std::uint64_t resident_placement_bytes{};
     /// Custom materials in the GPU cache.
     std::uint64_t cached_custom_materials{};
     /// Whether the latest preparation draws a custom material that reads opaque depth or color, so that its frame
@@ -211,8 +213,16 @@ struct ResourceStats {
     std::uint64_t pose_buffer_bytes{};
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
     std::uint64_t pose_uploaded_bytes{};
-    /// Main-view draw calls of the latest frame.
+    /// Main-view draw calls of the latest frame. A draw of an object with placements takes one call per run of
+    /// adjacent visible placement clusters.
     std::uint64_t draw_calls{};
+    /// Copies drawn by main-view draw calls of the latest frame: one per call of an object without placements, and
+    /// one per placement that a call draws.
+    std::uint64_t drawn_copies{};
+    /// Placement clusters (MeshPlacements::clusters()) of objects with a main-view draw that main-view frustum culling
+    /// skipped in the latest frame, counted once per object whatever its materials; an object culled whole counts
+    /// in #culled_instances instead.
+    std::uint64_t culled_clusters{};
     /// Instances with at least one main-view draw.
     std::uint64_t instances{};
     /// Meshes in the GPU cache.
@@ -225,11 +235,11 @@ struct ResourceStats {
     std::uint64_t candidate_draws{};
     /// Candidate draws rejected by frustum culling.
     std::uint64_t culled_draws{};
-    /// Indices submitted by main-view draws of the latest frame.
+    /// Indices submitted by main-view draws of the latest frame, once per copy drawn.
     std::uint64_t submitted_indices{};
     /// Draw calls of both shadow regions in the latest frame.
     std::uint64_t shadow_draw_calls{};
-    /// Indices submitted to both shadow regions in the latest frame.
+    /// Indices submitted to both shadow regions in the latest frame, once per copy drawn.
     std::uint64_t shadow_submitted_indices{};
     /// Device allocation bytes of both shadow depth images.
     std::uint64_t shadow_bytes{};
@@ -270,6 +280,13 @@ struct ResourceStats {
 /// draw() releases every cached Mesh that only the renderer still references; a draw() that returns early
 /// because the window is not drawable releases nothing. Selection, culling and visibility never evict, and
 /// there is no size budget.
+///
+/// An object with placements (Scene::set_placements) draws each of its mesh's draws as instances of one indexed draw,
+/// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see: the main
+/// view culls clusters by their world bounds when frustum culling is on, and each shadow region culls them against
+/// itself, so copies outside the view still cast shadows. Each MeshPlacements uploads its transforms once into a
+/// device buffer, cached per object and released as meshes are, and the vertex shaders compose each placement with
+/// the object's world matrix and the mesh's rest pose.
 ///
 /// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`
@@ -323,6 +340,8 @@ struct ResourceStats {
 /// - Only bounds centers are compared, so a large draw can sort wrongly against a small one near it, such as a
 ///   water plane and an object floating on it.
 /// - Mesh::compile_static can split one primitive into several draws, which sort separately.
+/// - The copies of an object with placements sort as one draw, by the bounds of every copy, and blend in
+///   MeshPlacements::transforms() order.
 ///
 /// A custom material draws in the pass that its CustomBlend mode selects. An opaque one draws in the world pass
 /// after every opaque and masked mesh, testing depth with `LESS` and writing it, so it hides and is hidden as they

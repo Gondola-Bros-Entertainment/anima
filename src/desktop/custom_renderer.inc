@@ -17,11 +17,11 @@ static_assert(offsetof(CustomFrameUniform, inverse_view_projection) == 64 &&
 // The per-draw push constants of custom shaders.
 struct CustomPush {
     Mat4 view;
-    std::uint32_t palette_offset, skinned;
-    std::array<std::uint32_t, 2> reserved;
+    std::uint32_t palette_offset, skinned, object_offset, placed;
     std::array<float, 4> factor;
 };
 static_assert(offsetof(CustomPush, palette_offset) == 64 && offsetof(CustomPush, skinned) == 68 &&
+              offsetof(CustomPush, object_offset) == 72 && offsetof(CustomPush, placed) == 76 &&
               offsetof(CustomPush, factor) == 80 && sizeof(CustomPush) == 96);
 // Descriptor bindings of a custom material's set: its parameter block, then its textures.
 static constexpr std::uint32_t custom_material_bindings = CustomMaterial::max_textures + 1;
@@ -294,20 +294,27 @@ void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {
     stages[0].module = shadow ? gpu.shadow_vertex : gpu.vertex;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = shadow ? gpu.shadow_fragment : gpu.fragment;
-    // Only the attributes that the vertex shader declares, so that no supplied attribute goes unread.
+    // Only the attributes that the vertex shader declares, so that no supplied attribute goes unread, and the
+    // bindings they read: the mesh's vertices and the placement rows.
     const auto declared = shadow ? source.shadow_vertex_attributes() : source.vertex_attributes();
     std::vector<VkVertexInputAttributeDescription> attributes;
-    for (const auto &attribute : resource_attributes)
-        if (declared & (1U << attribute.location))
-            attributes.push_back(attribute);
-    const VkVertexInputBindingDescription binding{0, sizeof(SourceVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    if (!attributes.empty()) {
-        vertex.vertexBindingDescriptionCount = 1;
-        vertex.pVertexBindingDescriptions = &binding;
-        vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size());
-        vertex.pVertexAttributeDescriptions = attributes.data();
+    std::vector<VkVertexInputBindingDescription> bindings;
+    for (const auto &binding : resource_bindings) {
+        const auto first = attributes.size();
+        const std::span<const VkVertexInputAttributeDescription> candidates =
+            binding.binding == 0 ? std::span<const VkVertexInputAttributeDescription>(resource_attributes)
+                                 : std::span<const VkVertexInputAttributeDescription>(placement_attributes);
+        for (const auto &attribute : candidates)
+            if (declared & (1U << attribute.location))
+                attributes.push_back(attribute);
+        if (attributes.size() != first)
+            bindings.push_back(binding);
     }
+    VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size());
+    vertex.pVertexBindingDescriptions = bindings.data();
+    vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size());
+    vertex.pVertexAttributeDescriptions = attributes.data();
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -366,7 +373,8 @@ void bind_custom(const GpuCustomMaterial &gpu, bool shadow) {
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, custom_pipeline_layout, 0,
                             static_cast<std::uint32_t>(std::size(sets)), sets, 0, nullptr);
 }
-// Records draw @p draw_index of @p render_instance with the bound custom pipeline and geometry, through @p view.
+// Records draw @p draw_index of @p render_instance with the bound custom pipeline and geometry, through @p view, once
+// per run of placement_runs.
 void record_custom_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view,
                         bool shadow) {
     const auto &source = *render_instance.source;
@@ -375,7 +383,8 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
     const CustomPush push{view,
                           render_instance.palette_offset + draw.palette_offset,
                           draw.skinned ? 1U : 0U,
-                          {},
+                          render_instance.object_offset,
+                          render_instance.placements ? 1U : 0U,
                           {factor.x, factor.y, factor.z, 1}};
     vkCmdPushConstants(command, custom_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
@@ -385,19 +394,24 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
 // depth-only variants that the region, the detail one with @p detail, contains.
 void record_custom_draws(const std::vector<CustomDraw> &draws, const Mat4 &view, bool shadow, bool detail) {
     const GpuCustomMaterial *bound_material = nullptr;
-    const GpuAsset *bound_geometry = nullptr;
+    const ResourceInstance *bound_geometry = nullptr;
+    const auto *frustum = shadow                    ? (detail ? &detail_shadow_frustum : &shadow_frustum)
+                          : options.frustum_culling ? &resource_frustum
+                                                    : nullptr;
     for (const auto &entry : draws) {
         const auto &render_instance = resource_instances[entry.instance];
-        if (shadow && !(detail ? detail_shadow_frustum : shadow_frustum)
-                           .intersects(render_instance.source->primitive_bounds[entry.draw]))
+        if (shadow && !frustum->intersects(render_instance.source->primitive_bounds[entry.draw]))
+            continue;
+        find_placement_runs(render_instance, frustum);
+        if (placement_runs.empty())
             continue;
         if (entry.custom != bound_material) {
             bound_material = entry.custom;
             bind_custom(*bound_material, shadow);
         }
-        if (render_instance.gpu.get() != bound_geometry) {
-            bound_geometry = render_instance.gpu.get();
-            bind_geometry(*bound_geometry);
+        if (&render_instance != bound_geometry) {
+            bound_geometry = &render_instance;
+            bind_geometry(render_instance);
         }
         record_custom_draw(render_instance, entry.draw, view, shadow);
     }

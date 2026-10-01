@@ -240,10 +240,31 @@ TEST_CASE("A custom material records the interface that its shaders declare") {
     CHECK(custom.casts_shadows());
     CHECK(custom.reads_opaque_depth());
     CHECK(custom.reads_opaque_color());
+    CHECK_FALSE(custom.reads_placements());
     const CustomMaterial plain(definition());
     CHECK_FALSE(plain.casts_shadows());
     CHECK_FALSE(plain.reads_opaque_depth());
     CHECK_FALSE(plain.reads_opaque_color());
+    CHECK_FALSE(plain.reads_placements());
+
+    // Drawing placements takes all three rows in every vertex shader the material has.
+    const auto placed = [](std::initializer_list<std::uint32_t> rows) {
+        auto module = vertex_module();
+        for (const auto row : rows)
+            (void)module.input_at(row, module.vector(4));
+        return module.words();
+    };
+    auto rows = definition();
+    rows.vertex_shader = placed({8, 9, 10});
+    CHECK(CustomMaterial(rows).vertex_attributes() == 0x701U);
+    CHECK(CustomMaterial(rows).reads_placements());
+    rows.vertex_shader = placed({8, 10});
+    CHECK_FALSE(CustomMaterial(rows).reads_placements());
+    rows.vertex_shader = placed({8, 9, 10});
+    rows.shadow_vertex_shader = placed({8, 9});
+    CHECK_FALSE(CustomMaterial(rows).reads_placements());
+    rows.shadow_vertex_shader = placed({8, 9, 10});
+    CHECK(CustomMaterial(rows).reads_placements());
 }
 
 TEST_CASE("Custom material definitions outside the documented limits are rejected") {
@@ -363,7 +384,12 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
     vertex = vertex_module();
     (void)vertex.input_at(8, vertex.scalar());
     rejects(definition(vertex),
-            "The vertex shader reads vertex attribute 8, which the custom material interface does not provide");
+            "The vertex shader reads vertex attribute 8 as float, but the custom material interface provides a vec4 "
+            "there");
+    vertex = vertex_module();
+    (void)vertex.input_at(11, vertex.vector(4));
+    rejects(definition(vertex),
+            "The vertex shader reads vertex attribute 11, which the custom material interface does not provide");
 
     auto fragment = fragment_module();
     (void)fragment.input_at(1, fragment.vector(3));
@@ -408,6 +434,10 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
     vertex = vertex_module();
     (void)vertex.variable(push_constant, vertex.structure({{vertex.scalar(), 72}}));
     rejects(definition(vertex), "The vertex shader declares the draw push constant member at offset 72 as float, "
+                                "but the custom material interface has a uint there");
+    vertex = vertex_module();
+    (void)vertex.variable(push_constant, vertex.structure({{vertex.scalar(), 88}}));
+    rejects(definition(vertex), "The vertex shader declares the draw push constant member at offset 88 as float, "
                                 "but the custom material interface has no member there");
 
     vertex = vertex_module();
@@ -509,6 +539,36 @@ TEST_CASE("Scene objects assign custom materials per mesh material") {
     auto empty = scene.create("empty");
     CHECK_THROWS_WITH_AS(scene.set_custom_material(empty.id(), 0, water), "GameObject has no MeshRenderer",
                          std::logic_error);
+}
+
+TEST_CASE("Only custom materials that read placements draw them") {
+    // Water reads no placement rows; grass reads all three.
+    const auto water = material("water");
+    auto rows = vertex_module();
+    for (const std::uint32_t row : {8U, 9U, 10U})
+        (void)rows.input_at(row, rows.vector(4));
+    auto value = definition(rows);
+    value.name = "grass";
+    const auto grass = std::make_shared<const CustomMaterial>(std::move(value));
+    REQUIRE(grass->reads_placements());
+
+    Scene scene;
+    const auto shape = mesh(2);
+    const auto placements = MeshPlacements::create(shape, std::vector<Mat4>{identity(), identity()});
+    auto object = scene.create("meadow", shape);
+    auto renderer = object.renderer();
+    renderer.set_custom_material(0, water);
+    CHECK_THROWS_WITH_AS(renderer.set_placements(placements), "A custom material that draws placements must read them",
+                         std::invalid_argument);
+    CHECK_FALSE(renderer.placements());
+    renderer.set_custom_material(0, grass);
+    renderer.set_placements(placements);
+    CHECK_THROWS_WITH_AS(renderer.set_custom_material(1, water),
+                         "A custom material that draws placements must read them", std::invalid_argument);
+    CHECK_FALSE(scene.instance(object.id()).custom_materials[1]);
+    renderer.set_custom_material(1, grass);
+    renderer.set_custom_material(0, nullptr);
+    CHECK(scene.instance(object.id()).placements == placements);
 }
 
 TEST_CASE("Documents store custom materials by name and resolve them through the application") {

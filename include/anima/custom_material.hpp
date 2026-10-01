@@ -23,7 +23,10 @@
 ///
 /// Vertex attributes, read only by vertex shaders, are the mesh's SourceVertex fields in mesh space: location 0
 /// `vec3` position, 1 `vec3` normal, 2 `vec3` color, 3 `vec2` uv, 4 `uvec4` joints, 5 `vec4` weights, 6 `vec4`
-/// tangent and 7 `float` alpha. A shader may read any subset.
+/// tangent and 7 `float` alpha; then per instance, 8 to 10 `vec4`, rows 0 to 2 of the affine matrix of the
+/// placement being drawn (Scene::set_placements), whose last row is (0, 0, 0, 1), or of an identity for an object
+/// without placements. A shader may read any subset, but only one that reads all three placement rows, in every
+/// vertex shader it has, can draw placements (reads_placements()).
 ///
 /// Descriptors:
 /// - Set 0, binding 0, any stage: the `std140` uniform block `AnimaFrame`, the same for every draw of a frame. At
@@ -43,7 +46,9 @@
 ///   draw, sky included, before exposure and tone mapping, sampled with linear filtering and clamped at the edges.
 /// - Set 1, binding 0, vertex shaders only: the `readonly` `std430` storage buffer `AnimaPoses` of `mat4
 ///   matrices[]`, the posed palettes of the frame (Scene::Instance::palette). A rigid draw uses
-///   `matrices[paletteOffset]`; a skinned vertex blends `matrices[paletteOffset + joints[i]]` by `weights[i]`.
+///   `matrices[paletteOffset]`; a skinned vertex blends `matrices[paletteOffset + joints[i]]` by `weights[i]`. For
+///   an object with placements, `matrices[paletteOffset]` is instead the node's matrix in the mesh's rest pose,
+///   and the vertex's world matrix is `matrices[objectOffset] * placement * matrices[paletteOffset]`.
 /// - Set 2, binding 0, any stage: the parameter block, a uniform block that holds
 ///   CustomMaterialDefinition::parameters from its start, laid out as the shader declares it.
 /// - Set 2, bindings 1 to 4, any stage: `sampler2D` for CustomMaterialDefinition::textures 0 to 3, sampled as their
@@ -53,8 +58,10 @@
 /// Push constants, any stage: the block `AnimaDraw`, per draw. At offset 0 `mat4 viewProjection`, the matrix of
 /// the pass being drawn: the camera's, or a shadow region's in the depth-only variant; 64 `uint paletteOffset`,
 /// IndexedDraw::palette_offset within the instance's palette; 68 `uint skinned`, 1 for a skinned draw and
-/// otherwise 0; and 80 `vec4 factor`, the object's linear RGB factor for the material slot (Scene::set_material_factor)
-/// with alpha 1.
+/// otherwise 0; 72 `uint objectOffset`, the index in `AnimaPoses` of the object's world matrix when it has
+/// placements; 76 `uint placed`, 1 when it has placements and otherwise 0; and 80 `vec4 factor`, the object's
+/// linear RGB factor for the material slot (Scene::set_material_factor) with alpha 1. `animaModelMatrix()` in
+/// `anima/custom_material.glsl` composes these as the standard material does.
 ///
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear
@@ -174,6 +181,12 @@ class CustomMaterial {
     [[nodiscard]] std::uint32_t vertex_attributes() const noexcept { return vertex_attributes_; }
     /// Vertex attributes that the shadow vertex shader declares, or 0 without one.
     [[nodiscard]] std::uint32_t shadow_vertex_attributes() const noexcept { return shadow_vertex_attributes_; }
+    /// Whether the vertex shader, and the depth-only variant's if there is one, read all three placement rows
+    /// (locations 8 to 10), which drawing an object's placements requires (Scene::set_placements).
+    [[nodiscard]] bool reads_placements() const noexcept {
+        constexpr std::uint32_t rows = 0x700;
+        return (vertex_attributes_ & rows) == rows && (!casts_shadows() || (shadow_vertex_attributes_ & rows) == rows);
+    }
     /// Whether the fragment shader declares opaque depth; either input makes the renderer copy opaque depth and
     /// color on frames that draw the material.
     [[nodiscard]] bool reads_opaque_depth() const noexcept { return reads_opaque_depth_; }

@@ -146,6 +146,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/prefab_variant.cpp
     src/assets/prefab_composition.cpp
     src/assets/mesh.cpp
+    src/assets/mesh_placements.cpp
     src/assets/terrain.cpp
     src/assets/animator.cpp
     src/assets/animation_state_machine.cpp
@@ -341,6 +342,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_custom_material_tests PRIVATE anima::assets anima_test_main Threads::Threads)
         anima_target_defaults(anima_custom_material_tests)
         add_test(NAME custom_materials COMMAND anima_custom_material_tests)
+        add_executable(anima_mesh_placements_tests tests/mesh_placements_tests.cpp)
+        target_link_libraries(anima_mesh_placements_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_mesh_placements_tests)
+        add_test(NAME mesh_placements COMMAND anima_mesh_placements_tests)
         add_executable(anima_texture_compression_tests tests/texture_compression_tests.cpp)
         target_include_directories(anima_texture_compression_tests SYSTEM PRIVATE third_party/stb)
         target_compile_definitions(anima_texture_compression_tests
@@ -663,8 +668,8 @@ if(ANIMA_BUILD_TESTS)
         set(desktop "${anima_consumer_executable_dir}/consumer_desktop${CMAKE_EXECUTABLE_SUFFIX}")
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
-        foreach(check_mode IN ITEMS allocations culling foliage environment resources material-sampling pbr
-            surface-maps sidedness blending custom-materials texture-memory)
+        foreach(check_mode IN ITEMS allocations culling placements foliage environment resources material-sampling
+            pbr surface-maps sidedness blending custom-materials texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})

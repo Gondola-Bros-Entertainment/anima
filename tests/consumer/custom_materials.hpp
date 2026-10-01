@@ -559,6 +559,56 @@ inline void check_shadows(Harness &harness) {
     harness.images.discard({"shadows", "shadows-without"});
 }
 
+// Copies of an opaque custom quad with a depth-only variant, drawn through one object's placements, match the same
+// copies as separate objects, their shadows on the ground included: the shaders' animaModelMatrix() composes the
+// placement as the standard material does. The translations are exact in float, so the frames are identical.
+inline void check_placements(Harness &harness) {
+    const auto aspect = harness.aspect();
+    const auto view = [&] {
+        using anima::operator*;
+        return anima::perspective(aspect, .1F, 50) * anima::look_at({0, 6, 6}, {0, 0, 0});
+    }();
+    anima::Environment lighting;
+    lighting.sun.direction = {-.5F, 1, 0};
+    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.radiance = {};
+    lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
+    lighting.shadow.enabled = true;
+    lighting.shadow.extent = 5;
+    lighting.shadow.depth = 20;
+    lighting.shadow.resolution = 1024;
+    const auto ground = blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, 0}, 4, 3);
+    const auto quad = blending_test::horizontal(blending_test::opaque({1, 1, 1}), {0, 0, 0}, .25F, .25F);
+    const auto material =
+        effect_material("casting effect", anima::CustomBlend::opaque, Effect{.color = {.5, .7, .9}}, true);
+    std::vector<anima::Mat4> placed;
+    for (const auto x : {-2.F, -1.F, 0.F, 1.F})
+        for (const auto z : {-1.5F, -.5F, .5F}) {
+            auto m = anima::identity();
+            anima::set_translation(m, {x, .75F + .25F * (x + 2), z});
+            placed.push_back(m);
+        }
+    auto separate = std::make_shared<anima::Scene>(), together = std::make_shared<anima::Scene>();
+    (void)separate->add(ground);
+    (void)together->add(ground);
+    for (const auto &m : placed)
+        separate->set_transform(add(*separate, quad, material), m);
+    const auto field = add(*together, quad, material);
+    together->set_placements(field, anima::MeshPlacements::create(quad, placed));
+    harness.render("placed-separate", {separate}, view, lighting);
+    const auto apart = harness.stats;
+    harness.render("placed-together", {together}, view, lighting);
+    require(harness.stats.draw_calls == 2 && harness.stats.drawn_copies == placed.size() + 1 &&
+                apart.draw_calls == placed.size() + 1,
+            "Custom placements did not draw every copy in one call");
+    harness.images.require_same("placed-separate", "placed-together",
+                                "Placed custom copies differ from separate objects");
+    std::cout << "CUSTOM placements: " << placed.size() << " copies in " << harness.stats.draw_calls
+              << " main-view and " << harness.stats.shadow_draw_calls << " shadow draw calls match " << apart.draw_calls
+              << " and " << apart.shadow_draw_calls << " for separate objects\n";
+    harness.images.discard({"placed-separate", "placed-together"});
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3, "Usage: consumer --custom-materials OUTPUT");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
@@ -571,10 +621,11 @@ inline int run(int argc, char **argv) {
     check_water(harness);
     check_skinning(harness);
     check_shadows(harness);
+    check_placements(harness);
     harness.finish();
     std::cout << "PASS custom materials: application SPIR-V reading the frame inputs, in the opaque pass and sorted "
                  "with blended draws, a time-driven effect, water that reads opaque depth and color copied only when "
-                 "drawn, skinning, and shadows only from a depth-only variant\n";
+                 "drawn, skinning, shadows only from a depth-only variant, and placed copies\n";
     return 0;
 }
 } // namespace custom_material_test

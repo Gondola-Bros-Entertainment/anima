@@ -58,6 +58,7 @@ struct ScenePersistence {
                 node.custom_materials = custom;
             node.primitive_visible = source.value.primitive_visible;
             node.casts_shadows = source.value.casts_shadows;
+            node.placements = source.value.placements;
         }
         return node;
     }
@@ -109,8 +110,10 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
         require(node.mesh || (!node.pose && node.material_factors.empty() && node.custom_materials.empty() &&
-                              node.primitive_visible.empty() && node.visible && node.casts_shadows),
+                              node.primitive_visible.empty() && node.visible && node.casts_shadows && !node.placements),
                 "Empty scene object has renderer state");
+        require(!node.placements || (node.placements->mesh() == node.mesh && !node.pose),
+                "Scene placements must copy the object's mesh, which has no pose");
     }
 }
 std::vector<GameObject> instantiate_nodes(Scene &scene, std::span<const Prefab::Node> nodes, const GameObject *parent,
@@ -187,9 +190,11 @@ Json encode_custom_materials(std::span<const std::shared_ptr<const CustomMateria
 Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, ResourceNames &resources) {
     auto objects = Json::array();
     for (const auto &node : nodes) {
-        Json mesh = nullptr, parent = nullptr, pose = nullptr;
+        Json mesh = nullptr, parent = nullptr, pose = nullptr, placements = nullptr;
         if (node.parent)
             parent = *node.parent;
+        if (node.placements)
+            placements = node.placements->transforms();
         if (node.mesh) {
             if (!resources.names.contains(node.mesh.get())) {
                 require(bool(name), "Scene serialization needs a mesh naming callback");
@@ -222,6 +227,7 @@ Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, Res
                            {"custom_materials", encode_custom_materials(node.custom_materials, resources)},
                            {"primitive_visible", node.primitive_visible},
                            {"casts_shadows", node.casts_shadows},
+                           {"placements", placements},
                            {"components", components}});
     }
     return objects;
@@ -329,7 +335,7 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
         // An omitted setting takes the default that Prefab::Node declares.
         anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh"},
                                    {"pose", "visible", "active", "material_factors", "custom_materials",
-                                    "primitive_visible", "casts_shadows", "components"});
+                                    "primitive_visible", "casts_shadows", "placements", "components"});
         Prefab::Node node;
         node.key = ObjectKey::parse(value.at("key").get<std::string>());
         node.active = value.value("active", node.active);
@@ -381,6 +387,16 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
         if (value.contains("primitive_visible"))
             node.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
         node.casts_shadows = value.value("casts_shadows", node.casts_shadows);
+        const auto &placements = value.contains("placements") ? value.at("placements") : omitted;
+        if (!placements.is_null()) {
+            require(placements.is_array() && node.mesh && !node.pose,
+                    "Scene placements must copy the object's mesh, which has no pose");
+            std::vector<Mat4> transforms;
+            transforms.reserve(placements.size());
+            for (const auto &transform : placements)
+                transforms.push_back(matrix_value(transform));
+            node.placements = MeshPlacements::create(node.mesh, transforms);
+        }
         if (value.contains("components")) {
             const auto &components = value.at("components");
             require(components.is_array() && components.size() <= maximum_components,
@@ -553,6 +569,8 @@ std::vector<GameObject> instantiate_prefab_nodes(Scene &scene, std::span<const P
             for (std::size_t i = 0; i < node.primitive_visible.size(); ++i)
                 renderer.set_primitive_visible(i, node.primitive_visible[i]);
             renderer.set_casts_shadows(node.casts_shadows);
+            if (node.placements)
+                renderer.set_placements(node.placements);
         }
     } catch (...) {
         destroy_prefab_objects(objects);
