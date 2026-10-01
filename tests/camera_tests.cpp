@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <iterator>
 #include <limits>
@@ -128,6 +129,52 @@ TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan cli
     CHECK(project(m, {4, 2, -11}).z == Near{0, tolerance});
     CHECK(view_origin(m)[2] == Near{1, tolerance}); // Toward the camera, which looks down -Z.
     CHECK(view_origin(m)[3] == Near{0, tolerance});
+}
+
+TEST_CASE("orthographic() maps a box to Vulkan clip space with reversed depth, as an orthographic camera does") {
+    // 4 units high and 8 wide, from 1 to 11 units ahead.
+    const auto m = orthographic(2, 4, 1, 11);
+    CHECK(project(m, {4, 2, -1}).x == Near{1, tolerance});
+    CHECK(project(m, {4, 2, -1}).y == Near{-1, tolerance}); // Framebuffer Y points down.
+    CHECK(project(m, {-4, -2, -11}).x == Near{-1, tolerance});
+    CHECK(project(m, {-4, -2, -11}).y == Near{1, tolerance});
+    CHECK(project(m, {0, 0, -1}).z == Near{1, tolerance});
+    CHECK(project(m, {0, 0, -6}).z == Near{.5F, tolerance}); // Linear in distance.
+    CHECK(project(m, {0, 0, -11}).z == Near{0, tolerance});
+    // Composed with a view, it yields the unit direction toward the camera, with W 0.
+    const Vec3 eye{3, 4, 5}, target{1, 2, -3};
+    const auto origin = view_origin(m * look_at(eye, target));
+    const auto toward = normalized(eye - target);
+    CHECK(origin[0] == Near{toward.x, tolerance});
+    CHECK(origin[1] == Near{toward.y, tolerance});
+    CHECK(origin[2] == Near{toward.z, tolerance});
+    CHECK(origin[3] == Near{0, tolerance});
+    // A camera at the origin with the same lens resolves to exactly this projection.
+    Viewed viewed(CameraProjection::orthographic);
+    const auto camera_view = view_matrix(viewed.scene, 2);
+    CHECK(std::equal(camera_view.begin(), camera_view.end(), m.begin()));
+    // The planes may lie at or behind the eye.
+    const auto around = orthographic(1, 2, -5, 5);
+    CHECK(project(around, {0, 0, 5}).z == Near{1, tolerance});
+    CHECK(project(around, {0, 0, 0}).z == Near{.5F, tolerance});
+    CHECK(project(around, {0, 0, -5}).z == Near{0, tolerance});
+
+    const auto invalid = math_error_message(MathErrorCode::invalid_orthographic);
+    CHECK(std::string_view(invalid) == "Invalid orthographic volume");
+    CHECK(math_error_name(MathErrorCode::invalid_orthographic) == "invalid_orthographic");
+    constexpr float infinity = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
+    // Aspect, height and the near and far planes.
+    for (const auto &bad :
+         {std::array{0.F, 4.F, 1.F, 11.F}, std::array{-1.F, 4.F, 1.F, 11.F}, std::array{2.F, 0.F, 1.F, 11.F},
+          std::array{2.F, 4.F, 11.F, 11.F}, std::array{2.F, 4.F, 11.F, 1.F}, std::array{infinity, 4.F, 1.F, 11.F},
+          std::array{2.F, infinity, 1.F, 11.F}, std::array{2.F, 4.F, -infinity, 11.F},
+          std::array{2.F, 4.F, 1.F, infinity}, std::array{nan, 4.F, 1.F, 11.F}, std::array{2.F, 4.F, nan, 11.F}}) {
+        CAPTURE(bad[0]);
+        CAPTURE(bad[1]);
+        CAPTURE(bad[2]);
+        CAPTURE(bad[3]);
+        CHECK_THROWS_WITH_AS(orthographic(bad[0], bad[1], bad[2], bad[3]), invalid, MathError);
+    }
 }
 
 TEST_CASE("The view follows the camera's world pose and ignores its positive scale") {

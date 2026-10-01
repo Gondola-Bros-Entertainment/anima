@@ -166,6 +166,27 @@ inline Mat4 perspective(float aspect, float near_plane, float far_plane) {
             (near_plane * far_plane) / (far_plane - near_plane),
             0};
 }
+/// Orthographic projection of a box @p height units high and `aspect * height` wide, centered on the view axis, for
+/// view space looking down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0 at @p far_plane,
+/// linear in between. It is the orthographic counterpart of perspective(), as `glm::ortho` is of `glm::perspective`,
+/// and the projection of an orthographic Camera; a matrix built by hand for forward depth makes a reversed-depth
+/// renderer draw farther surfaces over nearer ones. Each element is computed in double and rounded once to `float`, so
+/// one too large for `float`, as from a tiny @p aspect, is infinite. Throws MathError with
+/// MathErrorCode::invalid_orthographic unless every argument is finite, `aspect > 0`, `height > 0` and
+/// `near_plane < far_plane`; either plane may lie at or behind the eye.
+inline Mat4 orthographic(float aspect, float height, float near_plane, float far_plane) {
+    if (!(std::isfinite(aspect) && std::isfinite(height) && std::isfinite(near_plane) && std::isfinite(far_plane) &&
+          aspect > 0 && height > 0 && near_plane < far_plane))
+        throw MathError(MathErrorCode::invalid_orthographic);
+    const double depth = double(far_plane) - near_plane;
+    Mat4 result{};
+    result[0] = float(2 / (double(height) * aspect));
+    result[5] = float(-2 / double(height)); // Framebuffer Y points down.
+    result[10] = float(1 / depth);
+    result[14] = float(far_plane / depth);
+    result[15] = 1;
+    return result;
+}
 /// Recovers the viewer from view-projection matrix @p vp, which uses reversed depth: the eye position
 /// with W = 1 for a perspective projection, or the unit direction toward an orthographic camera with
 /// W = 0.

@@ -52,6 +52,10 @@ class MeshPlacements {
     /// 1 to 1048576"), and a transform with a nonfinite element or a last row other than (0, 0, 0, 1) within
     /// `0.00001` ("Placement transforms must be finite and affine"), and copies whose bounds leave the finite `float`
     /// range ("Placed copies exceed the finite range").
+    ///
+    /// Calls may run concurrently on any thread, as stage_scene() runs them for a document's placements, with the same
+    /// mesh or others. Each reads @p mesh, which never changes, and @p transforms, which must not change during the
+    /// call, and shares @p mesh only through its atomic reference count.
     [[nodiscard]] static std::shared_ptr<const MeshPlacements> create(std::shared_ptr<const Mesh> mesh,
                                                                       std::span<const Mat4> transforms);
     /// Mesh that the placements copy.

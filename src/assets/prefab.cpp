@@ -299,6 +299,9 @@ std::size_t retained_bytes(std::span<const Prefab::Node> nodes) {
             bytes += node.pose->world.size() * sizeof(Mat4);
         for (const auto &component : node.components)
             bytes += sizeof(ComponentData) + component.type.size() + component.state.size();
+        if (const auto &placements = node.placements)
+            bytes += sizeof(MeshPlacements) + placements->transforms().size_bytes() +
+                     placements->clusters().size_bytes() + placements->primitive_bounds().size_bytes();
     }
     return bytes;
 }

@@ -5,8 +5,9 @@
 
 // Draws a field of copies through one object's placements and the same copies as separate objects, over a ground
 // that receives their sun shadows, and requires identical frames. Every placement is an integer translation, a
-// quarter turn about Y and a Y scale of 1 or 2, and the objects are placed by integer translations, so the matrices
-// that the CPU composes for separate objects and the GPU composes for placed copies are exact and equal.
+// quarter turn about Y and a Y scale of 1 or 2, every other one mirrored in one case, and the objects are placed by
+// integer translations, so the matrices that the CPU composes for separate objects and the GPU composes for placed
+// copies are exact and equal.
 namespace placements_test {
 // A square pyramid with flat faces: a 1 m base centered on the origin and its apex 1.5 m up.
 inline std::shared_ptr<const anima::Mesh> pyramid() {
@@ -102,16 +103,16 @@ inline int run(int argc, char **argv) {
     for (const auto &scene : {separate, placed, bare})
         (void)scene->add(floor);
     std::vector<anima::Scene::Id> copies;
-    const auto place_separately = [&](const anima::Mat4 &world) {
-        for (std::size_t i = 0; i < placed_copies.size(); ++i)
-            separate->set_transform(copies[i], anima::operator*(world, placed_copies[i]));
+    const auto place_separately = [&](const anima::Mat4 &world, const std::vector<anima::Mat4> &copy_placements) {
+        for (std::size_t i = 0; i < copy_placements.size(); ++i)
+            separate->set_transform(copies[i], anima::operator*(world, copy_placements[i]));
     };
     for (std::size_t i = 0; i < placed_copies.size(); ++i)
         copies.push_back(separate->add(shape));
     auto field_object = placed->create("field", shape);
     field_object.renderer().set_placements(placements);
     const auto world = translation({2, 0, -3});
-    place_separately(world);
+    place_separately(world, placed_copies);
     field_object.set_world_matrix(world);
 
     gpu_check::Captures captures(output);
@@ -182,7 +183,7 @@ inline int run(int argc, char **argv) {
 
     // Moving the object moves every copy and its shadow.
     const auto moved = translation({-4, 0, 5});
-    place_separately(moved);
+    place_separately(moved, placed_copies);
     field_object.set_world_matrix(moved);
     view({24, 55, 85}, {24, 0, 20});
     (void)compare("moved");
@@ -203,6 +204,18 @@ inline int run(int argc, char **argv) {
     for (const auto id : copies)
         separate->set_visibility_range(id, {});
     field_object.renderer().set_visibility_range({});
+
+    // Every other copy mirrored: its placement negates the X axis, so its determinant is negative and its triangles'
+    // winding reverses, and placed copies must shade the same outward faces as separate mirrored objects.
+    auto mirrored_copies = placed_copies;
+    for (std::size_t i = 0; i < mirrored_copies.size(); i += 2)
+        for (std::size_t row = 0; row < 3; ++row)
+            mirrored_copies[i][row] = -mirrored_copies[i][row];
+    place_separately(moved, mirrored_copies);
+    field_object.renderer().set_placements(anima::MeshPlacements::create(shape, mirrored_copies));
+    const auto [mirrored_apart, mirrored] = compare("mirrored");
+    // As in the corner, cluster culling keeps every mirrored copy that object culling keeps.
+    require(mirrored.drawn_copies >= mirrored_apart.drawn_copies, "Mirrored placements did not draw every copy");
 
     // Without placements the object draws its one copy at its own place.
     field_object.renderer().set_placements(nullptr);

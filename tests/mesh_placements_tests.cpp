@@ -152,6 +152,30 @@ TEST_CASE("Placements group neighbours into clusters whose bounds hold every cop
         CHECK(same(again->transforms()[i], transforms[i]));
 }
 
+TEST_CASE("Placements order translations whose spread exceeds the float range") {
+    // From -2e38 to 2e38 along one axis the translations span 4e38, beyond the largest float, about 3.4e38. Their
+    // copies are still finite, and the curve orders them from the least to the greatest.
+    const auto mesh = triangle();
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        CAPTURE(axis);
+        std::vector<Mat4> given;
+        for (const float t : {2e38F, 0.F, -2e38F}) {
+            auto m = identity();
+            m[12 + axis] = t;
+            given.push_back(m);
+        }
+        const auto placements = MeshPlacements::create(mesh, given);
+        const auto transforms = placements->transforms();
+        REQUIRE(transforms.size() == 3);
+        CHECK(transforms[0][12 + axis] == -2e38F);
+        CHECK(transforms[1][12 + axis] == 0);
+        CHECK(transforms[2][12 + axis] == 2e38F);
+        for (const auto &m : transforms)
+            for (const auto corner : copy_corners(identity(), m))
+                CHECK(contains(placements->bounds(), corner));
+    }
+}
+
 TEST_CASE("A renderer with placements draws a copy at each one and bounds them all") {
     const auto mesh = triangle();
     const auto placements = MeshPlacements::create(mesh, grid(4, 3));
@@ -210,7 +234,8 @@ TEST_CASE("Placements keep the rest pose and copy only their own mesh") {
                          std::logic_error);
     CHECK_FALSE(renderer.placements());
     auto bare = scene.create("bare");
-    CHECK_THROWS_AS(scene.set_placements(bare.id(), placements), std::logic_error);
+    CHECK_THROWS_WITH_AS(scene.set_placements(bare.id(), placements), "GameObject has no MeshRenderer",
+                         std::logic_error);
 }
 
 TEST_CASE("Snapshots expand every copy") {
@@ -262,6 +287,26 @@ TEST_CASE("Scene documents and prefabs keep placements") {
     Scene target;
     const auto instance = prefab.instantiate(target);
     CHECK(instance.renderer().placements() == placements);
+
+    // Objects that share one set each write it in full, as they would separate sets of the same placements, and read
+    // back with separate sets.
+    Scene shared, apart;
+    for (const auto *label : {"a", "b"}) {
+        shared.create(label, mesh).renderer().set_placements(placements);
+        apart.create(label, mesh).renderer().set_placements(MeshPlacements::create(mesh, grid(5, 2)));
+    }
+    const auto shared_document = serialize_scene(shared, name);
+    CHECK(shared_document == serialize_scene(apart, name));
+    const auto separated = load_scene(shared_document, resolve);
+    REQUIRE(separated->instances().size() == 2);
+    const auto &first = separated->instance(separated->instances()[0]).placements,
+               &second = separated->instance(separated->instances()[1]).placements;
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(first != second);
+    REQUIRE(first->transforms().size() == second->transforms().size());
+    for (std::size_t i = 0; i < first->transforms().size(); ++i)
+        CHECK(same(first->transforms()[i], second->transforms()[i]));
 
     // A renderer without placements writes null, which reading keeps.
     object.renderer().set_placements(nullptr);
@@ -336,4 +381,37 @@ TEST_CASE("Prefab variants replace placements with the rest of a renderer") {
     empty.placements = placements;
     CHECK_THROWS_WITH_AS(PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, empty, {}, {}}}),
                          "Empty prefab variant renderer has state", std::invalid_argument);
+
+    // Documents follow the same rule: placements without the renderer's mesh, or with a pose, are rejected.
+    const auto text = variant.serialize(name);
+    const auto replaced = [&](const std::string &from, const std::string &to) {
+        auto result = text;
+        const auto at = result.find(from);
+        REQUIRE(at != std::string::npos);
+        return result.replace(at, from.size(), to);
+    };
+    const MeshResolver resolve = [&](std::string_view) { return mesh; };
+    for (const auto &document : {replaced("\"mesh\": \"triangle\"", "\"mesh\": null"),
+                                 replaced("\"pose\": null", "\"pose\": [[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]]")})
+        CHECK_THROWS_WITH_AS((void)PrefabVariant::deserialize(document, resolve),
+                             "Prefab variant placements must copy the renderer's mesh, which has no pose",
+                             std::invalid_argument);
+}
+
+TEST_CASE("Staged scenes count the placements they build in their retained bytes") {
+    const auto mesh = triangle();
+    const MeshName name = [](const std::shared_ptr<const Mesh> &) { return std::string("triangle"); };
+    const MeshResolver resolve = [&](std::string_view) { return mesh; };
+    Scene scene;
+    auto object = scene.create("grove", mesh);
+    const auto without = stage_scene(serialize_scene(scene, name), resolve).retained_bytes();
+    // 81 placements fill one cluster of 64 and one of 17; the triangle mesh has one draw.
+    object.renderer().set_placements(MeshPlacements::create(mesh, grid(9, 2)));
+    const auto staged = stage_scene(serialize_scene(scene, name), resolve);
+    const auto loaded = load_scene(staged);
+    const auto &built = loaded->instance(loaded->instances()[0]).placements;
+    REQUIRE(built);
+    REQUIRE(built->clusters().size() == 2);
+    CHECK(staged.retained_bytes() - without ==
+          sizeof(MeshPlacements) + 81 * sizeof(Mat4) + 2 * sizeof(MeshPlacements::Cluster) + sizeof(RenderBounds));
 }

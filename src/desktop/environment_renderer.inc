@@ -57,6 +57,17 @@ void create_environment_layout() {
     write.pBufferInfo = &buffer;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
+// Records the sky when the environment has one. It lies at the far plane, depth 0, tests depth with
+// GREATER_OR_EQUAL and writes none, so recorded after every opaque and masked surface of the pass it shades only the
+// pixels that they leave at the far plane, and the frame is the same as if it had drawn first.
+void record_sky() {
+    if (!environment.sky)
+        return;
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipeline);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, environment_pipeline_layout, 1, 1,
+                            &environment_set, 0, nullptr);
+    vkCmdDraw(command, 3, 1, 0, 0);
+}
 void update_environment() {
     const auto vec = [](Vec3 v, float w = 0.F) { return std::array<float, 4>{v.x, v.y, v.z, w}; };
     const auto &e = environment;

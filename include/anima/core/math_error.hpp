@@ -15,7 +15,9 @@ enum class MathErrorCode {
     nonfinite_projection, ///< A view-projection matrix has a nonfinite element.
     singular_projection,  ///< Solving a view-projection matrix met a zero pivot.
     nonfinite_quaternion, ///< A quaternion to normalize has a nonfinite component.
-    zero_quaternion       ///< A quaternion to normalize has a squared length below `1e-20`.
+    zero_quaternion,      ///< A quaternion to normalize has a squared length below `1e-20`.
+    invalid_orthographic  ///< Orthographic arguments are not finite or break `aspect > 0`, `height > 0` and
+                          ///< `near_plane < far_plane`.
 };
 /// Fixed English description of @p code, or `"Invalid math operation"` for a value outside the
 /// enumeration.
@@ -37,6 +39,8 @@ constexpr const char *math_error_message(MathErrorCode code) noexcept {
         return "Cannot normalize nonfinite quaternion";
     case MathErrorCode::zero_quaternion:
         return "Cannot normalize zero quaternion";
+    case MathErrorCode::invalid_orthographic:
+        return "Invalid orthographic volume";
     }
     return "Invalid math operation";
 }
@@ -59,6 +63,8 @@ constexpr std::string_view math_error_name(MathErrorCode code) noexcept {
         return "nonfinite_quaternion";
     case MathErrorCode::zero_quaternion:
         return "zero_quaternion";
+    case MathErrorCode::invalid_orthographic:
+        return "invalid_orthographic";
     }
     return "unknown_math_error";
 }

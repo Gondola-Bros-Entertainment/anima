@@ -272,11 +272,11 @@ inline double stripe_contrast(const gpu_check::Image &image, std::size_t first, 
     }
     return deviation / double(count);
 }
-// Draws the striped floor from 1 m above it with the default RendererOptions::max_anisotropy and with 1, and returns
-// the degree that the first renderer used. Between 12 and 30 m ahead, a pixel's footprint on the floor is 12 to 30
-// times longer than it is wide, so isotropic filtering blurs the stripes to gray, and anisotropic filtering, which
-// Vulkan requires to reach 16 wherever it is supported, keeps more of them. Nearest and unmipmapped floors must
-// not change.
+// Draws the striped floor from 1 m above it with the default RendererOptions::max_anisotropy, with 64, above the 16
+// that devices commonly allow, and with 1, and returns the degree that the first renderer used. Between 12 and 30 m
+// ahead, a pixel's footprint on the floor is 12 to 30 times longer than it is wide, so isotropic filtering blurs the
+// stripes to gray, and anisotropic filtering, which Vulkan requires to reach 16 wherever it is supported, keeps more of
+// them. Nearest and unmipmapped floors must not change.
 inline float check_anisotropy(const std::filesystem::path &output) {
     constexpr double height = 1, aim = 20, farthest = 30, closest = 12, least_gain = 2;
     const Harness::Eye eye{{0, float(height), float(aim)}, {0, 0, 0}};
@@ -297,6 +297,26 @@ inline float check_anisotropy(const std::filesystem::path &output) {
     }
     require(degree == 1 || degree == anima::RendererOptions{}.max_anisotropy,
             "The default anisotropy is " + std::to_string(degree) + ", not 1 or the default option");
+    // A request above the device's maxSamplerAnisotropy gets that limit, which Vulkan requires to be at least 16 where
+    // the device filters anisotropically, or 1 on a device that does not. Validation, which rejects a sampler beyond
+    // the limit, checks that the draw uses it, and where the limit is the default option's 16 the floor is the
+    // default's.
+    {
+        constexpr float above = 64;
+        Harness harness(output, above);
+        const auto limit = harness.max_anisotropy();
+        std::cout << "Anisotropy " << limit << " for a request of " << above << '\n';
+        require(degree == 1 ? limit == 1 : limit >= degree && limit <= above,
+                "A request of " + std::to_string(above) + " gave anisotropy " + std::to_string(limit) +
+                    ", not the device's limit, with the default option giving " + std::to_string(degree));
+        harness.render("floor-trilinear-above-limit", floors[0].second, anima::identity(), eye);
+        if (limit == degree) {
+            harness.images.add(anisotropic[0].first, anisotropic[0].second);
+            harness.images.require_same(anisotropic[0].first, "floor-trilinear-above-limit",
+                                        "A request above the device's limit filtered unlike the limit itself");
+        }
+        harness.finish();
+    }
     Harness harness(output, 1);
     require(harness.max_anisotropy() == 1, "RendererOptions::max_anisotropy 1 did not filter isotropically");
     auto &images = harness.images;

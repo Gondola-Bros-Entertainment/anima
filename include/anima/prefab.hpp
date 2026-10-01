@@ -171,19 +171,20 @@ class Prefab {
 ///   material name of 1 to 4,096 bytes;
 /// - `primitive_visible`: empty, the default, or one boolean per mesh primitive;
 /// - `placements`: null, the default, or 1 to 1,048,576 placements (MeshPlacements), each 16 numbers of an
-///   affine matrix, column-major, relative to the object, for an object with a mesh and a null `pose`. The
-///   document byte limit allows about 95,000. Writing keeps MeshPlacements::transforms() order, which reading
-///   keeps;
+///   affine matrix, column-major, relative to the object, for an object with a mesh and a null `pose`. Written one
+///   number to a line, as serialization indents the document, a placement takes about 380 bytes when it rotates
+///   and scales and about 260 when it only translates by whole numbers, so the document byte limit holds about
+///   44,000 of the first or 63,000 of the second. Writing keeps MeshPlacements::transforms() order, which reading
+///   keeps. Objects that share one MeshPlacements are each written in full and read back with separate sets;
 /// - `visibility_range`: null, the default, for every distance, or an object with exactly `begin`, `end` (null for
-///   no end), `begin_margin` and `end_margin` (VisibilityRange);
+///   no end), `begin_margin` and `end_margin` that validate_visibility_range() accepts, so an object with a null
+///   `end` has an `end_margin` of 0 (VisibilityRange);
 /// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
 ///   `enabled` (ComponentData).
 ///
 /// An object without a mesh has null `pose`, `placements` and `visibility_range`, empty arrays, and `visible` and
-/// `casts_shadows` true.
-/// Throws
-/// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming
-/// fails, two different custom materials share a name or a limit is exceeded.
+/// `casts_shadows` true. Throws `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh
+/// naming fails, two different custom materials share a name or a limit is exceeded.
 [[nodiscard]] std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs = {});
 /// An `anima.scene` document that stage_scene parsed, validated and resolved, for
 /// load_scene(const StagedScene &, const ComponentCodecs &) and SceneSet to commit on the thread that owns
@@ -202,8 +203,11 @@ class StagedScene {
     /// Bytes of decoded data held, excluding container overhead and the meshes and custom materials, which
     /// are shared: for each object, `sizeof(Prefab::Node)`, the bytes of its name, `sizeof(Mat4)` per pose
     /// matrix, `sizeof(Vec3)` per material factor, `sizeof(std::shared_ptr<const CustomMaterial>)` per custom
-    /// material slot, null or not, one byte per eight primitive visibility flags, rounded up, and for each
-    /// component `sizeof(ComponentData)` and the bytes of its type and payload. Copies share these bytes.
+    /// material slot, null or not, one byte per eight primitive visibility flags, rounded up, for each
+    /// component `sizeof(ComponentData)` and the bytes of its type and payload, and for the MeshPlacements that
+    /// staging built from its placements, `sizeof(MeshPlacements)`, `sizeof(Mat4)` per placement,
+    /// `sizeof(MeshPlacements::Cluster)` per cluster and `sizeof(RenderBounds)` per mesh draw. Copies share these
+    /// bytes.
     [[nodiscard]] std::size_t retained_bytes() const noexcept;
 
   private:

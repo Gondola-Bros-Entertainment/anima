@@ -217,7 +217,7 @@ struct ResourceStats {
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
     std::uint64_t pose_uploaded_bytes{};
     /// Main-view draw calls of the latest frame. A draw of an object with placements takes one call per run of
-    /// adjacent visible placement clusters.
+    /// adjacent visible placement clusters that draw the same level of detail.
     std::uint64_t draw_calls{};
     /// Copies drawn by main-view draw calls of the latest frame: one per call of an object without placements, and
     /// one per placement that a call draws.
@@ -257,9 +257,15 @@ struct ResourceStats {
 
 /// Renders selected scenes into one borrowed SDL window.
 ///
-/// Each frame renders the shadow regions, then the optional sky, the opaque and masked meshes and the blended
-/// meshes into a linear `RGBA16F` target, converts it for display and composites UI last. The window must
-/// outlive the renderer, which never destroys it.
+/// Each frame renders the shadow regions, then into a linear `RGBA16F` target the opaque and masked meshes, the
+/// optional sky, which shades only the pixels that they leave at the far plane, and the blended meshes; it converts
+/// the target for display and composites UI last. The window must outlive the renderer, which never destroys it.
+///
+/// The view's depth buffer is `VK_FORMAT_D32_SFLOAT` where the device can attach it, and otherwise
+/// `VK_FORMAT_X8_D24_UNORM_PACK32` or `VK_FORMAT_D16_UNORM`; Vulkan requires one of the first two. Reversed depth
+/// keeps distant surfaces precise only in the floating-point format, whose values crowd toward 0 as the depths of
+/// distant surfaces do; the fixed-point formats space their values evenly, which leaves distant surfaces the precision
+/// of forward depth.
 ///
 /// Applications customize shading, not the frame. A CustomMaterial supplies SPIR-V vertex and fragment shaders,
 /// an optional depth-only variant, a parameter block, textures and a blend mode for the mesh material slots it
@@ -290,19 +296,20 @@ struct ResourceStats {
 /// there is no size budget.
 ///
 /// An object with placements (Scene::set_placements) draws each of its mesh's draws as instances of one indexed draw,
-/// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see: the main
-/// view culls clusters by their world bounds when frustum culling is on, and each shadow region culls them against
-/// itself, so copies outside the view still cast shadows. Each MeshPlacements uploads its transforms once into a
-/// device buffer, cached per object and released as meshes are, and the vertex shaders compose each placement with
-/// the object's world matrix and the mesh's rest pose.
+/// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that draw the
+/// same level of detail: the main view culls clusters by their world bounds when frustum culling is on, and each
+/// shadow region culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements uploads
+/// its transforms once into a device buffer, cached per object and released as meshes are, and the vertex shaders
+/// compose each placement with the object's world matrix and the mesh's rest pose.
 ///
 /// An object with a visibility range (Scene::set_visibility_range) draws only at the distances the range allows from
 /// the eye of the current view, in the shadow passes too, measured to the center of its mesh's rest bounds
 /// (Mesh::rest_bounds()) as the object, or each copy, places it. Objects, and placement clusters, entirely outside it
 /// are culled in every pass. In the range's margins the standard material discards the share of a copy's pixels that
-/// a 4x4 ordered dither gives, so it fades without blending or sorting, and a copy casts shadows while more than half
-/// of it draws; copies the range hides draw no pixels. Custom materials fade through animaVisibility() and
-/// animaDissolved().
+/// a 4x4 ordered dither gives, keeping in a begin margin the pixels complementary to those an end margin keeps, so it
+/// fades without blending or sorting, and a copy casts shadows while more than half of it draws; its vertex shaders
+/// hide the copies outside the range in a cluster that is not culled. Custom materials fade and hide copies only
+/// through animaVisibility() and animaDissolved(), as custom_material.hpp describes.
 ///
 /// A draw with levels of detail (IndexedDraw::levels) draws, for each object or placement cluster, the coarsest level
 /// whose error stays within set_lod_threshold() pixels on screen; its index buffer holds every level, uploaded with
@@ -336,11 +343,11 @@ struct ResourceStats {
 /// culls nothing by facing, and shadows are cast from both sides.
 ///
 /// Blended materials (AlphaMode::blend) draw in the same pass, after every opaque and masked draw of every
-/// selected scene. They test depth with `LESS` and write none, so nearer opaque and masked surfaces hide them and
-/// they hide nothing. Their alpha is the product that masking tests. The shader shades the straight
-/// (unpremultiplied) albedo as it shades an opaque material, fog included, which applies at the surface's own
-/// distance, then writes its color times alpha with that alpha, blended as `ONE, ONE_MINUS_SRC_ALPHA`: the glTF
-/// "over" operator, applied to the whole shaded color, emission included, in linear light. For this fog model,
+/// selected scene. They test depth with `GREATER`, since the view's depth is reversed, and write none, so nearer opaque
+/// and masked surfaces hide them and they hide nothing. Their alpha is the product that masking tests. The shader
+/// shades the straight (unpremultiplied) albedo as it shades an opaque material, fog included, which applies at the
+/// surface's own distance, then writes its color times alpha with that alpha, blended as `ONE, ONE_MINUS_SRC_ALPHA`:
+/// the glTF "over" operator, applied to the whole shaded color, emission included, in linear light. For this fog model,
 /// fogging each surface before blending equals fogging the path from the eye through it to what lies behind.
 /// Exposure scales the composite, so it commutes with blending; tone mapping, which is not linear, applies to the
 /// composite. Texels stay straight alpha: mip chains of blended base-color maps weight color by alpha
@@ -364,10 +371,10 @@ struct ResourceStats {
 ///   MeshPlacements::transforms() order.
 ///
 /// A custom material draws in the pass that its CustomBlend mode selects. An opaque one draws in the world pass
-/// after every opaque and masked mesh, testing depth with `LESS` and writing it, so it hides and is hidden as they
-/// are. Blended and additive ones are blended draws: they sort with blended materials and draw in that order,
-/// testing depth with `LESS` and writing none. When a frame draws a blended or additive custom material whose
-/// fragment shader reads opaque depth or color (CustomMaterial::reads_opaque_depth,
+/// after every opaque and masked mesh and before the sky, testing depth with `GREATER` and writing it, so it hides
+/// and is hidden as they are. Blended and additive ones are blended draws: they sort with blended materials and draw
+/// in that order, testing depth with `GREATER` and writing none. When a frame draws a blended or additive custom
+/// material whose fragment shader reads opaque depth or color (CustomMaterial::reads_opaque_depth,
 /// CustomMaterial::reads_opaque_color), the world pass ends after the opaque draws, the renderer copies the depth
 /// and color targets into images that those shaders sample, and a second pass loads the targets and draws the
 /// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and
@@ -436,7 +443,8 @@ class VulkanRenderer {
     [[nodiscard]] std::optional<CapturedImage> take_capture();
     /// Sets the view used for shading, fog, the sky and culling from a column-major Vulkan view-projection
     /// (clip Y down, reversed depth from 1 at the near plane to 0 at the far one), such as anima::view_matrix
-    /// returns. A matrix with forward depth would draw farther surfaces over nearer ones.
+    /// returns, or anima::perspective() or anima::orthographic() times anima::look_at(). A matrix with forward depth
+    /// would draw farther surfaces over nearer ones.
     ///
     /// A perspective matrix supplies the eye position, an orthographic one the view direction. Until the first
     /// call the view-projection is all zeros. Throws anima::MathError (a `std::invalid_argument`) when

@@ -283,15 +283,14 @@ static Vec3 range_center(const Mesh &mesh) {
     return bounds.valid ? (bounds.minimum + bounds.maximum) * .5F : Vec3{};
 }
 // The pose buffer matrix after a ranged object's world matrix: @p range's begin, begin margin, end and end margin, then
-// @p center. Shaders may assume that no value is infinite, so an endless range ends at the largest float, which no
-// distance reaches, and keeps no end margin, which no distance could enter.
+// @p center. Shaders may assume that no value is infinite, so an endless range, which validation leaves no end margin,
+// ends at the largest float, which no distance reaches.
 static Mat4 range_columns(const VisibilityRange &range, Vec3 center) {
-    const bool endless = std::isinf(range.end);
     Mat4 columns{};
     columns[0] = range.begin;
     columns[1] = range.begin_margin;
-    columns[2] = endless ? std::numeric_limits<float>::max() : range.end;
-    columns[3] = endless ? 0.F : range.end_margin;
+    columns[2] = std::isinf(range.end) ? std::numeric_limits<float>::max() : range.end;
+    columns[3] = range.end_margin;
     columns[4] = center.x;
     columns[5] = center.y;
     columns[6] = center.z;
@@ -758,8 +757,8 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
         record(pending_level, pending_first, pending_count);
 }
 // Records one shadow region's casters or, when @p shadow is false, the main view: every opaque and masked draw in
-// selection, instance and draw order, then the opaque custom material draws, then, unless the frame copies opaque
-// inputs first, the blended draws back to front.
+// selection, instance and draw order, then the opaque custom material draws, then the sky where none of them drew,
+// then, unless the frame copies opaque inputs first, the blended draws back to front.
 void record_resources(bool shadow = false, bool detail = false) {
     if (!shadow) {
         resources.draw_calls = 0;
@@ -790,7 +789,10 @@ void record_resources(bool shadow = false, bool detail = false) {
         }
     }
     record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, shadow, detail);
-    if (!shadow && !resource_opaque_inputs)
+    if (shadow)
+        return;
+    record_sky();
+    if (!resource_opaque_inputs)
         record_blended();
 }
 // Records resource_blended_draws in order, each through the blended pipeline or its custom material's. Depth then

@@ -1063,7 +1063,10 @@ struct VulkanRenderer::Impl {
     }
     void create_depth() {
         depth_format = VK_FORMAT_UNDEFINED;
-        for (auto candidate : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {
+        // Reversed depth keeps its precision only in the floating-point format. Vulkan requires a device to attach
+        // depth in it or in X8_D24, and D16 is the last resort. Each holds depth alone, so the depth aspect, the clear
+        // to 0 and the copy that custom materials sample as opaque depth suit all three.
+        for (auto candidate : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D16_UNORM}) {
             VkFormatProperties properties{};
             vkGetPhysicalDeviceFormatProperties(physical, candidate, &properties);
             VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -1608,14 +1611,14 @@ struct VulkanRenderer::Impl {
         vkCmdSetScissor(command, 0, 1, &scissor);
         const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
         const float scale[]{std::min(1.0F, 1.0F / aspect), std::min(1.0F, aspect)};
+        bool triangle = options.diagnostic_triangle;
 #ifdef ANIMA_HAS_ASSETS
-        if (environment.sky) {
-            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipeline);
-            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, environment_pipeline_layout, 1, 1,
-                                    &environment_set, 0, nullptr);
-            vkCmdDraw(command, 3, 1, 0, 0);
-        }
-        if (!resource_scenes.empty()) {
+        // With scenes selected, record_resources() draws the sky after their opaque surfaces; without them it lies
+        // behind the diagnostic triangle, which tests no depth.
+        if (resource_scenes.empty())
+            record_sky();
+        else {
+            triangle = false;
             record_resources();
             if (split) {
                 vkCmdEndRenderPass(command);
@@ -1628,9 +1631,9 @@ struct VulkanRenderer::Impl {
                 vkCmdSetScissor(command, 0, 1, &scissor);
                 record_blended();
             }
-        } else
+        }
 #endif
-            if (options.diagnostic_triangle) {
+        if (triangle) {
             vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(scale), scale);
             vkCmdDraw(command, 3, 1, 0, 0);
