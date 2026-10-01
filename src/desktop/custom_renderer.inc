@@ -390,7 +390,7 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
                           render_instance.ranged ? 1U : 0U};
     vkCmdPushConstants(command, custom_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
-    record_indexed(draw, shadow);
+    record_indexed(render_instance, draw_index, shadow);
 }
 // Records @p draws in order through @p view: opaque custom materials in the main view, or with @p shadow the
 // depth-only variants that the region, the detail one with @p detail, contains.

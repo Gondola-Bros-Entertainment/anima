@@ -40,6 +40,9 @@ class MeshPlacements {
         /// Bounds of every primitive of the cluster's copies, hidden ones included, and of each copy's center of
         /// Mesh::rest_bounds(), which visibility ranges measure to, relative to the object.
         RenderBounds bounds;
+        /// Largest axis scale among the cluster's placements: the length of the longest of the first three columns
+        /// of their matrices, which levels of detail scale their errors by.
+        float scale{};
     };
 
     /// Places copies of @p mesh at @p transforms.

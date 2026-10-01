@@ -116,10 +116,12 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
     result->primitive_bounds_.resize(draws.size());
     for (std::size_t first = 0; first < order.size(); first += cluster_size) {
         const auto count = std::min(cluster_size, order.size() - first);
-        Cluster cluster{static_cast<std::uint32_t>(first), static_cast<std::uint32_t>(count), {}};
+        Cluster cluster{static_cast<std::uint32_t>(first), static_cast<std::uint32_t>(count), {}, 0};
         for (std::size_t k = first; k < first + count; ++k) {
             const auto &placement = transforms[order[k]];
             result->transforms_.push_back(placement);
+            cluster.scale = std::max(
+                {cluster.scale, length(axis_x(placement)), length(axis_y(placement)), length(axis_z(placement))});
             for (std::size_t i = 0; i < draws.size(); ++i)
                 for (const auto &points : corners[i])
                     for (const auto &corner : points) {

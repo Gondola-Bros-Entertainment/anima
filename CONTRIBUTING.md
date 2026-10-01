@@ -107,7 +107,9 @@ through the public API. `consumer_desktop` runs one mode per check: its default
 instances check, `--allocations`, `--culling`, `--placements`, which draws a field of
 copies through one object's placements and as separate objects over a shadowed ground,
 requires identical frames in and out of view and under a shared visibility range, and
-reports both at 10,000 copies,
+reports both at 10,000 copies, `--lod`, which draws dense spheres far away with
+simplified levels, in the view and the shadow passes, within pixel parity of their full
+draws, and keeps the full draw up close,
 `--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`,
 `--pbr`, `--surface-maps`, `--sidedness`, `--blending`, which compares blended
 materials with the renderer's documented compositing, fog, exposure, draw order and

@@ -73,6 +73,9 @@ struct RendererOptions {
     /// throws `std::invalid_argument`. The renderer uses at most the device's limit; see
     /// VulkanRenderer::max_anisotropy.
     float max_anisotropy = 16;
+    /// Initial level of detail threshold, in pixels; see VulkanRenderer::set_lod_threshold. Must be finite and
+    /// nonnegative, or construction throws `std::invalid_argument`.
+    float lod_threshold = 1;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -226,6 +229,8 @@ struct ResourceStats {
     /// Objects without placements, and placement clusters of objects with a main-view draw, that their visibility
     /// ranges (VisibilityRange) hid in the latest frame.
     std::uint64_t range_culled{};
+    /// Main-view draw calls of the latest frame that drew a simplified level (DrawLevel) instead of the full draw.
+    std::uint64_t lod_draws{};
     /// Instances with at least one main-view draw.
     std::uint64_t instances{};
     /// Meshes in the GPU cache.
@@ -298,6 +303,10 @@ struct ResourceStats {
 /// a 4x4 ordered dither gives, so it fades without blending or sorting, and a copy casts shadows while more than half
 /// of it draws; copies the range hides draw no pixels. Custom materials fade through animaVisibility() and
 /// animaDissolved().
+///
+/// A draw with levels of detail (IndexedDraw::levels) draws, for each object or placement cluster, the coarsest level
+/// whose error stays within set_lod_threshold() pixels on screen; its index buffer holds every level, uploaded with
+/// the mesh, and choosing one costs no upload or allocation.
 ///
 /// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`
@@ -390,7 +399,8 @@ class VulkanRenderer {
     /// supports swapchains and can present to the window; the first draw() with a drawable window creates the
     /// swapchain. Throws `std::invalid_argument` for a RendererOptions::fail_after stage that the option says
     /// construction rejects, before anything else, then for a RendererOptions::max_anisotropy that is not finite or
-    /// is below 1 ("Maximum anisotropy must be finite and at least 1") and for a null @p window;
+    /// is below 1 ("Maximum anisotropy must be finite and at least 1"), for a RendererOptions::lod_threshold that is
+    /// not finite or is negative ("LOD threshold must be finite and nonnegative") and for a null @p window;
     /// RendererUnavailableError when no driver or device can present to the window; what set_scenes() throws for
     /// the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
     /// other failures, including failed Vulkan calls. Completed stages are released before the exception
@@ -440,6 +450,17 @@ class VulkanRenderer {
     /// changes scenes, visibility or the mesh cache. Shadow casters are always culled against their shadow
     /// regions instead, so casters outside the view still cast. Disable it for an unculled reference.
     void set_frustum_culling(bool enabled);
+    /// Sets the largest error, in pixels of the view's height, that a level of detail (DrawLevel) may add on screen,
+    /// from the next draw(); it starts as RendererOptions::lod_threshold, and 0 always draws the full draws, as Godot's
+    /// mesh LOD threshold pixels do.
+    ///
+    /// Each draw of an object, and each placement cluster's copies of it, uses the coarsest of the draw's levels
+    /// whose error, scaled by the largest axis scale that places the draw, covers at most @p pixels when projected
+    /// at the distance from the eye to the nearest point of the draw's, or the cluster's, world bounds; from inside
+    /// those bounds it uses the full draw. An orthographic view projects errors without distance. Shadow passes
+    /// draw the levels the view chose. Throws `std::invalid_argument` unless @p pixels is finite and nonnegative
+    /// ("LOD threshold must be finite and nonnegative"), keeping the previous threshold.
+    void set_lod_threshold(float pixels);
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and both regions, enabled or not, with

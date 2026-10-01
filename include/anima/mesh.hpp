@@ -13,6 +13,20 @@ struct RenderBounds {
     /// False when the box is empty or unknown. Culling never rejects an invalid box.
     bool valid{};
 };
+/// A simplified version of an IndexedDraw's triangles: a subset of its vertices, joined into fewer triangles, which
+/// VulkanRenderer draws in its place where the error it adds would cover less than its LOD threshold on screen
+/// (RendererOptions::lod_threshold).
+struct DrawLevel {
+    /// Offset of the level's first index in Mesh::indices().
+    std::uint32_t first_index{};
+    /// Number of indices, three per triangle, fewer than the level before it has.
+    std::uint32_t index_count{};
+    /// The largest error of the simplification steps that produced the level, in the units of the draw's vertices
+    /// before their node or joints place them, so at least the error of the level before it. A step's error combines
+    /// how far it may move the surface it starts from with how much it changes normals and vertex colors, which the
+    /// simplifier weighs as distance and clamps to the scale of the positional error.
+    float error{};
+};
 /// One indexed triangle-list draw of a Mesh, compiled from one source primitive. Its position in
 /// Mesh::draws() is the primitive index that Scene::set_primitive_visible takes.
 struct IndexedDraw {
@@ -33,6 +47,23 @@ struct IndexedDraw {
     std::uint32_t node{};
     std::string node_name;
     std::string mesh_name;
+    /// Simplified levels of detail, each coarser than the one before (MeshLodOptions); empty draws only this one.
+    std::vector<DrawLevel> levels{};
+};
+
+/// Levels of detail that Mesh::compile generates for each draw, as Godot generates them on import.
+///
+/// Each level simplifies the one before it, starting from the draw, with meshoptimizer's quadric simplifier, which
+/// collapses the edges that change the surface, normals and vertex colors least and keeps the seams where those
+/// attributes split, toward half the triangles. Every level keeps the draw's open border whole, so draws that meet
+/// along it, such as the material subsets of one mesh or the pieces of Mesh::compile_static, meet without cracks
+/// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices
+/// of the one before it or when a step's error would exceed the draw's extent. Draws with a masked material
+/// (AlphaMode::mask) get none: their cutout edges follow texture coordinates, which the simplifier does not weigh, so
+/// foliage needs impostors instead. Each level takes its indices' memory and upload in addition to the draw's.
+struct MeshLodOptions {
+    /// Most levels per draw, from 0, the default, which generates none, to 8.
+    std::size_t levels{};
 };
 
 /// Limits for Mesh::compile_static; with #max_vertices zero the source compiles into one Mesh.
@@ -52,6 +83,8 @@ struct MeshCompileOptions {
     /// How long each resulting Mesh holds its textures' texels; shrunk images have no other holder, so with
     /// TexelRetention::until_upload they are freed once their Mesh is uploaded.
     TexelRetention texel_retention = TexelRetention::keep;
+    /// Levels of detail that each resulting Mesh generates, as compile() does.
+    MeshLodOptions lods{};
 };
 
 /// Immutable compiled render mesh: indexed geometry, draws, materials, textures and skins.
@@ -87,6 +120,11 @@ class Mesh {
     /// shares or holds its images through their atomic reference counts, and calls no application code.
     [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source,
                                                              TexelRetention texel_retention = TexelRetention::keep);
+    /// Compiles @p source as compile(const Asset &, TexelRetention) does, then gives each draw the levels of detail
+    /// that @p lods asks for. Throws what that overload throws, and `std::invalid_argument` for more than 8 levels
+    /// ("Mesh LOD levels must be from 0 to 8") before anything else.
+    [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source, TexelRetention texel_retention,
+                                                             MeshLodOptions lods);
     /// Compiles a static @p source into one or more meshes that together draw its geometry with the same node
     /// placement, to bound individual uploads.
     ///
@@ -102,7 +140,9 @@ class Mesh {
     /// textures that no primitive uses, fails as compile(source) would: its first defect in compile()'s order throws
     /// the same exception. Limits on the size of one Mesh apply to each result. The results share the images of
     /// @p source's textures, and each shrunk image among themselves, or hold them as
-    /// MeshCompileOptions::texel_retention says. Calls may run concurrently on any thread, as compile() calls may.
+    /// MeshCompileOptions::texel_retention says. Each result generates the levels of detail MeshCompileOptions::lods
+    /// asks for, as compile() does, and throws as compile() does for more than 8. Calls may run concurrently on any
+    /// thread, as compile() calls may.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Vertices that indices() refers to.
