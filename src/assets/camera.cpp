@@ -43,13 +43,8 @@ Mat4 camera_matrix(GameObject object, const CameraSettings &s, float aspect) {
         projection[10] = float(near / (far - near));
         projection[11] = -1;
         projection[14] = float(near * far / (far - near));
-    } else {
-        projection[0] = float(2 / (double(s.orthographic_height) * aspect));
-        projection[5] = -2 / s.orthographic_height;
-        projection[10] = float(1 / (far - near));
-        projection[14] = float(far / (far - near));
-        projection[15] = 1;
-    }
+    } else
+        projection = orthographic(aspect, s.orthographic_height, s.near_plane, s.far_plane);
     const auto result = projection * view;
     // Match the renderer's finite/invertible matrix and view-origin contract.
     (void)inverse(result);

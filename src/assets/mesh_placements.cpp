@@ -73,19 +73,22 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
 
     // Order the placements along a Morton curve through their translations, quantized within their bounds, so
     // that each run of cluster_size holds near neighbours. The sort is stable, so equal keys keep their order.
+    // Differences of finite floats can exceed the float range, so they are taken in double, where every one is
+    // finite and each ratio lies in [0, 1].
     RenderBounds origins;
     for (const auto &m : transforms)
         expand(origins, translation_of(m));
-    const auto extent = origins.maximum - origins.minimum;
-    const auto quantize = [](float offset, float size) -> std::uint64_t {
+    const auto quantize = [](float value, float minimum, float maximum) -> std::uint64_t {
         constexpr auto steps = double((std::uint64_t{1} << morton_bits) - 1);
-        return size > 0 ? static_cast<std::uint64_t>(std::clamp(double(offset) / size, 0.0, 1.0) * steps) : 0;
+        const auto size = double(maximum) - minimum;
+        return size > 0 ? static_cast<std::uint64_t>((double(value) - minimum) / size * steps) : 0;
     };
     std::vector<std::uint64_t> keys(transforms.size());
     for (std::size_t i = 0; i < transforms.size(); ++i) {
-        const auto offset = translation_of(transforms[i]) - origins.minimum;
-        keys[i] = spread(quantize(offset.x, extent.x)) | spread(quantize(offset.y, extent.y)) << 1 |
-                  spread(quantize(offset.z, extent.z)) << 2;
+        const auto t = translation_of(transforms[i]);
+        keys[i] = spread(quantize(t.x, origins.minimum.x, origins.maximum.x)) |
+                  spread(quantize(t.y, origins.minimum.y, origins.maximum.y)) << 1 |
+                  spread(quantize(t.z, origins.minimum.z, origins.maximum.z)) << 2;
     }
     std::vector<std::size_t> order(transforms.size());
     std::iota(order.begin(), order.end(), std::size_t{});

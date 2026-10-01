@@ -53,9 +53,15 @@ float ditherThreshold(vec2 pixel) {
 }
 void main() {
     // In its visibility range's margins an object dissolves, keeping the share of its pixels that its visibility
-    // gives, without blending or sorting.
-    if (visibility < 1.0 && visibility <= ditherThreshold(gl_FragCoord.xy))
-        discard;
+    // gives, without blending or sorting. Fading out it keeps the pixels whose threshold lies below that share, and
+    // fading in, where the visibility is negative, those whose threshold lies at or above 1 minus it, so an object
+    // fading in over the distances that another fades out over draws exactly the pixels the other leaves, as
+    // dithered LOD transitions do.
+    if (abs(visibility) < 1.0) {
+        float threshold = ditherThreshold(gl_FragCoord.xy);
+        if (visibility >= 0.0 ? threshold >= visibility : threshold < 1.0 + visibility)
+            discard;
+    }
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.
     float facing = (gl_FrontFacing ? 1.0 : -1.0) * orientation;

@@ -16,6 +16,7 @@ using namespace anima;
 
 namespace {
 constexpr auto invalid_range = "A visibility range requires 0 <= begin < end and margins that fit between them";
+constexpr auto endless_margin = "An endless visibility range has no end margin";
 constexpr float infinity = std::numeric_limits<float>::infinity(),
                 not_a_number = std::numeric_limits<float>::quiet_NaN();
 
@@ -102,8 +103,12 @@ TEST_CASE("Visibility ranges outside the documented rules are rejected") {
          {VisibilityRange{-1, 10, 0, 0}, VisibilityRange{not_a_number, 10, 0, 0},
           VisibilityRange{infinity, infinity, 0, 0}, VisibilityRange{10, 10, 0, 0}, VisibilityRange{10, 5, 0, 0},
           VisibilityRange{0, not_a_number, 0, 0}, VisibilityRange{0, 10, -1, 0},
-          VisibilityRange{0, 10, 0, not_a_number}, VisibilityRange{0, 10, 6, 5}, VisibilityRange{0, 10, 0, infinity}})
+          VisibilityRange{0, 10, 0, not_a_number}, VisibilityRange{0, 10, 6, 5}, VisibilityRange{0, 10, 0, infinity},
+          VisibilityRange{0, infinity, 0, infinity}})
         CHECK_THROWS_WITH_AS(validate_visibility_range(range), invalid_range, std::invalid_argument);
+    // No distance reaches an infinite end, so an end margin there could never dissolve anything.
+    for (const VisibilityRange &range : {VisibilityRange{0, infinity, 0, 5}, VisibilityRange{5, infinity, 3, 1e-30F}})
+        CHECK_THROWS_WITH_AS(validate_visibility_range(range), endless_margin, std::invalid_argument);
 }
 
 TEST_CASE("Renderers keep their visibility range until their mesh changes") {
@@ -116,11 +121,13 @@ TEST_CASE("Renderers keep their visibility range until their mesh changes") {
     renderer.set_visibility_range(range);
     CHECK(scene.instance(object.id()).visibility_range == range);
     CHECK_THROWS_WITH_AS(renderer.set_visibility_range({0, 10, 6, 5}), invalid_range, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(renderer.set_visibility_range({0, infinity, 0, 5}), endless_margin, std::invalid_argument);
     CHECK(renderer.visibility_range() == range);
     renderer.set_mesh(triangle());
     CHECK(renderer.visibility_range() == VisibilityRange{});
     auto bare = scene.create("bare");
-    CHECK_THROWS_AS(scene.set_visibility_range(bare.id(), range), std::logic_error);
+    CHECK_THROWS_WITH_AS(scene.set_visibility_range(bare.id(), range), "GameObject has no MeshRenderer",
+                         std::logic_error);
 }
 
 TEST_CASE("Scene documents and prefabs keep visibility ranges") {
@@ -152,6 +159,9 @@ TEST_CASE("Documents reject malformed visibility ranges") {
     CHECK(loaded->instance(loaded->instances()[0]).visibility_range == VisibilityRange{1, infinity, .5F, 0});
     CHECK_THROWS_WITH_AS((void)load_scene(document(R"({"begin":10,"end":5,"begin_margin":0,"end_margin":0})"), resolve),
                          invalid_range, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        (void)load_scene(document(R"({"begin":1,"end":null,"begin_margin":0.5,"end_margin":2})"), resolve),
+        endless_margin, std::invalid_argument);
     CHECK_THROWS_WITH_AS((void)load_scene(document("[0, 10]"), resolve), "Invalid scene visibility range",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(
@@ -171,6 +181,8 @@ TEST_CASE("Documents reject malformed visibility ranges") {
     invalid.mesh = mesh;
     invalid.visibility_range = {0, 10, 6, 5};
     CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{invalid}), invalid_range, std::invalid_argument);
+    invalid.visibility_range = {0, infinity, 0, 5};
+    CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{invalid}), endless_margin, std::invalid_argument);
 }
 
 TEST_CASE("Prefab variants replace visibility ranges with the rest of a renderer") {
@@ -197,4 +209,29 @@ TEST_CASE("Prefab variants replace visibility ranges with the rest of a renderer
     renderer.visibility_range = {10, 5, 0, 0};
     CHECK_THROWS_WITH_AS(PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, renderer, {}, {}}}), invalid_range,
                          std::invalid_argument);
+    renderer.visibility_range = {0, infinity, 0, 5};
+    CHECK_THROWS_WITH_AS(PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, renderer, {}, {}}}), endless_margin,
+                         std::invalid_argument);
+
+    // A variant document's field follows the rules of scene documents, under the variant's own message.
+    PrefabVariant::Renderer plain;
+    plain.mesh = mesh;
+    const auto text = PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, plain, {}, {}}}).serialize(name);
+    const auto with_range = [&](const std::string &range) {
+        auto result = text;
+        const std::string field = "\"visibility_range\": null";
+        const auto at = result.find(field);
+        REQUIRE(at != std::string::npos);
+        return result.replace(at, field.size(), "\"visibility_range\": " + range);
+    };
+    const MeshResolver resolve = [&](std::string_view) { return mesh; };
+    CHECK(PrefabVariant::deserialize(with_range(R"({"begin":3,"end":120,"begin_margin":2,"end_margin":20})"), resolve)
+              .overrides()[0]
+              .renderer->visibility_range == VisibilityRange{3, 120, 2, 20});
+    for (const std::string malformed : {"[0, 10]", R"({"begin":"0","end":10,"begin_margin":0,"end_margin":0})"})
+        CHECK_THROWS_WITH_AS((void)PrefabVariant::deserialize(with_range(malformed), resolve),
+                             "Invalid prefab variant visibility range", std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)PrefabVariant::deserialize(
+                             with_range(R"({"begin":0,"end":null,"begin_margin":0,"end_margin":5})"), resolve),
+                         endless_margin, std::invalid_argument);
 }

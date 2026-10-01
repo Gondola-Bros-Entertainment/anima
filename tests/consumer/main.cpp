@@ -302,6 +302,7 @@ int main(int argc, char **argv) {
 #endif
 #ifdef CONSUMER_DESKTOP
         replacement_test::reject_unfireable_injection();
+        replacement_test::reject_invalid_lod_threshold();
         material_test::reject_invalid_anisotropy();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);

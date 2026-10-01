@@ -81,6 +81,30 @@ inline void reject_unfireable_injection() {
         if (const auto error = construct(stage, true); error != no_window)
             throw std::runtime_error("A texture stage with an initial selection was rejected: " + error);
 }
+// Construction rejects a RendererOptions::lod_threshold that is not finite or is negative, after the failure stage and
+// the anisotropy and before it needs a window or GPU.
+inline void reject_invalid_lod_threshold() {
+    constexpr std::string_view invalid = "LOD threshold must be finite and nonnegative";
+    const auto construct = [](float threshold, float anisotropy, anima::RendererFailureStage stage) {
+        anima::RendererOptions options;
+        options.lod_threshold = threshold;
+        options.max_anisotropy = anisotropy;
+        options.fail_after = stage;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    constexpr auto no_failure = anima::RendererFailureStage::none;
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    for (const auto value : {-1.F, -std::numeric_limits<float>::denorm_min(), -infinity, infinity,
+                             std::numeric_limits<float>::quiet_NaN()})
+        rejects<std::invalid_argument>([&] { construct(value, 16, no_failure); }, invalid);
+    for (const auto value : {0.F, -0.F, 1.F, 1000.F})
+        rejects<std::invalid_argument>([&] { construct(value, 16, no_failure); }, "Renderer requires an SDL window");
+    // The failure stage and the anisotropy are checked first.
+    rejects<std::invalid_argument>([&] { construct(-1, 16, anima::RendererFailureStage::vertex); },
+                                   "Unknown initialization failure stage");
+    rejects<std::invalid_argument>([&] { construct(-1, 0, no_failure); },
+                                   "Maximum anisotropy must be finite and at least 1");
+}
 // A swapchain that fails after its predecessor was released leaves nothing to present, so the renderer
 // becomes fatal instead of rebuilding it on every draw.
 inline void reject_failed_swapchain(bool disable_present_fences) {

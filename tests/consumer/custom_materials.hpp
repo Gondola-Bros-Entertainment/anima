@@ -25,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -54,6 +55,9 @@ constexpr std::uint32_t fade_fragment[] =
     ;
 constexpr std::uint32_t fade_shadow_vertex[] =
 #include "custom_fade_shadow.vert.inc"
+    ;
+constexpr std::uint32_t depth_fragment[] =
+#include "custom_depth.frag.inc"
     ;
 using blending_test::Color;
 using blending_test::over;
@@ -621,10 +625,12 @@ inline void check_placements(Harness &harness) {
 }
 
 // Quads of a custom material that fades through animaVisibility() and animaDissolved(), as custom_fade.vert and
-// custom_fade.frag do, dissolve exactly the pixels that the standard material dissolves at the same distances, as
-// separate objects and as placed copies, and its depth-only variant custom_fade_shadow.vert, which casts while more
-// than half of a quad draws, leaves exactly the standard material's shadows. Each quad sits midway between two of the
-// dither's thresholds, so rounding in either shader cannot move a pixel across one.
+// custom_fade.frag do, dissolve exactly the pixels that the standard material dissolves at the same distances, across
+// the range's begin and end margins, as separate objects and as placed copies, and its depth-only variant
+// custom_fade_shadow.vert, which casts while more than half of a quad draws, leaves exactly the standard material's
+// shadows, which are those of the quads that more than half of draws, drawn whole. Each quad sits midway between two of
+// the dither's thresholds, so rounding in either shader cannot move a pixel across one. The placed copies form one
+// cluster, which the range cannot cull, so the shaders alone hide the copies outside it.
 inline void check_fading(Harness &harness) {
     const auto aspect = harness.aspect();
     const anima::Vec3 eye{0, 2, 0};
@@ -632,11 +638,19 @@ inline void check_fading(Harness &harness) {
         using anima::operator*;
         return anima::perspective(aspect, .1F, 100) * anima::look_at(eye, {0, 2, -1});
     }();
-    // Whole to 24 m, then dissolving until it is gone at 40 m.
-    const anima::VisibilityRange range{0, 40, 0, 16};
-    // Whole at 20 m; then 13.75, 9.75, 7.75, 5.75, 3.75 and 1.75 sixteenths visible, where 7.75 is too little to cast;
-    // then hidden beyond the end.
-    constexpr std::array<float, 8> distances{20, 26.25F, 30.25F, 32.25F, 34.25F, 36.25F, 38.25F, 42};
+    // Gone before 4 m, dissolving in until it is whole at 12 m, whole to 24 m, then dissolving out until it is gone
+    // at 40 m.
+    const anima::VisibilityRange range{4, 40, 8, 16};
+    // A row at eye height: whole at 20 m; then 13.75, 9.75, 7.75, 5.75, 3.75 and 1.75 sixteenths visible, where 7.75
+    // is too little to cast; then hidden beyond the end. A row above it: hidden before the beginning at 3 m, then 3, 7,
+    // 9 and 13 sixteenths visible, where 7 is too little to cast and 9 enough.
+    constexpr std::array<float, 8> fading_out{20, 26.25F, 30.25F, 32.25F, 34.25F, 36.25F, 38.25F, 42};
+    constexpr std::array<float, 5> fading_in{3, 5.5F, 7.5F, 8.5F, 10.5F};
+    const auto share = [&](float d) {
+        const auto rise = d < range.begin ? 0. : std::min(1., (double(d) - range.begin) / range.begin_margin);
+        const auto fall = d > range.end ? 0. : std::min(1., (double(range.end) - d) / range.end_margin);
+        return std::min(rise, fall);
+    };
     // A sun from the upper left behind the camera: each quad, which faces the camera, shadows the ground behind it,
     // which the camera sees beneath the quad.
     anima::Environment lighting;
@@ -661,28 +675,43 @@ inline void check_fading(Harness &harness) {
     const auto quad = blending_test::facing(blending_test::opaque({.9, .25, .2}, true), {0, 0, 0}, 1, 1);
     const auto ground = blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, -30}, 30, 30);
     std::vector<anima::Mat4> placed;
-    for (std::size_t i = 0; i < distances.size(); ++i) {
-        const float angle = (float(i) - 3.5F) * .12F, d = distances[i];
-        auto m = anima::identity();
-        m[0] = m[5] = m[10] = .04F * d;
-        anima::set_translation(m, {eye.x + d * std::sin(angle), eye.y, eye.z - d * std::cos(angle)});
-        placed.push_back(m);
-    }
+    std::vector<float> distances;
+    // Places the quads of one row @p elevation radians above eye height, 0.12 radians apart around straight ahead.
+    const auto row = [&](std::span<const float> row_distances, float elevation) {
+        for (std::size_t i = 0; i < row_distances.size(); ++i) {
+            const float angle = (float(i) - float(row_distances.size() - 1) / 2) * .12F, d = row_distances[i];
+            auto m = anima::identity();
+            m[0] = m[5] = m[10] = .04F * d;
+            anima::set_translation(m,
+                                   {eye.x + d * std::sin(angle) * std::cos(elevation), eye.y + d * std::sin(elevation),
+                                    eye.z - d * std::cos(angle) * std::cos(elevation)});
+            placed.push_back(m);
+            distances.push_back(d);
+        }
+    };
+    row(fading_out, 0);
+    row(fading_in, .22F);
     auto empty = std::make_shared<anima::Scene>(), standard = std::make_shared<anima::Scene>(),
-         separate = std::make_shared<anima::Scene>(), together = std::make_shared<anima::Scene>();
-    for (const auto &scene : {empty, standard, separate, together})
+         separate = std::make_shared<anima::Scene>(), together = std::make_shared<anima::Scene>(),
+         casters = std::make_shared<anima::Scene>();
+    for (const auto &scene : {empty, standard, separate, together, casters})
         (void)scene->add(ground);
     std::vector<anima::Scene::Id> plain;
-    for (const auto &m : placed) {
+    for (std::size_t i = 0; i < placed.size(); ++i) {
         plain.push_back(standard->add(quad));
-        standard->set_transform(plain.back(), m);
+        standard->set_transform(plain.back(), placed[i]);
         standard->set_visibility_range(plain.back(), range);
         const auto custom = add(*separate, quad, fade);
-        separate->set_transform(custom, m);
+        separate->set_transform(custom, placed[i]);
         separate->set_visibility_range(custom, range);
+        // The quads that cast, drawn whole.
+        if (share(distances[i]) > .5)
+            casters->set_transform(casters->add(quad), placed[i]);
     }
     const auto field = add(*together, quad, fade);
-    together->set_placements(field, anima::MeshPlacements::create(quad, placed));
+    const auto placements = anima::MeshPlacements::create(quad, placed);
+    require(placements->clusters().size() == 1, "The faded copies do not form one cluster");
+    together->set_placements(field, placements);
     together->set_visibility_range(field, range);
 
     // Without shadows, a capture differs from the frame without quads only where a quad draws.
@@ -708,8 +737,10 @@ inline void check_fading(Harness &harness) {
     harness.images.require(drawn > 0 && drawn < std::count(whole.begin(), whole.end(), true),
                            "The visibility range dissolved no pixel of the standard quads", {"fade-standard"});
     harness.render("fade-separate", {separate}, view, unshadowed);
-    require(culled == 1 && harness.stats.range_culled == 1, "The quad beyond the range's end was not culled whole");
+    require(culled == 2 && harness.stats.range_culled == 2,
+            "The quads before the range's beginning and beyond its end were not culled whole");
     harness.render("fade-placed", {together}, view, unshadowed);
+    require(harness.stats.range_culled == 0, "The range culled the cluster of faded copies");
     for (const std::string name : {"fade-separate", "fade-placed"}) {
         const auto mask = covered(name);
         std::size_t mismatched = 0;
@@ -724,10 +755,12 @@ inline void check_fading(Harness &harness) {
     }
 
     // With shadows, the pixels outside the quads differ from the unshadowed frame only by shadows on the ground,
-    // which every material must leave alike.
+    // which every material must leave alike, and which the casting quads drawn whole leave too. Outside the footprint
+    // of every quad drawn whole, nothing but the shadows can differ.
     harness.render("fade-standard-shadowed", {standard}, view, lighting);
     harness.render("fade-separate-shadowed", {separate}, view, lighting);
     harness.render("fade-placed-shadowed", {together}, view, lighting);
+    harness.render("fade-casters-shadowed", {casters}, view, lighting);
     const auto &without = harness.images["fade-standard"], &reference = harness.images["fade-standard-shadowed"];
     std::size_t shadowed = 0;
     for (std::size_t y = 0; y < reference.height; ++y)
@@ -735,22 +768,171 @@ inline void check_fading(Harness &harness) {
             shadowed +=
                 !quads[y * reference.width + x] && gpu_check::pixel(reference, x, y) != gpu_check::pixel(without, x, y);
     harness.images.require(shadowed > 0, "The standard quads cast no shadow", {"fade-standard-shadowed"});
-    for (const std::string name : {"fade-separate-shadowed", "fade-placed-shadowed"}) {
+    for (const std::string name : {"fade-separate-shadowed", "fade-placed-shadowed", "fade-casters-shadowed"}) {
+        const bool cast_whole = name == "fade-casters-shadowed";
+        const auto &outside = cast_whole ? whole : quads;
         const auto &image = harness.images[name];
         std::size_t mismatched = 0;
         for (std::size_t y = 0; y < image.height; ++y)
             for (std::size_t x = 0; x < image.width; ++x)
                 mismatched +=
-                    !quads[y * image.width + x] && gpu_check::pixel(image, x, y) != gpu_check::pixel(reference, x, y);
+                    !outside[y * image.width + x] && gpu_check::pixel(image, x, y) != gpu_check::pixel(reference, x, y);
         std::cout << "CUSTOM fading: outside the quads, " << name << " differs from the standard material in "
                   << mismatched << " pixels, where the standard quads shadow " << shadowed << '\n';
         harness.images.require(mismatched == 0,
-                               name + " casts shadows that differ from the standard material's in " +
+                               (cast_whole ? "The quads that more than half of draws, drawn whole, cast shadows that "
+                                             "differ from the faded quads' in "
+                                           : name + " casts shadows that differ from the standard material's in ") +
                                    std::to_string(mismatched) + " pixels",
                                {"fade-standard-shadowed", name});
     }
     harness.images.discard({"fade-empty", "fade-whole", "fade-standard", "fade-separate", "fade-placed",
-                            "fade-standard-shadowed", "fade-separate-shadowed", "fade-placed-shadowed"});
+                            "fade-standard-shadowed", "fade-separate-shadowed", "fade-placed-shadowed",
+                            "fade-casters-shadowed"});
+}
+
+// Two quads of one shape and place hand over across 12 to 20 m, as two models of one thing do: a red one, whole
+// nearer, dissolves out across its range's end margin while a blue one dissolves in across its begin margin. At 13, 16
+// and 19 m, where the red one draws 14, 8 and 2 sixteenths and the blue one the rest, each midway between two of the
+// dither's thresholds, the two keep complementary pixels: drawn alone, they cover disjoint parts of the quads'
+// footprint that together fill it, drawn together every pixel of the footprint shows one of them, and in each whole 4
+// by 4 cell of the dither the red one keeps as many pixels as its share gives. The standard material and the custom
+// fade material hand over alike.
+inline void check_crossfade(Harness &harness) {
+    const auto aspect = harness.aspect();
+    const anima::VisibilityRange outgoing{0, 20, 0, 8}, incoming{12, std::numeric_limits<float>::infinity(), 8, 0};
+    const anima::Vec3 red_factor{.8F, .1F, .1F}, blue_factor{.1F, .2F, .8F};
+    const auto quad = blending_test::facing(blending_test::opaque({1, 1, 1}), {0, 0, 0}, 2, 2);
+    anima::CustomMaterialDefinition definition;
+    definition.name = "fade";
+    definition.vertex_shader = words(fade_vertex);
+    definition.fragment_shader = words(fade_fragment);
+    const auto fade = std::make_shared<const anima::CustomMaterial>(std::move(definition));
+    for (const bool custom : {false, true}) {
+        const std::string path = custom ? "custom" : "standard";
+        // Adds the quad with @p factor and @p range, drawn by the fade material on the custom path.
+        const auto add_quad = [&](anima::Scene &scene, anima::Vec3 factor, const anima::VisibilityRange &range) {
+            const auto id = scene.add(quad);
+            scene.set_material_factor(id, 0, factor);
+            if (custom)
+                scene.set_custom_material(id, 0, fade);
+            scene.set_visibility_range(id, range);
+        };
+        auto empty = std::make_shared<anima::Scene>(), whole = std::make_shared<anima::Scene>(),
+             out = std::make_shared<anima::Scene>(), in = std::make_shared<anima::Scene>(),
+             both = std::make_shared<anima::Scene>();
+        add_quad(*whole, red_factor, {});
+        add_quad(*out, red_factor, outgoing);
+        add_quad(*in, blue_factor, incoming);
+        add_quad(*both, red_factor, outgoing);
+        add_quad(*both, blue_factor, incoming);
+        for (const int distance : {13, 16, 19}) {
+            using anima::operator*;
+            const auto view = anima::perspective(aspect, .1F, 100) * anima::look_at({0, 0, float(distance)}, {0, 0, 0});
+            const auto name = "crossfade-" + path + "-" + std::to_string(distance);
+            for (const auto &[suffix, scene] : {std::pair{"-empty", empty}, std::pair{"-whole", whole},
+                                                std::pair{"-out", out}, std::pair{"-in", in}, std::pair{"-both", both}})
+                harness.render(name + suffix, {scene}, view);
+            const auto &nothing = harness.images[name + "-empty"], &footprint = harness.images[name + "-whole"],
+                       &fading_out = harness.images[name + "-out"], &fading_in = harness.images[name + "-in"],
+                       &together = harness.images[name + "-both"];
+            const auto names = std::vector<std::string>{name + "-whole", name + "-out", name + "-in", name + "-both"};
+            const auto width = nothing.width, height = nothing.height;
+            const auto drawn = [&](const gpu_check::Image &image, std::size_t x, std::size_t y) {
+                return gpu_check::pixel(image, x, y) != gpu_check::pixel(nothing, x, y);
+            };
+            std::size_t covered = 0, both_drawn = 0, neither = 0, stray = 0, wrong = 0;
+            for (std::size_t y = 0; y < height; ++y)
+                for (std::size_t x = 0; x < width; ++x) {
+                    const bool inside = drawn(footprint, x, y), out_drawn = drawn(fading_out, x, y),
+                               in_drawn = drawn(fading_in, x, y);
+                    covered += inside;
+                    both_drawn += out_drawn && in_drawn;
+                    neither += inside && !out_drawn && !in_drawn;
+                    stray += !inside && (out_drawn || in_drawn || drawn(together, x, y));
+                    // Together, each pixel shows the quad that draws it alone.
+                    wrong += inside && gpu_check::pixel(together, x, y) !=
+                                           gpu_check::pixel(out_drawn ? fading_out : fading_in, x, y);
+                }
+            // In each 4 by 4 cell of the dither inside the footprint, the red quad keeps one pixel per sixteenth of its
+            // share.
+            const auto expected = std::size_t(2 * (20 - distance));
+            std::size_t cells = 0, uneven = 0;
+            for (std::size_t top = 0; top + 4 <= height; top += 4)
+                for (std::size_t left = 0; left + 4 <= width; left += 4) {
+                    std::size_t inside = 0, out_drawn = 0;
+                    for (std::size_t y = top; y < top + 4; ++y)
+                        for (std::size_t x = left; x < left + 4; ++x) {
+                            inside += drawn(footprint, x, y);
+                            out_drawn += drawn(fading_out, x, y);
+                        }
+                    if (inside < 16)
+                        continue;
+                    ++cells;
+                    uneven += out_drawn != expected;
+                }
+            const auto report = name + ": of " + std::to_string(covered) + " footprint pixels, " +
+                                std::to_string(both_drawn) + " drawn by both quads, " + std::to_string(neither) +
+                                " by neither and " + std::to_string(wrong) + " showing the wrong quad together; " +
+                                std::to_string(stray) + " drawn outside it; " + std::to_string(uneven) + " of " +
+                                std::to_string(cells) + " whole cells without " + std::to_string(expected) +
+                                " red pixels";
+            std::cout << "CUSTOM crossfade " << report << '\n';
+            harness.images.require(covered > 0 && cells > 0 && both_drawn == 0 && neither == 0 && wrong == 0 &&
+                                       stray == 0 && uneven == 0,
+                                   "Crossfading quads do not keep complementary pixels: " + report, names);
+            if (custom)
+                for (const auto *suffix : {"-out", "-in", "-both"}) {
+                    const auto standard_name = "crossfade-standard-" + std::to_string(distance) + suffix;
+                    harness.images.require_same(standard_name, name + suffix,
+                                                "The custom fade material crossfades unlike the standard material");
+                }
+        }
+    }
+    for (const int distance : {13, 16, 19})
+        for (const std::string path : {"standard", "custom"})
+            for (const auto *suffix : {"-empty", "-whole", "-out", "-in", "-both"})
+                harness.images.discard({"crossfade-" + path + "-" + std::to_string(distance) + suffix});
+}
+
+// A blended custom material that reads raw opaque depth sees the reversed depth that the renderer stored: 0 where
+// nothing opaque drew, and for an opaque plane at distance z from the eye along the view, n (f - z) / ((f - n) z) for
+// the near and far planes n and f, which is greater for a nearer plane than for a farther one.
+inline void check_opaque_depth(Harness &harness) {
+    const auto view = blending_test::perspective_view(harness.aspect());
+    constexpr double near_plane = .1, far_plane = 50, scale = 20;
+    const auto depth_at = [&](double z) { return near_plane * (far_plane - z) / ((far_plane - near_plane) * z); };
+    anima::CustomMaterialDefinition definition;
+    definition.name = "depth probe";
+    definition.vertex_shader = words(surface_vertex);
+    definition.fragment_shader = words(depth_fragment);
+    definition.blend = anima::CustomBlend::blended;
+    const auto probe = std::make_shared<const anima::CustomMaterial>(std::move(definition));
+    require(probe->reads_opaque_depth(), "The depth probe does not read opaque depth");
+    auto scene = std::make_shared<anima::Scene>();
+    (void)scene->add(blending_test::facing(blending_test::opaque({.9, .5, .1}), {-1.5F, 0, -4}, 1, 2));
+    (void)scene->add(blending_test::facing(blending_test::opaque({.1, .6, .9}), {1.5F, 0, -9}, 1, 2));
+    (void)add(*scene, surface({0, 0, -2}, 1.2F, .6F), probe);
+    harness.render("opaque-depth", {scene}, view);
+    require(harness.stats.opaque_inputs, "A frame that draws the depth probe did not copy opaque depth");
+    const auto near_depth = depth_at(4), far_depth = depth_at(9);
+    require(near_depth > far_depth && far_depth > 0, "The expected depths are not ordered");
+    // Seen through the probe, the point 0.4 m left of center lies on the near plane, 0.4 m right on the far one, and
+    // 0.45 m up on neither.
+    const anima::Vec3 on_near{-.4F, 0, -2}, on_far{.4F, 0, -2}, on_nothing{0, .45F, -2};
+    harness.expect("opaque-depth", view, on_near, {scale * near_depth, 0, 0}, "Opaque depth of the plane 4 m away");
+    harness.expect("opaque-depth", view, on_far, {scale * far_depth, 0, 0}, "Opaque depth of the plane 9 m away");
+    harness.expect("opaque-depth", view, on_nothing, {0, .5, 0}, "Opaque depth where nothing opaque drew");
+    const auto &image = harness.images["opaque-depth"];
+    const auto at_near = blending_test::pixel_of(view, on_near, image),
+               at_far = blending_test::pixel_of(view, on_far, image);
+    const auto nearer = gpu_check::pixel(image, at_near[0], at_near[1]),
+               farther = gpu_check::pixel(image, at_far[0], at_far[1]);
+    harness.images.require(nearer[0] > farther[0] && farther[0] > 0,
+                           "Opaque depth is not greater for the nearer plane: red " + std::to_string(nearer[0]) +
+                               " at 4 m, " + std::to_string(farther[0]) + " at 9 m",
+                           {"opaque-depth"});
+    harness.images.discard({"opaque-depth"});
 }
 
 inline int run(int argc, char **argv) {
@@ -763,15 +945,17 @@ inline int run(int argc, char **argv) {
     check_sorting(harness);
     check_time(harness);
     check_water(harness);
+    check_opaque_depth(harness);
     check_skinning(harness);
     check_shadows(harness);
     check_placements(harness);
     check_fading(harness);
+    check_crossfade(harness);
     harness.finish();
     std::cout << "PASS custom materials: application SPIR-V reading the frame inputs, in the opaque pass and sorted "
                  "with blended draws, a time-driven effect, water that reads opaque depth and color copied only when "
-                 "drawn, skinning, shadows only from a depth-only variant, placed copies, and fading that dissolves "
-                 "and casts as the standard material does\n";
+                 "drawn, raw reversed opaque depth, skinning, shadows only from a depth-only variant, placed copies, "
+                 "and fading that dissolves, casts and crossfades as the standard material does\n";
     return 0;
 }
 } // namespace custom_material_test

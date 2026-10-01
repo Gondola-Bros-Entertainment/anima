@@ -39,12 +39,19 @@ class SceneSet;
 /// Godot's visibility ranges measure to the center of an instance's bounds.
 ///
 /// Outside [#begin, #end] the object, or the copy, does not draw in any pass. Within #begin_margin of #begin and
-/// #end_margin of #end it dissolves with an ordered dither instead of popping: it is whole from `begin +
+/// #end_margin of #end it dissolves with a 4x4 ordered dither instead of popping: it is whole from `begin +
 /// begin_margin` to `end - end_margin` and gone at #begin and #end, and in between a share of its pixels proportional
-/// to the distance into the margin is discarded, so it costs no blending or sorting. It casts shadows while more than
-/// half of it draws. Ranges apply to perspective views; an orthographic view draws every object whole. A custom
-/// material dissolves only through the helpers in `anima/custom_material.glsl`; without them it draws whole inside the
-/// range.
+/// to the distance into the margin is discarded, so it costs no blending or sorting. Fading out it keeps the pixels of
+/// the dither's lowest thresholds and fading in those of its highest, so where one object's end margin spans the same
+/// distances as another's begin margin, as when two models of one thing hand over, the two keep complementary pixels.
+/// It casts shadows while more than half of it draws. Ranges apply to perspective views; an orthographic view draws
+/// every object whole.
+///
+/// The renderer culls an object, or a cluster of its placed copies (MeshPlacements::clusters()), only where it lies
+/// wholly outside the range; the standard material's shaders hide the other copies outside it and dissolve the margins.
+/// A custom material's shaders do so only through `animaVisibility()` and `animaDissolved()`, as custom_material.hpp
+/// describes; without them an object draws whole inside its range, and so does every copy in a cluster that lies partly
+/// inside, even one outside the range.
 struct VisibilityRange {
     /// Nearest distance at which the object draws; 0, the default, draws it however near.
     float begin = 0;
@@ -52,13 +59,14 @@ struct VisibilityRange {
     float end = std::numeric_limits<float>::infinity();
     /// Width over which it dissolves in beyond #begin; 0 makes it appear at once.
     float begin_margin = 0;
-    /// Width over which it dissolves out before #end; 0 makes it vanish at once.
+    /// Width over which it dissolves out before #end; 0 makes it vanish at once, and an endless range has none.
     float end_margin = 0;
     bool operator==(const VisibilityRange &) const = default;
 };
 /// Throws `std::invalid_argument` unless VisibilityRange::begin and the margins of @p range are finite and
 /// nonnegative, its end is greater than its begin, and the margins fit between them ("A visibility range requires
-/// 0 <= begin < end and margins that fit between them").
+/// 0 <= begin < end and margins that fit between them"), and for an end margin on an infinite end ("An endless
+/// visibility range has no end margin").
 void validate_visibility_range(const VisibilityRange &range);
 /// Persistent identity of an object within one scene; zero is null.
 ///
@@ -287,7 +295,10 @@ class Scene {
     /// snapshot does not describe custom materials, and textures their meshes' images, which have no
     /// texels for a Mesh compiled with TexelRetention::until_upload.
     ///
-    /// Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
+    /// Each draw contributes its own triangles, never its levels of detail (IndexedDraw::levels), once per
+    /// copy: a renderer with placements gives one primitive per placement and draw, in
+    /// MeshPlacements::transforms() order, placed as set_placements() describes, and visibility ranges
+    /// leave every copy in. Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
     /// included but marked invisible and left out of the snapshot bounds. Normals follow normal(), and
     /// corners follow MeshSnapshot::vertices. Throws SceneCapacityError when the expanded vertices
     /// exceed @p budget, and `std::invalid_argument` when their count or the combined material or

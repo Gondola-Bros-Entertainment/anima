@@ -216,13 +216,7 @@ inline anima::Mat4 perspective_view(float aspect) {
 // at 50.
 inline anima::Mat4 orthographic_view(float aspect) {
     using anima::operator*;
-    constexpr float half_height = 2, near_plane = .1F, far_plane = 50;
-    auto projection = anima::identity();
-    projection[0] = 1 / (half_height * aspect);
-    projection[5] = -1 / half_height; // Vulkan clip space points Y down.
-    projection[10] = 1 / (far_plane - near_plane);
-    projection[14] = far_plane / (far_plane - near_plane);
-    return projection * anima::look_at(origin, {0, 0, -1});
+    return anima::orthographic(aspect, 4, .1F, 50) * anima::look_at(origin, {0, 0, -1});
 }
 
 // Blended quads at z = -2 over opaque and masked backdrops at z = -4, each blended quad created before its backdrop,

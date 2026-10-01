@@ -1,7 +1,7 @@
 // GLSL declarations of the custom material shader interface that anima/custom_material.hpp documents. Include it
 // in shaders compiled for Vulkan 1.1, for example with `glslc --target-env=vulkan1.1 -I <anima>/include`.
 //
-// Every stage receives the frame block (animaFrame), the draw push constants (animaDraw) and
+// Every stage receives the frame block (animaFrame), the draw push constants (animaDraw), animaDissolved() and
 // animaWorldPosition(). Define these before including the file to declare more:
 // - ANIMA_VERTEX in vertex shaders: the vertex attributes, the placement rows, the pose buffer, animaModelMatrix(),
 //   animaWorldNormal() and animaVisibility();
@@ -36,8 +36,10 @@ layout(push_constant) uniform AnimaDraw {
     mat4 viewProjection;
     uint paletteOffset;
     uint skinned;
-    // With placements, the index of the object's world matrix in animaPoses, and 1; otherwise 0.
+    // With placements or a visibility range, the index in animaPoses of the object's world matrix, which the matrix
+    // that holds its range follows.
     uint objectOffset;
+    // 1 with placements; otherwise 0.
     uint placed;
     // The object's linear RGB factor for the material slot, with alpha 1.
     layout(offset = 80) vec4 factor;
@@ -47,13 +49,16 @@ layout(push_constant) uniform AnimaDraw {
 animaDraw;
 
 // Whether the fragment at framebuffer coordinates @p pixel, such as gl_FragCoord.xy, falls in the share of an object
-// that a visibility of @p visibility dissolves; discard it then. The standard material uses the same 4x4 ordered
-// dither.
+// that animaVisibility()'s @p visibility dissolves; discard it then. The standard material uses the same 4x4 ordered
+// dither: fading out, it keeps the pixels whose threshold lies below the share, and fading in, where @p visibility is
+// negative, those whose threshold lies at or above 1 minus the share, so an object fading in over the distances that
+// another fades out over keeps exactly the pixels that the other dissolves.
 bool animaDissolved(float visibility, vec2 pixel) {
     const float pattern[16] =
         float[](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
     ivec2 cell = ivec2(pixel) & 3;
-    return visibility < 1.0 && visibility <= (pattern[cell.y * 4 + cell.x] + 0.5) / 16.0;
+    float threshold = (pattern[cell.y * 4 + cell.x] + 0.5) / 16.0;
+    return abs(visibility) < 1.0 && (visibility >= 0.0 ? threshold >= visibility : threshold < 1.0 + visibility);
 }
 
 // The world position that Vulkan depth @p depth shows at the framebuffer coordinates @p pixel, such as
@@ -99,9 +104,10 @@ mat4 animaModelMatrix() {
     return transform;
 }
 // The share of this object, or of this placed copy, that its visibility range draws at the distance from the eye to
-// the center of its mesh's rest bounds as placed, as the standard material computes it: 1 whole, 0 gone, dissolving
-// across the range's margins, and 1 without a range or in an orthographic view. Pass it to the fragment shader, flat,
-// for animaDissolved(); a depth-only variant casts while it exceeds 0.5, as the standard material does.
+// the center of its mesh's rest bounds as placed, as the standard material computes it, negated while it fades in: 0
+// outside the range, from 0 to -1 across the begin margin, 1 between the margins, from 1 to 0 across the end margin,
+// and 1 without a range or in an orthographic view. abs() of it is the share. Pass it to the fragment shader, flat,
+// for animaDissolved(); a depth-only variant casts while abs() of it exceeds 0.5, as the standard material does.
 float animaVisibility() {
     if (animaDraw.ranged == 0u || animaFrame.viewOrigin.w == 0.0)
         return 1.0;
@@ -112,7 +118,8 @@ float animaVisibility() {
     float d = distance((object * vec4(range[1].xyz, 1.0)).xyz, animaFrame.viewOrigin.xyz);
     float rise = range[0].y > 0.0 ? clamp((d - range[0].x) / range[0].y, 0.0, 1.0) : (d >= range[0].x ? 1.0 : 0.0);
     float fall = range[0].w > 0.0 ? clamp((range[0].z - d) / range[0].w, 0.0, 1.0) : (d < range[0].z ? 1.0 : 0.0);
-    return min(rise, fall);
+    // The margins never overlap, so at most one of them is partial.
+    return rise < 1.0 ? -rise : fall;
 }
 // animaNormal in world space under @p transform, as the standard material computes it: the direction of the
 // cofactor matrix, which stays defined when an axis collapses, or +Y when no direction is left.

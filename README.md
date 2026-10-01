@@ -58,15 +58,15 @@ subdirectory, and compiler warning policy stays private to Anima's targets.
 | --- | --- | --- | --- |
 | Core | `anima::core` | always built | Math, fixed-step timing, geometry queries, action input, A* navigation, and audio decoding, mixing and device output |
 | Assets and scenes | `anima::assets` | `ANIMA_BUILD_ASSETS` (on) | GLB and BC7 KTX2 import, meshes, scenes, objects, components, prefabs, animation, cameras and lighting |
-| Desktop | `anima::desktop` | `ANIMA_BUILD_DESKTOP` (on) | SDL3/Vulkan rendering: skinning, materials, application shaders, instanced placements, culling, sky and directional shadows |
+| Desktop | `anima::desktop` | `ANIMA_BUILD_DESKTOP` (on) | SDL3/Vulkan rendering: skinning, materials with anisotropic filtering, application shaders, instanced placements, visibility ranges, levels of detail, culling, sky and directional shadows |
 | 3D physics | `anima::physics`, `anima::physics_scene` | `ANIMA_BUILD_PHYSICS` | Jolt simulation and queries; the scene target also needs assets |
 | 2D physics | `anima::physics2d`, `anima::physics2d_scene` | `ANIMA_BUILD_PHYSICS2D` | Box2D simulation and queries; the scene target also needs assets |
 | SDL input | `anima::input_sdl` | `ANIMA_BUILD_INPUT_SDL` | SDL event conversion using SDL headers only |
 | UI | `anima::ui_documents`, `anima::ui_scene`, `anima::ui` | `ANIMA_BUILD_UI_DOCUMENTS`, `ANIMA_BUILD_UI` | Headless RmlUi documents, their scene integration, and desktop presentation (requires desktop) |
 
-Jolt, Box2D, miniaudio and the importers stay private implementation dependencies;
-`anima::ui` exposes RmlUi deliberately for native interoperability. For audio,
-`anima::core` links the platform's thread library, and on macOS the Core Audio
+Jolt, Box2D, miniaudio, meshoptimizer and the importers stay private implementation
+dependencies; `anima::ui` exposes RmlUi deliberately for native interoperability. For
+audio, `anima::core` links the platform's thread library, and on macOS the Core Audio
 frameworks; Linux audio libraries load at run time. The
 [consumer suite](tests/consumer) builds each target as an external project with the
 engine's tools and tests off, which checks these dependency boundaries.
@@ -160,8 +160,11 @@ progress, or while a driver holds it, terminates the program with a diagnostic.
 Coordinates are right-handed with +Y up; cameras and audio listeners face local -Z.
 Physics uses caller-consistent units, normally meters and kilograms. `Mat4`
 is column-major with column vectors, quaternions are XYZW, and transforms compose as
-T * R * S. Projections target Vulkan clip space (Y flipped) with reversed depth, from 1 at the near plane
-to 0 at the far plane, which keeps a floating-point depth buffer precise at a distance.
+T * R * S. Projections target Vulkan clip space (Y flipped) with reversed depth, from 1
+at the near plane to 0 at the far plane, which keeps a floating-point depth buffer
+precise at a distance; `perspective()`, `orthographic()` and `view_matrix()` build
+them. Sun shadow regions keep forward depth, from 0 on the side facing the light, since
+their orthographic projections space depth evenly.
 
 ## API reference
 

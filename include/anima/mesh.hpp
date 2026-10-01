@@ -147,7 +147,8 @@ class Mesh {
                                                                                  MeshCompileOptions options = {});
     /// Vertices that indices() refers to.
     [[nodiscard]] std::span<const SourceVertex> vertices() const { return vertices_; }
-    /// Triangle-list indices into vertices(), in source order.
+    /// Triangle-list indices into vertices(): every draw's own, in source order, then after all of them each draw's
+    /// levels of detail (IndexedDraw::levels), draw by draw and level by level.
     [[nodiscard]] std::span<const std::uint32_t> indices() const { return indices_; }
     /// One draw per source primitive, in source order.
     [[nodiscard]] std::span<const IndexedDraw> draws() const { return draws_; }

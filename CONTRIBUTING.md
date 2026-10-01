@@ -106,18 +106,23 @@ drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic sce
 through the public API. `consumer_desktop` runs one mode per check: its default
 instances check, `--allocations`, `--culling`, `--placements`, which draws a field of
 copies through one object's placements and as separate objects over a shadowed ground,
-requires identical frames in and out of view and under a shared visibility range, and
+requires identical frames in and out of view, with mirrored copies and under a shared
+visibility range, and
 reports both at 10,000 copies, `--lod`, which draws dense spheres far away with
 simplified levels, in the view and the shadow passes, within pixel parity of their full
 draws, and keeps the full draw up close,
-`--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`,
+`--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`, which
+also requests an anisotropy of 64, above the 16 that devices commonly allow, and requires
+the device's limit,
 `--pbr`, `--surface-maps`, `--sidedness`, `--blending`, which compares blended
 materials with the renderer's documented compositing, fog, exposure, draw order and
 shadow policy,
-`--custom-materials`, which draws the consumer's own water, effect, probe and fading
-shaders, compiled by glslc in its build, and compares their frame inputs, passes, sorting,
-time, opaque depth and color, skinning, shadows, placed copies and fading across visibility
-ranges with the renderer's contract,
+`--custom-materials`, which draws the consumer's own water, effect, probe, depth probe and
+fading shaders, compiled by glslc in its build, and compares their frame inputs, passes,
+sorting, time, opaque depth, raw and as world positions, and color, skinning, shadows,
+placed copies and fading across both margins of visibility ranges with the renderer's
+contract, and requires two objects that hand over across the same distances, with the
+standard material and with the fading shaders, to keep complementary pixels,
 `--texture-memory`, which measures the CPU texels and device images of a 2048-texel
 texture and checks that meshes and custom materials compiled with
 `TexelRetention::until_upload` let their texels go once uploaded and keep drawing, and

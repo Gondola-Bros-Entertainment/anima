@@ -66,9 +66,20 @@
 /// placements or a visibility range; 76 `uint placed`, 1 when it has placements and otherwise 0; 80 `vec4 factor`,
 /// the object's linear RGB factor for the material slot (Scene::set_material_factor) with alpha 1; and 96 `uint
 /// ranged`, 1 when it has a visibility range other than the default and otherwise 0. `animaModelMatrix()` in
-/// `anima/custom_material.glsl` composes these as the standard material does, and `animaVisibility()` and
-/// `animaDissolved()` fade the object across its range's margins as the standard material does; a material that
-/// does not call them draws whole inside the range.
+/// `anima/custom_material.glsl` composes these as the standard material does.
+///
+/// A visibility range (VisibilityRange) is partly the shaders' to apply. The renderer skips an object, or a cluster
+/// of placed copies (MeshPlacements::clusters()), in every pass only where it lies wholly outside its range, so copies
+/// in the margins, and copies outside the range in a cluster that lies partly inside, reach the shaders whole. In a
+/// vertex shader, `animaVisibility()` returns the share of the object or copy that its range draws, as the standard
+/// material computes it, negated while it fades in: 0 outside the range, from 0 to -1 across the begin margin, 1
+/// between the margins, from 1 to 0 across the end margin, and 1 without a range or in an orthographic view. To
+/// draw as the standard material does, the vertex shader passes it as a `flat` output to the fragment shader, which
+/// discards the fragments for which `animaDissolved()` returns true: every fragment of a copy whose value is 0, and in
+/// the margins those that the standard material's 4x4 ordered dither discards, the pixels complementary in a begin
+/// margin to those of an end margin. The depth-only variant's vertex shader moves a copy out of the clip volume, for
+/// example to (2, 2, 2, 1), while `abs(animaVisibility())` is at most 0.5. A material whose shaders do neither draws
+/// whole every copy that the renderer does not skip, including copies outside the range.
 ///
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear

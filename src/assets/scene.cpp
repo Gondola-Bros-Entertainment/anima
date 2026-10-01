@@ -910,6 +910,8 @@ void validate_visibility_range(const VisibilityRange &range) {
                 finite_nonnegative(range.end_margin) && !std::isnan(range.end) && range.end > range.begin &&
                 double(range.begin_margin) + range.end_margin <= double(range.end) - range.begin,
             "A visibility range requires 0 <= begin < end and margins that fit between them");
+    // No distance reaches an infinite end, so a margin before it would never dissolve anything.
+    require(std::isfinite(range.end) || range.end_margin == 0, "An endless visibility range has no end margin");
 }
 void Scene::set_visibility_range(Id id, const VisibilityRange &range) {
     auto &value = get(id);

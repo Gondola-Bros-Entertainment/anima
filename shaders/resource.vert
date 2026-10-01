@@ -30,15 +30,17 @@ layout(push_constant) uniform Draw {
 }
 draw;
 // The share of an object, or of a placed copy, that its visibility range draws at the distance from the eye to
-// center, the center of its mesh's rest bounds as placed: 1 whole, 0 gone, dissolving across the margins. range holds
-// its begin, begin margin, end and end margin. An orthographic view, whose origin has w 0, draws everything whole.
+// center, the center of its mesh's rest bounds as placed: 1 whole, 0 gone, dissolving across the margins, and negated
+// in the begin margin, where it fades in, so that the fragment shader keeps the complementary pixels there. range holds
+// its begin, begin margin, end and end margin; the margins never overlap, so at most one of them is partial. An
+// orthographic view, whose origin has w 0, draws everything whole.
 float visibilityAt(vec3 center, vec4 range) {
     if (draw.origin.w == 0.0)
         return 1.0;
     float d = distance(center, draw.origin.xyz);
     float rise = range.y > 0.0 ? clamp((d - range.x) / range.y, 0.0, 1.0) : (d >= range.x ? 1.0 : 0.0);
     float fall = range.w > 0.0 ? clamp((range.z - d) / range.w, 0.0, 1.0) : (d < range.z ? 1.0 : 0.0);
-    return min(rise, fall);
+    return rise < 1.0 ? -rise : fall;
 }
 void main() {
     // indices: the draw's first palette matrix; whether it is skinned; with placements or a visibility range, the
@@ -81,7 +83,7 @@ void main() {
         visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0]);
     }
     // A copy that its range hides draws nothing: every corner leaves the view volume.
-    if (visibility <= 0.0)
+    if (visibility == 0.0)
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     baseColor = color * draw.factor.rgb;
     texcoord = uv;
