@@ -122,7 +122,8 @@ endif()
 
 if(ANIMA_BUILD_ASSETS)
     add_library(anima_asset_dependencies STATIC src/assets/third_party.cpp third_party/meshoptimizer/allocator.cpp
-        third_party/meshoptimizer/simplifier.cpp)
+        third_party/meshoptimizer/indexgenerator.cpp third_party/meshoptimizer/simplifier.cpp
+        third_party/meshoptimizer/vcacheoptimizer.cpp)
     anima_enable_sanitizers(anima_asset_dependencies)
     target_include_directories(anima_asset_dependencies SYSTEM PUBLIC third_party/cgltf third_party/meshoptimizer
         third_party/stb)

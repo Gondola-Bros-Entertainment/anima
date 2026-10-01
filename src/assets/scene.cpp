@@ -133,14 +133,14 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
                     std::numeric_limits<std::size_t>::max() / sizeof(SourceVertex) - result->vertices_.size(),
                 "Render vertex byte size overflow");
         const auto offset = primitive.skin < 0 ? static_cast<std::uint32_t>(primitive.node) : offsets[primitive.skin];
+        const auto joint_count = primitive.skin < 0 ? 1 : source.skins[primitive.skin].joints.size();
         vertex_ranges.push_back(result->vertices_.size());
-        result->draws_.push_back({static_cast<std::uint32_t>(result->indices_.size()),
-                                  static_cast<std::uint32_t>(primitive.vertices.size()), offset, primitive.skin >= 0,
-                                  primitive.material, static_cast<std::uint32_t>(primitive.node),
-                                  source.nodes[primitive.node].name, primitive.mesh_name});
+        result->draws_.push_back(
+            {static_cast<std::uint32_t>(result->indices_.size()), static_cast<std::uint32_t>(primitive.vertices.size()),
+             offset, static_cast<std::uint32_t>(joint_count), primitive.skin >= 0, primitive.material,
+             static_cast<std::uint32_t>(primitive.node), source.nodes[primitive.node].name, primitive.mesh_name});
         if (primitive.skin >= 0)
             materials->skinned_vertices += primitive.vertices.size();
-        const auto joint_count = primitive.skin < 0 ? 1 : source.skins[primitive.skin].joints.size();
         std::vector<RenderBounds> bounds(joint_count);
         std::unordered_map<Key, std::uint32_t, Hash> unique;
         unique.reserve(primitive.vertices.size() / 2);
@@ -178,10 +178,21 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     // draw simplifies against its own block of them, each level from the one before it, as meshoptimizer recommends
     // for a chain. The draw's border stays locked, as Godot locks it, since draws simplified apart, such as a mesh's
     // material subsets or compile_static() pieces, must still meet whichever levels they draw.
+    //
+    // Vertices weld only when every attribute matches, so a hard edge or a texture seam leaves several vertices at one
+    // position. Strictly, the simplifier collapses none of them, which leaves faceted models nearly whole. Permissive
+    // simplification may collapse across those discontinuities, charging the change in normals and colors to the
+    // step's error, while texture seams stay protected so textures do not smear across them, as meshoptimizer
+    // recommends for faceted meshes.
+    std::vector<unsigned> position_remap;
+    std::vector<unsigned char> vertex_locks;
     for (std::size_t d = 0; lods.levels && d < result->draws_.size(); ++d) {
         auto &draw = result->draws_[d];
-        if (draw.material >= 0 && materials->material_data[std::size_t(draw.material)].alpha_mode == AlphaMode::mask)
+        const auto alpha_mode =
+            draw.material >= 0 ? materials->material_data[std::size_t(draw.material)].alpha_mode : AlphaMode::opaque;
+        if (alpha_mode == AlphaMode::mask)
             continue;
+        const bool blended = alpha_mode == AlphaMode::blend;
         const auto first = vertex_ranges[d], count = vertex_ranges[d + 1] - first;
         std::vector<unsigned> current(result->indices_.begin() + draw.first_index,
                                       result->indices_.begin() + draw.first_index + draw.index_count);
@@ -198,23 +209,34 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
         // meshoptimizer's cluster LOD reference requires. Clamping keeps attribute error at the scale of the positional
         // error that selection projects, as meshoptimizer recommends when the error chooses levels.
         constexpr float maximum_relative_error = 1, minimum_reduction = .85F;
-        constexpr unsigned options = meshopt_SimplifyLockBorder | meshopt_SimplifyErrorClamped;
+        constexpr unsigned options =
+            meshopt_SimplifyLockBorder | meshopt_SimplifyErrorClamped | meshopt_SimplifyPermissive;
         const auto scale = meshopt_simplifyScale(positions, count, sizeof(SourceVertex));
+        position_remap.resize(count);
+        meshopt_generatePositionRemap(position_remap.data(), positions, count, sizeof(SourceVertex));
+        vertex_locks.assign(count, 0);
+        for (std::size_t i = 0; i < count; ++i)
+            if (const auto shared = position_remap[i]; shared != i && vertex[shared].uv != vertex[i].uv)
+                vertex_locks[i] = meshopt_SimplifyVertex_Protect;
         std::vector<unsigned> level;
         float error = 0;
         for (std::size_t k = 0; k < lods.levels; ++k) {
             float step = 0;
             level.resize(current.size());
-            level.resize(meshopt_simplifyWithAttributes(level.data(), current.data(), current.size(), positions, count,
-                                                        sizeof(SourceVertex), attributes, sizeof(SourceVertex),
-                                                        weights.data(), weights.size(), nullptr, current.size() / 6 * 3,
-                                                        maximum_relative_error, options, &step));
+            level.resize(meshopt_simplifyWithAttributes(
+                level.data(), current.data(), current.size(), positions, count, sizeof(SourceVertex), attributes,
+                sizeof(SourceVertex), weights.data(), weights.size(), vertex_locks.data(), current.size() / 6 * 3,
+                maximum_relative_error, options, &step));
             if (level.empty() || float(level.size()) > float(current.size()) * minimum_reduction)
                 break;
             require(level.size() <= UINT32_MAX - result->indices_.size(), "Invalid render triangle count");
-            // A step's error is relative to the level it starts from; the chain keeps the largest, as meshoptimizer's
-            // cluster LOD reference merges errors, so a coarser level never claims less error than a finer one.
-            error = std::max(error, step * scale);
+            // A step's error is measured from the level it starts from, so the chain adds them, as meshoptimizer
+            // recommends for a chain: a level's error then covers every step between it and the draw's own triangles.
+            error += step * scale;
+            // Simplification keeps the surviving triangles in source order. Reorder a level for the vertex cache,
+            // except a blended draw's, whose triangles composite in that order.
+            if (!blended)
+                meshopt_optimizeVertexCache(level.data(), level.data(), level.size(), count);
             draw.levels.push_back(
                 {static_cast<std::uint32_t>(result->indices_.size()), static_cast<std::uint32_t>(level.size()), error});
             for (const auto index : level)

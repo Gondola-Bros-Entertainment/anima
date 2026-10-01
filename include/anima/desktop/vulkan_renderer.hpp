@@ -463,7 +463,8 @@ class VulkanRenderer {
     /// mesh LOD threshold pixels do.
     ///
     /// Each draw of an object, and each placement cluster's copies of it, uses the coarsest of the draw's levels
-    /// whose error, scaled by the largest axis scale that places the draw, covers at most @p pixels when projected
+    /// whose error, scaled by the largest axis scale among the matrices that may place the draw (its node's, or its
+    /// skin's joints', IndexedDraw::palette_count of them), covers at most @p pixels when projected
     /// at the distance from the eye to the nearest point of the draw's, or the cluster's, world bounds; from inside
     /// those bounds it uses the full draw. An orthographic view projects errors without distance. Shadow passes
     /// draw the levels the view chose. Throws `std::invalid_argument` unless @p pixels is finite and nonnegative

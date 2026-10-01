@@ -715,13 +715,18 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
 void record_indexed(const ResourceInstance &render_instance, std::size_t draw_index, bool shadow) {
     const auto &source = *render_instance.source;
     const auto &draw = source.asset->draws()[draw_index];
-    // Without placements the draw's own bounds and placing matrix choose its level; with them, each run's cluster and
-    // the node's rest matrix, which the copies' placements multiply.
-    const auto level_of = [&](const PlacementRun &run) {
+    // Without placements the draw's own bounds and placing matrices choose its level, the largest scale among its
+    // node's matrix or its skin's joint matrices; with them, each run's cluster and the node's rest matrix, which the
+    // copies' placements multiply.
+    const auto level_of = [&](const PlacementRun &run) -> const DrawLevel * {
+        if (draw.levels.empty())
+            return nullptr;
         if (!render_instance.placements) {
             const auto &bounds = source.primitive_bounds[draw_index];
-            return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum),
-                             axis_scale(draw.skinned ? source.world : source.palette[draw.palette_offset]));
+            double scale = 0;
+            for (std::uint32_t j = 0; j < draw.palette_count; ++j)
+                scale = std::max(scale, axis_scale(source.palette[draw.palette_offset + j]));
+            return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum), scale);
         }
         return level_for(draw, run.distance, run.scale * axis_scale(source.asset->rest_pose().world[draw.node]));
     };

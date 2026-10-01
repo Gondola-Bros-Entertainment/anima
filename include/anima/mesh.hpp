@@ -21,10 +21,12 @@ struct DrawLevel {
     std::uint32_t first_index{};
     /// Number of indices, three per triangle, fewer than the level before it has.
     std::uint32_t index_count{};
-    /// The largest error of the simplification steps that produced the level, in the units of the draw's vertices
-    /// before their node or joints place them, so at least the error of the level before it. A step's error combines
-    /// how far it may move the surface it starts from with how much it changes normals and vertex colors, which the
-    /// simplifier weighs as distance and clamps to the scale of the positional error.
+    /// The sum of the errors of the simplification steps that produced the level, each measured from the level it
+    /// started from, in the units of the draw's vertices before their node or joints place them, so at least the
+    /// error of the level before it. It estimates how far the level lies from the draw's own triangles; each step's
+    /// error is itself an estimate, so a level may lie somewhat farther. A step's error combines how far it may move
+    /// the surface it starts from with how much it changes normals and vertex colors, which the simplifier weighs as
+    /// distance and clamps to the scale of the positional error.
     float error{};
 };
 /// One indexed triangle-list draw of a Mesh, compiled from one source primitive. Its position in
@@ -37,6 +39,9 @@ struct IndexedDraw {
     /// First palette matrix the draw uses: its node's matrix when rigid, its skin's first joint matrix when
     /// skinned. See Mesh::palette_size().
     std::uint32_t palette_offset{};
+    /// Palette matrices from #palette_offset that may place the draw's vertices: 1 when rigid, its skin's joint
+    /// count when skinned.
+    std::uint32_t palette_count{};
     /// Whether each vertex blends up to four joint matrices, with SourceVertex::joints counted from
     /// #palette_offset, instead of using its node's matrix.
     bool skinned{};
@@ -54,8 +59,11 @@ struct IndexedDraw {
 /// Levels of detail that Mesh::compile generates for each draw, as Godot generates them on import.
 ///
 /// Each level simplifies the one before it, starting from the draw, with meshoptimizer's quadric simplifier, which
-/// collapses the edges that change the surface, normals and vertex colors least and keeps the seams where those
-/// attributes split, toward half the triangles. Every level keeps the draw's open border whole, so draws that meet
+/// collapses the edges that change the surface, normals and vertex colors least, toward half the triangles. It may
+/// collapse across a hard edge, where normals or vertex colors split, charging the change to the step's error, so
+/// faceted models simplify too, but never across a seam where texture coordinates split. A level's triangles are
+/// ordered for the vertex cache, except a blended draw's, which keep their source order, since they composite in
+/// it. Every level keeps the draw's open border whole, so draws that meet
 /// along it, such as the material subsets of one mesh or the pieces of Mesh::compile_static, meet without cracks
 /// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices
 /// of the one before it or when a step's error would exceed the draw's extent. Draws with a masked material
