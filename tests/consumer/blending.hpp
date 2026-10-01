@@ -119,7 +119,7 @@ inline double distance_to_plane(const anima::Mat4 &inverse, anima::Vec3 eye, Pix
                           double(inverse[8 + row]) * depth + double(inverse[12 + row]);
         return std::array<double, 3>{result[0] / result[3], result[1] / result[3], result[2] / result[3]};
     };
-    const auto near_point = unproject(0), far_point = unproject(1);
+    const auto near_point = unproject(1), far_point = unproject(0); // Reversed depth.
     const auto t = (plane - near_point[2]) / (far_point[2] - near_point[2]);
     double square = 0;
     const std::array<double, 3> from{eye.x, eye.y, eye.z};
@@ -212,15 +212,16 @@ inline anima::Mat4 perspective_view(float aspect) {
     using anima::operator*;
     return anima::perspective(aspect, .1F, 50) * anima::look_at(origin, {0, 0, -1});
 }
-// An orthographic camera at the origin looking down -Z, 4 units high, with Vulkan depth 0 to 1 from 0.1 to 50.
+// An orthographic camera at the origin looking down -Z, 4 units high, with reversed Vulkan depth from 1 at 0.1 to 0
+// at 50.
 inline anima::Mat4 orthographic_view(float aspect) {
     using anima::operator*;
     constexpr float half_height = 2, near_plane = .1F, far_plane = 50;
     auto projection = anima::identity();
     projection[0] = 1 / (half_height * aspect);
     projection[5] = -1 / half_height; // Vulkan clip space points Y down.
-    projection[10] = -1 / (far_plane - near_plane);
-    projection[14] = -near_plane / (far_plane - near_plane);
+    projection[10] = 1 / (far_plane - near_plane);
+    projection[14] = far_plane / (far_plane - near_plane);
     return projection * anima::look_at(origin, {0, 0, -1});
 }
 

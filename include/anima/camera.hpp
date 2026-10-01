@@ -70,8 +70,8 @@ struct CameraView {
 ///
 /// Exactly one CameraView must be active, even when several point at the same camera, and its
 /// object must be live in @p scene with an active Camera; other cameras need not be disabled. The
-/// result is column-major in Vulkan clip space: framebuffer Y down, depth 0 at the near plane and 1
-/// at the far plane. Call it on idle scenes after updates; it runs no hooks, advances no time,
+/// result is column-major in Vulkan clip space: framebuffer Y down, reversed depth, 1 at the near
+/// plane and 0 at the far plane. Call it on idle scenes after updates; it runs no hooks, advances no time,
 /// keeps no reference and touches no renderer.
 ///
 /// Throws `std::invalid_argument` for a missing, ambiguous, stale or foreign selection, a missing

@@ -11,7 +11,8 @@
 ///
 /// World space is right-handed with +Y up, and cameras and audio listeners face local -Z. Matrices
 /// are column-major and act on column vectors, the glTF convention. Projections use Vulkan clip
-/// space: framebuffer Y points down and depth runs from 0 at the near plane to 1 at the far plane.
+/// space with reversed depth: framebuffer Y points down and depth runs from 1 at the near plane to 0
+/// at the far plane, so that a floating-point depth buffer keeps its precision at a distance.
 
 namespace anima {
 /// Three-component float vector for positions, directions and scales.
@@ -140,14 +141,14 @@ inline Mat4 look_at(Vec3 eye, Vec3 target) {
             right.z, up.z, -forward.z, 0, -dot(right, eye), -dot(up, eye), dot(forward, eye), 1};
 }
 /// Perspective projection with a fixed 45-degree vertical field of view, for view space looking
-/// down -Z, in Vulkan clip space with depth 0 at @p near_plane and 1 at @p far_plane. Throws
-/// MathError with MathErrorCode::invalid_frustum unless `aspect > 0` and
+/// down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0 at @p far_plane.
+/// Throws MathError with MathErrorCode::invalid_frustum unless `aspect > 0` and
 /// `0 < near_plane < far_plane`.
 inline Mat4 perspective(float aspect, float near_plane, float far_plane) {
     if (!(aspect > 0 && near_plane > 0 && far_plane > near_plane))
         throw MathError(MathErrorCode::invalid_frustum);
     constexpr float f = 2.41421356237F; // 45 degrees vertical field of view.
-    // Vulkan zero-to-one depth, right-handed view, framebuffer Y points down.
+    // Reversed Vulkan depth, right-handed view, framebuffer Y points down.
     return {f / aspect,
             0,
             0,
@@ -158,17 +159,19 @@ inline Mat4 perspective(float aspect, float near_plane, float far_plane) {
             0,
             0,
             0,
-            far_plane / (near_plane - far_plane),
+            near_plane / (far_plane - near_plane),
             -1,
             0,
             0,
-            (near_plane * far_plane) / (near_plane - far_plane),
+            (near_plane * far_plane) / (far_plane - near_plane),
             0};
 }
-/// Recovers the viewer from view-projection matrix @p vp: the eye position with W = 1 for a
-/// perspective projection, or the unit direction toward an orthographic camera with W = 0.
+/// Recovers the viewer from view-projection matrix @p vp, which uses reversed depth: the eye position
+/// with W = 1 for a perspective projection, or the unit direction toward an orthographic camera with
+/// W = 0.
 ///
-/// It solves `vp * x = (0, 0, 1, 0)`, so callers need not supply the camera position separately.
+/// It solves `vp * x = (0, 0, 1, 0)`, so callers need not supply the camera position separately. An
+/// orthographic matrix with forward depth gives the direction away from its camera.
 /// Throws MathError with MathErrorCode::nonfinite_projection for a nonfinite element or
 /// MathErrorCode::singular_projection when elimination meets a zero pivot, and
 /// `std::invalid_argument` when the result is not a finite `float`.
@@ -202,7 +205,8 @@ inline std::array<float, 4> view_origin(const Mat4 &vp) {
             }
     }
     const bool perspective_view = rows[3][4] != 0;
-    const double divisor = perspective_view ? rows[3][4] : -std::hypot(rows[0][4], rows[1][4], rows[2][4]);
+    // Reversed depth grows toward the camera, so an orthographic solution already points at it.
+    const double divisor = perspective_view ? rows[3][4] : std::hypot(rows[0][4], rows[1][4], rows[2][4]);
     std::array<float, 4> result{};
     for (unsigned r = 0; r < 3; ++r) {
         result[r] = static_cast<float>(rows[r][4] / divisor);

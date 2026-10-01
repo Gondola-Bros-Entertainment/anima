@@ -965,10 +965,15 @@ struct VulkanRenderer::Impl {
         }
 #endif
         VkPipelineDepthStencilStateCreateInfo depth_state{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth_state.depthTestEnable = !ui;
+        // The diagnostic triangle is a screen overlay, not part of the view.
+        depth_state.depthTestEnable = !ui && mode != PipelineKind::diagnostic;
         // Blended surfaces are hidden by nearer opaque and masked ones, and hide nothing themselves.
         depth_state.depthWriteEnable = !ui && !sky && !blended;
-        depth_state.depthCompareOp = sky ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
+        // The view uses reversed depth, where nearer surfaces have greater depth and the sky lies at the far
+        // plane, depth 0. Shadow regions are orthographic, where depth is linear in distance, and keep forward depth.
+        depth_state.depthCompareOp = shadow ? VK_COMPARE_OP_LESS
+                                     : sky  ? VK_COMPARE_OP_GREATER_OR_EQUAL
+                                            : VK_COMPARE_OP_GREATER;
         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1574,7 +1579,8 @@ struct VulkanRenderer::Impl {
         constexpr VkClearColorValue clear_color{{0.018F, 0.027F, 0.041F, 1.0F}};
         std::array<VkClearValue, 2> clear{};
         clear[0].color = clear_color;
-        clear[1].depthStencil = {1, 0};
+        // The far plane in reversed depth.
+        clear[1].depthStencil = {0, 0};
         VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         pass.renderPass = render_pass;
         pass.framebuffer = image.framebuffer;
