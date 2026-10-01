@@ -936,16 +936,21 @@ struct VulkanRenderer::Impl {
 #endif
         VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
 #ifdef ANIMA_HAS_ASSETS
-        const VkVertexInputBindingDescription resource_binding{0, sizeof(SourceVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+        // Mesh vertices from binding 0 and placement rows from binding 1.
+        std::array<VkVertexInputAttributeDescription, resource_attributes.size() + placement_attributes.size()>
+            placed_attributes{};
+        std::copy(resource_attributes.begin(), resource_attributes.end(), placed_attributes.begin());
+        std::copy(placement_attributes.begin(), placement_attributes.end(),
+                  placed_attributes.begin() + resource_attributes.size());
         if (resource) {
-            vertex.vertexBindingDescriptionCount = 1;
-            vertex.pVertexBindingDescriptions = &resource_binding;
-            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(resource_attributes.size());
-            vertex.pVertexAttributeDescriptions = resource_attributes.data();
+            vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(resource_bindings.size());
+            vertex.pVertexBindingDescriptions = resource_bindings.data();
+            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(placed_attributes.size());
+            vertex.pVertexAttributeDescriptions = placed_attributes.data();
         }
         const VkVertexInputAttributeDescription shadow_resource_attributes[]{
-            resource_attributes[0], resource_attributes[3], resource_attributes[4], resource_attributes[5],
-            resource_attributes[7]};
+            resource_attributes[0], resource_attributes[3],  resource_attributes[4],  resource_attributes[5],
+            resource_attributes[7], placement_attributes[0], placement_attributes[1], placement_attributes[2]};
         if (shadow) {
             vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(shadow_resource_attributes));
             vertex.pVertexAttributeDescriptions = shadow_resource_attributes;
@@ -1809,6 +1814,8 @@ struct VulkanRenderer::Impl {
             resource_scenes.clear();
             resource_cache.clear();
             custom_cache.clear();
+            placement_cache.clear();
+            identity_placement.reset();
             custom_frame_buffer.reset();
             if (custom_frame_pool)
                 vkDestroyDescriptorPool(device, custom_frame_pool, nullptr);

@@ -269,11 +269,31 @@ void Scene::pose(Instance &value, const Pose &pose, const Mat4 &world) {
     std::vector<RenderBounds> bounds;
     palette.reserve(value.asset->palette_size_);
     bounds.reserve(value.asset->draws_.size());
-    const auto combined = append_pose(*value.asset, pose, world, palette, bounds);
+    auto combined = append_pose(*value.asset, pose, world, palette, bounds);
+    if (value.placements)
+        combined = place(*value.placements, world, bounds);
     // All validation and allocations completed before publishing pose and bounds.
     value.palette.swap(palette);
     value.primitive_bounds.swap(bounds);
     value.bounds = combined;
+    value.world = world;
+}
+RenderBounds Scene::place(const MeshPlacements &placements, const Mat4 &world, std::span<RenderBounds> bounds) {
+    RenderBounds combined;
+    const auto relative = placements.primitive_bounds();
+    for (std::size_t i = 0; i < bounds.size(); ++i) {
+        bounds[i] = {};
+        const auto &b = relative[i];
+        if (!b.valid)
+            continue;
+        for (unsigned corner = 0; corner < 8; ++corner)
+            expand(bounds[i],
+                   point(world, {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
+                                 corner & 4 ? b.maximum.z : b.minimum.z}));
+        expand(combined, bounds[i].minimum);
+        expand(combined, bounds[i].maximum);
+    }
+    return combined;
 }
 RenderBounds Scene::append_pose(const Mesh &asset, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
                                 std::vector<RenderBounds> &bounds) {
@@ -541,7 +561,8 @@ void Scene::remove(Id id) {
 }
 void Scene::set_pose(Id id, const Pose &value, const Mat4 &world) {
     auto &entry = slot(id);
-    (void)get(id);
+    if (get(id).placements)
+        throw std::logic_error("A renderer that draws placements keeps the rest pose");
     // A stored pose with room for this one takes the copy in place. Otherwise the copy is made
     // first, so a failed allocation publishes nothing.
     const bool fits = entry.pose && entry.pose->local.capacity() >= value.local.size() &&
@@ -596,6 +617,10 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
                                                          : source.pose                ? *source.pose
                                                                                       : source.value.asset->rest_,
                                                          placed, posed_palettes_, posed_bounds_);
+                if (source.value.placements)
+                    posed_objects_[i].combined = place(
+                        *source.value.placements, placed,
+                        std::span(posed_bounds_).subspan(posed_objects_[i].bounds, source.value.asset->draws_.size()));
             }
             if (descendants)
                 for (auto child = source.first_child; child != no_slot; child = slots_[child].next_sibling)
@@ -613,6 +638,7 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
             std::copy_n(posed_bounds_.begin() + static_cast<std::ptrdiff_t>(posed.bounds),
                         value.primitive_bounds.size(), value.primitive_bounds.begin());
             value.bounds = posed.combined;
+            value.world = posed.world;
         }
     }
     entry.local = local;
@@ -765,6 +791,12 @@ void MeshRenderer::set_primitive_visible(std::size_t primitive, bool visible) {
     object_.scene().set_primitive_visible(object_.id_, primitive, visible);
 }
 void MeshRenderer::set_casts_shadows(bool casts) { object_.scene().set_casts_shadows(object_.id_, casts); }
+std::shared_ptr<const MeshPlacements> MeshRenderer::placements() const {
+    return object_.scene().instance(object_.id_).placements;
+}
+void MeshRenderer::set_placements(std::shared_ptr<const MeshPlacements> placements) {
+    object_.scene().set_placements(object_.id_, std::move(placements));
+}
 RenderBounds MeshRenderer::bounds() const { return object_.scene().instance(object_.id_).bounds; }
 void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
     auto &value = get(id);
@@ -778,9 +810,12 @@ void Scene::clear_material_factor(Id id, std::size_t material) {
     value.factors.at(material) = value.asset->materials_->material_data.at(material).factor;
 }
 void Scene::set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
-    auto &slots = get(id).custom_materials;
+    auto &value = get(id);
+    auto &slots = value.custom_materials;
     if (material >= slots.size())
         throw std::out_of_range("Custom material slot is outside the mesh's materials");
+    require(!value.placements || !custom || custom->reads_placements(),
+            "A custom material that draws placements must read them");
     slots[material] = std::move(custom);
 }
 void Scene::set_visible(Id id, bool visible) {
@@ -791,6 +826,28 @@ void Scene::set_primitive_visible(Id id, std::size_t primitive, bool visible) {
     get(id).primitive_visible.at(primitive) = visible;
 }
 void Scene::set_casts_shadows(Id id, bool casts) { get(id).casts_shadows = casts; }
+void Scene::set_placements(Id id, std::shared_ptr<const MeshPlacements> placements) {
+    auto &entry = slot(id);
+    auto &value = get(id);
+    if (placements) {
+        require(placements->mesh() == value.asset, "Placements copy another mesh");
+        require(std::all_of(value.custom_materials.begin(), value.custom_materials.end(),
+                            [](const auto &custom) { return !custom || custom->reads_placements(); }),
+                "A custom material that draws placements must read them");
+        if (entry.pose)
+            throw std::logic_error("A renderer with a pose cannot draw placements");
+    }
+    // Without placements a renderer draws the one copy its palette places, so its bounds come from its pose.
+    std::vector<Mat4> palette;
+    std::vector<RenderBounds> bounds;
+    auto combined =
+        append_pose(*value.asset, entry.pose ? *entry.pose : value.asset->rest_, entry.world, palette, bounds);
+    if (placements)
+        combined = place(*placements, entry.world, bounds);
+    value.primitive_bounds.swap(bounds);
+    value.bounds = combined;
+    value.placements = std::move(placements);
+}
 RenderBounds Scene::bounds() const {
     RenderBounds result;
     for (auto id : instances()) {
@@ -809,9 +866,11 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     std::size_t corners = 0;
     const auto objects = instances();
     for (auto id : objects) {
-        const auto size = instance(id).asset->indices().size();
-        require(size <= std::numeric_limits<std::size_t>::max() - corners, "Snapshot vertex overflow");
-        corners += size;
+        const auto &value = instance(id);
+        const auto copies = value.placements ? value.placements->transforms().size() : 1;
+        const auto size = value.asset->indices().size();
+        require(size <= (std::numeric_limits<std::size_t>::max() - corners) / copies, "Snapshot vertex overflow");
+        corners += size * copies;
     }
     (void)validate_scene_geometry(corners, budget);
     MeshSnapshot result;
@@ -843,46 +902,59 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
         result.default_is_bind_pose &= description.default_is_bind_pose;
         result.clips.insert(result.clips.end(), description.clips.begin(), description.clips.end());
         result.notices.insert(result.notices.end(), description.notices.begin(), description.notices.end());
-        for (std::size_t i = 0; i < asset.draws().size(); ++i) {
-            const auto &draw = asset.draws()[i];
-            const bool visible = value.visible && value.active && value.primitive_visible[i];
-            const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : value.factors[draw.material];
-            result.primitives.push_back(
-                {draw.node_name, draw.mesh_name,
-                 draw.material < 0 ? "default" : description.material_data[draw.material].name,
-                 value.palette[draw.node], static_cast<std::uint32_t>(result.vertices.size()), draw.index_count,
-                 draw.material < 0 ? -1 : static_cast<int>(material_offset) + draw.material, visible});
-            if (draw.skinned)
-                result.skinned_vertices += draw.index_count;
-            bool reversed = false;
-            for (std::size_t j = draw.first_index; j < std::size_t(draw.first_index) + draw.index_count; ++j) {
-                const auto corner = j - draw.first_index;
-                const auto &source = asset.vertices()[asset.indices()[j]];
-                auto transform = value.palette[draw.palette_offset];
-                if (draw.skinned) {
-                    transform = {};
-                    for (unsigned influence = 0; influence < 4; ++influence)
-                        if (source.weights[influence] != 0)
-                            for (unsigned k = 0; k < 16; ++k)
-                                transform[k] += value.palette[draw.palette_offset + source.joints[influence]][k] *
-                                                source.weights[influence];
+        // Each placement draws a copy whose node matrices are the object's world matrix times the placement times
+        // the rest pose's; without placements, the palette places the one copy.
+        const std::span<const Mat4> placements =
+            value.placements ? value.placements->transforms() : std::span<const Mat4>();
+        std::vector<Mat4> copy_palette;
+        for (std::size_t copy = 0; copy < std::max<std::size_t>(placements.size(), 1); ++copy) {
+            if (!placements.empty()) {
+                copy_palette.clear();
+                for (const auto &node : asset.rest_.world)
+                    copy_palette.push_back(value.world * placements[copy] * node);
+            }
+            const auto &palette = placements.empty() ? value.palette : copy_palette;
+            for (std::size_t i = 0; i < asset.draws().size(); ++i) {
+                const auto &draw = asset.draws()[i];
+                const bool visible = value.visible && value.active && value.primitive_visible[i];
+                const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : value.factors[draw.material];
+                result.primitives.push_back(
+                    {draw.node_name, draw.mesh_name,
+                     draw.material < 0 ? "default" : description.material_data[draw.material].name, palette[draw.node],
+                     static_cast<std::uint32_t>(result.vertices.size()), draw.index_count,
+                     draw.material < 0 ? -1 : static_cast<int>(material_offset) + draw.material, visible});
+                if (draw.skinned)
+                    result.skinned_vertices += draw.index_count;
+                bool reversed = false;
+                for (std::size_t j = draw.first_index; j < std::size_t(draw.first_index) + draw.index_count; ++j) {
+                    const auto corner = j - draw.first_index;
+                    const auto &source = asset.vertices()[asset.indices()[j]];
+                    auto transform = palette[draw.palette_offset];
+                    if (draw.skinned) {
+                        transform = {};
+                        for (unsigned influence = 0; influence < 4; ++influence)
+                            if (source.weights[influence] != 0)
+                                for (unsigned k = 0; k < 16; ++k)
+                                    transform[k] += palette[draw.palette_offset + source.joints[influence]][k] *
+                                                    source.weights[influence];
+                    }
+                    // The first corner's matrix decides the triangle's winding, as it does on the GPU.
+                    if (corner % 3 == 0)
+                        reversed = detail::reverses_winding(transform);
+                    const auto position = point(transform, source.position);
+                    result.vertices.push_back(
+                        {position,
+                         normal(transform, source.normal),
+                         {source.color.x * factor.x, source.color.y * factor.y, source.color.z * factor.z},
+                         source.uv,
+                         tangent(transform, source.tangent),
+                         source.alpha});
+                    if (visible)
+                        expand(bounds, position);
+                    // A reversed triangle swaps its last two corners, keeping its source winding against its normals.
+                    if (reversed && corner % 3 == 2)
+                        std::swap(result.vertices[result.vertices.size() - 2], result.vertices.back());
                 }
-                // The first corner's matrix decides the triangle's winding, as it does on the GPU.
-                if (corner % 3 == 0)
-                    reversed = detail::reverses_winding(transform);
-                const auto position = point(transform, source.position);
-                result.vertices.push_back(
-                    {position,
-                     normal(transform, source.normal),
-                     {source.color.x * factor.x, source.color.y * factor.y, source.color.z * factor.z},
-                     source.uv,
-                     tangent(transform, source.tangent),
-                     source.alpha});
-                if (visible)
-                    expand(bounds, position);
-                // A reversed triangle swaps its last two corners, keeping its source winding against its normals.
-                if (reversed && corner % 3 == 2)
-                    std::swap(result.vertices[result.vertices.size() - 2], result.vertices.back());
             }
         }
     }

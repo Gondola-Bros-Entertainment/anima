@@ -4,12 +4,28 @@ struct GpuAsset {
     std::unique_ptr<ResourceBuffer> vertices, indices;
     std::unique_ptr<GpuMaterials> materials;
 };
+// The transforms of one MeshPlacements on the GPU, uploaded once and cached per MeshPlacements object as meshes are:
+// rows 0 to 2 of each affine matrix, which the vertex shaders read as per-instance attributes.
+struct GpuPlacements {
+    std::shared_ptr<const MeshPlacements> source;
+    std::unique_ptr<ResourceBuffer> rows;
+};
 struct ResourceInstance {
     std::shared_ptr<GpuAsset> gpu;
     const Scene::Instance *source{};
+    // Where the instance's matrices start in the pose buffer: its palette, or with placements the rest pose's node
+    // matrices, which object_offset's world matrix and each placement place.
     std::uint32_t palette_offset{};
     // Ranges of resource_draws, the instance's opaque and masked main-view draws, and of resource_shadow_draws.
     std::size_t first_draw{}, draw_count{}, first_shadow{}, shadow_count{};
+    // With placements, their GPU rows and the pose buffer index of the object's world matrix.
+    std::shared_ptr<GpuPlacements> placements;
+    std::uint32_t object_offset{};
+};
+// Placements, in MeshPlacements::transforms() order, that one draw call copies; a renderer without placements draws
+// one run of its single copy.
+struct PlacementRun {
+    std::uint32_t first{}, count{};
 };
 struct GpuCustomMaterial;
 // A main-view draw that composites over the target instead of replacing it, recorded after every opaque and
@@ -43,6 +59,18 @@ static_assert(sizeof(ResourcePush) == 128 && offsetof(ResourcePush, indices) == 
               offsetof(ResourcePush, factor) == 112 && sizeof(Mat4) == 64);
 static_assert(sizeof(SourceVertex) == 96 && offsetof(SourceVertex, joints) == 44 &&
               offsetof(SourceVertex, weights) == 60);
+// Bytes of one placement's rows on the GPU.
+static constexpr std::uint32_t placement_stride = 3 * 4 * sizeof(float);
+// Per-instance attributes from binding 1: rows 0 to 2 of a placement's affine matrix.
+static constexpr auto placement_attributes = std::to_array<VkVertexInputAttributeDescription>({
+    {8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+    {9, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16},
+    {10, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32},
+});
+static constexpr std::array<VkVertexInputBindingDescription, 2> resource_bindings{{
+    {0, sizeof(SourceVertex), VK_VERTEX_INPUT_RATE_VERTEX},
+    {1, placement_stride, VK_VERTEX_INPUT_RATE_INSTANCE},
+}};
 // SourceVertex attributes that the resource vertex shader reads, by location.
 static constexpr auto resource_attributes = std::to_array<VkVertexInputAttributeDescription>({
     {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, position)},
@@ -62,6 +90,11 @@ VkDescriptorPool pose_pool{};
 VkDescriptorSet pose_set{};
 std::vector<std::shared_ptr<const Scene>> resource_scenes;
 std::map<const Mesh *, std::shared_ptr<GpuAsset>> resource_cache;
+std::map<const MeshPlacements *, std::shared_ptr<GpuPlacements>> placement_cache;
+// One identity placement, bound at binding 1 for instances without placements.
+std::unique_ptr<ResourceBuffer> identity_placement;
+// The runs that the instance being recorded draws in the current pass.
+std::vector<PlacementRun> placement_runs;
 std::unique_ptr<ResourceBuffer> pose_buffer;
 std::vector<ResourceInstance> resource_instances;
 std::vector<std::size_t> resource_draws, resource_shadow_draws;
@@ -152,7 +185,8 @@ void create_resource_layout() {
     vkGetPhysicalDeviceProperties(physical, &properties);
     if (properties.limits.maxPushConstantsSize < sizeof(ResourcePush) ||
         properties.limits.maxPerStageDescriptorStorageBuffers < 1 || properties.limits.maxBoundDescriptorSets < 3 ||
-        properties.limits.maxVertexInputAttributes < resource_attributes.size() ||
+        properties.limits.maxVertexInputAttributes < resource_attributes.size() + placement_attributes.size() ||
+        properties.limits.maxVertexInputBindings < resource_bindings.size() ||
         properties.limits.maxVertexInputBindingStride < sizeof(SourceVertex))
         throw std::runtime_error("Device lacks resource renderer interface limits");
     VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -184,6 +218,65 @@ void create_resource_layout() {
     allocate.descriptorSetCount = 1;
     allocate.pSetLayouts = &pose_layout;
     check(vkAllocateDescriptorSets(device, &allocate, &pose_set), "Allocate pose descriptor");
+    const std::array<float, 12> identity_rows{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    identity_placement =
+        resource_buffer(placement_stride, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    upload_resource_buffer(*identity_placement, identity_rows.data(), VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+}
+// The GPU rows of @p placements, uploading them on first use.
+std::shared_ptr<GpuPlacements> gpu_placements(const std::shared_ptr<const MeshPlacements> &placements) {
+    if (auto found = placement_cache.find(placements.get()); found != placement_cache.end())
+        return found->second;
+    const auto transforms = placements->transforms();
+    std::vector<float> rows;
+    rows.reserve(transforms.size() * 12);
+    for (const auto &m : transforms)
+        for (unsigned row = 0; row < 3; ++row)
+            for (unsigned column = 0; column < 4; ++column)
+                rows.push_back(m[column * 4 + row]);
+    auto value = std::make_shared<GpuPlacements>();
+    value->source = placements;
+    value->rows = resource_buffer(rows.size() * sizeof(float),
+                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    upload_resource_buffer(*value->rows, rows.data(), VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+    placement_cache.emplace(placements.get(), value);
+    return value;
+}
+// Whether @p frustum contains the world bounds of @p cluster's copies under @p world.
+static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &world, const RenderFrustum &frustum) {
+    RenderBounds bounds;
+    const auto &b = cluster.bounds;
+    for (unsigned corner = 0; corner < 8; ++corner) {
+        const auto v = point(world, {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
+                                     corner & 4 ? b.maximum.z : b.minimum.z});
+        if (!bounds.valid)
+            bounds = {v, v, true};
+        bounds.minimum = {std::min(bounds.minimum.x, v.x), std::min(bounds.minimum.y, v.y),
+                          std::min(bounds.minimum.z, v.z)};
+        bounds.maximum = {std::max(bounds.maximum.x, v.x), std::max(bounds.maximum.y, v.y),
+                          std::max(bounds.maximum.z, v.z)};
+    }
+    return frustum.intersects(bounds);
+}
+// Fills placement_runs with the runs of @p render_instance's placement clusters that @p frustum contains, merging
+// adjacent ones, or with all of them for a null @p frustum. Without placements the single copy is one run.
+void find_placement_runs(const ResourceInstance &render_instance, const RenderFrustum *frustum) {
+    placement_runs.clear();
+    if (!render_instance.placements) {
+        placement_runs.push_back({0, 1});
+        return;
+    }
+    const auto &world = render_instance.source->world;
+    for (const auto &cluster : render_instance.placements->source->clusters()) {
+        if (frustum && !cluster_visible(cluster, world, *frustum))
+            continue;
+        if (!placement_runs.empty() && placement_runs.back().first + placement_runs.back().count == cluster.first)
+            placement_runs.back().count += cluster.count;
+        else
+            placement_runs.push_back({cluster.first, cluster.count});
+    }
 }
 std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, RendererFailureStage failure,
                                     const MeshPreparation *prepared = nullptr) {
@@ -243,7 +336,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     std::vector<std::size_t> draws, shadows;
     std::vector<BlendedDraw> blended;
     std::vector<CustomDraw> custom_draws, custom_shadows;
-    std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0;
+    std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0,
+                  culled_clusters = 0;
     for (const auto &source : sources)
         for (auto id : source->instances()) {
             const auto &render_instance = source->instance(id);
@@ -300,16 +394,37 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 draws.size() != first_draw || blended.size() != first_blended || custom_draws.size() != first_custom;
             if (!main_view)
                 ++culled_instances;
+            else if (render_instance.placements && cull)
+                for (const auto &cluster : render_instance.placements->clusters())
+                    culled_clusters += !cluster_visible(cluster, render_instance.world, resource_frustum);
             // An instance with blended or custom draws is always kept, so their instance index above stays valid.
             if (!main_view && shadows.size() == first_shadow && custom_shadows.size() == first_custom_shadow)
                 continue;
+            // With placements, the object's world matrix and then the rest pose's node matrices, which the vertex
+            // shaders compose with each placement; otherwise the palette.
+            const auto &rest = render_instance.asset->rest_pose().world;
+            const auto matrices = render_instance.placements ? rest.size() + 1 : render_instance.palette.size();
             const auto max_matrices = properties.limits.maxStorageBufferRange / sizeof(Mat4);
-            if (palettes.size() > max_matrices || render_instance.palette.size() > max_matrices - palettes.size())
+            if (palettes.size() > max_matrices || matrices > max_matrices - palettes.size())
                 throw std::length_error("Instance palettes exceed device storage-buffer range");
-            instances.push_back({gpu_asset(render_instance.asset, failure), &render_instance,
-                                 static_cast<std::uint32_t>(palettes.size()), first_draw, draws.size() - first_draw,
-                                 first_shadow, shadows.size() - first_shadow});
-            palettes.insert(palettes.end(), render_instance.palette.begin(), render_instance.palette.end());
+            const auto first_matrix = static_cast<std::uint32_t>(palettes.size());
+            ResourceInstance prepared{gpu_asset(render_instance.asset, failure),
+                                      &render_instance,
+                                      first_matrix,
+                                      first_draw,
+                                      draws.size() - first_draw,
+                                      first_shadow,
+                                      shadows.size() - first_shadow,
+                                      {},
+                                      first_matrix};
+            if (render_instance.placements) {
+                prepared.placements = gpu_placements(render_instance.placements);
+                prepared.palette_offset = first_matrix + 1;
+                palettes.push_back(render_instance.world);
+                palettes.insert(palettes.end(), rest.begin(), rest.end());
+            } else
+                palettes.insert(palettes.end(), render_instance.palette.begin(), render_instance.palette.end());
+            instances.push_back(std::move(prepared));
         }
     const VkDeviceSize bytes = palettes.size() * sizeof(Mat4);
     if (bytes && (!pose_buffer || pose_buffer->bytes < bytes)) {
@@ -354,6 +469,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     resources.culled_instances = culled_instances;
     resources.candidate_draws = candidate_draws;
     resources.culled_draws = culled_draws;
+    resources.culled_clusters = culled_clusters;
 }
 void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions settings,
                 bool initial = false) {
@@ -443,9 +559,14 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
         throw;
     }
 }
-void bind_geometry(const GpuAsset &gpu) {
-    const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(command, 0, 1, &gpu.vertices->buffer, &offset);
+// Binds @p render_instance's vertices and indices, and its placement rows or the identity placement.
+void bind_geometry(const ResourceInstance &render_instance) {
+    const auto &gpu = *render_instance.gpu;
+    const std::array<VkBuffer, 2> buffers{gpu.vertices->buffer, render_instance.placements
+                                                                    ? render_instance.placements->rows->buffer
+                                                                    : identity_placement->buffer};
+    const std::array<VkDeviceSize, 2> offsets{};
+    vkCmdBindVertexBuffers(command, 0, static_cast<std::uint32_t>(buffers.size()), buffers.data(), offsets.data());
     vkCmdBindIndexBuffer(command, gpu.indices->buffer, 0, VK_INDEX_TYPE_UINT32);
 }
 // Records draw @p draw_index of @p render_instance with the bound pipeline and geometry, through @p view, and
@@ -459,7 +580,8 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const ResourcePush push{view,
                             view_origin,
                             {material.metallic, material.roughness, 0, 0},
-                            {render_instance.palette_offset + draw.palette_offset, draw.skinned ? 1U : 0U, 0, 0},
+                            {render_instance.palette_offset + draw.palette_offset, draw.skinned ? 1U : 0U,
+                             render_instance.object_offset, render_instance.placements ? 1U : 0U},
                             {factor.x, factor.y, factor.z, 1}};
     vkCmdPushConstants(command, resource_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
@@ -468,16 +590,20 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
     record_indexed(draw, shadow);
 }
-// Records @p draw with the bound pipeline, geometry, descriptors and push constants, and counts it in the shadow or
-// main-view statistics.
+// Records @p draw once per run of placement_runs, with the bound pipeline, geometry, descriptors and push constants,
+// and counts each call and copy in the shadow or main-view statistics.
 void record_indexed(const IndexedDraw &draw, bool shadow) {
-    vkCmdDrawIndexed(command, draw.index_count, 1, draw.first_index, 0, 0);
-    if (shadow) {
-        ++resources.shadow_draw_calls;
-        resources.shadow_submitted_indices += draw.index_count;
-    } else {
-        ++resources.draw_calls;
-        resources.submitted_indices += draw.index_count;
+    for (const auto &run : placement_runs) {
+        vkCmdDrawIndexed(command, draw.index_count, run.count, draw.first_index, 0, run.first);
+        const auto indices = std::uint64_t{draw.index_count} * run.count;
+        if (shadow) {
+            ++resources.shadow_draw_calls;
+            resources.shadow_submitted_indices += indices;
+        } else {
+            ++resources.draw_calls;
+            resources.submitted_indices += indices;
+            resources.drawn_copies += run.count;
+        }
     }
 }
 // Records one shadow region's casters or, when @p shadow is false, the main view: every opaque and masked draw in
@@ -487,15 +613,22 @@ void record_resources(bool shadow = false, bool detail = false) {
     if (!shadow) {
         resources.draw_calls = 0;
         resources.submitted_indices = 0;
+        resources.drawn_copies = 0;
     }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? shadow_resource_pipeline : resource_pipeline);
     const auto &view = shadow ? (detail ? detail_shadow_view : shadow_view) : view_projection;
+    const auto *frustum = shadow                    ? (detail ? &detail_shadow_frustum : &shadow_frustum)
+                          : options.frustum_culling ? &resource_frustum
+                                                    : nullptr;
     for (const auto &render_instance : resource_instances) {
         const auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
         const auto count = shadow ? render_instance.shadow_count : render_instance.draw_count;
         if (!count)
             continue;
-        bind_geometry(*render_instance.gpu);
+        find_placement_runs(render_instance, frustum);
+        if (placement_runs.empty())
+            continue;
+        bind_geometry(render_instance);
         for (std::size_t i = first; i < first + count; ++i) {
             const auto draw_index = (shadow ? resource_shadow_draws : resource_draws)[i];
             if (shadow && !(detail ? detail_shadow_frustum : shadow_frustum)
@@ -512,9 +645,13 @@ void record_resources(bool shadow = false, bool detail = false) {
 // holds every opaque and masked surface, which these pipelines test against without writing.
 void record_blended() {
     VkPipeline bound_pipeline = VK_NULL_HANDLE;
-    const GpuAsset *bound = nullptr;
+    const ResourceInstance *bound = nullptr;
+    const auto *frustum = options.frustum_culling ? &resource_frustum : nullptr;
     for (const auto &blended : resource_blended_draws) {
         const auto &render_instance = resource_instances[blended.instance];
+        find_placement_runs(render_instance, frustum);
+        if (placement_runs.empty())
+            continue;
         const auto draw_pipeline = blended.custom ? blended.custom->pipeline : blended_resource_pipeline;
         if (draw_pipeline != bound_pipeline) {
             if (blended.custom)
@@ -523,9 +660,9 @@ void record_blended() {
                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, blended_resource_pipeline);
             bound_pipeline = draw_pipeline;
         }
-        if (render_instance.gpu.get() != bound) {
-            bound = render_instance.gpu.get();
-            bind_geometry(*bound);
+        if (&render_instance != bound) {
+            bound = &render_instance;
+            bind_geometry(render_instance);
         }
         if (blended.custom)
             record_custom_draw(render_instance, blended.draw, view_projection, false);
@@ -545,6 +682,11 @@ ResourceStats resource_stats() const {
             value.resident_geometry_bytes += gpu->vertices->allocation_bytes + gpu->indices->allocation_bytes;
         for (const auto &texture : gpu->materials->textures)
             value.resident_texture_bytes += texture.allocation_bytes;
+    }
+    value.resident_placement_bytes = 0;
+    for (const auto &[key, gpu] : placement_cache) {
+        (void)key;
+        value.resident_placement_bytes += gpu->rows->allocation_bytes;
     }
     value.cached_custom_materials = custom_cache.size();
     for (const auto &[key, gpu] : custom_cache) {
@@ -576,6 +718,12 @@ void retire_resources() {
     for (auto it = custom_cache.begin(); it != custom_cache.end();) {
         if (it->second->source.use_count() == 1)
             it = custom_cache.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = placement_cache.begin(); it != placement_cache.end();) {
+        if (it->second->source.use_count() == 1)
+            it = placement_cache.erase(it);
         else
             ++it;
     }

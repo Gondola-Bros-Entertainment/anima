@@ -72,8 +72,8 @@ class Prefab {
         std::optional<std::size_t> parent;
         /// Matrix relative to the parent; the root's is multiplied by the instantiation placement.
         Mat4 local = identity();
-        /// Optional shared mesh; without one, #pose, #material_factors, #custom_materials and
-        /// #primitive_visible must be empty and #visible and #casts_shadows true.
+        /// Optional shared mesh; without one, #pose, #material_factors, #custom_materials,
+        /// #primitive_visible and #placements must be empty and #visible and #casts_shadows true.
         std::shared_ptr<const Mesh> mesh;
         /// Initial Pose::world matrices, one per mesh node; empty uses the mesh's rest pose.
         std::optional<Pose> pose;
@@ -89,6 +89,9 @@ class Prefab {
         std::vector<bool> primitive_visible;
         /// Whether the renderer casts shadows (Scene::Instance::casts_shadows).
         bool casts_shadows = true;
+        /// Copies drawn in place of the one at the object (Scene::set_placements), or null; they must copy
+        /// #mesh, and #pose must be empty.
+        std::shared_ptr<const MeshPlacements> placements;
         /// Encoded components, at most 1,024, each type at most once.
         std::vector<ComponentData> components;
         /// Authored activation (GameObject::active_self), independent of the parent.
@@ -164,10 +167,15 @@ class Prefab {
 /// - `custom_materials`: empty, the default, or one entry per mesh material, each null or a custom
 ///   material name of 1 to 4,096 bytes;
 /// - `primitive_visible`: empty, the default, or one boolean per mesh primitive;
+/// - `placements`: null, the default, or 1 to 1,048,576 placements (MeshPlacements), each 16 numbers of an
+///   affine matrix, column-major, relative to the object, for an object with a mesh and a null `pose`. The
+///   document byte limit allows about 95,000. Writing keeps MeshPlacements::transforms() order, which reading
+///   keeps;
 /// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
 ///   `enabled` (ComponentData).
 ///
-/// An object without a mesh has a null `pose`, empty arrays, and `visible` and `casts_shadows` true. Throws
+/// An object without a mesh has null `pose` and `placements`, empty arrays, and `visible` and `casts_shadows` true.
+/// Throws
 /// `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh naming
 /// fails, two different custom materials share a name or a limit is exceeded.
 [[nodiscard]] std::string serialize_scene(Scene &scene, const MeshName &name, const ComponentCodecs &codecs = {});

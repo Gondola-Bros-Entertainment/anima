@@ -142,6 +142,7 @@ class Mesh {
 
   private:
     friend class Scene;
+    friend class MeshPlacements;
     struct BoundPart {
         std::uint32_t palette;
         RenderBounds bound;

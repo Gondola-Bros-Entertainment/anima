@@ -38,8 +38,11 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     const auto *renderer = value.renderer ? &*value.renderer : nullptr;
     require(!renderer || renderer->mesh ||
                 (!renderer->pose && renderer->visible && renderer->material_factors.empty() &&
-                 renderer->custom_materials.empty() && renderer->primitive_visible.empty() && renderer->casts_shadows),
+                 renderer->custom_materials.empty() && renderer->primitive_visible.empty() && renderer->casts_shadows &&
+                 !renderer->placements),
             "Empty prefab variant renderer has state");
+    require(!renderer || !renderer->placements || (renderer->placements->mesh() == renderer->mesh && !renderer->pose),
+            "Prefab variant placements must copy the renderer's mesh, which has no pose");
     auto object = validation.create();
     if (value.local)
         object.set_local_matrix(*value.local);
@@ -75,7 +78,9 @@ struct ResourceNames {
     std::map<std::string, const CustomMaterial *, std::less<>> materials;
 };
 Json encode_renderer(const PrefabVariant::Renderer &renderer, const MeshName &name, ResourceNames &resources) {
-    Json mesh = nullptr, pose = nullptr;
+    Json mesh = nullptr, pose = nullptr, placements = nullptr;
+    if (renderer.placements)
+        placements = renderer.placements->transforms();
     if (renderer.mesh) {
         if (!resources.names.contains(renderer.mesh.get())) {
             require(bool(name), "Prefab variant serialization needs a mesh naming callback");
@@ -109,7 +114,8 @@ Json encode_renderer(const PrefabVariant::Renderer &renderer, const MeshName &na
             {"material_factors", factors},
             {"custom_materials", custom},
             {"primitive_visible", renderer.primitive_visible},
-            {"casts_shadows", renderer.casts_shadows}};
+            {"casts_shadows", renderer.casts_shadows},
+            {"placements", placements}};
 }
 // Resources resolved while reading one document, each once per key or name.
 struct Resources {
@@ -119,9 +125,9 @@ struct Resources {
 PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &resolve,
                                         const CustomMaterialResolver &materials, Resources &resources) {
     // An omitted setting takes the default that PrefabVariant::Renderer declares.
-    detail::json_fields(
-        value, {"mesh"},
-        {"pose", "visible", "material_factors", "custom_materials", "primitive_visible", "casts_shadows"});
+    detail::json_fields(value, {"mesh"},
+                        {"pose", "visible", "material_factors", "custom_materials", "primitive_visible",
+                         "casts_shadows", "placements"});
     PrefabVariant::Renderer renderer;
     const auto &mesh = value.at("mesh");
     if (!mesh.is_null()) {
@@ -179,6 +185,16 @@ PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &r
     if (value.contains("primitive_visible"))
         renderer.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
     renderer.casts_shadows = value.value("casts_shadows", renderer.casts_shadows);
+    const auto &placements = value.contains("placements") ? value.at("placements") : omitted;
+    if (!placements.is_null()) {
+        require(placements.is_array() && renderer.mesh && !renderer.pose,
+                "Prefab variant placements must copy the renderer's mesh, which has no pose");
+        std::vector<Mat4> transforms;
+        transforms.reserve(placements.size());
+        for (const auto &transform : placements)
+            transforms.push_back(matrix_value(transform));
+        renderer.placements = MeshPlacements::create(renderer.mesh, transforms);
+    }
     return renderer;
 }
 } // namespace
@@ -237,6 +253,7 @@ Prefab PrefabVariant::resolve(const PrefabResolver &resolver, ComponentCodecs co
             node.custom_materials = renderer.custom_materials;
             node.primitive_visible = renderer.primitive_visible;
             node.casts_shadows = renderer.casts_shadows;
+            node.placements = renderer.placements;
         }
         for (const auto &type : value.remove_components) {
             const auto component = std::find_if(node.components.begin(), node.components.end(),

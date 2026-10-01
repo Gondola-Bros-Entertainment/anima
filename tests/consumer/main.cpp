@@ -48,6 +48,7 @@
 #include "environment.hpp"
 #include "foliage.hpp"
 #include "materials.hpp"
+#include "placements.hpp"
 #include "rejection.hpp"
 #include "replacement.hpp"
 #include "resources.hpp"
@@ -309,6 +310,8 @@ int main(int argc, char **argv) {
             return allocation_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--culling")
             return culling_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--placements")
+            return placements_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")

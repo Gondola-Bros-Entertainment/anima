@@ -104,13 +104,16 @@ library, such as one on the static buffer that glibc's `localeconv()` rewrites.
 CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
 drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic scenes
 through the public API. `consumer_desktop` runs one mode per check: its default
-instances check, `--allocations`, `--culling`, `--foliage`, `--environment`,
-`--resources`, `--replace`, `--material-sampling`, `--pbr`, `--surface-maps`,
-`--sidedness`, `--blending`, which compares blended materials with the renderer's
-documented compositing, fog, exposure, draw order and shadow policy,
+instances check, `--allocations`, `--culling`, `--placements`, which draws a field of
+copies through one object's placements and as separate objects over a shadowed ground,
+requires identical frames in and out of view, and reports both at 10,000 copies,
+`--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`,
+`--pbr`, `--surface-maps`, `--sidedness`, `--blending`, which compares blended
+materials with the renderer's documented compositing, fog, exposure, draw order and
+shadow policy,
 `--custom-materials`, which draws the consumer's own water, effect and probe shaders,
 compiled by glslc in its build, and compares their frame inputs, passes, sorting, time,
-opaque depth and color, skinning and shadows with the renderer's contract,
+opaque depth and color, skinning, shadows and placed copies with the renderer's contract,
 `--texture-memory`, which measures the CPU texels and device images of a 2048-texel
 texture and checks that meshes and custom materials compiled with
 `TexelRetention::until_upload` let their texels go once uploaded and keep drawing, and

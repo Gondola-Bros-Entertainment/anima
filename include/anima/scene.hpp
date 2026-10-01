@@ -2,6 +2,7 @@
 #include <anima/assets/scene_budget.hpp>
 #include <anima/custom_material.hpp>
 #include <anima/mesh.hpp>
+#include <anima/mesh_placements.hpp>
 #include <compare>
 #include <cstdint>
 #include <map>
@@ -99,7 +100,8 @@ class Scene {
     struct Instance {
         /// Shared immutable mesh.
         std::shared_ptr<const Mesh> asset;
-        /// World matrix of each mesh node, followed by one skinning matrix per joint of each skin.
+        /// World matrix of each mesh node, followed by one skinning matrix per joint of each skin. With
+        /// #placements, the copy that one identity placement would draw.
         std::vector<Mat4> palette;
         /// Linear RGB factor per mesh material: the authored value or this object's override.
         std::vector<Vec3> factors;
@@ -109,7 +111,7 @@ class Scene {
         std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
         /// Visibility per mesh primitive.
         std::vector<bool> primitive_visible;
-        /// Conservative world bounds per mesh primitive.
+        /// Conservative world bounds per mesh primitive, covering every copy of it.
         std::vector<RenderBounds> primitive_bounds;
         /// Union of all primitive bounds, including hidden primitives, so visibility changes cannot
         /// invalidate it between poses.
@@ -120,6 +122,11 @@ class Scene {
         bool active = true;
         /// Whether the renderer's primitives cast shadows. They receive shadows either way.
         bool casts_shadows = true;
+        /// Copies drawn in place of the one at the object, relative to it, or null to draw that one; see
+        /// set_placements(). Visibility, factors, custom materials and shadow casting apply to every copy.
+        std::shared_ptr<const MeshPlacements> placements;
+        /// The object's world matrix, which places #placements.
+        Mat4 world = identity();
     };
     Scene();
     /// Invalidates every handle to the scene, then sends `on_disable()` to each component that
@@ -198,7 +205,7 @@ class Scene {
     /// The renderer keeps a copy of @p pose in storage it reuses: once it has held a pose with at
     /// least as many Pose::local and Pose::world entries since its mesh was set, the call allocates
     /// only as a transform change does (see GameObject). Throws `std::logic_error` when the object
-    /// has no renderer.
+    /// has no renderer or its renderer draws placements, whose copies keep the rest pose.
     void set_pose(Id id, const Pose &pose, const Mat4 &world = identity());
     /// Sets @p id's world matrix, as GameObject::set_world_matrix does.
     void set_transform(Id id, const Mat4 &world);
@@ -212,7 +219,9 @@ class Scene {
     /// Draws the primitives of mesh material @p material of this object with @p custom, or with the
     /// mesh's Material again when @p custom is null (Instance::custom_materials). The object's factor
     /// for that material still reaches the custom shaders. Throws `std::out_of_range` for an index
-    /// outside the mesh's materials and `std::logic_error` when the object has no renderer.
+    /// outside the mesh's materials, `std::logic_error` when the object has no renderer, and
+    /// `std::invalid_argument` when the renderer draws placements that @p custom does not read
+    /// (CustomMaterial::reads_placements(): "A custom material that draws placements must read them").
     void set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom);
     /// Shows or hides @p id's renderer and sets its MeshRenderer component's enabled flag to match.
     /// Per-primitive choices are kept. Throws `std::logic_error` when the object has no renderer.
@@ -223,6 +232,15 @@ class Scene {
     /// Sets whether @p id's renderer casts shadows (Instance::casts_shadows). Throws
     /// `std::logic_error` when the object has no renderer.
     void set_casts_shadows(Id id, bool casts);
+    /// Draws one copy of @p id's mesh per placement of @p placements, as MeshPlacements describes, instead of one
+    /// copy at the object, or that one copy again when @p placements is null (Instance::placements). The copies
+    /// draw the mesh's rest pose, and the renderer's bounds cover all of them. Moving the object then takes time
+    /// proportional to the mesh's primitives, as before, not to the placements. Throws `std::logic_error` when the
+    /// object has no renderer or its renderer has a pose (set_pose(), or one that a document or prefab supplied),
+    /// and `std::invalid_argument` when @p placements copy another mesh ("Placements copy another mesh") or a custom
+    /// material of the renderer does not read them (CustomMaterial::reads_placements(): "A custom material that
+    /// draws placements must read them").
+    void set_placements(Id id, std::shared_ptr<const MeshPlacements> placements);
     /// Render state of @p id's renderer, borrowed until the scene next changes. Throws
     /// `std::logic_error` when the object has no renderer.
     [[nodiscard]] const Instance &instance(Id id) const;
@@ -317,6 +335,9 @@ class Scene {
     static void pose(Instance &instance, const Pose &pose, const Mat4 &world);
     static RenderBounds append_pose(const Mesh &asset, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
                                     std::vector<RenderBounds> &bounds);
+    // Writes the world bounds of @p placements' copies of each primitive under @p world into @p bounds and
+    // returns their union.
+    static RenderBounds place(const MeshPlacements &placements, const Mat4 &world, std::span<RenderBounds> bounds);
     std::uint64_t owner_;
     std::shared_ptr<detail::SceneLifetime> lifetime_;
     std::size_t object_count_{};
@@ -480,8 +501,8 @@ class MeshRenderer {
     /// Shared mesh being drawn.
     [[nodiscard]] std::shared_ptr<const Mesh> mesh() const;
     /// Replaces the mesh, keeping the object's transform and resetting the pose to rest, material
-    /// factors to authored values, custom materials to none, the renderer and every primitive to
-    /// visible, and shadow casting on. Throws `std::invalid_argument` for a null mesh.
+    /// factors to authored values, custom materials and placements to none, the renderer and every
+    /// primitive to visible, and shadow casting on. Throws `std::invalid_argument` for a null mesh.
     void set_mesh(std::shared_ptr<const Mesh> mesh);
     /// Sets the animation pose, keeping the object's placement; see Scene::set_pose.
     void set_pose(const Pose &pose);
@@ -498,7 +519,11 @@ class MeshRenderer {
     void set_primitive_visible(std::size_t primitive, bool visible);
     /// Sets whether the renderer casts shadows; see Scene::set_casts_shadows.
     void set_casts_shadows(bool casts);
-    /// Union of all primitive bounds in world space, including hidden primitives.
+    /// Copies drawn in place of the one at the object, or null; see Scene::set_placements.
+    [[nodiscard]] std::shared_ptr<const MeshPlacements> placements() const;
+    /// Draws a copy at each placement, or one copy at the object for null; see Scene::set_placements.
+    void set_placements(std::shared_ptr<const MeshPlacements> placements);
+    /// Union of all primitive bounds in world space, including hidden primitives and every copy.
     [[nodiscard]] RenderBounds bounds() const;
 
   private:

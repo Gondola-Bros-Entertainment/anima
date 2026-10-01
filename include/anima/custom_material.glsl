@@ -3,8 +3,8 @@
 //
 // Every stage receives the frame block (animaFrame), the draw push constants (animaDraw) and
 // animaWorldPosition(). Define these before including the file to declare more:
-// - ANIMA_VERTEX in vertex shaders: the vertex attributes, the pose buffer, animaModelMatrix() and
-//   animaWorldNormal();
+// - ANIMA_VERTEX in vertex shaders: the vertex attributes, the placement rows, the pose buffer, animaModelMatrix()
+//   and animaWorldNormal();
 // - ANIMA_OPAQUE_DEPTH and ANIMA_OPAQUE_COLOR in the fragment shader of a blended or additive material: the
 //   opaque depth and color, which cost a copy on every frame that draws the material.
 // Parameter blocks and textures belong to each material: declare them at set 2, binding 0, and bindings 1 to 4.
@@ -36,6 +36,9 @@ layout(push_constant) uniform AnimaDraw {
     mat4 viewProjection;
     uint paletteOffset;
     uint skinned;
+    // With placements, the index of the object's world matrix in animaPoses, and 1; otherwise 0.
+    uint objectOffset;
+    uint placed;
     // The object's linear RGB factor for the material slot, with alpha 1.
     layout(offset = 80) vec4 factor;
 }
@@ -57,12 +60,24 @@ layout(location = 4) in uvec4 animaJoints;
 layout(location = 5) in vec4 animaWeights;
 layout(location = 6) in vec4 animaTangent;
 layout(location = 7) in float animaAlpha;
+// Rows 0 to 2 of the affine matrix of the placement being drawn, or of an identity without placements.
+layout(location = 8) in vec4 animaPlacement0;
+layout(location = 9) in vec4 animaPlacement1;
+layout(location = 10) in vec4 animaPlacement2;
 layout(set = 1, binding = 0, std430) readonly buffer AnimaPoses { mat4 matrices[]; }
 animaPoses;
 
+// The placement being drawn, relative to its object.
+mat4 animaPlacement() {
+    return transpose(mat4(animaPlacement0, animaPlacement1, animaPlacement2, vec4(0.0, 0.0, 0.0, 1.0)));
+}
 // The matrix from mesh space to world space for this vertex: its node's, or in a skinned draw its joints' matrices
-// blended by weight, as the standard material computes it.
+// blended by weight, or for a placed copy the object's matrix times the placement times the node's rest matrix, as
+// the standard material computes it.
 mat4 animaModelMatrix() {
+    if (animaDraw.placed != 0u)
+        return animaPoses.matrices[animaDraw.objectOffset] * animaPlacement() *
+               animaPoses.matrices[animaDraw.paletteOffset];
     if (animaDraw.skinned == 0u)
         return animaPoses.matrices[animaDraw.paletteOffset];
     mat4 transform = mat4(0.0);

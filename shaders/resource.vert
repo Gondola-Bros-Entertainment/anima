@@ -7,6 +7,10 @@ layout(location = 4) in uvec4 joints;
 layout(location = 5) in vec4 weights;
 layout(location = 6) in vec4 tangent;
 layout(location = 7) in float alpha;
+// Rows 0 to 2 of the placement's affine matrix, per instance; an identity for an object without placements.
+layout(location = 8) in vec4 placement0;
+layout(location = 9) in vec4 placement1;
+layout(location = 10) in vec4 placement2;
 layout(location = 4) out vec4 worldTangent;
 layout(location = 5) out float vertexAlpha;
 layout(location = 0) out vec3 worldNormal;
@@ -23,8 +27,13 @@ layout(push_constant) uniform Draw {
 }
 draw;
 void main() {
+    // indices: the draw's first palette matrix, whether it is skinned, and with placements, the object's world matrix
+    // and 1, when the palette matrix is the node's in the rest pose.
     mat4 transform = poses.matrices[draw.indices.x];
-    if (draw.indices.y != 0) {
+    if (draw.indices.w != 0u)
+        transform = poses.matrices[draw.indices.z] *
+                    transpose(mat4(placement0, placement1, placement2, vec4(0, 0, 0, 1))) * transform;
+    else if (draw.indices.y != 0) {
         transform = mat4(0.0);
         for (uint i = 0; i < 4; ++i)
             if (weights[i] != 0.0)
