@@ -110,7 +110,8 @@ requires identical frames in and out of view, with mirrored copies and under a s
 visibility range, and
 reports both at 10,000 copies, `--lod`, which draws dense spheres far away with
 simplified levels, in the view and the shadow passes, within pixel parity of their full
-draws, and keeps the full draw up close,
+draws, finer levels up close, a skinned sphere's levels by its joints' scale and a
+flat-shaded sphere's within the same parity,
 `--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`, which
 also requests an anisotropy of 64, above the 16 that devices commonly allow, and requires
 the device's limit,
@@ -179,7 +180,7 @@ in its notes under [third_party](third_party/README.md). To update one:
    (`ci-full-release` and `ci-sanitizers`), and the `gpu` label when SDL or RmlUi
    changes.
 
-Vendored headers under `third_party` are replaced whole at the new revision: update
+Vendored files under `third_party` are replaced whole at the new revision: update
 their table and SHA-256 list in [third_party/README.md](third_party/README.md) and
 reapply the local changes it records. GitHub Actions are pinned by commit with a
 version comment, and Dependabot proposes their updates.
@@ -195,7 +196,7 @@ and the Doxygen build; `CI required` gates merging. CodeQL runs its
 `security-extended` queries on the workflows and on C++. It analyzes C++ from a
 traced build of every module, because extraction without a build infers compiler
 flags and include paths, which is less accurate for code with many external
-dependencies. Results in fetched dependencies and vendored headers are dropped
+dependencies. Results in fetched dependencies and vendored code are dropped
 before upload. Record the commands and results of checks CI cannot run, such as
 GPU and device checks, in the pull request.
 

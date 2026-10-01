@@ -89,6 +89,46 @@ bool closed(std::initializer_list<Triangles> parts) {
     }
     return std::all_of(edges.begin(), edges.end(), [](const auto &edge) { return edge.second == 0; });
 }
+// The distance from @p p to the nearest point of triangle @p a, @p b, @p c (Ericson, Real-Time Collision Detection,
+// 5.1.5).
+float distance_to_triangle(Vec3 p, Vec3 a, Vec3 b, Vec3 c) {
+    const auto ab = b - a, ac = c - a, ap = p - a;
+    const float d1 = dot(ab, ap), d2 = dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0)
+        return length(p - a);
+    const auto bp = p - b;
+    const float d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3)
+        return length(p - b);
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0)
+        return length(p - (a + ab * (d1 / (d1 - d3))));
+    const auto cp = p - c;
+    const float d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6)
+        return length(p - c);
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0)
+        return length(p - (a + ac * (d2 / (d2 - d6))));
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0)
+        return length(p - (b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))));
+    const float denominator = 1 / (va + vb + vc);
+    return length(p - (a + ab * (vb * denominator) + ac * (vc * denominator)));
+}
+// The farthest that any vertex of draw @p index of @p mesh lies from the triangles of @p level.
+float deviation(const Mesh &mesh, std::size_t index, const DrawLevel &level) {
+    const auto &draw = mesh.draws()[index];
+    const auto at = [&](std::uint32_t i) { return mesh.vertices()[mesh.indices()[i]].position; };
+    float farthest = 0;
+    for (auto i = draw.first_index; i < draw.first_index + draw.index_count; ++i) {
+        float nearest = INFINITY;
+        for (auto t = level.first_index; t < level.first_index + level.index_count; t += 3)
+            nearest = std::min(nearest, distance_to_triangle(at(i), at(t), at(t + 1), at(t + 2)));
+        farthest = std::max(farthest, nearest);
+    }
+    return farthest;
+}
 } // namespace
 
 TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
@@ -127,6 +167,71 @@ TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
     // The first level halves the sphere's indices with an error of a few hundredths of its radius.
     CHECK(draw.levels[0].index_count <= draw.index_count / 2 + 3);
     CHECK(draw.levels[0].error < .05F);
+}
+
+TEST_CASE("Faceted draws simplify across their hard edges and keep their texture seams") {
+    // Flat shading gives each triangle its own normal, so no vertex welds with a neighbor's, as in a model with hard
+    // edges: only positions are shared.
+    auto asset = sphere_asset();
+    auto &vertices = asset.primitives[0].vertices;
+    for (std::size_t t = 0; t < vertices.size(); t += 3) {
+        const auto normal = normalized(
+            cross(vertices[t + 1].position - vertices[t].position, vertices[t + 2].position - vertices[t].position));
+        for (std::size_t k = 0; k < 3; ++k)
+            vertices[t + k].normal = normal;
+    }
+    const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+    const auto &draw = mesh->draws()[0];
+    REQUIRE(draw.levels.size() >= 3);
+    CHECK(draw.levels[0].index_count <= draw.index_count * 6 / 10);
+    float previous_error = 0;
+    for (const auto &level : draw.levels) {
+        CHECK(level.error > previous_error);
+        previous_error = level.error;
+        CHECK(closed({{mesh.get(), level.first_index, level.index_count}}));
+        // The texture wraps from 1 back to 0 along segment 0. No triangle may join the two sides of that seam,
+        // which would stretch the whole texture across it.
+        for (auto t = level.first_index; t < level.first_index + level.index_count; t += 3) {
+            float lowest = 1, highest = 0;
+            for (std::uint32_t k = 0; k < 3; ++k) {
+                const auto u = mesh->vertices()[mesh->indices()[t + k]].uv[0];
+                lowest = std::min(lowest, u);
+                highest = std::max(highest, u);
+            }
+            CHECK(highest - lowest < .5F);
+        }
+    }
+}
+
+TEST_CASE("A level's error covers every step that produced it") {
+    // Each step's error is measured from the level before it, so a level that kept only the largest step's error
+    // would claim less than it moves the surface, and the renderer would draw it nearer than its threshold allows.
+    // A single step's error is meshoptimizer's own estimate, which the first level shows: this sphere's lies 17%
+    // beyond it with fused multiply-adds and 29% without. A deeper level, made by several steps, may understate its
+    // distance no more than that; levels that kept only the largest step lay up to 64% beyond their error.
+    const auto mesh = Mesh::compile(sphere_asset(), TexelRetention::keep, {6});
+    const auto &levels = mesh->draws()[0].levels;
+    REQUIRE(levels.size() >= 5);
+    const auto one_step = deviation(*mesh, 0, levels[0]) / levels[0].error;
+    for (std::size_t k = 1; k < levels.size(); ++k)
+        CHECK(deviation(*mesh, 0, levels[k]) <= levels[k].error * one_step);
+}
+
+TEST_CASE("Draws record the palette matrices that may place their vertices") {
+    const auto rigid = Mesh::compile(sphere_asset());
+    CHECK(rigid->draws()[0].palette_count == 1);
+    auto asset = sphere_asset();
+    asset.nodes.resize(4);
+    asset.skins.push_back({{1, 2, 3}, {identity(), identity(), identity()}});
+    for (auto &vertex : asset.primitives[0].vertices) {
+        vertex.joints = {0, 2, 0, 0};
+        vertex.weights = {.5F, .5F, 0, 0};
+    }
+    asset.primitives[0].skin = 0;
+    const auto skinned = Mesh::compile(asset);
+    CHECK(skinned->draws()[0].skinned);
+    CHECK(skinned->draws()[0].palette_offset == 4);
+    CHECK(skinned->draws()[0].palette_count == 3);
 }
 
 TEST_CASE("Draws that meet stay closed whichever levels each draws") {

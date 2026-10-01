@@ -8,7 +8,8 @@
 
 // Levels of detail: dense spheres, as one object and as a field of placed copies over a shadowed ground, drawn at the
 // default 1 pixel threshold and with levels off. Far away the threshold draws simplified levels, in the view and the
-// shadow passes, and the frames match within the renderer's pixel parity; up close the full draw is kept.
+// shadow passes, and the frames match within the renderer's pixel parity; up close it draws finer levels. A skinned
+// sphere chooses its levels by its joints' scale, and a flat-shaded one simplifies within the same parity.
 namespace lod_test {
 inline anima::Asset sphere_asset() {
     anima::Asset asset;
@@ -40,6 +41,35 @@ inline anima::Asset sphere_asset() {
                 primitive.vertices.push_back(v);
         }
     asset.primitives.push_back(std::move(primitive));
+    return asset;
+}
+// The sphere skinned to one joint that scales it by 0.01, for an object whose world matrix scales it back by 100.
+inline anima::Asset skinned_sphere_asset() {
+    auto asset = sphere_asset();
+    asset.nodes.resize(2);
+    asset.nodes[1].rest.scale = {.01F, .01F, .01F};
+    asset.skins.push_back({{1}, {anima::identity()}});
+    auto &primitive = asset.primitives[0];
+    primitive.skin = 0;
+    for (auto &vertex : primitive.vertices) {
+        vertex.joints = {0, 0, 0, 0};
+        vertex.weights = {1, 0, 0, 0};
+    }
+    return asset;
+}
+// The sphere shaded flat: each triangle has its own outward normal, so its vertices weld with no neighbor's, as in a
+// model with hard edges.
+inline anima::Asset faceted_sphere_asset() {
+    auto asset = sphere_asset();
+    auto &vertices = asset.primitives[0].vertices;
+    for (std::size_t t = 0; t < vertices.size(); t += 3) {
+        auto normal = anima::normalized(anima::cross(vertices[t + 1].position - vertices[t].position,
+                                                     vertices[t + 2].position - vertices[t].position));
+        if (anima::dot(normal, vertices[t].position - anima::Vec3{0, .5F, 0}) < 0)
+            normal = -normal;
+        for (std::size_t k = 0; k < 3; ++k)
+            vertices[t + k].normal = normal;
+    }
     return asset;
 }
 inline std::shared_ptr<const anima::Mesh> ground() {
@@ -204,11 +234,43 @@ inline int run(int argc, char **argv) {
     require(close.submitted_indices - ground_indices > 4 * (far.submitted_indices - ground_indices) / far_spheres,
             "The near sphere did not draw a finer level than the far ones");
 
+    // One sphere at a time at the middle distance. A skinned copy that its world matrix scales by 100 and its joint
+    // by 0.01 is the rigid sphere's size and chooses the same level, since the joint matrices place a skinned draw.
+    // Shaded flat, the sphere simplifies across its hard edges within the same parity.
+    view({28.5F, 14, 62}, {28.5F, 0, 30});
+    const auto at = [](float scale) {
+        auto m = anima::identity();
+        m[0] = m[5] = m[10] = scale;
+        anima::set_translation(m, {28.5F, 0, 30});
+        return m;
+    };
+    const auto only = [&](std::shared_ptr<const anima::Mesh> mesh, const anima::Mat4 &world) {
+        auto subject = std::make_shared<anima::Scene>();
+        subject->create("subject", std::move(mesh)).set_world_matrix(world);
+        renderer.set_scenes({subject});
+    };
+    only(sphere, at(1));
+    const auto rigid = draw("rigid-levels", 1);
+    require(rigid.lod_draws > 0, "The rigid sphere did not choose a level");
+    only(anima::Mesh::compile(skinned_sphere_asset(), anima::TexelRetention::keep, {6}), at(100));
+    (void)draw("skinned-full", 0);
+    const auto skinned = draw("skinned-levels", 1);
+    require(skinned.submitted_indices == rigid.submitted_indices &&
+                skinned.shadow_submitted_indices == rigid.shadow_submitted_indices,
+            "The skinned sphere chose another level than the rigid one");
+    require_levels_match("skinned-full", "skinned-levels");
+    only(anima::Mesh::compile(faceted_sphere_asset(), anima::TexelRetention::keep, {6}), at(1));
+    const auto faceted_full = draw("faceted-full", 0);
+    const auto faceted = draw("faceted-levels", 1);
+    require(faceted.lod_draws > 0 && faceted.submitted_indices < faceted_full.submitted_indices / 2,
+            "The faceted sphere did not simplify");
+    require_levels_match("faceted-full", "faceted-levels");
+
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "LOD validation failed");
-    std::cout << "PASS levels of detail: copies and objects draw simplified levels that move only their edges, by at "
-                 "most a pixel, in the view and the shadow passes, finer nearer the eye; validation_warnings=0 "
-                 "validation_errors=0\n";
+    std::cout << "PASS levels of detail: copies, objects, skinned and flat-shaded meshes draw simplified levels that "
+                 "move only their edges, by at most a pixel, in the view and the shadow passes, finer nearer the eye; "
+                 "validation_warnings=0 validation_errors=0\n";
     return 0;
 }
 } // namespace lod_test
