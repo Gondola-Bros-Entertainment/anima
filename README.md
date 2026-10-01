@@ -160,7 +160,8 @@ progress, or while a driver holds it, terminates the program with a diagnostic.
 Coordinates are right-handed with +Y up; cameras and audio listeners face local -Z.
 Physics uses caller-consistent units, normally meters and kilograms. `Mat4`
 is column-major with column vectors, quaternions are XYZW, and transforms compose as
-T * R * S. Projections target Vulkan clip space (Y flipped, depth 0 to 1).
+T * R * S. Projections target Vulkan clip space (Y flipped) with reversed depth, from 1 at the near plane
+to 0 at the far plane, which keeps a floating-point depth buffer precise at a distance.
 
 ## API reference
 

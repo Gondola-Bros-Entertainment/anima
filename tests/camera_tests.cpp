@@ -110,11 +110,11 @@ struct Rig {
 };
 } // namespace
 
-TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan clip space") {
+TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan clip space with reversed depth") {
     Viewed viewed(CameraProjection::perspective);
     auto m = view_matrix(viewed.scene, 2);
-    CHECK(project(m, {0, 0, -1}).z == Near{0, tolerance});
-    CHECK(project(m, {0, 0, -11}).z == Near{1, tolerance});
+    CHECK(project(m, {0, 0, -1}).z == Near{1, tolerance});
+    CHECK(project(m, {0, 0, -11}).z == Near{0, tolerance});
     CHECK(project(m, {2, 1, -1}).x == Near{1, tolerance});
     CHECK(project(m, {2, 1, -1}).y == Near{-1, tolerance});
     CHECK(view_origin(m)[3] == Near{1, tolerance});
@@ -124,8 +124,9 @@ TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan cli
     m = view_matrix(viewed.scene, 2);
     CHECK(project(m, {4, 2, -1}).x == Near{1, tolerance});
     CHECK(project(m, {4, 2, -1}).y == Near{-1, tolerance});
-    CHECK(project(m, {4, 2, -1}).z == Near{0, tolerance});
-    CHECK(project(m, {4, 2, -11}).z == Near{1, tolerance});
+    CHECK(project(m, {4, 2, -1}).z == Near{1, tolerance});
+    CHECK(project(m, {4, 2, -11}).z == Near{0, tolerance});
+    CHECK(view_origin(m)[2] == Near{1, tolerance}); // Toward the camera, which looks down -Z.
     CHECK(view_origin(m)[3] == Near{0, tolerance});
 }
 
@@ -137,8 +138,8 @@ TEST_CASE("The view follows the camera's world pose and ignores its positive sca
     viewed.eye.set_local_position({1, 0, 0});
     // The parent's half turn about Y puts the eye at (8, 3, 4), looking along +Z.
     const auto scaled = view_matrix(viewed.scene, 2);
-    CHECK(project(scaled, {8, 3, 5}).z == Near{0, tolerance});
-    CHECK(project(scaled, {8, 3, 15}).z == Near{1, tolerance});
+    CHECK(project(scaled, {8, 3, 5}).z == Near{1, tolerance});
+    CHECK(project(scaled, {8, 3, 15}).z == Near{0, tolerance});
     viewed.eye.clear_parent();
     viewed.eye.set_transform({.translation = {8, 3, 4}, .rotation = {0, 1, 0, 0}});
     CHECK(same(scaled, view_matrix(viewed.scene, 2)));

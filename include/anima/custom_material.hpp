@@ -36,8 +36,9 @@
 ///   viewport`, the target's width and height in pixels and their reciprocals; and 288 `float time`, the seconds
 ///   that VulkanRenderer::set_time received.
 /// - Set 0, binding 1, fragment shaders of blended and additive materials only: `sampler2D` opaque depth, the
-///   depth buffer after every opaque draw of the frame, Vulkan depth from 0 at the near plane to 1 at the far one in
-///   `r`, sampled with nearest filtering and clamped at the edges.
+///   depth buffer after every opaque draw of the frame, reversed Vulkan depth from 1 at the near plane to 0 at the
+///   far one in `r`, 0 where nothing opaque drew, sampled with nearest filtering and clamped at the edges. Nearer
+///   surfaces have greater depth.
 /// - Set 0, binding 2, under the same rule: `sampler2D` opaque color, the scene's linear color after every opaque
 ///   draw, sky included, before exposure and tone mapping, sampled with linear filtering and clamped at the edges.
 /// - Set 1, binding 0, vertex shaders only: the `readonly` `std430` storage buffer `AnimaPoses` of `mat4
@@ -58,7 +59,9 @@
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear
 /// `RGBA16F` scene target, whose display conversion applies exposure and tone mapping; the shadow fragment shader
-/// writes no color. `gl_Position` is in Vulkan clip space, with Y down and depth 0 to 1. Built-in variables such as
+/// writes no color. `gl_Position` is in Vulkan clip space, with Y down and depth 0 to 1: reversed in the view, where
+/// `viewProjection` puts 1 at the near plane and nearer surfaces pass the depth test, and forward in the shadow
+/// variant, with 0 on the side facing the light; `gl_FragDepth` follows the same direction. Built-in variables such as
 /// `gl_FragCoord`, `gl_FrontFacing` and `gl_FragDepth` are available. Rasterization culls nothing, and
 /// `gl_FrontFacing` reports the winding on screen, which a matrix with a negative determinant reverses.
 ///

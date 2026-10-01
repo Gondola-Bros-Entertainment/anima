@@ -2,5 +2,6 @@
 layout(location = 0) out vec2 screen;
 void main() {
     screen = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0;
-    gl_Position = vec4(screen, 1, 1);
+    // The far plane in reversed depth, behind everything the view draws.
+    gl_Position = vec4(screen, 0, 1);
 }

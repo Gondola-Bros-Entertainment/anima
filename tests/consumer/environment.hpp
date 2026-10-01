@@ -776,7 +776,8 @@ inline int run(int argc, char **argv) {
     auto curved_scene = std::make_shared<anima::Scene>();
     (void)curved_scene->add(anima::Mesh::compile(*curved));
     renderer.set_scenes({curved_scene});
-    constexpr anima::Mat4 curved_projection{2 / 1.2F, 0, 0, 0, 0, -2 / .9F, 0, 0, 0, 0, -1.F / 20, 0, 0, 0, 0, 1};
+    // Orthographic, with reversed depth from 1 at the eye to 0 at 20 m.
+    constexpr anima::Mat4 curved_projection{2 / 1.2F, 0, 0, 0, 0, -2 / .9F, 0, 0, 0, 0, 1.F / 20, 0, 0, 0, 1, 1};
     renderer.set_view(curved_projection * anima::look_at({0, 0, 3}, {0, 0, 0}));
     anima::Environment curved_environment;
     curved_environment.sun.direction = {-4, 0, 1};

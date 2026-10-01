@@ -40,14 +40,14 @@ Mat4 camera_matrix(GameObject object, const CameraSettings &s, float aspect) {
         const double f = 1 / std::tan(double(s.vertical_fov_degrees) * std::numbers::pi / 360);
         projection[0] = float(f / aspect);
         projection[5] = float(-f);
-        projection[10] = float(far / (near - far));
+        projection[10] = float(near / (far - near));
         projection[11] = -1;
-        projection[14] = float(near * far / (near - far));
+        projection[14] = float(near * far / (far - near));
     } else {
         projection[0] = float(2 / (double(s.orthographic_height) * aspect));
         projection[5] = -2 / s.orthographic_height;
-        projection[10] = float(1 / (near - far));
-        projection[14] = float(near / (near - far));
+        projection[10] = float(1 / (far - near));
+        projection[14] = float(far / (far - near));
         projection[15] = 1;
     }
     const auto result = projection * view;

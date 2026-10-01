@@ -325,7 +325,8 @@ void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = VK_TRUE;
     depth.depthWriteEnable = opaque ? VK_TRUE : VK_FALSE;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS;
+    // Reversed depth in the view; shadow regions keep forward depth, as the built-in shadow pass does.
+    depth.depthCompareOp = shadow ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_GREATER;
     VkPipelineColorBlendAttachmentState attachment{};
     attachment.blendEnable = opaque ? VK_FALSE : VK_TRUE;
     attachment.srcColorBlendFactor = attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;

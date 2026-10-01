@@ -391,10 +391,21 @@ TEST_CASE("Material factors outside their ranges are rejected by validate_materi
     CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-roughness")), invalid_factors, std::invalid_argument);
 }
 
-TEST_CASE("A perspective projection maps the near and far planes to Vulkan depths 0 and 1") {
+TEST_CASE("A perspective projection maps the near and far planes to reversed Vulkan depths 1 and 0") {
     const auto projection = perspective(1.5F, 0.1F, 100.F);
-    CHECK((-0.1F * projection[10] + projection[14]) / 0.1F == Near{0, tolerance});
-    CHECK((-100.F * projection[10] + projection[14]) / 100.F == Near{1, tolerance});
+    CHECK((-0.1F * projection[10] + projection[14]) / 0.1F == Near{1, tolerance});
+    CHECK((-100.F * projection[10] + projection[14]) / 100.F == Near{0, tolerance});
+}
+
+TEST_CASE("Reversed depth keeps surfaces 1 cm apart at 450 m in order") {
+    // A 3 cm near plane with forward depth spaces adjacent float depths about 40 cm apart at 450 m.
+    const auto projection = perspective(16.F / 9.F, .03F, 500.F);
+    const auto depth = [&](float distance) { return (-distance * projection[10] + projection[14]) / distance; };
+    for (int step = 0; step < 100; ++step) {
+        const float distance = 450.F + float(step) * .01F;
+        CAPTURE(distance);
+        CHECK(depth(distance) > depth(distance + .01F));
+    }
 }
 
 TEST_CASE("An orbit camera's view origin and horizontal axes follow its orientation within its bounds") {
@@ -435,7 +446,7 @@ TEST_CASE("An orbit camera's view origin and horizontal axes follow its orientat
 TEST_CASE("An orthographic view origin is the direction toward the camera, and a singular view is rejected") {
     auto ortho = identity();
     ortho[5] = -1;
-    ortho[10] = -.01F;
+    ortho[10] = .01F; // Reversed depth grows toward the camera.
     const Vec3 oe{4, 2, 5}, ot{-1, 0, 1};
     const auto direction = view_origin(ortho * look_at(oe, ot));
     const auto expected = normalized(oe - ot);
