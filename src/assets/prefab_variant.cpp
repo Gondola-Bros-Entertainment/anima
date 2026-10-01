@@ -1,4 +1,5 @@
 #include "../detail/json.hpp"
+#include "../detail/visibility_range_json.hpp"
 #include <algorithm>
 #include <anima/prefab_variant.hpp>
 #include <cmath>
@@ -39,10 +40,12 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     require(!renderer || renderer->mesh ||
                 (!renderer->pose && renderer->visible && renderer->material_factors.empty() &&
                  renderer->custom_materials.empty() && renderer->primitive_visible.empty() && renderer->casts_shadows &&
-                 !renderer->placements),
+                 !renderer->placements && renderer->visibility_range == VisibilityRange{}),
             "Empty prefab variant renderer has state");
     require(!renderer || !renderer->placements || (renderer->placements->mesh() == renderer->mesh && !renderer->pose),
             "Prefab variant placements must copy the renderer's mesh, which has no pose");
+    if (renderer)
+        validate_visibility_range(renderer->visibility_range);
     auto object = validation.create();
     if (value.local)
         object.set_local_matrix(*value.local);
@@ -115,7 +118,8 @@ Json encode_renderer(const PrefabVariant::Renderer &renderer, const MeshName &na
             {"custom_materials", custom},
             {"primitive_visible", renderer.primitive_visible},
             {"casts_shadows", renderer.casts_shadows},
-            {"placements", placements}};
+            {"placements", placements},
+            {"visibility_range", detail::encode_visibility_range(renderer.visibility_range)}};
 }
 // Resources resolved while reading one document, each once per key or name.
 struct Resources {
@@ -127,7 +131,7 @@ PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &r
     // An omitted setting takes the default that PrefabVariant::Renderer declares.
     detail::json_fields(value, {"mesh"},
                         {"pose", "visible", "material_factors", "custom_materials", "primitive_visible",
-                         "casts_shadows", "placements"});
+                         "casts_shadows", "placements", "visibility_range"});
     PrefabVariant::Renderer renderer;
     const auto &mesh = value.at("mesh");
     if (!mesh.is_null()) {
@@ -195,6 +199,9 @@ PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &r
             transforms.push_back(matrix_value(transform));
         renderer.placements = MeshPlacements::create(renderer.mesh, transforms);
     }
+    renderer.visibility_range =
+        detail::decode_visibility_range(value.contains("visibility_range") ? value.at("visibility_range") : omitted,
+                                        "Invalid prefab variant visibility range");
     return renderer;
 }
 } // namespace
@@ -254,6 +261,7 @@ Prefab PrefabVariant::resolve(const PrefabResolver &resolver, ComponentCodecs co
             node.primitive_visible = renderer.primitive_visible;
             node.casts_shadows = renderer.casts_shadows;
             node.placements = renderer.placements;
+            node.visibility_range = renderer.visibility_range;
         }
         for (const auto &type : value.remove_components) {
             const auto component = std::find_if(node.components.begin(), node.components.end(),

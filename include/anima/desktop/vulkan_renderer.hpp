@@ -223,6 +223,9 @@ struct ResourceStats {
     /// skipped in the latest frame, counted once per object whatever its materials; an object culled whole counts
     /// in #culled_instances instead.
     std::uint64_t culled_clusters{};
+    /// Objects without placements, and placement clusters of objects with a main-view draw, that their visibility
+    /// ranges (VisibilityRange) hid in the latest frame.
+    std::uint64_t range_culled{};
     /// Instances with at least one main-view draw.
     std::uint64_t instances{};
     /// Meshes in the GPU cache.
@@ -287,6 +290,14 @@ struct ResourceStats {
 /// itself, so copies outside the view still cast shadows. Each MeshPlacements uploads its transforms once into a
 /// device buffer, cached per object and released as meshes are, and the vertex shaders compose each placement with
 /// the object's world matrix and the mesh's rest pose.
+///
+/// An object with a visibility range (Scene::set_visibility_range) draws only at the distances the range allows from
+/// the eye of the current view, in the shadow passes too, measured to the center of its mesh's rest bounds
+/// (Mesh::rest_bounds()) as the object, or each copy, places it. Objects, and placement clusters, entirely outside it
+/// are culled in every pass. In the range's margins the standard material discards the share of a copy's pixels that
+/// a 4x4 ordered dither gives, so it fades without blending or sorting, and a copy casts shadows while more than half
+/// of it draws; copies the range hides draw no pixels. Custom materials fade through animaVisibility() and
+/// animaDissolved().
 ///
 /// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`

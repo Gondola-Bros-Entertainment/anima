@@ -150,7 +150,8 @@ function(add_anima_consumer mode target test_name)
         find_package(Vulkan REQUIRED COMPONENTS glslc)
         set(shader_directory "${CMAKE_CURRENT_BINARY_DIR}/${target}-shaders")
         set(shader_outputs)
-        foreach(shader IN ITEMS custom_surface.vert custom_water.frag custom_effect.frag custom_probe.frag custom_shadow.vert)
+        foreach(shader IN ITEMS custom_surface.vert custom_water.frag custom_effect.frag custom_probe.frag custom_shadow.vert
+                custom_fade.vert custom_fade.frag custom_fade_shadow.vert)
             set(output "${shader_directory}/${shader}.inc")
             add_custom_command(OUTPUT "${output}"
                 COMMAND "${CMAKE_COMMAND}" -E make_directory "${shader_directory}"

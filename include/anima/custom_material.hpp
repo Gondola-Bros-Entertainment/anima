@@ -48,7 +48,11 @@
 ///   matrices[]`, the posed palettes of the frame (Scene::Instance::palette). A rigid draw uses
 ///   `matrices[paletteOffset]`; a skinned vertex blends `matrices[paletteOffset + joints[i]]` by `weights[i]`. For
 ///   an object with placements, `matrices[paletteOffset]` is instead the node's matrix in the mesh's rest pose,
-///   and the vertex's world matrix is `matrices[objectOffset] * placement * matrices[paletteOffset]`.
+///   and the vertex's world matrix is `matrices[objectOffset] * placement * matrices[paletteOffset]`. For an object
+///   with placements or a visibility range, `matrices[objectOffset]` is its world matrix. The first column of
+///   `matrices[objectOffset + 1]` is then its range: begin, begin margin, end and end margin (VisibilityRange), with
+///   an endless range ending at the largest finite `float` and no end margin. The `xyz` of its second column is the
+///   center of Mesh::rest_bounds(), which the range measures to once the object, and each placement, places it.
 /// - Set 2, binding 0, any stage: the parameter block, a uniform block that holds
 ///   CustomMaterialDefinition::parameters from its start, laid out as the shader declares it.
 /// - Set 2, bindings 1 to 4, any stage: `sampler2D` for CustomMaterialDefinition::textures 0 to 3, sampled as their
@@ -59,9 +63,12 @@
 /// the pass being drawn: the camera's, or a shadow region's in the depth-only variant; 64 `uint paletteOffset`,
 /// IndexedDraw::palette_offset within the instance's palette; 68 `uint skinned`, 1 for a skinned draw and
 /// otherwise 0; 72 `uint objectOffset`, the index in `AnimaPoses` of the object's world matrix when it has
-/// placements; 76 `uint placed`, 1 when it has placements and otherwise 0; and 80 `vec4 factor`, the object's
-/// linear RGB factor for the material slot (Scene::set_material_factor) with alpha 1. `animaModelMatrix()` in
-/// `anima/custom_material.glsl` composes these as the standard material does.
+/// placements or a visibility range; 76 `uint placed`, 1 when it has placements and otherwise 0; 80 `vec4 factor`,
+/// the object's linear RGB factor for the material slot (Scene::set_material_factor) with alpha 1; and 96 `uint
+/// ranged`, 1 when it has a visibility range other than the default and otherwise 0. `animaModelMatrix()` in
+/// `anima/custom_material.glsl` composes these as the standard material does, and `animaVisibility()` and
+/// `animaDissolved()` fade the object across its range's margins as the standard material does; a material that
+/// does not call them draws whole inside the range.
 ///
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear

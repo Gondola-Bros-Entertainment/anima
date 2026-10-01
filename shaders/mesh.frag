@@ -7,6 +7,7 @@ layout(location = 3) in vec3 worldPosition;
 layout(location = 4) in vec4 worldTangent;
 layout(location = 5) in float vertexAlpha;
 layout(location = 6) flat in float orientation;
+layout(location = 7) flat in float visibility;
 #include "material.glsl"
 layout(push_constant) uniform Surface {
     layout(offset = 64) vec4 viewOrigin;
@@ -43,7 +44,18 @@ vec3 light(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float metallic, float a
     vec3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo / PI;
     return (diffuse + fresnel * distribution * visibility) * nl;
 }
+// The 4x4 ordered dither threshold at @p pixel, in (0, 1); anima/custom_material.glsl's animaDissolved() uses the same.
+float ditherThreshold(vec2 pixel) {
+    const float pattern[16] =
+        float[](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    ivec2 cell = ivec2(pixel) & 3;
+    return (pattern[cell.y * 4 + cell.x] + 0.5) / 16.0;
+}
 void main() {
+    // In its visibility range's margins an object dissolves, keeping the share of its pixels that its visibility
+    // gives, without blending or sorting.
+    if (visibility < 1.0 && visibility <= ditherThreshold(gl_FragCoord.xy))
+        discard;
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.
     float facing = (gl_FrontFacing ? 1.0 : -1.0) * orientation;

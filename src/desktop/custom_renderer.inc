@@ -19,10 +19,11 @@ struct CustomPush {
     Mat4 view;
     std::uint32_t palette_offset, skinned, object_offset, placed;
     std::array<float, 4> factor;
+    std::uint32_t ranged;
 };
 static_assert(offsetof(CustomPush, palette_offset) == 64 && offsetof(CustomPush, skinned) == 68 &&
               offsetof(CustomPush, object_offset) == 72 && offsetof(CustomPush, placed) == 76 &&
-              offsetof(CustomPush, factor) == 80 && sizeof(CustomPush) == 96);
+              offsetof(CustomPush, factor) == 80 && offsetof(CustomPush, ranged) == 96 && sizeof(CustomPush) == 100);
 // Descriptor bindings of a custom material's set: its parameter block, then its textures.
 static constexpr std::uint32_t custom_material_bindings = CustomMaterial::max_textures + 1;
 
@@ -385,7 +386,8 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
                           draw.skinned ? 1U : 0U,
                           render_instance.object_offset,
                           render_instance.placements ? 1U : 0U,
-                          {factor.x, factor.y, factor.z, 1}};
+                          {factor.x, factor.y, factor.z, 1},
+                          render_instance.ranged ? 1U : 0U};
     vkCmdPushConstants(command, custom_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
     record_indexed(draw, shadow);
