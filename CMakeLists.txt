@@ -121,9 +121,11 @@ if(ANIMA_BUILD_ASSETS OR ANIMA_BUILD_UI)
 endif()
 
 if(ANIMA_BUILD_ASSETS)
-    add_library(anima_asset_dependencies STATIC src/assets/third_party.cpp)
+    add_library(anima_asset_dependencies STATIC src/assets/third_party.cpp third_party/meshoptimizer/allocator.cpp
+        third_party/meshoptimizer/simplifier.cpp)
     anima_enable_sanitizers(anima_asset_dependencies)
-    target_include_directories(anima_asset_dependencies SYSTEM PUBLIC third_party/cgltf third_party/stb)
+    target_include_directories(anima_asset_dependencies SYSTEM PUBLIC third_party/cgltf third_party/meshoptimizer
+        third_party/stb)
     target_compile_features(anima_asset_dependencies PRIVATE cxx_std_20)
     add_library(anima_assets STATIC
     src/assets/mesh_snapshot.cpp
@@ -350,6 +352,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_visibility_range_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_visibility_range_tests)
         add_test(NAME visibility_ranges COMMAND anima_visibility_range_tests)
+        add_executable(anima_mesh_lod_tests tests/mesh_lod_tests.cpp)
+        target_link_libraries(anima_mesh_lod_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_mesh_lod_tests)
+        add_test(NAME mesh_lods COMMAND anima_mesh_lod_tests)
         add_executable(anima_texture_compression_tests tests/texture_compression_tests.cpp)
         target_include_directories(anima_texture_compression_tests SYSTEM PRIVATE third_party/stb)
         target_compile_definitions(anima_texture_compression_tests
@@ -672,8 +678,8 @@ if(ANIMA_BUILD_TESTS)
         set(desktop "${anima_consumer_executable_dir}/consumer_desktop${CMAKE_EXECUTABLE_SUFFIX}")
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
-        foreach(check_mode IN ITEMS allocations culling placements foliage environment resources material-sampling
-            pbr surface-maps sidedness blending custom-materials texture-memory)
+        foreach(check_mode IN ITEMS allocations culling placements lod foliage environment resources
+            material-sampling pbr surface-maps sidedness blending custom-materials texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})

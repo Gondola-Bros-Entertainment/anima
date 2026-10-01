@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <anima/assets/scene_validation.hpp>
 #include <anima/scene.hpp>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <charconv>
@@ -13,6 +14,7 @@
 #include <exception>
 #include <functional>
 #include <limits>
+#include <meshoptimizer.h>
 #include <set>
 #include <type_traits>
 #include <unordered_map>
@@ -68,6 +70,10 @@ struct Hash {
 } // namespace
 
 std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention texel_retention) {
+    return compile(source, texel_retention, {});
+}
+std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention texel_retention, MeshLodOptions lods) {
+    require(lods.levels <= 8, "Mesh LOD levels must be from 0 to 8");
     if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
         throw std::invalid_argument("Unknown texel retention");
     auto result = std::shared_ptr<Mesh>(new Mesh);
@@ -111,6 +117,8 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     materials->default_is_bind_pose = materials->bind_deviation < mesh_limits::bind_pose_tolerance;
     require(palette_size <= UINT32_MAX, "Render palette index overflow");
     result->palette_size_ = palette_size;
+    // Where each draw's vertices start, then where the last one's end.
+    std::vector<std::size_t> vertex_ranges;
     for (const auto &primitive : source.primitives) {
         require(primitive.node < source.nodes.size(), "Invalid render primitive node");
         require(primitive.skin >= -1 && (primitive.skin < 0 || std::size_t(primitive.skin) < source.skins.size()),
@@ -125,6 +133,7 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
                     std::numeric_limits<std::size_t>::max() / sizeof(SourceVertex) - result->vertices_.size(),
                 "Render vertex byte size overflow");
         const auto offset = primitive.skin < 0 ? static_cast<std::uint32_t>(primitive.node) : offsets[primitive.skin];
+        vertex_ranges.push_back(result->vertices_.size());
         result->draws_.push_back({static_cast<std::uint32_t>(result->indices_.size()),
                                   static_cast<std::uint32_t>(primitive.vertices.size()), offset, primitive.skin >= 0,
                                   primitive.material, static_cast<std::uint32_t>(primitive.node),
@@ -163,6 +172,55 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
         for (std::size_t j = 0; j < bounds.size(); ++j)
             if (bounds[j].valid)
                 parts.push_back({offset + static_cast<std::uint32_t>(j), bounds[j]});
+    }
+    vertex_ranges.push_back(result->vertices_.size());
+    // Levels of detail, appended after every draw's own indices. Each primitive's vertices are contiguous, so each
+    // draw simplifies against its own block of them, each level from the one before it, as meshoptimizer recommends
+    // for a chain. The draw's border stays locked, as Godot locks it, since draws simplified apart, such as a mesh's
+    // material subsets or compile_static() pieces, must still meet whichever levels they draw.
+    for (std::size_t d = 0; lods.levels && d < result->draws_.size(); ++d) {
+        auto &draw = result->draws_[d];
+        if (draw.material >= 0 && materials->material_data[std::size_t(draw.material)].alpha_mode == AlphaMode::mask)
+            continue;
+        const auto first = vertex_ranges[d], count = vertex_ranges[d + 1] - first;
+        std::vector<unsigned> current(result->indices_.begin() + draw.first_index,
+                                      result->indices_.begin() + draw.first_index + draw.index_count);
+        for (auto &index : current)
+            index -= static_cast<unsigned>(first);
+        const auto *vertex = &result->vertices_[first];
+        const float *positions = &vertex->position.x, *attributes = &vertex->normal.x;
+        // Normals, then vertex colors, which follow them in SourceVertex, at the weight of about 1 that meshoptimizer
+        // suggests for normalized attributes.
+        static_assert(offsetof(SourceVertex, color) == offsetof(SourceVertex, normal) + 3 * sizeof(float));
+        constexpr std::array<float, 6> weights{1, 1, 1, 1, 1, 1};
+        // A step may move the surface by up to the draw's extent, since the renderer draws a level only where its
+        // error projects within the LOD threshold, and must drop at least 15% of the indices it starts from, as
+        // meshoptimizer's cluster LOD reference requires. Clamping keeps attribute error at the scale of the positional
+        // error that selection projects, as meshoptimizer recommends when the error chooses levels.
+        constexpr float maximum_relative_error = 1, minimum_reduction = .85F;
+        constexpr unsigned options = meshopt_SimplifyLockBorder | meshopt_SimplifyErrorClamped;
+        const auto scale = meshopt_simplifyScale(positions, count, sizeof(SourceVertex));
+        std::vector<unsigned> level;
+        float error = 0;
+        for (std::size_t k = 0; k < lods.levels; ++k) {
+            float step = 0;
+            level.resize(current.size());
+            level.resize(meshopt_simplifyWithAttributes(level.data(), current.data(), current.size(), positions, count,
+                                                        sizeof(SourceVertex), attributes, sizeof(SourceVertex),
+                                                        weights.data(), weights.size(), nullptr, current.size() / 6 * 3,
+                                                        maximum_relative_error, options, &step));
+            if (level.empty() || float(level.size()) > float(current.size()) * minimum_reduction)
+                break;
+            require(level.size() <= UINT32_MAX - result->indices_.size(), "Invalid render triangle count");
+            // A step's error is relative to the level it starts from; the chain keeps the largest, as meshoptimizer's
+            // cluster LOD reference merges errors, so a coarser level never claims less error than a finer one.
+            error = std::max(error, step * scale);
+            draw.levels.push_back(
+                {static_cast<std::uint32_t>(result->indices_.size()), static_cast<std::uint32_t>(level.size()), error});
+            for (const auto index : level)
+                result->indices_.push_back(index + static_cast<std::uint32_t>(first));
+            current.swap(level);
+        }
     }
     result->texel_retention_ = texel_retention;
     if (texel_retention == TexelRetention::until_upload)
@@ -900,7 +958,10 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     for (auto id : objects) {
         const auto &value = instance(id);
         const auto copies = value.placements ? value.placements->transforms().size() : 1;
-        const auto size = value.asset->indices().size();
+        // Each draw's own indices; levels of detail follow them in Mesh::indices() and are not snapshotted.
+        std::size_t size = 0;
+        for (const auto &draw : value.asset->draws_)
+            size += draw.index_count;
         require(size <= (std::numeric_limits<std::size_t>::max() - corners) / copies, "Snapshot vertex overflow");
         corners += size * copies;
     }

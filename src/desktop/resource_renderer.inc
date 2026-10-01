@@ -25,10 +25,13 @@ struct ResourceInstance {
     std::uint32_t object_offset{};
     bool ranged{};
 };
-// Placements, in MeshPlacements::transforms() order, that one draw call copies; a renderer without placements draws
-// one run of its single copy.
+// Placements, in MeshPlacements::transforms() order, that one draw call copies: one visible cluster's, which recording
+// merges with the next when they draw the same level of detail; a renderer without placements draws one run of its
+// single copy. With placements, the run also holds the distance from the eye to its cluster's world bounds and the
+// largest axis scale that places its copies, by which levels of detail are chosen.
 struct PlacementRun {
     std::uint32_t first{}, count{};
+    double distance{}, scale{};
 };
 struct GpuCustomMaterial;
 // A main-view draw that composites over the target instead of replacing it, recorded after every opaque and
@@ -247,6 +250,20 @@ std::shared_ptr<GpuPlacements> gpu_placements(const std::shared_ptr<const MeshPl
     placement_cache.emplace(placements.get(), value);
     return value;
 }
+// The distance from @p eye to the nearest point of the box from @p minimum to @p maximum, 0 inside it.
+static double nearest_distance(Vec3 eye, Vec3 minimum, Vec3 maximum) {
+    double squared = 0;
+    for (const auto [lo, hi, at] : {std::array{minimum.x, maximum.x, eye.x}, std::array{minimum.y, maximum.y, eye.y},
+                                    std::array{minimum.z, maximum.z, eye.z}}) {
+        const double gap = std::max({double(lo) - at, double(at) - hi, 0.0});
+        squared += gap * gap;
+    }
+    return std::sqrt(squared);
+}
+// The length of the longest of the first three columns of @p m: the largest scale it applies along an axis.
+static double axis_scale(const Mat4 &m) {
+    return std::max({double(length(axis_x(m))), double(length(axis_y(m))), double(length(axis_z(m)))});
+}
 // Whether a box from @p minimum to @p maximum may hold a point at a distance from @p eye inside @p range.
 static bool within_range(const VisibilityRange &range, Vec3 eye, Vec3 minimum, Vec3 maximum) {
     double nearest = 0, farthest = 0;
@@ -280,10 +297,8 @@ static Mat4 range_columns(const VisibilityRange &range, Vec3 center) {
     columns[6] = center.z;
     return columns;
 }
-// Whether @p frustum, when given, contains the world bounds of @p cluster's copies under @p world, and @p range, when
-// given, can draw a copy at their distance from @p eye.
-static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &world, const RenderFrustum *frustum,
-                            const VisibilityRange *range, Vec3 eye) {
+// The world bounds of @p cluster's copies under @p world.
+static RenderBounds cluster_bounds(const MeshPlacements::Cluster &cluster, const Mat4 &world) {
     RenderBounds bounds;
     const auto &b = cluster.bounds;
     for (unsigned corner = 0; corner < 8; ++corner) {
@@ -296,8 +311,40 @@ static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &
         bounds.maximum = {std::max(bounds.maximum.x, v.x), std::max(bounds.maximum.y, v.y),
                           std::max(bounds.maximum.z, v.z)};
     }
+    return bounds;
+}
+// Whether @p frustum, when given, contains @p bounds, and @p range, when given, can draw a copy at their distance from
+// @p eye.
+static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *frustum, const VisibilityRange *range,
+                            Vec3 eye) {
     return (!frustum || frustum->intersects(bounds)) &&
            (!range || within_range(*range, eye, bounds.minimum, bounds.maximum));
+}
+static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &world, const RenderFrustum *frustum,
+                            const VisibilityRange *range, Vec3 eye) {
+    return cluster_visible(cluster_bounds(cluster, world), frustum, range, eye);
+}
+// Pixels of the view's height per unit of error at distance 1, or at any distance in an orthographic view: the length
+// of the view-projection's second row, which is the projection's vertical scale, times half the target's height.
+double lod_projection() const {
+    return std::sqrt(double(view_projection[1]) * view_projection[1] + double(view_projection[5]) * view_projection[5] +
+                     double(view_projection[9]) * view_projection[9]) *
+           extent.height / 2;
+}
+// The coarsest level of @p draw whose error, scaled by @p scale and projected at @p distance from the eye, covers at
+// most the LOD threshold in pixels; null for the full draw.
+const DrawLevel *level_for(const IndexedDraw &draw, double distance, double scale) const {
+    const bool perspective = view_origin[3] != 0;
+    if (draw.levels.empty() || options.lod_threshold <= 0 || (perspective && distance <= 0))
+        return nullptr;
+    const double pixels = lod_projection() * scale / (perspective ? distance : 1);
+    const DrawLevel *chosen = nullptr;
+    for (const auto &level : draw.levels) {
+        if (double(level.error) * pixels > options.lod_threshold)
+            break;
+        chosen = &level;
+    }
+    return chosen;
 }
 // The visibility range that culling applies to @p render_instance: none for the default range or an orthographic view.
 const VisibilityRange *culling_range(const Scene::Instance &render_instance) const {
@@ -306,8 +353,9 @@ const VisibilityRange *culling_range(const Scene::Instance &render_instance) con
                : nullptr;
 }
 Vec3 eye() const { return {view_origin[0], view_origin[1], view_origin[2]}; }
-// Fills placement_runs with the runs of @p render_instance's placement clusters that @p frustum, when given, contains
-// and its visibility range can draw, merging adjacent ones. Without placements the single copy is one run.
+// Fills placement_runs with one run for each of @p render_instance's placement clusters that @p frustum, when given,
+// contains and its visibility range can draw; record_indexed() merges adjacent runs that draw the same level. Without
+// placements the single copy is one run.
 void find_placement_runs(const ResourceInstance &render_instance, const RenderFrustum *frustum) {
     placement_runs.clear();
     if (!render_instance.placements) {
@@ -316,13 +364,13 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
     }
     const auto &world = render_instance.source->world;
     const auto *range = culling_range(*render_instance.source);
+    const auto world_scale = axis_scale(world);
     for (const auto &cluster : render_instance.placements->source->clusters()) {
-        if (!cluster_visible(cluster, world, frustum, range, eye()))
-            continue;
-        if (!placement_runs.empty() && placement_runs.back().first + placement_runs.back().count == cluster.first)
-            placement_runs.back().count += cluster.count;
-        else
-            placement_runs.push_back({cluster.first, cluster.count});
+        const auto bounds = cluster_bounds(cluster, world);
+        if (cluster_visible(bounds, frustum, range, eye()))
+            placement_runs.push_back({cluster.first, cluster.count,
+                                      nearest_distance(eye(), bounds.minimum, bounds.maximum),
+                                      world_scale * cluster.scale});
     }
 }
 std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, RendererFailureStage failure,
@@ -660,23 +708,54 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
                                  environment_set, pose_set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
-    record_indexed(draw, shadow);
+    record_indexed(render_instance, draw_index, shadow);
 }
-// Records @p draw once per run of placement_runs, with the bound pipeline, geometry, descriptors and push constants,
-// and counts each call and copy in the shadow or main-view statistics.
-void record_indexed(const IndexedDraw &draw, bool shadow) {
-    for (const auto &run : placement_runs) {
-        vkCmdDrawIndexed(command, draw.index_count, run.count, draw.first_index, 0, run.first);
-        const auto indices = std::uint64_t{draw.index_count} * run.count;
+// Records draw @p draw_index of @p render_instance for every run of placement_runs, with the bound pipeline, geometry,
+// descriptors and push constants, each at the level of detail its distance and scale choose, merging adjacent runs
+// that choose the same level into one call, and counts each call and copy in the shadow or main-view statistics.
+void record_indexed(const ResourceInstance &render_instance, std::size_t draw_index, bool shadow) {
+    const auto &source = *render_instance.source;
+    const auto &draw = source.asset->draws()[draw_index];
+    // Without placements the draw's own bounds and placing matrix choose its level; with them, each run's cluster and
+    // the node's rest matrix, which the copies' placements multiply.
+    const auto level_of = [&](const PlacementRun &run) {
+        if (!render_instance.placements) {
+            const auto &bounds = source.primitive_bounds[draw_index];
+            return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum),
+                             axis_scale(draw.skinned ? source.world : source.palette[draw.palette_offset]));
+        }
+        return level_for(draw, run.distance, run.scale * axis_scale(source.asset->rest_pose().world[draw.node]));
+    };
+    const auto record = [&](const DrawLevel *level, std::uint32_t first, std::uint32_t count) {
+        const auto index_count = level ? level->index_count : draw.index_count;
+        vkCmdDrawIndexed(command, index_count, count, level ? level->first_index : draw.first_index, 0, first);
+        const auto indices = std::uint64_t{index_count} * count;
         if (shadow) {
             ++resources.shadow_draw_calls;
             resources.shadow_submitted_indices += indices;
         } else {
             ++resources.draw_calls;
             resources.submitted_indices += indices;
-            resources.drawn_copies += run.count;
+            resources.drawn_copies += count;
+            resources.lod_draws += level != nullptr;
         }
+    };
+    const DrawLevel *pending_level = nullptr;
+    std::uint32_t pending_first = 0, pending_count = 0;
+    for (const auto &run : placement_runs) {
+        const auto *level = level_of(run);
+        if (pending_count && level == pending_level && pending_first + pending_count == run.first) {
+            pending_count += run.count;
+            continue;
+        }
+        if (pending_count)
+            record(pending_level, pending_first, pending_count);
+        pending_level = level;
+        pending_first = run.first;
+        pending_count = run.count;
     }
+    if (pending_count)
+        record(pending_level, pending_first, pending_count);
 }
 // Records one shadow region's casters or, when @p shadow is false, the main view: every opaque and masked draw in
 // selection, instance and draw order, then the opaque custom material draws, then, unless the frame copies opaque
@@ -686,6 +765,7 @@ void record_resources(bool shadow = false, bool detail = false) {
         resources.draw_calls = 0;
         resources.submitted_indices = 0;
         resources.drawn_copies = 0;
+        resources.lod_draws = 0;
     }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? shadow_resource_pipeline : resource_pipeline);
     const auto &view = shadow ? (detail ? detail_shadow_view : shadow_view) : view_projection;

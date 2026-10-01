@@ -47,6 +47,7 @@
 #include "custom_materials.hpp"
 #include "environment.hpp"
 #include "foliage.hpp"
+#include "lod.hpp"
 #include "materials.hpp"
 #include "placements.hpp"
 #include "rejection.hpp"
@@ -312,6 +313,8 @@ int main(int argc, char **argv) {
             return culling_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--placements")
             return placements_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--lod")
+            return lod_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")

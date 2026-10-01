@@ -355,6 +355,8 @@ struct VulkanRenderer::Impl {
         }
         if (!std::isfinite(options.max_anisotropy) || options.max_anisotropy < 1)
             throw std::invalid_argument("Maximum anisotropy must be finite and at least 1");
+        if (!std::isfinite(options.lod_threshold) || options.lod_threshold < 0)
+            throw std::invalid_argument("LOD threshold must be finite and nonnegative");
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -1966,6 +1968,12 @@ void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
 void VulkanRenderer::set_frustum_culling(bool enabled) {
     impl_->running();
     impl_->options.frustum_culling = enabled;
+}
+void VulkanRenderer::set_lod_threshold(float pixels) {
+    impl_->running();
+    if (!std::isfinite(pixels) || pixels < 0)
+        throw std::invalid_argument("LOD threshold must be finite and nonnegative");
+    impl_->options.lod_threshold = pixels;
 }
 void VulkanRenderer::set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions options) {
 #ifdef ANIMA_HAS_ASSETS

@@ -12,10 +12,12 @@ them compile as C++ and add no language runtime dependency.
 | [stb_image 2.30](https://github.com/nothings/stb/tree/2c980bb59875b0d32144a71867fbdebb2f77cd20) | `2c980bb59875b0d32144a71867fbdebb2f77cd20` | `stb/stb_image.h`, `stb/LICENSE` (MIT or public domain; Anima uses MIT) |
 | [doctest 2.5.3](https://github.com/doctest/doctest/tree/2d0a9359a60c51affe2a9bebb1be1dca47868151) | `2d0a9359a60c51affe2a9bebb1be1dca47868151` (`v2.5.3` tag) | `doctest/doctest/doctest.h`, `doctest/LICENSE.txt` (MIT); test runner only, never linked into engine targets |
 | [Vulkan Memory Allocator 3.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tree/3aa921224c154a0d2c43912bc88e1c42ce1f7607) | `3aa921224c154a0d2c43912bc88e1c42ce1f7607` (`v3.4.0` tag) | `vma/vk_mem_alloc.h`, `vma/LICENSE.txt` (MIT); private to `anima::desktop`, which compiles its implementation once |
+| [meshoptimizer 1.3](https://github.com/zeux/meshoptimizer/tree/9e1f07b159d3cb777f1c67ed31fc11fd117986f4) | `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` (`v1.3` tag) | `meshoptimizer/meshoptimizer.h`, `meshoptimizer/allocator.cpp`, `meshoptimizer/simplifier.cpp`, `meshoptimizer/LICENSE.md` (MIT); private to `anima::assets`, which simplifies mesh draws into levels of detail |
 | [miniaudio 0.11.25](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d) | `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d` (`0.11.25` tag) | `miniaudio/miniaudio.h`, `miniaudio/LICENSE` (public domain or MIT No Attribution; Anima uses MIT No Attribution); private to `anima::core` |
 | [stb_vorbis 1.22](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d/extras) | miniaudio's `extras/stb_vorbis.c` at the same revision | `miniaudio/stb_vorbis.c` (MIT or public domain, stated at the end of the file; Anima uses MIT); private to `anima::core` |
 
-The cgltf, doctest, Vulkan Memory Allocator and stb_vorbis files are unmodified.
+The cgltf, doctest, meshoptimizer, Vulkan Memory Allocator and stb_vorbis files are unmodified. Of meshoptimizer,
+Anima keeps only the simplifier and the allocator it uses, from the release's `src` directory.
 stb_image carries two local size-safety changes: 16-bit channel conversion uses its
 checked allocation helper, and 8-bit PNG row copying reuses the validated row byte
 count. The JSON header carries one local thread-safety change: its lexer and
@@ -71,6 +73,10 @@ cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421  doctest/doctes
 0fe0b331fa1513dcce8604ff1fa925f32d1cea17d8aeb1c2471fad40d291adc5  doctest/LICENSE.txt
 8487b7995ad3b263eb73bc5b9a77d71aa69b6bef5d58a715c02d2663afd81f1a  vma/vk_mem_alloc.h
 52df2c03d6cfc9ffec13c9d3626c530fc9ce0cbe41d5ea3d10cd46edeb1aeb38  vma/LICENSE.txt
+e3688ef553f603391747895a5c221ef1528574cc7f8173782417a96cb531f61b  meshoptimizer/meshoptimizer.h
+d2cc48691fe2f4c6d097bf7a766389cfb7f83ca14a5f747e3944332656d02254  meshoptimizer/allocator.cpp
+719303b6970398631e30724e8eebc6cd2e7e08b67fe8ab7cbf7eecafdaa08616  meshoptimizer/simplifier.cpp
+f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26  meshoptimizer/LICENSE.md
 1760f0ca949e885e971600406ee223616c701c0bf6920584571cff85570b4f75  miniaudio/miniaudio.h
 457f1b500e0adf6bc059edddfa78a2f62012e7c3bb43476c20e0bd23b25ba0eb  miniaudio/LICENSE
 4c7cb2ff1f7011e9d67950446b7eb9ca044f2e464d76bfbb0b84dd2e23e65636  miniaudio/stb_vorbis.c
