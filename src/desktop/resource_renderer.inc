@@ -92,6 +92,9 @@ VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};
 VkPipeline resource_pipeline{}, blended_resource_pipeline{};
+// Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow regions.
+VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
+VkPipeline impostor_pipeline{}, shadow_impostor_pipeline{};
 VkDescriptorPool pose_pool{};
 VkDescriptorSet pose_set{};
 std::vector<std::shared_ptr<const Scene>> resource_scenes;
@@ -695,10 +698,17 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const Material fallback;
     const auto &material = draw.material < 0 ? fallback : source.asset->materials()->material_data.at(draw.material);
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
+    // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
+    // its frames per side and layout where they say whether they are skinned, which an impostor never is.
+    const auto *frames = source.asset->impostor();
     const ResourcePush push{view,
                             view_origin,
-                            {material.metallic, material.roughness, 0, 0},
-                            {render_instance.palette_offset + draw.palette_offset, draw.skinned ? 1U : 0U,
+                            frames ? std::array{frames->center.x, frames->center.y, frames->center.z, frames->radius}
+                                   : std::array{material.metallic, material.roughness, 0.F, 0.F},
+                            {render_instance.palette_offset + draw.palette_offset,
+                             frames         ? frames->count | std::uint32_t(frames->layout) << 8
+                             : draw.skinned ? 1U
+                                            : 0U,
                              render_instance.object_offset,
                              (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
                             {factor.x, factor.y, factor.z, 1}};
@@ -772,26 +782,34 @@ void record_resources(bool shadow = false, bool detail = false) {
         resources.drawn_copies = 0;
         resources.lod_draws = 0;
     }
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? shadow_resource_pipeline : resource_pipeline);
     const auto &view = shadow ? (detail ? detail_shadow_view : shadow_view) : view_projection;
     const auto *frustum = shadow                    ? (detail ? &detail_shadow_frustum : &shadow_frustum)
                           : options.frustum_culling ? &resource_frustum
                                                     : nullptr;
-    for (const auto &render_instance : resource_instances) {
-        const auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
-        const auto count = shadow ? render_instance.shadow_count : render_instance.draw_count;
-        if (!count)
-            continue;
-        find_placement_runs(render_instance, frustum);
-        if (placement_runs.empty())
-            continue;
-        bind_geometry(render_instance);
-        for (std::size_t i = first; i < first + count; ++i) {
-            const auto draw_index = (shadow ? resource_shadow_draws : resource_draws)[i];
-            if (shadow && !(detail ? detail_shadow_frustum : shadow_frustum)
-                               .intersects(render_instance.source->primitive_bounds[draw_index]))
+    // Meshes, then impostors, each through their pipeline, bound once their first draw records.
+    for (const bool impostors : {false, true}) {
+        const auto group_pipeline = impostors ? (shadow ? shadow_impostor_pipeline : impostor_pipeline)
+                                              : (shadow ? shadow_resource_pipeline : resource_pipeline);
+        bool bound = false;
+        for (const auto &render_instance : resource_instances) {
+            const auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
+            const auto count = shadow ? render_instance.shadow_count : render_instance.draw_count;
+            if (!count || (render_instance.gpu->asset->impostor() != nullptr) != impostors)
                 continue;
-            record_draw(render_instance, draw_index, view, shadow);
+            find_placement_runs(render_instance, frustum);
+            if (placement_runs.empty())
+                continue;
+            if (!bound)
+                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, group_pipeline);
+            bound = true;
+            bind_geometry(render_instance);
+            for (std::size_t i = first; i < first + count; ++i) {
+                const auto draw_index = (shadow ? resource_shadow_draws : resource_draws)[i];
+                if (shadow && !(detail ? detail_shadow_frustum : shadow_frustum)
+                                   .intersects(render_instance.source->primitive_bounds[draw_index]))
+                    continue;
+                record_draw(render_instance, draw_index, view, shadow);
+            }
         }
     }
     record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, shadow, detail);

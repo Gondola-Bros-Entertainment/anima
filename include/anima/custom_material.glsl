@@ -49,10 +49,11 @@ layout(push_constant) uniform AnimaDraw {
 animaDraw;
 
 // Whether the fragment at framebuffer coordinates @p pixel, such as gl_FragCoord.xy, falls in the share of an object
-// that animaVisibility()'s @p visibility dissolves; discard it then. The standard material uses the same 4x4 ordered
-// dither: fading out, it keeps the pixels whose threshold lies below the share, and fading in, where @p visibility is
-// negative, those whose threshold lies at or above 1 minus the share, so an object fading in over the distances that
-// another fades out over keeps exactly the pixels that the other dissolves.
+// that animaVisibility()'s @p visibility dissolves; discard it then, after any sampling that chooses mip levels from
+// derivatives, which a discard leaves undefined for the rest of its 2x2 quad. The standard material uses the same 4x4
+// ordered dither: fading out, it keeps the pixels whose threshold lies below the share, and fading in, where @p
+// visibility is negative, those whose threshold lies at or above 1 minus the share, so an object fading in over the
+// distances that another fades out over keeps exactly the pixels that the other dissolves.
 bool animaDissolved(float visibility, vec2 pixel) {
     const float pattern[16] =
         float[](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);

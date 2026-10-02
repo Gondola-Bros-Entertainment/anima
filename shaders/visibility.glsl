@@ -17,10 +17,10 @@ float visibilityAt(vec3 center, vec4 range, vec4 origin) {
 }
 
 // Whether the fragment at framebuffer coordinates @p pixel falls in the share of an object that @p visibility, from
-// visibilityAt(), dissolves with a 4x4 ordered dither, without blending or sorting. Fading out it keeps the pixels whose
-// threshold lies below the share, and fading in, where @p visibility is negative, those whose threshold lies at or
-// above 1 minus it, so an object fading in over the distances that another fades out over draws exactly the pixels the
-// other leaves, as dithered LOD transitions do.
+// visibilityAt(), dissolves with a 4x4 ordered dither, without blending or sorting. Fading out it keeps the pixels
+// whose threshold lies below the share, and fading in, where @p visibility is negative, those whose threshold lies at
+// or above 1 minus it, so an object fading in over the distances that another fades out over draws exactly the pixels
+// the other leaves, as dithered LOD transitions do.
 bool dissolved(float visibility, vec2 pixel) {
     const float pattern[16] =
         float[](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);

@@ -315,6 +315,19 @@ struct ResourceStats {
 /// whose error stays within set_lod_threshold() pixels on screen; its index buffer holds every level, uploaded with
 /// the mesh, and choosing one costs no upload or allocation.
 ///
+/// A Mesh compiled with Mesh::compile_impostor() draws as an impostor (impostor.hpp): each object or placed copy is
+/// one quad, which faces the eye across the front of the sphere of its ImpostorFrames, covering the sphere's
+/// silhouette, computed in the mesh's space, so that any affine world matrix or placement keeps it exact. Each pixel
+/// blends the three frames whose directions surround the direction toward the eye, weighted by their barycentric
+/// position on the grid: in each, where the pixel's ray crosses the frame's plane, the ray steps once to the height
+/// stored there, as parallax mapping steps, and samples the frame there, from the mip level its footprint chooses but
+/// no coarser than four texels across a frame. The blended coverage is tested against the material's cutoff, the
+/// pixel's depth is that of the blended surface point, and it is lit as the standard material lights a surface, with
+/// the blended normal, base color times the object's material factor, occlusion, roughness, metallic and emission,
+/// and shadows received without a receiver plane. Into the shadow regions the impostor draws along the sun with the
+/// frames nearest the sun's direction. A copy seen from inside its sphere draws nothing, and visibility ranges apply
+/// as to any copy. A custom material assigned to its material slot draws it as a quad instead.
+///
 /// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`
 /// reflectance for dielectrics. Base color is the base color texture, decoded from sRGB before filtering,

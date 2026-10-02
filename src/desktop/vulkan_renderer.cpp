@@ -69,6 +69,15 @@ constexpr std::uint32_t mesh_fragment_code[] =
 constexpr std::uint32_t resource_vertex_code[] =
 #include "resource.vert.inc"
     ;
+constexpr std::uint32_t impostor_vertex_code[] =
+#include "impostor.vert.inc"
+    ;
+constexpr std::uint32_t impostor_fragment_code[] =
+#include "impostor.frag.inc"
+    ;
+constexpr std::uint32_t impostor_shadow_fragment_code[] =
+#include "impostor-shadow.frag.inc"
+    ;
 #endif
 struct VulkanFailure : std::runtime_error {
     VkResult result;
@@ -648,8 +657,11 @@ struct VulkanRenderer::Impl {
         create_custom_layout();
         make_shaders(shadow_resource_vertex_code, shadow_fragment_code, shadow_resource_vertex_shader,
                      shadow_fragment_shader);
+        make_shaders(impostor_vertex_code, impostor_fragment_code, impostor_vertex_shader, impostor_fragment_shader);
+        make_fragment(impostor_shadow_fragment_code, impostor_shadow_fragment_shader);
         create_shadow_pass();
         create_pipeline(PipelineKind::shadow_resource, shadow_resource_pipeline);
+        create_pipeline(PipelineKind::shadow_impostor, shadow_impostor_pipeline);
 #endif
     }
     void running() const {
@@ -794,6 +806,7 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         create_pipeline(PipelineKind::resource, resource_pipeline);
         create_pipeline(PipelineKind::blended_resource, blended_resource_pipeline);
+        create_pipeline(PipelineKind::impostor, impostor_pipeline);
         create_pipeline(PipelineKind::sky, sky_pipeline);
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
@@ -896,13 +909,24 @@ struct VulkanRenderer::Impl {
 #endif
     }
     // blended_resource draws meshes as resource does, but composites premultiplied color over the target and
-    // writes no depth.
-    enum class PipelineKind { diagnostic, ui, resource, blended_resource, sky, shadow_resource };
+    // writes no depth. impostor and shadow_impostor draw impostor meshes (Mesh::impostor()) in the view and the shadow
+    // regions.
+    enum class PipelineKind {
+        diagnostic,
+        ui,
+        resource,
+        blended_resource,
+        sky,
+        shadow_resource,
+        impostor,
+        shadow_impostor
+    };
     void create_pipeline(PipelineKind mode, VkPipeline &output) {
-        const bool shadow = mode == PipelineKind::shadow_resource;
+        const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
+        const bool shadow = mode == PipelineKind::shadow_resource || mode == PipelineKind::shadow_impostor;
         const bool blended = mode == PipelineKind::blended_resource;
 #ifdef ANIMA_HAS_ASSETS
-        const bool resource = mode == PipelineKind::resource || blended || shadow;
+        const bool resource = mode == PipelineKind::resource || blended || shadow || impostor;
 #endif
         const bool ui = mode == PipelineKind::ui, sky = mode == PipelineKind::sky;
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
@@ -921,12 +945,13 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         if (resource)
             stages[1].module = mesh_fragment_shader;
-        // mesh.frag's constant 0 selects premultiplied output.
-        const VkBool32 premultiplied = VK_TRUE;
-        const VkSpecializationMapEntry premultiplied_entry{0, 0, sizeof(premultiplied)};
-        const VkSpecializationInfo premultiplied_output{1, &premultiplied_entry, sizeof(premultiplied), &premultiplied};
+        // Sets a shader's constant 0: mesh.frag's selects premultiplied output, impostor.vert's the shadow regions'
+        // view.
+        const VkBool32 enabled = VK_TRUE;
+        const VkSpecializationMapEntry constant_entry{0, 0, sizeof(enabled)};
+        const VkSpecializationInfo constant_enabled{1, &constant_entry, sizeof(enabled), &enabled};
         if (blended)
-            stages[1].pSpecializationInfo = &premultiplied_output;
+            stages[1].pSpecializationInfo = &constant_enabled;
         if (sky) {
             stages[0].module = sky_vertex_shader;
             stages[1].module = sky_fragment_shader;
@@ -934,6 +959,12 @@ struct VulkanRenderer::Impl {
         if (shadow) {
             stages[0].module = shadow_resource_vertex_shader;
             stages[1].module = shadow_fragment_shader;
+        }
+        if (impostor) {
+            stages[0].module = impostor_vertex_shader;
+            stages[1].module = shadow ? impostor_shadow_fragment_shader : impostor_fragment_shader;
+            if (shadow)
+                stages[0].pSpecializationInfo = &constant_enabled;
         }
 #endif
         VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -956,6 +987,13 @@ struct VulkanRenderer::Impl {
         if (shadow) {
             vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(shadow_resource_attributes));
             vertex.pVertexAttributeDescriptions = shadow_resource_attributes;
+        }
+        // An impostor's corner is its texture coordinate alone.
+        const VkVertexInputAttributeDescription impostor_attributes[]{resource_attributes[3], placement_attributes[0],
+                                                                      placement_attributes[1], placement_attributes[2]};
+        if (impostor) {
+            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(impostor_attributes));
+            vertex.pVertexAttributeDescriptions = impostor_attributes;
         }
 #endif
 #ifdef ANIMA_UI
@@ -1782,6 +1820,9 @@ struct VulkanRenderer::Impl {
         if (blended_resource_pipeline)
             vkDestroyPipeline(device, blended_resource_pipeline, nullptr);
         blended_resource_pipeline = VK_NULL_HANDLE;
+        if (impostor_pipeline)
+            vkDestroyPipeline(device, impostor_pipeline, nullptr);
+        impostor_pipeline = VK_NULL_HANDLE;
         if (sky_pipeline)
             vkDestroyPipeline(device, sky_pipeline, nullptr);
         sky_pipeline = VK_NULL_HANDLE;
@@ -1839,6 +1880,14 @@ struct VulkanRenderer::Impl {
             detail_shadow_target.reset();
             if (shadow_resource_pipeline)
                 vkDestroyPipeline(device, shadow_resource_pipeline, nullptr);
+            if (shadow_impostor_pipeline)
+                vkDestroyPipeline(device, shadow_impostor_pipeline, nullptr);
+            if (impostor_vertex_shader)
+                vkDestroyShaderModule(device, impostor_vertex_shader, nullptr);
+            if (impostor_fragment_shader)
+                vkDestroyShaderModule(device, impostor_fragment_shader, nullptr);
+            if (impostor_shadow_fragment_shader)
+                vkDestroyShaderModule(device, impostor_shadow_fragment_shader, nullptr);
             if (shadow_pass)
                 vkDestroyRenderPass(device, shadow_pass, nullptr);
             if (shadow_resource_vertex_shader)

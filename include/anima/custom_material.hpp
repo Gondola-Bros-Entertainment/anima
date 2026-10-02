@@ -74,12 +74,13 @@
 /// vertex shader, `animaVisibility()` returns the share of the object or copy that its range draws, as the standard
 /// material computes it, negated while it fades in: 0 outside the range, from 0 to -1 across the begin margin, 1
 /// between the margins, from 1 to 0 across the end margin, and 1 without a range or in an orthographic view. To
-/// draw as the standard material does, the vertex shader passes it as a `flat` output to the fragment shader, which
-/// discards the fragments for which `animaDissolved()` returns true: every fragment of a copy whose value is 0, and in
-/// the margins those that the standard material's 4x4 ordered dither discards, the pixels complementary in a begin
-/// margin to those of an end margin. The depth-only variant's vertex shader moves a copy out of the clip volume, for
-/// example to (2, 2, 2, 1), while `abs(animaVisibility())` is at most 0.5. A material whose shaders do neither draws
-/// whole every copy that the renderer does not skip, including copies outside the range.
+/// draw as the standard material does, the vertex shader passes it as a `flat` output to the fragment shader, which,
+/// after any sampling that chooses mip levels from derivatives, since a discard leaves those undefined for the rest of
+/// its 2x2 quad, discards the fragments for which `animaDissolved()` returns true: every fragment of a copy whose value
+/// is 0, and in the margins those that the standard material's 4x4 ordered dither discards, the pixels complementary in
+/// a begin margin to those of an end margin. The depth-only variant's vertex shader moves a copy out of the clip
+/// volume, for example to (2, 2, 2, 1), while `abs(animaVisibility())` is at most 0.5. A material whose shaders do
+/// neither draws whole every copy that the renderer does not skip, including copies outside the range.
 ///
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear

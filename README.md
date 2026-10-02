@@ -57,8 +57,8 @@ subdirectory, and compiler warning policy stays private to Anima's targets.
 | Module | Targets | Option | Provides |
 | --- | --- | --- | --- |
 | Core | `anima::core` | always built | Math, fixed-step timing, geometry queries, action input, A* navigation, and audio decoding, mixing and device output |
-| Assets and scenes | `anima::assets` | `ANIMA_BUILD_ASSETS` (on) | GLB and BC7 KTX2 import, meshes, scenes, objects, components, prefabs, animation, cameras and lighting |
-| Desktop | `anima::desktop` | `ANIMA_BUILD_DESKTOP` (on) | SDL3/Vulkan rendering: skinning, materials with anisotropic filtering, application shaders, instanced placements, visibility ranges, levels of detail, culling, sky and directional shadows |
+| Assets and scenes | `anima::assets` | `ANIMA_BUILD_ASSETS` (on) | GLB and BC7 KTX2 import, meshes, impostor baking, scenes, objects, components, prefabs, animation, cameras and lighting |
+| Desktop | `anima::desktop` | `ANIMA_BUILD_DESKTOP` (on) | SDL3/Vulkan rendering: skinning, materials with anisotropic filtering, application shaders, instanced placements, visibility ranges, levels of detail, octahedral impostors, culling, sky and directional shadows |
 | 3D physics | `anima::physics`, `anima::physics_scene` | `ANIMA_BUILD_PHYSICS` | Jolt simulation and queries; the scene target also needs assets |
 | 2D physics | `anima::physics2d`, `anima::physics2d_scene` | `ANIMA_BUILD_PHYSICS2D` | Box2D simulation and queries; the scene target also needs assets |
 | SDL input | `anima::input_sdl` | `ANIMA_BUILD_INPUT_SDL` | SDL event conversion using SDL headers only |
