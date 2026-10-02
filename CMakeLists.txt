@@ -476,6 +476,7 @@ if(ANIMA_BUILD_DESKTOP)
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/material.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/visibility.glsl"
             VERBATIM)
         list(APPEND shader_outputs "${output}")
     endforeach()

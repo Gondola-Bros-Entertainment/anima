@@ -182,8 +182,10 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     // Vertices weld only when every attribute matches, so a hard edge or a texture seam leaves several vertices at one
     // position. Strictly, the simplifier collapses none of them, which leaves faceted models nearly whole. Permissive
     // simplification may collapse across those discontinuities, charging the change in normals and colors to the
-    // step's error, while texture seams stay protected so textures do not smear across them, as meshoptimizer
-    // recommends for faceted meshes.
+    // step's error, as meshoptimizer recommends for faceted meshes. Simplification writes only indices, so a collapse
+    // gives the moved corners the target vertex's other attributes, which it does not weigh. Splits in those stay
+    // protected: texture coordinates, which would smear the texture, tangent handedness, which would mirror the normal
+    // map, vertex alpha, and in a skinned draw the joints and weights, which would tear the surface once posed.
     std::vector<unsigned> position_remap;
     std::vector<unsigned char> vertex_locks;
     for (std::size_t d = 0; lods.levels && d < result->draws_.size(); ++d) {
@@ -214,9 +216,13 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
         const auto scale = meshopt_simplifyScale(positions, count, sizeof(SourceVertex));
         position_remap.resize(count);
         meshopt_generatePositionRemap(position_remap.data(), positions, count, sizeof(SourceVertex));
+        const auto split = [&](const SourceVertex &a, const SourceVertex &b) {
+            return a.uv != b.uv || a.tangent[3] != b.tangent[3] || a.alpha != b.alpha ||
+                   (draw.skinned && (a.joints != b.joints || a.weights != b.weights));
+        };
         vertex_locks.assign(count, 0);
         for (std::size_t i = 0; i < count; ++i)
-            if (const auto shared = position_remap[i]; shared != i && vertex[shared].uv != vertex[i].uv)
+            if (const auto shared = position_remap[i]; shared != i && split(vertex[shared], vertex[i]))
                 vertex_locks[i] = meshopt_SimplifyVertex_Protect;
         std::vector<unsigned> level;
         float error = 0;
@@ -234,7 +240,8 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
             // recommends for a chain: a level's error then covers every step between it and the draw's own triangles.
             error += step * scale;
             // Simplification keeps the surviving triangles in source order. Reorder a level for the vertex cache,
-            // except a blended draw's, whose triangles composite in that order.
+            // except a blended draw's, whose triangles composite in that order. Only the draw's own material is known
+            // here; a blended custom material assigned later composites the reordered levels.
             if (!blended)
                 meshopt_optimizeVertexCache(level.data(), level.data(), level.size(), count);
             draw.levels.push_back(

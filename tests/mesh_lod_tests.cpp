@@ -57,6 +57,19 @@ Asset sphere_asset(AlphaMode mode = AlphaMode::opaque) {
     asset.primitives.push_back(sphere(24, 48));
     return asset;
 }
+// sphere_asset() flat shaded: each triangle has its own normal, so no vertex welds with a neighbor's, as in a model
+// with hard edges, and only positions are shared.
+Asset faceted_sphere_asset() {
+    auto asset = sphere_asset();
+    auto &vertices = asset.primitives[0].vertices;
+    for (std::size_t t = 0; t < vertices.size(); t += 3) {
+        const auto normal = normalized(
+            cross(vertices[t + 1].position - vertices[t].position, vertices[t + 2].position - vertices[t].position));
+        for (std::size_t k = 0; k < 3; ++k)
+            vertices[t + k].normal = normal;
+    }
+    return asset;
+}
 // Triangles that one draw, or one of its levels, draws: @p count indices of @p mesh from @p first.
 struct Triangles {
     const Mesh *mesh{};
@@ -69,6 +82,28 @@ std::vector<Triangles> draw_and_levels(const Mesh &mesh, std::size_t index) {
     for (const auto &level : draw.levels)
         result.push_back({&mesh, level.first_index, level.index_count});
     return result;
+}
+// A triangle's indices rotated to start at the smallest, which keeps its winding, so equal triangles compare equal.
+std::array<std::uint32_t, 3> canonical(const std::uint32_t *corners) {
+    const auto first = std::size_t(std::min_element(corners, corners + 3) - corners);
+    return {corners[first], corners[(first + 1) % 3], corners[(first + 2) % 3]};
+}
+// Whether the triangles of @p level that @p previous also draws, unchanged, keep the order they have in @p previous,
+// and how many there are.
+std::pair<bool, std::size_t> keeps_order(const Mesh &mesh, const Triangles &previous, const Triangles &level) {
+    std::map<std::array<std::uint32_t, 3>, std::uint32_t> position;
+    for (std::uint32_t t = 0; t < previous.count; t += 3)
+        position.emplace(canonical(&mesh.indices()[previous.first + t]), t);
+    bool ordered = true;
+    std::size_t unchanged = 0;
+    std::uint32_t last = 0;
+    for (std::uint32_t t = 0; t < level.count; t += 3)
+        if (const auto found = position.find(canonical(&mesh.indices()[level.first + t])); found != position.end()) {
+            ordered = ordered && (!unchanged || found->second > last);
+            last = found->second;
+            ++unchanged;
+        }
+    return {ordered, unchanged};
 }
 // Whether @p parts close up together: each edge, by the positions of its ends, is matched by one that runs the other
 // way, so no crack opens anywhere between them.
@@ -170,17 +205,7 @@ TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
 }
 
 TEST_CASE("Faceted draws simplify across their hard edges and keep their texture seams") {
-    // Flat shading gives each triangle its own normal, so no vertex welds with a neighbor's, as in a model with hard
-    // edges: only positions are shared.
-    auto asset = sphere_asset();
-    auto &vertices = asset.primitives[0].vertices;
-    for (std::size_t t = 0; t < vertices.size(); t += 3) {
-        const auto normal = normalized(
-            cross(vertices[t + 1].position - vertices[t].position, vertices[t + 2].position - vertices[t].position));
-        for (std::size_t k = 0; k < 3; ++k)
-            vertices[t + k].normal = normal;
-    }
-    const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+    const auto mesh = Mesh::compile(faceted_sphere_asset(), TexelRetention::keep, {4});
     const auto &draw = mesh->draws()[0];
     REQUIRE(draw.levels.size() >= 3);
     CHECK(draw.levels[0].index_count <= draw.index_count * 6 / 10);
@@ -200,6 +225,82 @@ TEST_CASE("Faceted draws simplify across their hard edges and keep their texture
             }
             CHECK(highest - lowest < .5F);
         }
+    }
+}
+
+TEST_CASE("Faceted draws keep the splits in attributes that simplification does not weigh") {
+    // Each half of a faceted sphere, split along two meridians away from its texture seam, takes its own value of one
+    // attribute. Simplification writes only indices, so collapsing across the split would give the moved corners the
+    // other half's value: the alpha would move, the normal map would mirror, and the posed skin would tear.
+    enum class Split { alpha, handedness, joints };
+    for (const auto split : {Split::alpha, Split::handedness, Split::joints}) {
+        CAPTURE(int(split));
+        auto asset = faceted_sphere_asset();
+        auto &primitive = asset.primitives[0];
+        if (split == Split::joints) {
+            asset.nodes.resize(3);
+            asset.skins.push_back({{1, 2}, {identity(), identity()}});
+            primitive.skin = 0;
+        }
+        for (std::size_t v = 0; v < primitive.vertices.size(); ++v) {
+            // Six corners per quad and 48 quads per ring; segments 12 to 35 form one half.
+            const bool half = (v / 6 % 48 + 36) % 48 < 24;
+            auto &vertex = primitive.vertices[v];
+            vertex.weights = {split == Split::joints ? 1.F : 0.F, 0, 0, 0};
+            if (split == Split::alpha)
+                vertex.alpha = half ? 1.F : .5F;
+            else if (split == Split::handedness)
+                vertex.tangent = {1, 0, 0, half ? 1.F : -1.F};
+            else
+                vertex.joints = {half ? 1U : 0U, 0, 0, 0};
+        }
+        const auto value = [&](const SourceVertex &vertex) {
+            return split == Split::alpha        ? vertex.alpha
+                   : split == Split::handedness ? vertex.tangent[3]
+                                                : float(vertex.joints[0]);
+        };
+        const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+        const auto &draw = mesh->draws()[0];
+        REQUIRE(draw.levels.size() >= 3);
+        // The protected splits are two meridians, so the hard edges elsewhere still simplify.
+        CHECK(draw.levels[0].index_count <= draw.index_count * 6 / 10);
+        for (const auto &level : draw.levels) {
+            std::size_t joined = 0;
+            for (auto t = level.first_index; t < level.first_index + level.index_count; t += 3) {
+                const auto at = [&](std::uint32_t k) { return value(mesh->vertices()[mesh->indices()[t + k]]); };
+                joined += at(0) != at(1) || at(0) != at(2);
+            }
+            CHECK(joined == 0);
+        }
+    }
+}
+
+TEST_CASE("A blended draw's levels keep their triangles in source order") {
+    // The sphere's triangles in a scrambled order, which ordering for the vertex cache changes. A blended draw
+    // composites its triangles in order, so each of its levels keeps the triangles it shares unchanged with the one
+    // before it in that one's order; an opaque draw's levels are reordered.
+    for (const auto mode : {AlphaMode::blend, AlphaMode::opaque}) {
+        CAPTURE(int(mode));
+        auto asset = sphere_asset(mode);
+        auto &vertices = asset.primitives[0].vertices;
+        const auto triangles = vertices.size() / 3;
+        // 1009 is prime and does not divide the 2,304 triangles, so the stride visits each once.
+        std::vector<SourceVertex> scrambled;
+        scrambled.reserve(vertices.size());
+        for (std::size_t k = 0; k < triangles; ++k)
+            for (std::size_t c = 0; c < 3; ++c)
+                scrambled.push_back(vertices[k * 1009 % triangles * 3 + c]);
+        vertices = std::move(scrambled);
+        const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+        const auto steps = draw_and_levels(*mesh, 0);
+        REQUIRE(steps.size() >= 3);
+        bool every_level_ordered = true;
+        for (std::size_t k = 1; k < steps.size(); ++k) {
+            const auto [ordered, unchanged] = keeps_order(*mesh, steps[k - 1], steps[k]);
+            CHECK(unchanged >= 10);
+            every_level_ordered = every_level_ordered && ordered;
+        }
+        CHECK(every_level_ordered == (mode == AlphaMode::blend));
     }
 }
 

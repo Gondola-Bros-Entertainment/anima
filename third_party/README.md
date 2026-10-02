@@ -17,7 +17,8 @@ them compile as C++ and add no language runtime dependency.
 | [stb_vorbis 1.22](https://github.com/mackron/miniaudio/tree/9634bedb5b5a2ca38c1ee7108a9358a4e233f14d/extras) | miniaudio's `extras/stb_vorbis.c` at the same revision | `miniaudio/stb_vorbis.c` (MIT or public domain, stated at the end of the file; Anima uses MIT); private to `anima::core` |
 
 The cgltf, doctest, meshoptimizer, Vulkan Memory Allocator and stb_vorbis files are unmodified. Of meshoptimizer,
-Anima keeps only the simplifier and the allocator it uses, from the release's `src` directory.
+Anima keeps only the simplifier, the position remap and vertex cache ordering that its levels of detail use, and the
+allocator they use, from the release's `src` directory.
 stb_image carries two local size-safety changes: 16-bit channel conversion uses its
 checked allocation helper, and 8-bit PNG row copying reuses the validated row byte
 count. The JSON header carries one local thread-safety change: its lexer and

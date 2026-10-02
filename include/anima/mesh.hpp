@@ -61,9 +61,11 @@ struct IndexedDraw {
 /// Each level simplifies the one before it, starting from the draw, with meshoptimizer's quadric simplifier, which
 /// collapses the edges that change the surface, normals and vertex colors least, toward half the triangles. It may
 /// collapse across a hard edge, where normals or vertex colors split, charging the change to the step's error, so
-/// faceted models simplify too, but never across a seam where texture coordinates split. A level's triangles are
-/// ordered for the vertex cache, except a blended draw's, which keep their source order, since they composite in
-/// it. Every level keeps the draw's open border whole, so draws that meet
+/// faceted models simplify too, but never across a split in the attributes it does not weigh: texture coordinates,
+/// tangent handedness, vertex alpha, and in a skinned draw joints and weights. A level's triangles are ordered for the
+/// vertex cache, except those of a draw whose own material is AlphaMode::blend, which keep their source order, since
+/// they composite in it; a blended custom material (Scene::set_custom_material) composites any other draw's levels in
+/// their cache order. Every level keeps the draw's open border whole, so draws that meet
 /// along it, such as the material subsets of one mesh or the pieces of Mesh::compile_static, meet without cracks
 /// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices
 /// of the one before it or when a step's error would exceed the draw's extent. Draws with a masked material
