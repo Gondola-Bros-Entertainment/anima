@@ -1,5 +1,5 @@
 #version 450
-// The depth-only variant of the application's effect: the same placement, through the shadow region's matrix.
+// The depth-only variant of the application's effect: the same placement, through the shadow map's matrix.
 #extension GL_GOOGLE_include_directive : require
 #define ANIMA_VERTEX
 #include "anima/custom_material.glsl"

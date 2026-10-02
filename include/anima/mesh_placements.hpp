@@ -18,7 +18,7 @@ namespace anima {
 /// rest pose (Mesh::rest_pose()). Such a renderer always draws the rest pose. Creation groups the placements into
 /// clusters of at most #cluster_size near one another, ordered along a space-filling curve through their
 /// translations, and records the bounds of each cluster's copies, so a renderer can skip the clusters that a view
-/// or shadow region cannot see. transforms() lists the placements in that order, not in the order given; the
+/// or shadow pass cannot see. transforms() lists the placements in that order, not in the order given; the
 /// copies are interchangeable, so only blended materials, whose copies blend in that order, can tell.
 ///
 /// Immutable after creation and safe to read from several threads; scenes and renderers share it. VulkanRenderer

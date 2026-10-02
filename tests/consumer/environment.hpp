@@ -155,8 +155,8 @@ inline std::shared_ptr<const anima::Asset> box_fixture(anima::Vec3 half, bool gr
     return asset;
 }
 // A mesh and its (-1, 1, 1) mirror image under the same light shade as mirror images, casting and receiving
-// shadows alike. The sun, the camera and the shadow region lie in the plane x = 0 that relates them, and each
-// cube stands on its own ground tile, the mirrored cube's tile being the other tile mirrored.
+// shadows alike. The sun, the camera and the shadow cascade that the view centers lie in the plane x = 0 that relates
+// them, and each cube stands on its own ground tile, the mirrored cube's tile being the other tile mirrored.
 template <class Capture>
 void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, const gpu_check::Captures &images) {
     using anima::operator*;
@@ -196,11 +196,10 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, 
     lighting.fill.radiance = {};
     lighting.ambient_sky = {.25F, .3F, .4F};
     lighting.ambient_ground = {.04F, .03F, .02F};
-    lighting.shadow.enabled = true;
-    lighting.shadow.center = {0, 0, -1};
-    lighting.shadow.extent = 4;
-    lighting.shadow.depth = 20;
-    lighting.shadow.resolution = 1024;
+    // One cascade over the 10 m in view, with texels of about 7 mm.
+    lighting.shadow_cascades.enabled = true;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 10;
     const auto view = anima::perspective(4.F / 3, .05F, 50) * anima::look_at({0, 5, 3}, {0, 0, -1});
     renderer.set_view(view);
     renderer.set_environment(lighting);
@@ -312,7 +311,7 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture,
     lighting.fill.radiance = {};
     lighting.ambient_sky = {.25F, .3F, .4F};
     lighting.ambient_ground = {.04F, .03F, .02F};
-    lighting.shadow.enabled = false;
+    lighting.shadow_cascades.enabled = false;
     const auto view = anima::perspective(4.F / 3, .05F, 50) * anima::look_at({0, 2, 5}, {0, half, 0});
     renderer.set_view(view);
     renderer.set_environment(lighting);
@@ -362,6 +361,26 @@ inline gpu_check::Rgb ground_pixel(const gpu_check::Image &image, double x, doub
     return gpu_check::pixel(image, std::size_t(px), std::size_t(py));
 }
 inline int sum(const gpu_check::Rgb &c) { return c[0] + c[1] + c[2]; }
+// The orthographic view of the curved fixture: 1.2 m wide and 0.9 m high, with reversed depth from 1 at the eye to 0
+// at 20 m.
+inline anima::Mat4 curved_view() {
+    using anima::operator*;
+    return anima::orthographic(1.2F / .9F, .9F, 0, 20) * anima::look_at({0, 0, 3}, {0, 0, 0});
+}
+// Light grazing the curved fixture from its side, without ambient light, and, when @p shadowed, one cascade of the
+// default biases over the 20 m in view, whose texels of about 2 cm are as coarse as a game's far shadows.
+inline anima::Environment curved_environment(bool shadowed) {
+    anima::Environment lighting;
+    lighting.sun.direction = {-4, 0, 1};
+    lighting.sun.radiance = {3, 3, 3};
+    lighting.fill.radiance = {};
+    lighting.ambient_sky = lighting.ambient_ground = lighting.ambient_specular = {};
+    lighting.shadow_cascades.enabled = shadowed;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 20;
+    lighting.shadow_cascades.resolution = 1024;
+    return lighting;
+}
 // The coarse 12-sided cylinder's smooth normals face the light at these probes while the polygon beside them faces
 // away. Ray casting each shadow texel's light ray through the polygon proves that ordinary self-occlusion there
 // stays under the configured residual bias, so extending that nearly edge-on plane must not invent a shadow: the
@@ -369,8 +388,14 @@ inline int sum(const gpu_check::Rgb &c) { return c[0] + c[1] + c[2]; }
 inline void check_curved_receiver(const gpu_check::Captures &images) {
     constexpr int least_direct_light = 16, largest_error = 2;
     constexpr double cylinder_radius = .3, view_width = 1.2, view_height = .9, side_width = .15;
-    constexpr double shadow_extent = 50, shadow_depth = 70, shadow_texels = 2048;
-    constexpr double constant_bias = .00035, slope_bias = .001;
+    const auto lighting = curved_environment(true);
+    const auto cascades = anima::fit_shadow_cascades(lighting, curved_view());
+    images.require(cascades.size() == 1, "The curved view fits no shadow cascade", {});
+    // The cascade's texels, which the renderer lays out as fit_shadow_cascades() states, and its biases in them.
+    const auto &cascade = cascades.front();
+    const double texel = cascade.texel, shadow_width = 2. * cascade.radius, shadow_texels = shadow_width / texel;
+    const double constant_bias = lighting.shadow_cascades.constant_bias,
+                 slope_bias = lighting.shadow_cascades.slope_bias;
     images.require_same("curved-shadowed", "curved-reference-shadowed", "The curved receiver's backends differ");
     const auto &unshadowed = images["curved-unshadowed"];
     const auto &shadowed = images["curved-shadowed"];
@@ -383,7 +408,9 @@ inline void check_curved_receiver(const gpu_check::Captures &images) {
         vertices[i] = {cylinder_radius * std::sin(double(i) * std::numbers::pi / 6),
                        cylinder_radius * std::cos(double(i) * std::numbers::pi / 6)};
     const Point light{-4 / std::sqrt(17.), 1 / std::sqrt(17.)};
+    // The cascade's axis across the sun in this plane, and where along it the square is centered.
     const Point right{light[1], -light[0]};
+    const auto middle = dot({cascade.center.x, cascade.center.z}, right);
     const auto geometric_light = dot({std::sin(std::numbers::pi / 12), std::cos(std::numbers::pi / 12)}, light);
     images.require(geometric_light < 0, "The curved fixture no longer reaches the geometric light terminator", {});
     for (const double fraction : {.04, .06, .08}) {
@@ -395,11 +422,11 @@ inline void check_curved_receiver(const gpu_check::Captures &images) {
         const auto length = std::hypot(radial[0], radial[1]);
         const auto shaded_light = dot({radial[0] / length, radial[1] / length}, light);
         images.require(shaded_light > 0, "A curved probe is not directly lit", {});
-        const auto bias = shadow_depth * (constant_bias + slope_bias * (1 - shaded_light));
-        const auto first_texel = std::floor((dot(radial, right) / shadow_extent + .5) * shadow_texels - .5);
+        const auto bias = texel * (constant_bias + slope_bias * (1 - shaded_light));
+        const auto first_texel = std::floor(((dot(radial, right) - middle) / shadow_width + .5) * shadow_texels - .5);
         double advance = 0;
         for (const double tap : {-1., 0., 1., 2.}) {
-            const auto projected = ((first_texel + tap + .5) / shadow_texels - .5) * shadow_extent;
+            const auto projected = ((first_texel + tap + .5) / shadow_texels - .5) * shadow_width + middle;
             for (std::size_t i = 0; i < vertices.size(); ++i) {
                 const auto &a = vertices[i], &b = vertices[(i + 1) % vertices.size()];
                 const auto ra = dot(a, right), rb = dot(b, right);
@@ -519,9 +546,9 @@ inline int run(int argc, char **argv) {
     environment.ambient_sky = {.16F, .18F, .3F};
     environment.ambient_ground = {.08F, .06F, .09F};
     environment.sky = true;
-    environment.shadow.extent = 10;
-    environment.shadow.depth = 30;
-    environment.shadow.resolution = 1024;
+    // One cascade over the 25 m around the scene, which every view below keeps in it.
+    environment.shadow_cascades.count = 1;
+    environment.shadow_cascades.distance = 25;
     const auto start = std::chrono::steady_clock::now();
     gpu_check::Captures images(output);
     // Draws a frame, and reads it back as @p name unless the name is empty.
@@ -546,7 +573,7 @@ inline int run(int argc, char **argv) {
     };
     renderer.set_environment(environment);
     capture("unshadowed");
-    environment.shadow.enabled = true;
+    environment.shadow_cascades.enabled = true;
     renderer.set_environment(environment);
     capture("shadowed");
     require(renderer.resource_stats().shadow_draw_calls == 2, "Missing shadow casters");
@@ -652,10 +679,10 @@ inline int run(int argc, char **argv) {
     scene->set_primitive_visible(id, 1, false);
     capture("caster-hidden");
     scene->set_primitive_visible(id, 1, true);
-    environment.shadow.resolution = 512;
+    environment.shadow_cascades.resolution = 1024;
     renderer.set_environment(environment);
     capture("");
-    environment.shadow.resolution = 1024;
+    environment.shadow_cascades.resolution = 2048;
     renderer.set_environment(environment);
     capture("restored-shadow");
     renderer.set_view(anima::perspective(4.F / 3, .05F, 2) * anima::look_at({0, 1, 1}, {0, 0, 0}));
@@ -663,19 +690,18 @@ inline int run(int argc, char **argv) {
     require(renderer.resource_stats().culled_draws >= 1 && renderer.resource_stats().shadow_draw_calls == 2,
             "Main camera incorrectly removed an offscreen shadow caster");
     renderer.set_view(view);
-    // Move the main camera continuously without moving the light's shadow region.
-    // Returning to the original view must reproduce the original shadowed image.
+    // Move the main camera continuously, refitting the cascade to each view on the world's texel grid. Returning to
+    // the original view must reproduce the original shadowed image.
     for (int step = 0; step <= 16; ++step) {
         const float x = step <= 8 ? -.5F * step : -4.F + .5F * (step - 8);
         renderer.set_view(anima::perspective(4.F / 3, .05F, 100) * anima::look_at({x, 6, 10}, {0, 0, 0}));
         capture(step == 8 ? "camera-left" : step == 16 ? "camera-restored" : "");
     }
-    // Optional detail region: retain world coverage while refining a small
-    // subject, including independent casters outside both the main camera and
-    // the original world-shadow volume.
-    environment.detail_shadow = environment.shadow;
+    // Optional detail region: keep the cascades' coverage while refining a small subject, including independent
+    // casters outside both the main camera and every cascade.
     environment.detail_shadow.enabled = true;
     environment.detail_shadow.extent = 2;
+    environment.detail_shadow.depth = 30;
     environment.detail_shadow.resolution = 1024;
     renderer.set_environment(environment);
     capture("detail-shadowed");
@@ -698,7 +724,7 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
     capture("detail-away");
     environment.detail_shadow.center.x = 0;
-    environment.shadow.enabled = false;
+    environment.shadow_cascades.enabled = false;
     renderer.set_environment(environment);
     capture("detail-only");
     renderer.set_view(anima::perspective(4.F / 3, .05F, 2) * anima::look_at({0, 1, 1}, {0, 0, 0}));
@@ -708,12 +734,15 @@ inline int run(int argc, char **argv) {
     auto translated = anima::identity();
     translated[12] = 40;
     scene->set_pose(id, anima::sample_pose(*asset), translated);
-    environment.shadow.enabled = true;
+    // Cascades that end a metre from the eye hold neither the translated caster nor its ground.
+    environment.shadow_cascades.enabled = true;
+    environment.shadow_cascades.distance = 1;
     environment.detail_shadow.center.x = 40;
     renderer.set_environment(environment);
     renderer.set_view(anima::perspective(4.F / 3, .05F, 100) * anima::look_at({40, 6, 10}, {40, 0, 0}));
     capture("detail-outside-world");
-    require(renderer.resource_stats().shadow_draw_calls == 2, "Detail casters depended on world-region visibility");
+    require(renderer.resource_stats().shadow_draw_calls == 2, "Detail casters depended on cascade coverage");
+    environment.shadow_cascades.distance = 25;
     scene->set_pose(id, anima::sample_pose(*asset));
     renderer.set_view(view);
     environment.detail_shadow.enabled = false;
@@ -745,10 +774,10 @@ inline int run(int argc, char **argv) {
     (void)slope_scene->add(anima::Mesh::compile(*slope));
     renderer.set_scenes({slope_scene});
     environment.sun.direction = {1, .6F, .1F};
-    environment.shadow.enabled = false;
+    environment.shadow_cascades.enabled = false;
     renderer.set_environment(environment);
     capture("slope-unshadowed");
-    environment.shadow.enabled = true;
+    environment.shadow_cascades.enabled = true;
     renderer.set_environment(environment);
     capture("slope-shadowed");
     renderer.set_scenes({reference_test::scene(anima::make_mesh_snapshot(*slope, anima::sample_pose(*slope)))});
@@ -758,11 +787,11 @@ inline int run(int argc, char **argv) {
     // unobstructed, light-facing plane into an acne pattern.
     const auto slope_sun = environment.sun.direction;
     environment.sun.direction = {1, .4F, .1F};
-    environment.shadow.enabled = false;
+    environment.shadow_cascades.enabled = false;
     renderer.set_scenes({slope_scene});
     renderer.set_environment(environment);
     capture("steep-slope-unshadowed");
-    environment.shadow.enabled = true;
+    environment.shadow_cascades.enabled = true;
     renderer.set_environment(environment);
     capture("steep-slope-shadowed");
     renderer.set_scenes({reference_test::scene(anima::make_mesh_snapshot(*slope, anima::sample_pose(*slope)))});
@@ -776,23 +805,10 @@ inline int run(int argc, char **argv) {
     auto curved_scene = std::make_shared<anima::Scene>();
     (void)curved_scene->add(anima::Mesh::compile(*curved));
     renderer.set_scenes({curved_scene});
-    // Orthographic, 1.2 m wide and 0.9 m high, with reversed depth from 1 at the eye to 0 at 20 m.
-    const auto curved_projection = anima::orthographic(1.2F / .9F, .9F, 0, 20);
-    renderer.set_view(curved_projection * anima::look_at({0, 0, 3}, {0, 0, 0}));
-    anima::Environment curved_environment;
-    curved_environment.sun.direction = {-4, 0, 1};
-    curved_environment.sun.radiance = {3, 3, 3};
-    curved_environment.fill.radiance = {};
-    curved_environment.ambient_sky = curved_environment.ambient_ground = curved_environment.ambient_specular = {};
-    curved_environment.shadow.extent = 25;
-    curved_environment.shadow.depth = 70;
-    curved_environment.shadow.resolution = 2048;
-    curved_environment.shadow.constant_bias = .00035F;
-    curved_environment.shadow.slope_bias = .001F;
-    renderer.set_environment(curved_environment);
+    renderer.set_view(curved_view());
+    renderer.set_environment(curved_environment(false));
     capture("curved-unshadowed");
-    curved_environment.shadow.enabled = true;
-    renderer.set_environment(curved_environment);
+    renderer.set_environment(curved_environment(true));
     capture("curved-shadowed");
     renderer.set_scenes({reference_test::scene(anima::make_mesh_snapshot(*curved, anima::sample_pose(*curved)))});
     capture("curved-reference-shadowed");
@@ -800,7 +816,7 @@ inline int run(int argc, char **argv) {
     renderer.set_view(view);
     renderer.set_scenes({std::make_shared<anima::Scene>()});
     capture("sky");
-    environment.shadow.enabled = false;
+    environment.shadow_cascades.enabled = false;
     renderer.set_environment(environment);
     capture("sky-shadows-disabled");
     check_mirrored_shading(renderer, capture, images);

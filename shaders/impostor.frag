@@ -49,8 +49,8 @@ void main() {
     vec3 albedo = clamp(hit.color.rgb * surface.factor.rgb, 0.0, 1.0);
     float occlusion = mix(1.0, maps.r, material.detail.z);
     // Impostor surfaces have no plane to extend across the shadow kernel, so they keep the constant and slope biases.
-    vec3 color =
-        reflectedLight(n, position, surface.viewOrigin, albedo, maps.b, maps.g, occlusion, vec2(0), vec2(0));
+    vec3 color = reflectedLight(n, position, surface.viewOrigin, albedo, maps.b, maps.g, occlusion,
+                                ShadowReceiver(vec3(0), vec3(0), 0.0, 1.0));
     color += material.emissiveAlpha.rgb * emission;
     outColor = vec4(fogged(color, position, surface.viewOrigin), 1.0);
 }

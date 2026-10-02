@@ -88,10 +88,9 @@ inline int run(int argc, char **argv) {
     // A low sun in -X casts shadows four times as long as each copy is tall toward +X.
     anima::Environment environment;
     environment.sun.direction = anima::normalized({-4, 1, 0});
-    environment.shadow.enabled = true;
-    environment.shadow.center = {25, 0, 25};
-    environment.shadow.extent = 40;
-    environment.shadow.depth = 120;
+    // Four cascades over the 150 m that holds the field from every view below.
+    environment.shadow_cascades.enabled = true;
+    environment.shadow_cascades.distance = 150;
     renderer.set_environment(environment);
 
     const auto shape = pyramid(), floor = ground();

@@ -1,5 +1,5 @@
 #version 450
-// The depth-only variant of the application's fading surface: the same placement through the shadow region's matrix,
+// The depth-only variant of the application's fading surface: the same placement through the shadow map's matrix,
 // casting while more than half of the object draws, as the standard material casts. animaVisibility() is negative
 // while the object fades in, so its absolute value is the share that draws.
 #extension GL_GOOGLE_include_directive : require

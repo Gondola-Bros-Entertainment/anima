@@ -30,7 +30,7 @@ layout(push_constant) uniform Draw {
     layout(offset = 96) uvec4 indices;
 }
 draw;
-// Set in the shadow pipeline, which views along the sun, whose direction the shadow region's projection gives.
+// Set in the shadow pipeline, which views along the sun, whose direction the shadow pass's projection gives.
 layout(constant_id = 0) const bool shadowPass = false;
 #include "visibility.glsl"
 #include "impostor.glsl"
@@ -47,7 +47,7 @@ void main() {
     vec3 center = draw.sphere.xyz;
     float radius = draw.sphere.w;
     uint count = draw.indices.y & 255u, arrangement = draw.indices.y >> 8;
-    // The direction toward the viewpoint in the mesh's space. A shadow region's projection is orthographic with forward
+    // The direction toward the viewpoint in the mesh's space. A shadow pass's projection is orthographic with forward
     // depth, so its third row points away from the sun.
     vec3 toward;
     bool parallel = shadowPass || draw.origin.w == 0.0;

@@ -34,6 +34,8 @@ struct PlacementRun {
     double distance{}, scale{};
 };
 struct GpuCustomMaterial;
+// One shadow pass's view and frustum (shadow_renderer.inc).
+struct ShadowPass;
 // A main-view draw that composites over the target instead of replacing it, recorded after every opaque and
 // masked draw in the order sort_back_to_front() gives: a blended material's, or a blended or additive custom
 // material's.
@@ -92,7 +94,7 @@ VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};
 VkPipeline resource_pipeline{}, blended_resource_pipeline{};
-// Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow regions.
+// Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow passes.
 VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
 VkPipeline impostor_pipeline{}, shadow_impostor_pipeline{};
 VkDescriptorPool pose_pool{};
@@ -483,9 +485,14 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 // A depth-only shadow map holds neither unlit surfaces nor partial transmission; a custom material
                 // casts through its depth-only variant.
                 const bool casts = custom ? custom->casts_shadows() : !material || !(material->unlit || blend);
-                if (casts && render_instance.casts_shadows &&
-                    ((environment.shadow.enabled && shadow_frustum.intersects(bounds)) ||
-                     (environment.detail_shadow.enabled && detail_shadow_frustum.intersects(bounds)))) {
+                bool cast = false;
+                if (casts && render_instance.casts_shadows) {
+                    cast = environment.detail_shadow.enabled && detail_pass.frustum.intersects(bounds);
+                    // Every cascade that the draw may shadow extends its depth over it.
+                    for (std::uint32_t c = 0; c < cascade_fits.count; ++c)
+                        cast = cascade_casts(c, bounds) || cast;
+                }
+                if (cast) {
                     if (custom)
                         custom_shadows.push_back(
                             {instances.size(), i, &gpu_custom(render_instance.custom_materials[material_index])});
@@ -772,20 +779,18 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
     if (pending_count)
         record(pending_level, pending_first, pending_count);
 }
-// Records one shadow region's casters or, when @p shadow is false, the main view: every opaque and masked draw in
+// Records the casters of shadow pass @p shadow or, without one, the main view: every opaque and masked draw in
 // selection, instance and draw order, then the opaque custom material draws, then the sky where none of them drew,
 // then, unless the frame copies opaque inputs first, the blended draws back to front.
-void record_resources(bool shadow = false, bool detail = false) {
+void record_resources(const ShadowPass *shadow = nullptr) {
     if (!shadow) {
         resources.draw_calls = 0;
         resources.submitted_indices = 0;
         resources.drawn_copies = 0;
         resources.lod_draws = 0;
     }
-    const auto &view = shadow ? (detail ? detail_shadow_view : shadow_view) : view_projection;
-    const auto *frustum = shadow                    ? (detail ? &detail_shadow_frustum : &shadow_frustum)
-                          : options.frustum_culling ? &resource_frustum
-                                                    : nullptr;
+    const auto &view = shadow ? shadow->view : view_projection;
+    const auto *frustum = shadow ? &shadow->frustum : options.frustum_culling ? &resource_frustum : nullptr;
     // Meshes, then impostors, each through their pipeline, bound once their first draw records.
     for (const bool impostors : {false, true}) {
         const auto group_pipeline = impostors ? (shadow ? shadow_impostor_pipeline : impostor_pipeline)
@@ -805,14 +810,14 @@ void record_resources(bool shadow = false, bool detail = false) {
             bind_geometry(render_instance);
             for (std::size_t i = first; i < first + count; ++i) {
                 const auto draw_index = (shadow ? resource_shadow_draws : resource_draws)[i];
-                if (shadow && !(detail ? detail_shadow_frustum : shadow_frustum)
-                                   .intersects(render_instance.source->primitive_bounds[draw_index]))
+                if (shadow && !shadow->frustum.intersects(render_instance.source->primitive_bounds[draw_index]))
                     continue;
-                record_draw(render_instance, draw_index, view, shadow);
+                record_draw(render_instance, draw_index, view, shadow != nullptr);
             }
         }
     }
-    record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, shadow, detail);
+    record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, frustum,
+                        shadow != nullptr);
     if (shadow)
         return;
     record_sky();
@@ -874,7 +879,7 @@ ResourceStats resource_stats() const {
     }
     value.opaque_input_bytes =
         opaque_inputs ? opaque_inputs->color.allocation_bytes + opaque_inputs->depth.allocation_bytes : 0;
-    value.shadow_bytes = shadow_target ? shadow_target->texture.allocation_bytes : 0;
+    value.shadow_bytes = cascade_target ? cascade_target->texture.allocation_bytes : 0;
     value.shadow_bytes += detail_shadow_target ? detail_shadow_target->texture.allocation_bytes : 0;
     value.pose_buffer_bytes = pose_buffer ? pose_buffer->allocation_bytes : 0;
     return value;

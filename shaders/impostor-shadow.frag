@@ -1,6 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-// An impostor's depth in a shadow region, which impostor.vert views along the sun: covered where the frames nearest
+// An impostor's depth in a shadow map, which impostor.vert views along the sun: covered where the frames nearest
 // the sun's direction cover the ray, at the depth of the surface point that they store.
 layout(location = 0) in vec3 rayOrigin;
 layout(location = 1) in vec3 rayDirection;
@@ -18,7 +18,7 @@ draw;
 #include "impostor.glsl"
 #include "impostor_sample.glsl"
 // The quad lies across the side of the sphere facing the sun, and the depth written is clamped to the quad's own where
-// the parallax step carries the blended point in front of it, so in the shadow regions' forward depth it is never less
+// the parallax step carries the blended point in front of it, so in the shadow maps' forward depth it is never less
 // than the quad's, and the depth test may reject hidden pixels before they are shaded.
 layout(depth_greater) out float gl_FragDepth;
 void main() {

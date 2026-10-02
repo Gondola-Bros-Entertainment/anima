@@ -267,10 +267,10 @@ inline int run(int argc, char **argv) {
     // pixels that it darkens by more than 12 levels against the bare ground.
     anima::Environment environment;
     environment.sun.direction = {-.6F, .45F, .8F};
-    environment.shadow.enabled = true;
-    environment.shadow.center = {6, 0, -8};
-    environment.shadow.extent = 30;
-    environment.shadow.depth = 80;
+    // One cascade over the orthographic view's 59 m of depth, with texels of about 3 cm.
+    environment.shadow_cascades.enabled = true;
+    environment.shadow_cascades.count = 1;
+    environment.shadow_cascades.distance = 60;
     renderer.set_environment(environment);
     {
         // Looking straight down at the ground 15 metres along the shadow, with the frame's up along it.

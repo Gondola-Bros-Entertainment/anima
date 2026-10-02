@@ -418,10 +418,10 @@ inline void check_shadows(Harness &harness) {
     lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
     lighting.fill.radiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
-    lighting.shadow.enabled = true;
-    lighting.shadow.extent = 5;
-    lighting.shadow.depth = 20;
-    lighting.shadow.resolution = 1024;
+    // One cascade over the 15 m in view, with texels of about 1 cm.
+    lighting.shadow_cascades.enabled = true;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 15;
     constexpr Color gray{.6, .6, .6}, tint{.9, .2, .2};
     const auto ground = horizontal(opaque(gray, true), {0, 0, 0}, 4, 3);
 

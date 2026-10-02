@@ -138,10 +138,9 @@ inline int run(int argc, char **argv) {
         rejection::rejects<std::invalid_argument>([&] { renderer.set_lod_threshold(invalid); },
                                                   "LOD threshold must be finite and nonnegative");
     anima::Environment environment;
-    environment.shadow.enabled = true;
-    environment.shadow.center = {30, 0, 30};
-    environment.shadow.extent = 40;
-    environment.shadow.depth = 120;
+    // Four cascades over the 150 m that holds the field from every view below.
+    environment.shadow_cascades.enabled = true;
+    environment.shadow_cascades.distance = 150;
     renderer.set_environment(environment);
 
     const auto sphere = anima::Mesh::compile(sphere_asset(), anima::TexelRetention::keep, {6});

@@ -20,16 +20,16 @@ vec3 light(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float metallic, float a
     return (diffuse + fresnel * distribution * visibility) * nl;
 }
 // The light that a surface at @p position with unit normal @p n reflects toward @p viewOrigin, the eye with w 1 or the
-// direction toward the camera with w 0: ambient light darkened by @p occlusion, and the sun, shadowed with the receiver
-// plane gradients that sunVisibility() takes, and the fill light, each through light().
+// direction toward the camera with w 0: ambient light darkened by @p occlusion, and the sun, shadowed as
+// sunVisibility() finds for @p receiver, and the fill light, each through light().
 vec3 reflectedLight(vec3 n, vec3 position, vec4 viewOrigin, vec3 albedo, float metallic, float perceptualRoughness,
-                    float occlusion, vec2 receiverGradient, vec2 detailGradient) {
+                    float occlusion, ShadowReceiver receiver) {
     vec3 v = unit(viewOrigin.xyz - position * viewOrigin.w);
     float roughness = max(perceptualRoughness, minimumRoughness);
     vec3 f0 = mix(vec3(dielectricReflectance), albedo, metallic);
     vec3 ambient = mix(environment.ambientGround.rgb, environment.ambientSky.rgb, n.y * 0.5 + 0.5);
     vec3 color = occlusion * (ambient * (1.0 - metallic) * albedo + environment.ambientSpecular.rgb * f0);
-    color += sunVisibility(position, n, receiverGradient, detailGradient) * environment.sunRadiance.rgb *
+    color += sunVisibility(position, n, receiver) * environment.sunRadiance.rgb *
              light(n, v, environment.sunDirection.xyz, albedo, f0, metallic, roughness * roughness);
     color += environment.fillRadiance.rgb *
              light(n, v, environment.fillDirection.xyz, albedo, f0, metallic, roughness * roughness);

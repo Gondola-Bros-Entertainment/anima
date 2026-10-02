@@ -1,23 +1,31 @@
 // Included inside Impl. Set 1 is shared by
 // world passes; material set 0 and palette set 2 stay independent.
 Environment environment;
+// As shaders/environment.glsl lays it out, in std140.
 struct EnvironmentUniform {
     std::array<float, 4> sun_direction, sun_radiance, fill_direction, fill_radiance;
     std::array<float, 4> ambient_sky, ambient_ground, ambient_specular;
     std::array<float, 4> sky_zenith, sky_horizon, sky_ground, fog, controls;
     Mat4 inverse_view;
     std::array<float, 4> view_origin;
-    Mat4 shadow_view;
-    std::array<float, 4> shadow;
+    // Each fitted cascade's view-projection, the view depth where it ends, and its constant and slope biases in its
+    // normalized depth with the world size of its texels.
+    std::array<Mat4, 4> cascade_views;
+    std::array<float, 4> cascade_ends;
+    std::array<std::array<float, 4>, 4> cascade_biases;
+    // The point that view depths are measured from, with the depth where the first cascade begins; the unit view
+    // direction, with the share of each cascade that blends into the next; and the number of cascades.
+    std::array<float, 4> cascade_origin, cascade_axis, cascades;
     Mat4 detail_shadow_view;
     std::array<float, 4> detail_shadow;
 };
 static_assert(offsetof(EnvironmentUniform, inverse_view) == 192);
 static_assert(offsetof(EnvironmentUniform, view_origin) == 256);
-static_assert(offsetof(EnvironmentUniform, shadow_view) == 272);
-static_assert(offsetof(EnvironmentUniform, shadow) == 336);
-static_assert(offsetof(EnvironmentUniform, detail_shadow_view) == 352 &&
-              offsetof(EnvironmentUniform, detail_shadow) == 416 && sizeof(EnvironmentUniform) == 432);
+static_assert(offsetof(EnvironmentUniform, cascade_views) == 272 && offsetof(EnvironmentUniform, cascade_ends) == 528 &&
+              offsetof(EnvironmentUniform, cascade_biases) == 544 &&
+              offsetof(EnvironmentUniform, cascade_origin) == 608 && offsetof(EnvironmentUniform, cascades) == 640);
+static_assert(offsetof(EnvironmentUniform, detail_shadow_view) == 656 &&
+              offsetof(EnvironmentUniform, detail_shadow) == 720 && sizeof(EnvironmentUniform) == 736);
 VkDescriptorSetLayout environment_layout{};
 VkDescriptorPool environment_pool{};
 VkDescriptorSet environment_set{};
@@ -68,30 +76,49 @@ void record_sky() {
                             &environment_set, 0, nullptr);
     vkCmdDraw(command, 3, 1, 0, 0);
 }
+// Writes the environment and the latest fit of the shadow cascades (finish_shadow_cascades()) for the next frame.
 void update_environment() {
     const auto vec = [](Vec3 v, float w = 0.F) { return std::array<float, 4>{v.x, v.y, v.z, w}; };
     const auto &e = environment;
-    const EnvironmentUniform data{vec(normalized(e.sun.direction)),
-                                  vec(e.sun.radiance),
-                                  vec(normalized(e.fill.direction)),
-                                  vec(e.fill.radiance),
-                                  vec(e.ambient_sky),
-                                  vec(e.ambient_ground),
-                                  vec(e.ambient_specular),
-                                  vec(e.sky_zenith),
-                                  vec(e.sky_horizon),
-                                  vec(e.sky_ground),
-                                  vec(e.fog_color, e.fog_density),
-                                  {e.exposure, e.tone_mapping ? 1.F : 0.F, 0.F, 0.F},
-                                  inverse_view,
-                                  view_origin,
-                                  shadow_view,
-                                  {e.shadow.enabled ? 1.F : 0.F, 1.F / static_cast<float>(e.shadow.resolution),
-                                   e.shadow.constant_bias, e.shadow.slope_bias},
-                                  detail_shadow_view,
-                                  {e.detail_shadow.enabled ? 1.F : 0.F,
-                                   1.F / static_cast<float>(e.detail_shadow.resolution), e.detail_shadow.constant_bias,
-                                   e.detail_shadow.slope_bias}};
+    EnvironmentUniform data{vec(normalized(e.sun.direction)),
+                            vec(e.sun.radiance),
+                            vec(normalized(e.fill.direction)),
+                            vec(e.fill.radiance),
+                            vec(e.ambient_sky),
+                            vec(e.ambient_ground),
+                            vec(e.ambient_specular),
+                            vec(e.sky_zenith),
+                            vec(e.sky_horizon),
+                            vec(e.sky_ground),
+                            vec(e.fog_color, e.fog_density),
+                            {e.exposure, e.tone_mapping ? 1.F : 0.F, 0.F, 0.F},
+                            inverse_view,
+                            view_origin,
+                            {},
+                            {},
+                            {},
+                            {},
+                            {},
+                            {},
+                            detail_pass.view,
+                            {e.detail_shadow.enabled ? 1.F : 0.F, 1.F / static_cast<float>(e.detail_shadow.resolution),
+                             e.detail_shadow.constant_bias, e.detail_shadow.slope_bias}};
+    const auto &settings = e.shadow_cascades;
+    // A 16-bit map stores depth in steps of 1/65535, which the bias must also cover.
+    const double step = shadow_format == VK_FORMAT_D16_UNORM ? 1. / 65535 : 0;
+    for (std::uint32_t i = 0; i < cascade_fits.count; ++i) {
+        const auto &fit = cascade_fits.cascades[i];
+        const auto texels = fit.texel / cascade_depth[i];
+        data.cascade_views[i] = cascade_passes[i].view;
+        data.cascade_ends[i] = float(fit.end);
+        data.cascade_biases[i] = {float(settings.constant_bias * texels + step), float(settings.slope_bias * texels),
+                                  float(fit.texel), 0};
+    }
+    const auto &origin = cascade_fits.origin, &forward = cascade_fits.forward;
+    data.cascade_origin = {float(origin[0]), float(origin[1]), float(origin[2]),
+                           cascade_fits.count ? float(cascade_fits.cascades[0].begin) : 0.F};
+    data.cascade_axis = {float(forward[0]), float(forward[1]), float(forward[2]), settings.blend};
+    data.cascades = {float(cascade_fits.count), 0, 0, 0};
     std::memcpy(environment_buffer->mapping, &data, sizeof(data));
     flush_resource(*environment_buffer);
 }

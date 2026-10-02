@@ -333,7 +333,7 @@ void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = VK_TRUE;
     depth.depthWriteEnable = opaque ? VK_TRUE : VK_FALSE;
-    // Reversed depth in the view; shadow regions keep forward depth, as the built-in shadow pass does.
+    // Reversed depth in the view; shadow maps keep forward depth, as the built-in shadow pass does.
     depth.depthCompareOp = shadow ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_GREATER;
     VkPipelineColorBlendAttachmentState attachment{};
     attachment.blendEnable = opaque ? VK_FALSE : VK_TRUE;
@@ -392,14 +392,12 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
                        sizeof(push), &push);
     record_indexed(render_instance, draw_index, shadow);
 }
-// Records @p draws in order through @p view: opaque custom materials in the main view, or with @p shadow the
-// depth-only variants that the region, the detail one with @p detail, contains.
-void record_custom_draws(const std::vector<CustomDraw> &draws, const Mat4 &view, bool shadow, bool detail) {
+// Records @p draws in order through @p view, culled by @p frustum when given: opaque custom materials in the main view,
+// or with @p shadow the depth-only variants that a shadow pass's frustum contains.
+void record_custom_draws(const std::vector<CustomDraw> &draws, const Mat4 &view, const RenderFrustum *frustum,
+                         bool shadow) {
     const GpuCustomMaterial *bound_material = nullptr;
     const ResourceInstance *bound_geometry = nullptr;
-    const auto *frustum = shadow                    ? (detail ? &detail_shadow_frustum : &shadow_frustum)
-                          : options.frustum_culling ? &resource_frustum
-                                                    : nullptr;
     for (const auto &entry : draws) {
         const auto &render_instance = resource_instances[entry.instance];
         if (shadow && !frustum->intersects(render_instance.source->primitive_bounds[entry.draw]))

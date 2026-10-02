@@ -31,7 +31,7 @@ class DirectionalLightComponent {
     [[nodiscard]] Vec3 radiance() const { return radiance_; }
     /// Sets finite, nonnegative linear RGB radiance, or throws `std::invalid_argument` and keeps the previous
     /// value. Zero gives no direct light, but the light must still resolve, and it disables neither the sky
-    /// nor the shadow regions.
+    /// nor the shadow maps.
     void set_radiance(Vec3 radiance);
 
   private:
@@ -45,8 +45,8 @@ class DirectionalLightComponent {
 /// object again, and destroying the object invalidates the link for good, even if a later object has the same
 /// name or key. When a link's scene leaves a SceneSet, SceneSet::replace rebinds it to the replacement's
 /// object with the same key and SceneSet::unload sets it to null, given codecs from
-/// add_lighting_component_codecs; otherwise it expires with the scene. Shadow region centers are world
-/// coordinates; moving this object does not move them.
+/// add_lighting_component_codecs; otherwise it expires with the scene. The detail shadow region's center is a world
+/// coordinate; moving this object does not move it.
 class SceneEnvironment {
   public:
     /// Throws `std::invalid_argument` for invalid @p settings; see configure().
@@ -73,8 +73,8 @@ class SceneEnvironment {
 /// Both links must name live objects of @p scene with an active DirectionalLightComponent and a valid
 /// orientation (see DirectionalLightComponent); other lights may stay active without being selected.
 /// Disabled environments and environments under inactive parents do not count. The result is validated with
-/// validate_environment() and both shadow projections with directional_shadow_matrix(), including disabled
-/// regions; VulkanRenderer::set_environment later checks enabled regions against device limits. Throws
+/// validate_environment() and the detail region's projection with detail_shadow_matrix(), even while the region is
+/// disabled; VulkanRenderer::set_environment later checks enabled shadow maps against device limits. Throws
 /// `std::invalid_argument` for a missing, ambiguous, null, stale, foreign or inactive selection and for
 /// invalid values, and `std::logic_error` while @p scene is updating, under construction or no longer live.
 ///
@@ -86,7 +86,7 @@ class SceneEnvironment {
 /// describes.
 [[nodiscard]] Environment lighting_environment(SceneSet &scenes);
 
-/// Registers the `anima.directional-light.v1` and `anima.scene-environment.v1` component codecs together,
+/// Registers the `anima.directional-light.v1` and `anima.scene-environment.v2` component codecs together,
 /// or neither: throws `std::invalid_argument` if @p codecs already has either type or key.
 ///
 /// A directional-light payload is a JSON object with exactly `radiance`, three numbers. A scene-environment
@@ -95,10 +95,12 @@ class SceneEnvironment {
 /// each prefab instance maps them to its own objects; a link to a stale object or outside the captured
 /// objects fails to capture, and a key the document lacks fails to decode.
 ///
-/// `settings` has exactly the EnvironmentSettings field names. Colors and centers are three numbers, flags
-/// are booleans, and each shadow region has exactly `enabled`, `center`, `extent`, `depth`, `resolution` (an
-/// integer from 1 to 4,294,967,295), `constant_bias` and `slope_bias`. Numbers must be finite, and payloads
-/// are at most 64 KiB. Unknown, missing or duplicate fields, wrong types and invalid values are rejected. The
+/// `settings` has exactly the EnvironmentSettings field names. Colors and centers are three numbers and flags
+/// are booleans. `shadow_cascades` has exactly `enabled`, `count`, `distance`, `logarithmic_split`, `blend`,
+/// `resolution`, `constant_bias` and `slope_bias`, and `detail_shadow` exactly `enabled`, `center`, `extent`, `depth`,
+/// `resolution`, `constant_bias` and `slope_bias`, where each count and resolution is an integer from 1 to
+/// 4,294,967,295 that validate_environment_settings() then limits. Numbers must be finite, and payloads are at most
+/// 64 KiB. Unknown, missing or duplicate fields, wrong types and invalid values are rejected. The
 /// scene or prefab stores transforms and enabled state. A missing or inactive light is not a decoding error;
 /// lighting_environment() rejects it later. The scene-environment codec reports SceneEnvironment::sun and
 /// SceneEnvironment::fill as links, so SceneSet::replace and SceneSet::unload repair them (see

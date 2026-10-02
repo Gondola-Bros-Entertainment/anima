@@ -42,6 +42,7 @@
 #ifdef CONSUMER_DESKTOP
 #include "allocations.hpp"
 #include "blending.hpp"
+#include "cascades.hpp"
 #include "compressed_textures.hpp"
 #include "culling.hpp"
 #include "custom_materials.hpp"
@@ -319,6 +320,8 @@ int main(int argc, char **argv) {
             return lod_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--impostors")
             return impostor_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--cascades")
+            return cascades_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")

@@ -5,6 +5,7 @@
 #include <doctest/doctest.h>
 
 #include <cstddef>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
@@ -39,6 +40,11 @@ bool same(const DirectionalShadow &a, const DirectionalShadow &b) {
            near(a.extent, b.extent) && near(a.depth, b.depth) && near(a.constant_bias, b.constant_bias) &&
            near(a.slope_bias, b.slope_bias);
 }
+bool same(const ShadowCascades &a, const ShadowCascades &b) {
+    return a.enabled == b.enabled && a.count == b.count && a.resolution == b.resolution &&
+           near(a.distance, b.distance) && near(a.logarithmic_split, b.logarithmic_split) && near(a.blend, b.blend) &&
+           near(a.constant_bias, b.constant_bias) && near(a.slope_bias, b.slope_bias);
+}
 bool same(const Environment &a, const Environment &b) {
     return near(a.sun.direction, b.sun.direction) && near(a.fill.direction, b.fill.direction) &&
            near(a.sun.radiance, b.sun.radiance) && near(a.fill.radiance, b.fill.radiance) &&
@@ -46,7 +52,8 @@ bool same(const Environment &a, const Environment &b) {
            near(a.ambient_specular, b.ambient_specular) && near(a.sky_zenith, b.sky_zenith) &&
            near(a.sky_horizon, b.sky_horizon) && near(a.sky_ground, b.sky_ground) && near(a.fog_color, b.fog_color) &&
            near(a.fog_density, b.fog_density) && near(a.exposure, b.exposure) && a.sky == b.sky &&
-           a.tone_mapping == b.tone_mapping && same(a.shadow, b.shadow) && same(a.detail_shadow, b.detail_shadow);
+           a.tone_mapping == b.tone_mapping && same(a.shadow_cascades, b.shadow_cascades) &&
+           same(a.detail_shadow, b.detail_shadow);
 }
 GameObject light(Scene &scene, Vec3 radiance = {1, 2, 3}) {
     auto object = scene.create("light");
@@ -112,7 +119,7 @@ EnvironmentSettings changed_settings() {
     settings.fog_density = .05F;
     settings.exposure = 1.5F;
     settings.tone_mapping = true;
-    settings.shadow = {true, {1, 2, 3}, 20, 80, 1024, .002F, .003F};
+    settings.shadow_cascades = {true, 3, 150, .6F, .2F, 1024, 1.5F, 2.5F};
     settings.detail_shadow = {true, {4, 5, 6}, 4, 40, 2048, .004F, .005F};
     return settings;
 }
@@ -191,37 +198,40 @@ TEST_CASE("Invalid environment settings are rejected and keep the accepted envir
     settings.sky = true;
     settings.tone_mapping = true;
     settings.exposure = 1.5F;
-    settings.shadow.enabled = true;
-    settings.shadow.extent = 8;
+    settings.shadow_cascades.enabled = true;
+    settings.detail_shadow.extent = 8;
     selected->configure(settings);
     const auto configured = lighting_environment(scene);
-    CHECK(point(directional_shadow_matrix(configured), {0, 0, 0}).z == Near{.5F, tolerance});
-    for (unsigned field = 0; field < 9; ++field) {
-        CAPTURE(field);
+    CHECK(point(detail_shadow_matrix(configured), {0, 0, 0}).z == Near{.5F, tolerance});
+    constexpr auto colours = "Environment colours must be finite nonnegative linear RGB";
+    constexpr auto cascades = "Invalid shadow cascades", region = "Invalid directional shadow region";
+    constexpr auto infinite = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
+    const std::vector<std::pair<std::function<void(EnvironmentSettings &)>, const char *>> breaks{
+        {[](auto &bad) { bad.exposure = 0; }, invalid_exposure},
+        {[](auto &bad) { bad.fog_density = -1; }, invalid_exposure},
+        {[](auto &bad) { bad.ambient_specular.x = -1; }, colours},
+        {[](auto &bad) { bad.sky_zenith.y = infinite; }, colours},
+        {[](auto &bad) { bad.shadow_cascades.count = 0; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.count = 5; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.distance = 0; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.distance = 2e9F; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.distance = nan; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.logarithmic_split = 1.5F; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.logarithmic_split = nan; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.blend = -.5F; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.resolution = 15; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.constant_bias = infinite; }, cascades},
+        {[](auto &bad) { bad.shadow_cascades.slope_bias = -1; }, cascades},
+        {[](auto &bad) { bad.detail_shadow.extent = 0; }, region},
+        {[](auto &bad) { bad.detail_shadow.depth = 0; }, region},
+        {[](auto &bad) { bad.detail_shadow.center.z = nan; }, region},
+        {[](auto &bad) { bad.detail_shadow.resolution = 0; }, region},
+        {[](auto &bad) { bad.detail_shadow.slope_bias = -1; }, region}};
+    for (std::size_t index = 0; index < breaks.size(); ++index) {
+        CAPTURE(index);
         auto bad = settings;
-        if (field == 0)
-            bad.exposure = 0;
-        if (field == 1)
-            bad.fog_density = -1;
-        if (field == 2)
-            bad.ambient_specular.x = -1;
-        if (field == 3)
-            bad.sky_zenith.y = std::numeric_limits<float>::infinity();
-        if (field == 4)
-            bad.shadow.resolution = 0;
-        if (field == 5)
-            bad.shadow.extent = 0;
-        if (field == 6)
-            bad.detail_shadow.depth = 0;
-        if (field == 7)
-            bad.detail_shadow.center.z = std::numeric_limits<float>::quiet_NaN();
-        if (field == 8)
-            bad.shadow.slope_bias = -1;
-        // Fields 0 and 1 break the exposure or fog, 2 and 3 a color, and the rest a shadow region.
-        const auto error = field < 2   ? invalid_exposure
-                           : field < 4 ? "Environment colours must be finite nonnegative linear RGB"
-                                       : "Invalid directional shadow region";
-        CHECK_THROWS_WITH_AS(selected->configure(bad), error, std::invalid_argument);
+        breaks[index].first(bad);
+        CHECK_THROWS_WITH_AS(selected->configure(bad), breaks[index].second, std::invalid_argument);
         CHECK(same(configured, lighting_environment(scene)));
     }
     settings.detail_shadow.extent = std::numeric_limits<float>::denorm_min();
@@ -318,7 +328,7 @@ TEST_CASE("An environment in one member follows its lights through a replacement
     REQUIRE(cleared.size() == 2);
     for (const auto &link : cleared) {
         CHECK(link.owner.id() == selected.object().id());
-        CHECK(link.component == "anima.scene-environment.v1");
+        CHECK(link.component == "anima.scene-environment.v2");
         CHECK(link.target == SceneAddress{"lights", sun_key});
     }
     CHECK(selected->sun.id() == Scene::Id{});
@@ -399,6 +409,15 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
                                 "Duplicate JSON document field"});
             payloads.push_back(
                 {replace(valid, "\"fog_density\":", "\"unexpected\":"), "Missing JSON field: fog_density"});
+            // The cascades are the only object with a count, of 3.
+            for (const auto &[bad, error] : {std::pair{"0", "Shadow cascade count exceeds its range"},
+                                             std::pair{"2.5", "Shadow cascade count requires a positive integer"},
+                                             std::pair{"-2", "Shadow cascade count requires a positive integer"},
+                                             std::pair{"5", "Invalid shadow cascades"}})
+                payloads.push_back({replace(valid, "\"count\":3", "\"count\":" + std::string(bad)), error});
+            payloads.push_back({replace(valid, "\"blend\":", "\"unexpected\":"), "Missing JSON field: blend"});
+            payloads.push_back(
+                {replace(valid, "\"shadow_cascades\":", "\"shadow\":"), "Missing JSON field: shadow_cascades"});
         } else {
             payloads = invalid_payloads(valid, "radiance", "radiance");
             for (const auto &[bad, error] :
@@ -446,7 +465,7 @@ TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes fi
 TEST_CASE("A failed codec registration publishes neither codec") {
     ComponentCodecs conflict;
     conflict.add<SceneEnvironment>(
-        "anima.scene-environment.v1", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
+        "anima.scene-environment.v2", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
         [](GameObject o, std::string_view, const ObjectReferences &) { o.add_component<SceneEnvironment>(); });
     CHECK_THROWS_WITH_AS(add_lighting_component_codecs(conflict), duplicate_codec, std::invalid_argument);
     Scene scene;
