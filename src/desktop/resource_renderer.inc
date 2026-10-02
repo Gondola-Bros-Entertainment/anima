@@ -719,7 +719,8 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
     // node's matrix or its skin's joint matrices; with them, each run's cluster and the node's rest matrix, which the
     // copies' placements multiply.
     const auto level_of = [&](const PlacementRun &run) -> const DrawLevel * {
-        if (draw.levels.empty())
+        // Before scanning a skin's joints, which may number hundreds.
+        if (draw.levels.empty() || options.lod_threshold <= 0)
             return nullptr;
         if (!render_instance.placements) {
             const auto &bounds = source.primitive_bounds[draw_index];

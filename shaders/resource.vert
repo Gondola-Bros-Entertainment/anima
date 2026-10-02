@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 color;
@@ -29,19 +30,7 @@ layout(push_constant) uniform Draw {
     layout(offset = 112) vec4 factor;
 }
 draw;
-// The share of an object, or of a placed copy, that its visibility range draws at the distance from the eye to
-// center, the center of its mesh's rest bounds as placed: 1 whole, 0 gone, dissolving across the margins, and negated
-// in the begin margin, where it fades in, so that the fragment shader keeps the complementary pixels there. range holds
-// its begin, begin margin, end and end margin; the margins never overlap, so at most one of them is partial. An
-// orthographic view, whose origin has w 0, draws everything whole.
-float visibilityAt(vec3 center, vec4 range) {
-    if (draw.origin.w == 0.0)
-        return 1.0;
-    float d = distance(center, draw.origin.xyz);
-    float rise = range.y > 0.0 ? clamp((d - range.x) / range.y, 0.0, 1.0) : (d >= range.x ? 1.0 : 0.0);
-    float fall = range.w > 0.0 ? clamp((range.z - d) / range.w, 0.0, 1.0) : (d < range.z ? 1.0 : 0.0);
-    return rise < 1.0 ? -rise : fall;
-}
+#include "visibility.glsl"
 void main() {
     // indices: the draw's first palette matrix; whether it is skinned; with placements or a visibility range, the
     // object's world matrix, followed by a matrix whose first column is its range and whose second holds the center
@@ -80,7 +69,7 @@ void main() {
     visibility = 1.0;
     if (ranged) {
         mat4 range = poses.matrices[draw.indices.z + 1u];
-        visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0]);
+        visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0], draw.origin);
     }
     // A copy that its range hides draws nothing: every corner leaves the view volume.
     if (visibility == 0.0)

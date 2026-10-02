@@ -43,9 +43,11 @@ class SceneSet;
 /// begin_margin` to `end - end_margin` and gone at #begin and #end, and in between a share of its pixels proportional
 /// to the distance into the margin is discarded, so it costs no blending or sorting. Fading out it keeps the pixels of
 /// the dither's lowest thresholds and fading in those of its highest, so where one object's end margin spans the same
-/// distances as another's begin margin, as when two models of one thing hand over, the two keep complementary pixels.
-/// It casts shadows while more than half of it draws. Ranges apply to perspective views; an orthographic view draws
-/// every object whole.
+/// distances as another's begin margin, as when two models of one thing hand over, the two keep complementary pixels
+/// from every viewpoint when their rest bounds' centers coincide as placed. Each measures to its own center, so centers
+/// apart by `d` differ in distance by up to `d`, which leaves about `d / margin` of their pixels drawn twice or by
+/// neither. It casts shadows while more than half of it draws. Ranges apply to perspective views; an orthographic view
+/// draws every object whole.
 ///
 /// The renderer culls an object, or a cluster of its placed copies (MeshPlacements::clusters()), only where it lies
 /// wholly outside the range; the standard material's shaders hide the other copies outside it and dissolve the margins.

@@ -1063,13 +1063,17 @@ struct VulkanRenderer::Impl {
     }
     void create_depth() {
         depth_format = VK_FORMAT_UNDEFINED;
-        // Reversed depth keeps its precision only in the floating-point format. Vulkan requires a device to attach
-        // depth in it or in X8_D24, and D16 is the last resort. Each holds depth alone, so the depth aspect, the clear
-        // to 0 and the copy that custom materials sample as opaque depth suit all three.
+        // Reversed depth keeps its precision only in the floating-point format, and X8_D24 keeps more than D16. Each
+        // holds depth alone, so the depth aspect and the clear to 0 suit all three. Custom materials that read opaque
+        // depth sample a copy of the depth image, so the format must also be sampled and copied. Vulkan requires
+        // sampling, and with it copying, of D16 and the floating-point format but not of X8_D24, and attachment of D16
+        // and of at least one of the others, so D16 always qualifies.
+        constexpr VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                                VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
         for (auto candidate : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D16_UNORM}) {
             VkFormatProperties properties{};
             vkGetPhysicalDeviceFormatProperties(physical, candidate, &properties);
-            VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
             if ((properties.optimalTilingFeatures & needed) == needed) {
                 depth_format = candidate;
                 break;

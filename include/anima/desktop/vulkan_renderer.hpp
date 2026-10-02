@@ -261,11 +261,11 @@ struct ResourceStats {
 /// optional sky, which shades only the pixels that they leave at the far plane, and the blended meshes; it converts
 /// the target for display and composites UI last. The window must outlive the renderer, which never destroys it.
 ///
-/// The view's depth buffer is `VK_FORMAT_D32_SFLOAT` where the device can attach it, and otherwise
-/// `VK_FORMAT_X8_D24_UNORM_PACK32` or `VK_FORMAT_D16_UNORM`; Vulkan requires one of the first two. Reversed depth
-/// keeps distant surfaces precise only in the floating-point format, whose values crowd toward 0 as the depths of
-/// distant surfaces do; the fixed-point formats space their values evenly, which leaves distant surfaces the precision
-/// of forward depth.
+/// The view's depth buffer is the first of `VK_FORMAT_D32_SFLOAT`, `VK_FORMAT_X8_D24_UNORM_PACK32` and
+/// `VK_FORMAT_D16_UNORM` that the device can attach, sample and copy, as custom materials that read opaque depth
+/// require; Vulkan guarantees all three uses for `VK_FORMAT_D16_UNORM`. Reversed depth keeps distant surfaces precise
+/// only in the floating-point format, whose values crowd toward 0 as the depths of distant surfaces do; the fixed-point
+/// formats space their values evenly, which leaves distant surfaces the precision of forward depth.
 ///
 /// Applications customize shading, not the frame. A CustomMaterial supplies SPIR-V vertex and fragment shaders,
 /// an optional depth-only variant, a parameter block, textures and a blend mode for the mesh material slots it
