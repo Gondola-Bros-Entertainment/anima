@@ -32,7 +32,7 @@ layout(set = 0, binding = 0, std140) uniform AnimaFrame {
 animaFrame;
 
 layout(push_constant) uniform AnimaDraw {
-    // The camera's view-projection, or a shadow region's in the depth-only variant.
+    // The camera's view-projection, or in the depth-only variant a shadow pass's: a cascade's or the detail region's.
     mat4 viewProjection;
     uint paletteOffset;
     uint skinned;

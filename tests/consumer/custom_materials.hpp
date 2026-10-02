@@ -534,10 +534,10 @@ inline void check_shadows(Harness &harness) {
     lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
     lighting.fill.radiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
-    lighting.shadow.enabled = true;
-    lighting.shadow.extent = 5;
-    lighting.shadow.depth = 20;
-    lighting.shadow.resolution = 1024;
+    // One cascade over the 15 m in view, with texels of about 1 cm.
+    lighting.shadow_cascades.enabled = true;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 15;
     const Effect effect{.color = {.5, .7, .9}};
     const auto white = blending_test::opaque({1, 1, 1});
     auto scene = std::make_shared<anima::Scene>();
@@ -588,10 +588,10 @@ inline void check_placements(Harness &harness) {
     lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
     lighting.fill.radiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
-    lighting.shadow.enabled = true;
-    lighting.shadow.extent = 5;
-    lighting.shadow.depth = 20;
-    lighting.shadow.resolution = 1024;
+    // One cascade over the 15 m in view, with texels of about 1 cm.
+    lighting.shadow_cascades.enabled = true;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 15;
     const auto ground = blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, 0}, 4, 3);
     const auto quad = blending_test::horizontal(blending_test::opaque({1, 1, 1}), {0, 0, 0}, .25F, .25F);
     const auto material =
@@ -658,12 +658,12 @@ inline void check_fading(Harness &harness) {
     lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
     lighting.fill.radiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
-    lighting.shadow.enabled = true;
-    lighting.shadow.center = {0, 0, -30};
-    lighting.shadow.extent = 30;
-    lighting.shadow.depth = 120;
+    // One cascade over the 60 m of ground in view.
+    lighting.shadow_cascades.enabled = true;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 60;
     auto unshadowed = lighting;
-    unshadowed.shadow.enabled = false;
+    unshadowed.shadow_cascades.enabled = false;
 
     anima::CustomMaterialDefinition definition;
     definition.name = "fade";

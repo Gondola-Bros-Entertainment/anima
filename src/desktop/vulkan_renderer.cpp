@@ -945,7 +945,7 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         if (resource)
             stages[1].module = mesh_fragment_shader;
-        // Sets a shader's constant 0: mesh.frag's selects premultiplied output, impostor.vert's the shadow regions'
+        // Sets a shader's constant 0: mesh.frag's selects premultiplied output, impostor.vert's the shadow passes'
         // view.
         const VkBool32 enabled = VK_TRUE;
         const VkSpecializationMapEntry constant_entry{0, 0, sizeof(enabled)};
@@ -1015,7 +1015,7 @@ struct VulkanRenderer::Impl {
         // Blended surfaces are hidden by nearer opaque and masked ones, and hide nothing themselves.
         depth_state.depthWriteEnable = !ui && !sky && !blended;
         // The view uses reversed depth, where nearer surfaces have greater depth and the sky lies at the far
-        // plane, depth 0. Shadow regions are orthographic, where depth is linear in distance, and keep forward depth.
+        // plane, depth 0. Shadow passes are orthographic, where depth is linear in distance, and keep forward depth.
         depth_state.depthCompareOp = shadow ? VK_COMPARE_OP_LESS
                                      : sky  ? VK_COMPARE_OP_GREATER_OR_EQUAL
                                             : VK_COMPARE_OP_GREATER;
@@ -1521,7 +1521,7 @@ struct VulkanRenderer::Impl {
         retire_resources();
         try {
             ensure_shadow_targets();
-            update_environment();
+            fit_shadow_cascades();
             update_custom_frame();
         } catch (const VulkanFailure &error) {
             if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
@@ -1592,6 +1592,19 @@ struct VulkanRenderer::Impl {
                 throw SceneResourceError(error.what());
             }
             profile.uploaded_bytes = resources.pose_uploaded_bytes;
+        }
+        try {
+            // Preparation extended each cascade's depth toward its casters.
+            finish_shadow_cascades();
+            update_environment();
+        } catch (const VulkanFailure &error) {
+            if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
+                throw;
+            throw SceneResourceError(error.what());
+        } catch (const std::exception &error) {
+            if (fatal)
+                throw RendererFatalError(error.what());
+            throw SceneResourceError(error.what());
         }
 #endif
         measure(profile.upload_ms);
@@ -1876,7 +1889,7 @@ struct VulkanRenderer::Impl {
             if (custom_material_layout)
                 vkDestroyDescriptorSetLayout(device, custom_material_layout, nullptr);
             pose_buffer.reset();
-            shadow_target.reset();
+            cascade_target.reset();
             detail_shadow_target.reset();
             if (shadow_resource_pipeline)
                 vkDestroyPipeline(device, shadow_resource_pipeline, nullptr);
@@ -2018,6 +2031,7 @@ void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
     impl_->view_origin = origin;
     impl_->resource_frustum = frustum;
     impl_->inverse_view = inverted;
+    impl_->view_set = true;
 #endif
     impl_->view_projection = view_projection;
 }
@@ -2091,23 +2105,22 @@ void VulkanRenderer::set_environment(const Environment &environment) {
     impl_->running();
     validate_environment(environment);
 #ifdef ANIMA_HAS_ASSETS
-    const auto shadow = directional_shadow_matrix(environment);
-    const RenderFrustum frustum(shadow);
-    const auto detail_shadow = directional_shadow_matrix(environment, true);
-    const RenderFrustum detail_frustum(detail_shadow);
+    const auto detail = detail_shadow_matrix(environment);
+    const RenderFrustum detail_frustum(detail);
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(impl_->physical, &properties);
-    // A disabled region allocates only its 1x1 placeholder, so the device bounds enabled regions alone.
-    for (const auto &region : {environment.shadow, environment.detail_shadow})
-        if (region.enabled && (region.resolution > properties.limits.maxImageDimension2D ||
-                               region.resolution > properties.limits.maxFramebufferWidth ||
-                               region.resolution > properties.limits.maxFramebufferHeight))
-            throw std::invalid_argument("Shadow resolution exceeds device capabilities");
+    const auto &limits = properties.limits;
+    const auto fits = [&](std::uint32_t resolution) {
+        return resolution <= limits.maxImageDimension2D && resolution <= limits.maxFramebufferWidth &&
+               resolution <= limits.maxFramebufferHeight;
+    };
+    // Disabled maps allocate only their 1x1 placeholders, so the device bounds enabled ones alone.
+    const auto &cascades = environment.shadow_cascades;
+    if ((cascades.enabled && (!fits(cascades.resolution) || cascades.count > limits.maxImageArrayLayers)) ||
+        (environment.detail_shadow.enabled && !fits(environment.detail_shadow.resolution)))
+        throw std::invalid_argument("Shadow resolution exceeds device capabilities");
     impl_->environment = environment;
-    impl_->shadow_view = shadow;
-    impl_->shadow_frustum = frustum;
-    impl_->detail_shadow_view = detail_shadow;
-    impl_->detail_shadow_frustum = detail_frustum;
+    impl_->detail_pass = {detail, detail_frustum};
 #else
     throw std::logic_error("Environment rendering requires asset support");
 #endif

@@ -20,12 +20,6 @@ surface;
 layout(location = 0) out vec4 outColor;
 // Set in the blended pipeline, which composites premultiplied color over the target with ONE, ONE_MINUS_SRC_ALPHA.
 layout(constant_id = 0) const bool blended = false;
-float receiverPlaneWeight(float curvature, float facing, mat4 view, vec4 settings) {
-    vec3 axis = vec3(view[0][0], view[1][0], view[2][0]);
-    float texelPitch = 2.0 * settings.y / max(length(axis), 1e-12);
-    float curved = smoothstep(0.00001, 0.0001, curvature * texelPitch);
-    return mix(1.0, smoothstep(0.0, 0.15, facing), curved);
-}
 void main() {
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.
@@ -39,25 +33,16 @@ void main() {
     // Assets without TANGENT use a per-triangle cotangent frame; degenerate UVs
     // retain the geometric normal instead of producing NaNs.
     vec3 dp1 = dFdx(worldPosition), dp2 = dFdy(worldPosition);
-    // A smooth normal can face the sun while its polygon is at/beyond the
-    // geometric terminator. Extending that nearly edge-on plane across PCF
-    // neighbours produces false self-shadow triangles on curved surfaces.
-    // Detect curvature from the base normal's variation over a shadow texel,
-    // before normal mapping. Constant-normal planes retain their exact depth
-    // correction even when their shading normal differs from the polygon.
+    // The shadow filter extends the receiver's plane across its texels, and needs to know where that plane misleads:
+    // how the geometric normal faces the sun, and how much the base normal turns per unit of distance, before normal
+    // mapping. Every pixel of the quad computes these derivatives before any of them discards.
     vec3 geometricNormal = unit(cross(dp1, dp2));
     geometricNormal *= dot(geometricNormal, worldNormal) < 0.0 ? -1.0 : 1.0;
     geometricNormal *= facing;
-    float receiverFacing = dot(geometricNormal, environment.sunDirection.xyz);
     vec3 dn1 = dFdx(n), dn2 = dFdy(n);
     float curvature = sqrt((dot(dn1, dn1) + dot(dn2, dn2)) / max(dot(dp1, dp1) + dot(dp2, dp2), 1e-12));
-    // Keep a numerical floor for constant normals. Even small curvature makes
-    // near-singular plane extrapolation unreliable across the PCF footprint.
-    float planeWeight = receiverPlaneWeight(curvature, receiverFacing, environment.shadowView, environment.shadow);
-    float detailWeight =
-        receiverPlaneWeight(curvature, receiverFacing, environment.detailShadowView, environment.detailShadow);
-    vec2 receiverGradient = shadowReceiverGradient(dp1, dp2, environment.shadowView) * planeWeight;
-    vec2 detailGradient = shadowReceiverGradient(dp1, dp2, environment.detailShadowView) * detailWeight;
+    ShadowReceiver receiver =
+        ShadowReceiver(dp1, dp2, curvature, dot(geometricNormal, environment.sunDirection.xyz));
     vec2 du1 = dFdx(texcoord), du2 = dFdy(texcoord);
     float determinant = du1.x * du2.y - du1.y * du2.x;
     if (material.maps.x > 0.5) {
@@ -97,7 +82,7 @@ void main() {
         discard;
     vec3 albedo = clamp(base.rgb * baseColor, 0.0, 1.0);
     vec3 color = reflectedLight(n, worldPosition, surface.viewOrigin, albedo, surface.factors.x * mr.b,
-                                surface.factors.y * mr.g, occlusion, receiverGradient, detailGradient);
+                                surface.factors.y * mr.g, occlusion, receiver);
     color += material.emissiveAlpha.rgb * emission;
     if (material.detail.w > 0.5)
         color = albedo;

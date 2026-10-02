@@ -117,6 +117,12 @@ to match the tree from six directions, in an orthographic view and under a turne
 unevenly scaled placement, and in the shadow it casts, within the parity the check
 states, requires their handover to leave no pixel uncovered, and reports 10,000 placed
 trees as meshes and as impostors,
+`--cascades`, which draws the same plate near the camera and far from it and requires
+each one's shadow edge to span about 2.4 texels of the cascade that
+fit_shadow_cascades() says holds it, an edge to stay put while the camera moves by part
+of a texel, a wall's edge to keep its place across every seam between cascades, and a
+caster toward the sun beyond every cascade's sphere to shadow the ground in view, and
+reports the shadow passes' time for one to four cascades over 10,000 copies,
 `--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`, which
 also requests an anisotropy of 64, above the 16 that devices commonly allow, and requires
 the device's limit,

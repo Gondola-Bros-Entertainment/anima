@@ -3,6 +3,7 @@
 #include "../detail/scene_orientation.hpp"
 #include <anima/lighting.hpp>
 #include <limits>
+#include <string>
 
 namespace anima {
 namespace {
@@ -43,9 +44,8 @@ template <class Scenes> Environment resolve(Scenes &scenes) {
     result.sun = resolve_light(scenes, selected->sun);
     result.fill = resolve_light(scenes, selected->fill);
     validate_environment(result);
-    // The renderer uses both projections even when their regions are disabled.
-    (void)directional_shadow_matrix(result);
-    (void)directional_shadow_matrix(result, true);
+    // The renderer uses the detail region's projection even while the region is disabled.
+    (void)detail_shadow_matrix(result);
     return result;
 }
 float number(const Json &j) {
@@ -67,6 +67,33 @@ Vec3 vector(const Json &j) {
         throw std::invalid_argument("Lighting vector requires three numbers");
     return {number(j[0]), number(j[1]), number(j[2])};
 }
+// A positive integer within the 32-bit range, named @p name in the messages that reject it.
+std::uint32_t positive_integer(const Json &j, const std::string &name) {
+    if (!j.is_number_integer() || (!j.is_number_unsigned() && j.get<std::int64_t>() <= 0))
+        throw std::invalid_argument(name + " requires a positive integer");
+    const auto value = j.get<std::uint64_t>();
+    if (!value || value > std::numeric_limits<std::uint32_t>::max())
+        throw std::invalid_argument(name + " exceeds its range");
+    return static_cast<std::uint32_t>(value);
+}
+Json cascades_json(const ShadowCascades &c) {
+    return Json{{"enabled", c.enabled},
+                {"count", c.count},
+                {"distance", c.distance},
+                {"logarithmic_split", c.logarithmic_split},
+                {"blend", c.blend},
+                {"resolution", c.resolution},
+                {"constant_bias", c.constant_bias},
+                {"slope_bias", c.slope_bias}};
+}
+ShadowCascades cascades(const Json &j) {
+    detail::json_fields(
+        j, {"enabled", "count", "distance", "logarithmic_split", "blend", "resolution", "constant_bias", "slope_bias"});
+    return {boolean(j.at("enabled")),      positive_integer(j.at("count"), "Shadow cascade count"),
+            number(j.at("distance")),      number(j.at("logarithmic_split")),
+            number(j.at("blend")),         positive_integer(j.at("resolution"), "Shadow resolution"),
+            number(j.at("constant_bias")), number(j.at("slope_bias"))};
+}
 Json shadow_json(const DirectionalShadow &s) {
     return Json{{"enabled", s.enabled},      {"center", vector_json(s.center)}, {"extent", s.extent},
                 {"depth", s.depth},          {"resolution", s.resolution},      {"constant_bias", s.constant_bias},
@@ -74,17 +101,11 @@ Json shadow_json(const DirectionalShadow &s) {
 }
 DirectionalShadow shadow(const Json &j) {
     detail::json_fields(j, {"enabled", "center", "extent", "depth", "resolution", "constant_bias", "slope_bias"});
-    const auto &size = j.at("resolution");
-    if (!size.is_number_integer() || (!size.is_number_unsigned() && size.get<std::int64_t>() <= 0))
-        throw std::invalid_argument("Shadow resolution requires a positive integer");
-    const auto resolution = size.get<std::uint64_t>();
-    if (!resolution || resolution > std::numeric_limits<std::uint32_t>::max())
-        throw std::invalid_argument("Shadow resolution exceeds its range");
     return {boolean(j.at("enabled")),
             vector(j.at("center")),
             number(j.at("extent")),
             number(j.at("depth")),
-            static_cast<std::uint32_t>(resolution),
+            positive_integer(j.at("resolution"), "Shadow resolution"),
             number(j.at("constant_bias")),
             number(j.at("slope_bias"))};
 }
@@ -100,12 +121,12 @@ Json settings_json(const EnvironmentSettings &s) {
                 {"fog_density", s.fog_density},
                 {"exposure", s.exposure},
                 {"tone_mapping", s.tone_mapping},
-                {"shadow", shadow_json(s.shadow)},
+                {"shadow_cascades", cascades_json(s.shadow_cascades)},
                 {"detail_shadow", shadow_json(s.detail_shadow)}};
 }
 EnvironmentSettings settings(const Json &j) {
     detail::json_fields(j, {"ambient_sky", "ambient_ground", "ambient_specular", "sky", "sky_zenith", "sky_horizon",
-                            "sky_ground", "fog_color", "fog_density", "exposure", "tone_mapping", "shadow",
+                            "sky_ground", "fog_color", "fog_density", "exposure", "tone_mapping", "shadow_cascades",
                             "detail_shadow"});
     EnvironmentSettings result;
     result.ambient_sky = vector(j.at("ambient_sky"));
@@ -119,7 +140,7 @@ EnvironmentSettings settings(const Json &j) {
     result.fog_density = number(j.at("fog_density"));
     result.exposure = number(j.at("exposure"));
     result.tone_mapping = boolean(j.at("tone_mapping"));
-    result.shadow = shadow(j.at("shadow"));
+    result.shadow_cascades = cascades(j.at("shadow_cascades"));
     result.detail_shadow = shadow(j.at("detail_shadow"));
     return result;
 }
@@ -156,7 +177,7 @@ void add_lighting_component_codecs(ComponentCodecs &codecs) {
             object.add_component<DirectionalLightComponent>(vector(j.at("radiance")));
         });
     pending.add<SceneEnvironment>(
-        "anima.scene-environment.v1",
+        "anima.scene-environment.v2",
         [](const SceneEnvironment &environment, const ObjectReferences &references) {
             return Json{{"sun", references.key(environment.sun).string()},
                         {"fill", references.key(environment.fill).string()},

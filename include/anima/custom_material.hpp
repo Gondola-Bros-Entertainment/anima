@@ -60,7 +60,8 @@
 ///   filtered anisotropically as VulkanRenderer::max_anisotropy() describes.
 ///
 /// Push constants, any stage: the block `AnimaDraw`, per draw. At offset 0 `mat4 viewProjection`, the matrix of
-/// the pass being drawn: the camera's, or a shadow region's in the depth-only variant; 64 `uint paletteOffset`,
+/// the pass being drawn: the camera's, or in the depth-only variant a shadow pass's, a shadow cascade's or the detail
+/// region's; 64 `uint paletteOffset`,
 /// IndexedDraw::palette_offset within the instance's palette; 68 `uint skinned`, 1 for a skinned draw and
 /// otherwise 0; 72 `uint objectOffset`, the index in `AnimaPoses` of the object's world matrix when it has
 /// placements or a visibility range; 76 `uint placed`, 1 when it has placements and otherwise 0; 80 `vec4 factor`,

@@ -14,18 +14,58 @@ using namespace anima;
 namespace {
 constexpr float tolerance = 1e-4F; // Matrix products, shadow depths, tangents and vertex alpha.
 constexpr auto texel_range = "Shadow texel size exceeds finite range";
-// A sun straight overhead, a world shadow region of extent 8 and depth 20, and an enabled detail
-// region of extent 1.5 centered at (1, 2, 3).
+// A sun straight overhead and an enabled detail region of extent 1.5 and depth 20 centered at (1, 2, 3).
 Environment overhead_sun() {
     Environment env;
     env.sun.direction = {0, 1, 0};
-    env.shadow.extent = 8;
-    env.shadow.depth = 20;
-    env.detail_shadow = env.shadow;
     env.detail_shadow.enabled = true;
     env.detail_shadow.extent = 1.5F;
+    env.detail_shadow.depth = 20;
     env.detail_shadow.center = {1, 2, 3};
     return env;
+}
+// Four enabled cascades of 2048 texels to 100 m, from a sun in the sky's south-west quarter.
+Environment cascaded() {
+    Environment env;
+    env.sun.direction = {-.5F, .72F, .38F};
+    env.shadow_cascades.enabled = true;
+    return env;
+}
+// A 16:9 perspective view from 3 cm to 480 m, looking down and across from above the origin.
+Mat4 wide_view(Vec3 eye = {4, 3, 9}, Vec3 target = {0, 1, 0}, float far_plane = 480) {
+    return perspective(16.F / 9, .03F, far_plane) * look_at(eye, target);
+}
+// The axes along which the sun's shadow projections lie, as directional shadows document them: right and up across
+// the sun, and forward away from it.
+std::array<Vec3, 3> sun_axes(Vec3 sun) {
+    const auto forward = normalized(sun) * -1.F;
+    const auto right = normalized(cross(forward, std::abs(forward.y) > .99F ? Vec3{1, 0, 0} : Vec3{0, 1, 0}));
+    return {right, cross(right, forward), forward};
+}
+// Split @p k of @p count over view depths from @p near_depth to @p far_depth, as ShadowCascades states it.
+double split(double near_depth, double far_depth, double share, int k, int count) {
+    const double fraction = double(k) / count;
+    return share * near_depth * std::pow(far_depth / near_depth, fraction) +
+           (1 - share) * (near_depth + (far_depth - near_depth) * fraction);
+}
+// The corners of perspective view @p view's frustum at view depths @p from and @p to, scaled from those of its far
+// plane, whose depth is @p far_depth: unprojecting the far plane, rather than the near one, keeps rounding small.
+std::array<Vec3, 8> slice_corners(const Mat4 &view, float far_depth, double from, double to) {
+    const auto inverted = inverse(view);
+    const auto origin = view_origin(view);
+    const Vec3 eye{origin[0], origin[1], origin[2]};
+    std::array<Vec3, 8> corners{};
+    for (int c = 0; c < 4; ++c) {
+        const std::array<float, 4> clip{c & 1 ? 1.F : -1.F, c & 2 ? 1.F : -1.F, 0, 1};
+        std::array<float, 4> world{};
+        for (int r = 0; r < 4; ++r)
+            for (int k = 0; k < 4; ++k)
+                world[r] += inverted[k * 4 + r] * clip[k];
+        const Vec3 on_far{world[0] / world[3], world[1] / world[3], world[2] / world[3]};
+        corners[c] = eye + (on_far - eye) * float(from / far_depth);
+        corners[c + 4] = eye + (on_far - eye) * float(to / far_depth);
+    }
+    return corners;
 }
 // A 2x1 image from transparent black to opaque white.
 Texture gradient(TextureEncoding encoding) {
@@ -81,23 +121,19 @@ TEST_CASE("A view projection times its inverse is the identity, and a singular m
     CHECK_THROWS_WITH_AS(inverse({}), math_error_message(MathErrorCode::singular_matrix), MathError);
 }
 
-TEST_CASE("Shadow regions map their depth to [0, 1] and snap their origins to texels") {
+TEST_CASE("The detail region maps its depth to [0, 1] and snaps its origin to texels") {
     auto env = overhead_sun();
-    const auto light = directional_shadow_matrix(env);
-    CHECK(point(light, {0, 0, 0}).z == Near{.5F, tolerance});
-    CHECK(point(light, {0, 10, 0}).z == Near{0, tolerance});
-    CHECK(point(light, {0, -10, 0}).z == Near{1, tolerance});
-    env.shadow.center.x = .001F;
-    CHECK(light == directional_shadow_matrix(env));
-    const auto detail = directional_shadow_matrix(env, true);
+    const auto detail = detail_shadow_matrix(env);
+    CHECK(point(detail, {1, 2, 3}).z == Near{.5F, tolerance});
+    CHECK(point(detail, {1, 12, 3}).z == Near{0, tolerance});
+    CHECK(point(detail, {1, -8, 3}).z == Near{1, tolerance});
     env.detail_shadow.center.x += .0001F;
-    CHECK(detail == directional_shadow_matrix(env, true));
-    CHECK(light == directional_shadow_matrix(env)); // Moving the detail region leaves the world region.
+    CHECK(detail == detail_shadow_matrix(env));
     env.detail_shadow.center.x += .2F;
-    CHECK(detail != directional_shadow_matrix(env, true));
+    CHECK(detail != detail_shadow_matrix(env));
 }
 
-TEST_CASE("Invalid lights, exposure, fog and shadow regions are rejected") {
+TEST_CASE("Invalid lights, exposure, fog and shadow settings are rejected") {
     const auto env = overhead_sun();
     auto bad = env;
     bad.sun.direction = {};
@@ -111,17 +147,141 @@ TEST_CASE("Invalid lights, exposure, fog and shadow regions are rejected") {
     CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment exposure or fog density",
                          std::invalid_argument);
     bad = env;
-    bad.shadow.extent = std::numeric_limits<float>::max();
-    CHECK_THROWS_WITH_AS(directional_shadow_matrix(bad), texel_range, std::invalid_argument);
-    bad = env;
-    bad.shadow.extent = std::numeric_limits<float>::denorm_min();
-    CHECK_THROWS_WITH_AS(directional_shadow_matrix(bad), texel_range, std::invalid_argument);
+    bad.detail_shadow.extent = std::numeric_limits<float>::max();
+    CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), texel_range, std::invalid_argument);
     bad = env;
     bad.detail_shadow.extent = std::numeric_limits<float>::denorm_min();
-    CHECK_THROWS_WITH_AS(directional_shadow_matrix(bad, true), texel_range, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), texel_range, std::invalid_argument);
     bad = env;
     bad.detail_shadow.center.y = std::numeric_limits<float>::quiet_NaN();
     CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid directional shadow region", std::invalid_argument);
+    bad = env;
+    bad.shadow_cascades.count = 0;
+    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid shadow cascades", std::invalid_argument);
+    // Disabled cascades are validated as enabled ones are.
+    CHECK_THROWS_WITH_AS(fit_shadow_cascades(bad, wide_view()), "Invalid shadow cascades", std::invalid_argument);
+}
+
+TEST_CASE("Shadow cascades split a perspective view's depth as ShadowCascades states") {
+    auto env = cascaded();
+    const auto cascades = fit_shadow_cascades(env, wide_view());
+    REQUIRE(cascades.size() == 4);
+    for (int i = 0; i < 4; ++i) {
+        CAPTURE(i);
+        const auto begin = split(.03, 100, .75, i, 4), end = split(.03, 100, .75, i + 1, 4);
+        CHECK(cascades[std::size_t(i)].begin == Near{begin, 1e-5 * end});
+        CHECK(cascades[std::size_t(i)].end == Near{end, 1e-5 * end});
+    }
+    // A far plane nearer than the distance ends the shadows; even splits ignore the logarithm.
+    env.shadow_cascades.logarithmic_split = 0;
+    env.shadow_cascades.count = 3;
+    const auto clipped = fit_shadow_cascades(env, wide_view({4, 3, 9}, {0, 1, 0}, 60));
+    REQUIRE(clipped.size() == 3);
+    for (int i = 0; i < 3; ++i) {
+        CAPTURE(i);
+        CHECK(clipped[std::size_t(i)].end == Near{.03 + (60 - .03) * (i + 1) / 3, 1e-3});
+    }
+    // An orthographic view splits evenly from its near plane, to its far plane or the distance.
+    env.shadow_cascades.logarithmic_split = .75F;
+    env.shadow_cascades.count = 4;
+    const auto ortho = orthographic(4.F / 3, 2, -5, 25) * look_at({0, 0, 3}, {0, 0, 0});
+    for (const auto &[distance, last] : {std::pair{20.F, 20.F}, std::pair{100.F, 30.F}}) {
+        CAPTURE(distance);
+        env.shadow_cascades.distance = distance;
+        const auto even = fit_shadow_cascades(env, ortho);
+        REQUIRE(even.size() == 4);
+        for (std::size_t i = 0; i < even.size(); ++i) {
+            CAPTURE(i);
+            CHECK(even[i].begin == Near{last * float(i) / 4, 1e-4});
+            CHECK(even[i].end == Near{last * float(i + 1) / 4, 1e-4});
+        }
+    }
+}
+
+TEST_CASE("Each cascade's square holds its slice of the view and the filter, on whole texels") {
+    const auto env = cascaded();
+    const auto view = wide_view();
+    const auto cascades = fit_shadow_cascades(env, view);
+    REQUIRE(cascades.size() == 4);
+    const auto [right, up, forward] = sun_axes(env.sun.direction);
+    for (std::size_t i = 0; i < cascades.size(); ++i) {
+        CAPTURE(i);
+        const auto &cascade = cascades[i];
+        CHECK(cascade.texel == Near{2 * cascade.radius / 2048, 1e-9});
+        // The slice reaches back to where the previous cascade starts blending into this one.
+        const double from = i ? cascade.begin - .1 * (cascade.begin - cascades[i - 1].begin) : cascade.begin;
+        for (const auto corner : slice_corners(view, 480, from, cascade.end)) {
+            // The filter reads 2.5 texels around a sample, which must stay inside the square.
+            const auto room = cascade.radius - 2.5F * cascade.texel + 1e-4F;
+            CHECK(std::abs(dot(right, corner - cascade.center)) <= room);
+            CHECK(std::abs(dot(up, corner - cascade.center)) <= room);
+        }
+        for (const auto axis : {right, up}) {
+            const auto texels = double(dot(axis, cascade.center)) / cascade.texel;
+            CHECK(texels == Near{std::round(texels), .01});
+        }
+        // The square's center maps to its middle, and the sphere's depth to [0, 1].
+        const auto middle = point(cascade.view_projection, cascade.center);
+        CHECK(middle.x == Near{0, 1e-4});
+        CHECK(middle.y == Near{0, 1e-4});
+        CHECK(point(cascade.view_projection, cascade.center - forward * cascade.radius).z >= -1e-5F);
+        CHECK(point(cascade.view_projection, cascade.center + forward * cascade.radius).z <= 1 + 1e-5F);
+    }
+    // Farther cascades are coarser.
+    for (std::size_t i = 1; i < cascades.size(); ++i)
+        CHECK(cascades[i].texel > cascades[i - 1].texel);
+}
+
+TEST_CASE("Turning and moving the view keeps each cascade's size and moves it by whole texels") {
+    const auto env = cascaded();
+    const auto first = fit_shadow_cascades(env, wide_view());
+    REQUIRE(first.size() == 4);
+    const auto [right, up, forward] = sun_axes(env.sun.direction);
+    (void)forward;
+    for (int step = 1; step <= 40; ++step) {
+        CAPTURE(step);
+        const float turn = .37F * float(step), rise = .2F * std::sin(.5F * float(step));
+        const Vec3 eye{4 + .731F * float(step), 3 + .1F * float(step % 7), 9 - .417F * float(step)};
+        const auto moved = fit_shadow_cascades(env, wide_view(eye, eye + Vec3{std::cos(turn), rise, std::sin(turn)}));
+        REQUIRE(moved.size() == first.size());
+        for (std::size_t i = 0; i < moved.size(); ++i) {
+            CAPTURE(i);
+            CHECK(moved[i].radius == first[i].radius); // Exactly: the size does not depend on the camera's pose.
+            for (const auto axis : {right, up}) {
+                const auto shift = double(dot(axis, moved[i].center - first[i].center)) / first[i].texel;
+                CHECK(shift == Near{std::round(shift), .02});
+            }
+        }
+    }
+    // A move of a fraction of the finest texel either keeps a cascade's square or shifts it by one whole texel, so
+    // a point keeps its place within its texel, and the shadow edges that texels make stay where they are.
+    const Vec3 point_in_view{1, .5F, 2};
+    for (const auto fraction : {.1F, .3F, .45F}) {
+        CAPTURE(fraction);
+        const auto offset = (right + up * .7F) * (fraction * first[0].texel);
+        const auto moved = fit_shadow_cascades(env, wide_view(Vec3{4, 3, 9} + offset, Vec3{0, 1, 0} + offset));
+        for (std::size_t i = 0; i < moved.size(); ++i) {
+            CAPTURE(i);
+            const auto before = point(first[i].view_projection, point_in_view),
+                       after = point(moved[i].view_projection, point_in_view);
+            const auto u = double(after.x - before.x) * 1024, v = double(after.y - before.y) * 1024;
+            CHECK(u == Near{std::round(u), .02});
+            CHECK(v == Near{std::round(v), .02});
+        }
+    }
+}
+
+TEST_CASE("A view with no depth to shade gets no cascades, and an invalid view is rejected") {
+    auto env = cascaded();
+    env.shadow_cascades.distance = 2;
+    CHECK(fit_shadow_cascades(env, perspective(1, 3, 50) * look_at({0, 0, 5}, {})).empty());
+    CHECK_FALSE(fit_shadow_cascades(env, perspective(1, 1, 50) * look_at({0, 0, 5}, {})).empty());
+    CHECK_THROWS_WITH_AS(fit_shadow_cascades(env, Mat4{}), math_error_message(MathErrorCode::singular_matrix),
+                         MathError);
+    auto nonfinite = wide_view();
+    nonfinite[5] = std::numeric_limits<float>::infinity();
+    CHECK_THROWS_WITH_AS(fit_shadow_cascades(env, nonfinite), math_error_message(MathErrorCode::nonfinite_matrix),
+                         MathError);
 }
 
 TEST_CASE("Color mips average in sRGB, and data mips and alpha average linearly") {

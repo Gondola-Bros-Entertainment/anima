@@ -176,7 +176,7 @@ struct FrameProfile {
     bool gpu_available{};
     /// The whole command buffer.
     double gpu_ms{};
-    /// Both shadow regions.
+    /// Every shadow pass: each shadow cascade and the detail region.
     double gpu_shadow_ms{};
     /// Sky and meshes into the scene target, with the copy of opaque inputs on frames that make one.
     double gpu_scene_ms{};
@@ -245,11 +245,12 @@ struct ResourceStats {
     std::uint64_t culled_draws{};
     /// Indices submitted by main-view draws of the latest frame, once per copy drawn.
     std::uint64_t submitted_indices{};
-    /// Draw calls of both shadow regions in the latest frame.
+    /// Draw calls of every shadow pass in the latest frame, each cascade's and the detail region's, so a caster that
+    /// several cascades hold counts in each.
     std::uint64_t shadow_draw_calls{};
-    /// Indices submitted to both shadow regions in the latest frame, once per copy drawn.
+    /// Indices submitted to every shadow pass in the latest frame, once per copy drawn.
     std::uint64_t shadow_submitted_indices{};
-    /// Device allocation bytes of both shadow depth images.
+    /// Device allocation bytes of the shadow depth images: the cascades' layers and the detail region's.
     std::uint64_t shadow_bytes{};
     /// Allocation bytes of the scene color and depth targets; excludes the swapchain and shadow images.
     std::uint64_t world_target_bytes{};
@@ -257,9 +258,15 @@ struct ResourceStats {
 
 /// Renders selected scenes into one borrowed SDL window.
 ///
-/// Each frame renders the shadow regions, then into a linear `RGBA16F` target the opaque and masked meshes, the
+/// Each frame renders the sun's shadow maps, then into a linear `RGBA16F` target the opaque and masked meshes, the
 /// optional sky, which shades only the pixels that they leave at the far plane, and the blended meshes; it converts
 /// the target for display and composites UI last. The window must outlive the renderer, which never destroys it.
+///
+/// The sun's shadow maps are its cascades (ShadowCascades), which each frame fits to the current view as
+/// fit_shadow_cascades() does and extends toward the sun over the casters that each one's square reaches, as layers of
+/// one depth image, and the optional detail region (DirectionalShadow), each the first of `VK_FORMAT_D32_SFLOAT` and
+/// `VK_FORMAT_D16_UNORM` that the device can attach and sample; with 16-bit depth, each cascade's bias also covers a
+/// step of its depth. Each pass draws the opaque and masked casters that it holds, culled against itself.
 ///
 /// The view's depth buffer is the first of `VK_FORMAT_D32_SFLOAT`, `VK_FORMAT_X8_D24_UNORM_PACK32` and
 /// `VK_FORMAT_D16_UNORM` that the device can attach, sample and copy, as custom materials that read opaque depth
@@ -298,7 +305,7 @@ struct ResourceStats {
 /// An object with placements (Scene::set_placements) draws each of its mesh's draws as instances of one indexed draw,
 /// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that draw the
 /// same level of detail: the main view culls clusters by their world bounds when frustum culling is on, and each
-/// shadow region culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements uploads
+/// shadow pass culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements uploads
 /// its transforms once into a device buffer, cached per object and released as meshes are, and the vertex shaders
 /// compose each placement with the object's world matrix and the mesh's rest pose.
 ///
@@ -326,7 +333,7 @@ struct ResourceStats {
 /// depth is that of the blended surface point, or the quad's where the parallax step carries that point in front of the
 /// quad, and it is lit as the standard material lights a surface, with the blended normal, base color times the
 /// object's material factor, occlusion, roughness, metallic and emission, and shadows received without a receiver
-/// plane. Into the shadow regions the impostor draws along the sun with the frames nearest the sun's direction. A copy
+/// plane. Into the shadow maps the impostor draws along the sun with the frames nearest the sun's direction. A copy
 /// seen from inside its sphere draws nothing, and visibility ranges apply as to any copy. A custom material assigned to
 /// its material slot draws it as a quad instead.
 ///
@@ -394,7 +401,8 @@ struct ResourceStats {
 /// and color targets into images that those shaders sample, and a second pass loads the targets and draws the
 /// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and
 /// released with the swapchain. A custom material casts shadows only through its depth-only variant, which draws
-/// into each enabled shadow region with that region's view-projection; without one it casts none. Custom shaders
+/// into each shadow pass, each cascade and the detail region, with that pass's view-projection; without one it casts
+/// none. Custom shaders
 /// read no shadow maps, and fog is theirs to apply from the documented inputs, while exposure and tone mapping
 /// apply to the whole target at display conversion. A CustomMaterial's shader modules, pipelines, parameter
 /// buffer, textures and descriptors are created the first time a preparation draws it and are released as cached
@@ -487,12 +495,14 @@ class VulkanRenderer {
     void set_lod_threshold(float pixels);
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
-    /// Validates @p environment with validate_environment() and both regions, enabled or not, with
-    /// directional_shadow_matrix(). Each enabled region's DirectionalShadow::resolution must also fit the
-    /// device's 2D image and framebuffer limits; a disabled region keeps a 1x1 map, so its resolution meets that
-    /// check only in a call that enables it. Invalid input throws `std::invalid_argument` or anima::MathError
-    /// and keeps the previous environment. The next draw() allocates changed shadow maps and throws
-    /// SceneResourceError if that fails.
+    /// Validates @p environment with validate_environment() and the detail region, enabled or not, with
+    /// detail_shadow_matrix(). While the shadow cascades are enabled, ShadowCascades::resolution must fit the
+    /// device's 2D image and framebuffer limits and ShadowCascades::count its image array layers, and so must the
+    /// detail region's DirectionalShadow::resolution while it is enabled; disabled maps keep 1x1 placeholders, so
+    /// their resolutions meet that check only in a call that enables them ("Shadow resolution exceeds device
+    /// capabilities"). Invalid input throws `std::invalid_argument` or anima::MathError and keeps the previous
+    /// environment. Each draw() fits the cascades to the view as fit_shadow_cascades() does, extends their depth over
+    /// their casters, allocates changed shadow maps and throws SceneResourceError if that fails.
     void set_environment(const Environment &environment);
     /// Sets the seconds that custom material shaders read as the frame block's `time`, from the next draw(); it
     /// starts at 0. The renderer never advances it, so the application chooses the clock, pauses and rate. Shaders
