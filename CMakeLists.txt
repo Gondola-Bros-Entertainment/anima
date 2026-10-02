@@ -148,6 +148,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/prefab.cpp
     src/assets/prefab_variant.cpp
     src/assets/prefab_composition.cpp
+    src/assets/impostor.cpp
     src/assets/mesh.cpp
     src/assets/mesh_placements.cpp
     src/assets/terrain.cpp
@@ -353,6 +354,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_visibility_range_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_visibility_range_tests)
         add_test(NAME visibility_ranges COMMAND anima_visibility_range_tests)
+        add_executable(anima_impostor_tests tests/impostor_tests.cpp)
+        target_link_libraries(anima_impostor_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_impostor_tests)
+        add_test(NAME impostors COMMAND anima_impostor_tests)
         add_executable(anima_mesh_lod_tests tests/mesh_lod_tests.cpp)
         target_link_libraries(anima_mesh_lod_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_mesh_lod_tests)
@@ -461,7 +466,8 @@ if(ANIMA_BUILD_DESKTOP)
     set(shader_outputs)
     set(shader_sources triangle.vert triangle.frag)
     if(ANIMA_BUILD_ASSETS)
-        list(APPEND shader_sources mesh.frag resource.vert sky.vert sky.frag shadow-resource.vert shadow.frag resolve.frag)
+        list(APPEND shader_sources mesh.frag resource.vert sky.vert sky.frag shadow-resource.vert shadow.frag resolve.frag
+            impostor.vert impostor.frag impostor-shadow.frag)
     endif()
     if(ANIMA_BUILD_UI)
         list(APPEND shader_sources ui.vert ui.frag)
@@ -477,6 +483,9 @@ if(ANIMA_BUILD_DESKTOP)
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/visibility.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/lighting.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/impostor.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/impostor_sample.glsl"
             VERBATIM)
         list(APPEND shader_outputs "${output}")
     endforeach()
@@ -680,7 +689,7 @@ if(ANIMA_BUILD_TESTS)
         set(desktop "${anima_consumer_executable_dir}/consumer_desktop${CMAKE_EXECUTABLE_SUFFIX}")
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
-        foreach(check_mode IN ITEMS allocations culling placements lod foliage environment resources
+        foreach(check_mode IN ITEMS allocations culling placements lod impostors foliage environment resources
             material-sampling pbr surface-maps sidedness blending custom-materials texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")

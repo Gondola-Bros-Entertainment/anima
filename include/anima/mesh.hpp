@@ -1,5 +1,7 @@
 #pragma once
 #include <anima/assets/mesh_snapshot.hpp>
+#include <cstdint>
+#include <optional>
 
 /// @file
 /// Immutable compiled meshes, shared by anima::Scene instances and cached on the GPU by
@@ -70,11 +72,44 @@ struct IndexedDraw {
 /// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices
 /// of the one before it or when a step's error would exceed the draw's extent. Draws with a masked material
 /// (AlphaMode::mask) get none: their cutout edges follow texture coordinates, which the simplifier does not weigh, so
-/// foliage needs impostors instead. Each level takes its indices' memory and upload in addition to the draw's.
+/// foliage draws far away as an impostor instead (bake_impostor()). Each level takes its indices' memory and upload in
+/// addition to the draw's.
 struct MeshLodOptions {
     /// Most levels per draw, from 0, the default, which generates none, to 8.
     std::size_t levels{};
 };
+
+/// The directions from which an impostor's frames view its mesh (ImpostorFrames).
+enum class ImpostorLayout {
+    /// Directions at or above the mesh's horizontal plane, on a hemi-octahedral grid, for objects seen from above or
+    /// level, such as trees; a view from below shows the frames along the horizon.
+    hemisphere,
+    /// Every direction, on an octahedral grid.
+    sphere
+};
+
+/// How an impostor's atlas holds its frames, in the space of its source mesh's vertices as the rest pose places them,
+/// with +Y up. A persisted atlas keeps these values with its images.
+///
+/// The atlas holds #count by #count frames, frame `(i, j)` in column `i` and row `j` counted from texture coordinate
+/// `(0, 0)`. Frame `(i, j)` views the mesh orthographically from the unit direction `d` that the grid point
+/// `(u, v) = (2i / (count - 1) - 1, 2j / (count - 1) - 1)` encodes: for ImpostorLayout::hemisphere, `x = (u + v) / 2`,
+/// `z = (u - v) / 2` and `y = 1 - |x| - |z|`; for ImpostorLayout::sphere, `x = u`, `z = v` and `y = 1 - |u| - |v|`,
+/// where a negative `y` folds `x` and `z` to `(1 - |z|) sign(x)` and `(1 - |x|) sign(z)`; `d` is `(x, y, z)`
+/// normalized. The frame shows the square of side `2 radius` around #center on the plane through #center
+/// perpendicular to `d`, with texture `u` along `right` and `v` along `up`: `right` is `(d.z, 0, -d.x)` normalized, or
+/// `(1, 0, 0)` where `d.x` and `d.z` are both 0, and `up` is `cross(d, right)`.
+struct ImpostorFrames {
+    /// The directions that the frames cover.
+    ImpostorLayout layout = ImpostorLayout::hemisphere;
+    /// Frames along each side of the atlas, from 2 to 32.
+    std::uint32_t count{};
+    /// Center of the sphere that holds every vertex, the center of Mesh::rest_bounds().
+    Vec3 center{};
+    /// Radius of that sphere, finite and greater than 0.
+    float radius{};
+};
+struct ImpostorAtlas;
 
 /// Limits for Mesh::compile_static; with #max_vertices zero the source compiles into one Mesh.
 struct MeshCompileOptions {
@@ -155,6 +190,28 @@ class Mesh {
     /// thread, as compile() calls may.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
+    /// Compiles @p atlas, from bake_impostor() or persisted from it, into a Mesh that VulkanRenderer draws as an
+    /// impostor, and that scenes place, range, cull and shade as any Mesh.
+    ///
+    /// The Mesh has one node and one draw, a quad of two triangles whose corners span the cube of side
+    /// `2 ImpostorFrames::radius` around ImpostorFrames::center, so its rest bounds share their center with its source
+    /// mesh's and a visibility range measures to the same point for both. Its one material is AlphaMode::mask with
+    /// cutoff 0.5 and double-sided, with ImpostorAtlas::color as its base color, ImpostorAtlas::normal_depth as its
+    /// normal map, ImpostorAtlas::surface as both its metallic-roughness and occlusion maps, and
+    /// ImpostorAtlas::emissive, when present, as its emissive map with ImpostorAtlas::emission_scale as its factor.
+    /// Each texture keeps its sampler; an
+    /// ImageFormat::rgba8 base color's mips keep its alpha coverage at 0.5, as a masked material's do. impostor()
+    /// returns @p atlas's frames.
+    ///
+    /// Throws `std::invalid_argument` for frames out of range ("Impostor frames must number from 2 to 32 per side, with
+    /// a finite center and a positive finite radius"), for an unknown layout ("Unknown impostor layout"), and for
+    /// images that are not square, equal in size and divisible into the frames, or whose textures use the wrong
+    /// encoding ("Impostor images must be equal squares divisible into the frames, color and emission sRGB, normals
+    /// and surface linear"), for an emission scale below 1 or not finite ("Impostor emission scale must be finite and
+    /// at least 1"), then as compile() does for its textures, and for an unknown @p texel_retention. Calls may run
+    /// concurrently on any thread.
+    [[nodiscard]] static std::shared_ptr<const Mesh>
+    compile_impostor(const ImpostorAtlas &atlas, TexelRetention texel_retention = TexelRetention::keep);
     /// Vertices that indices() refers to.
     [[nodiscard]] std::span<const SourceVertex> vertices() const { return vertices_; }
     /// Triangle-list indices into vertices(): every draw's own, in source order, then after all of them each draw's
@@ -193,6 +250,9 @@ class Mesh {
     /// world transforms within `0.00001` per element. Animator requires it. Throws as sample_pose() does when
     /// the rest pose of @p source cannot be evaluated.
     [[nodiscard]] bool accepts_animation_source(const Asset &source) const;
+    /// The frames of a Mesh compiled with compile_impostor(), which VulkanRenderer draws as an impostor; null for any
+    /// other Mesh.
+    [[nodiscard]] const ImpostorFrames *impostor() const noexcept { return impostor_ ? &*impostor_ : nullptr; }
 
   private:
     friend class Scene;
@@ -213,6 +273,7 @@ class Mesh {
     RenderBounds rest_bounds_;
     TexelRetention texel_retention_ = TexelRetention::keep;
     detail::TexelHoldPtr texels_;
+    std::optional<ImpostorFrames> impostor_;
 };
 
 } // namespace anima

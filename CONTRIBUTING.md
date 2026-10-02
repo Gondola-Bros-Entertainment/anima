@@ -112,6 +112,11 @@ reports both at 10,000 copies, `--lod`, which draws dense spheres far away with
 simplified levels, in the view and the shadow passes, within pixel parity of their full
 draws, finer levels up close, a skinned sphere's levels by its joints' scale and a
 flat-shaded sphere's within the same parity,
+`--impostors`, which bakes a tree of masked leaf cards into an impostor and requires it
+to match the tree from six directions, in an orthographic view and under a turned,
+unevenly scaled placement, and in the shadow it casts, within the parity the check
+states, requires their handover to leave no pixel uncovered, and reports 10,000 placed
+trees as meshes and as impostors,
 `--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`, which
 also requests an anisotropy of 64, above the 16 that devices commonly allow, and requires
 the device's limit,

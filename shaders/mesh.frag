@@ -16,44 +16,22 @@ layout(push_constant) uniform Surface {
 }
 surface;
 #include "environment.glsl"
+#include "lighting.glsl"
 layout(location = 0) out vec4 outColor;
 // Set in the blended pipeline, which composites premultiplied color over the target with ONE, ONE_MINUS_SRC_ALPHA.
 layout(constant_id = 0) const bool blended = false;
-const float PI = 3.14159265359;
-const float minimumRoughness = 0.045;
-const float dielectricReflectance = 0.04;
-const float maximumHalfFloat = 65504.0;
-vec3 unit(vec3 v) { return v * inversesqrt(max(dot(v, v), 1e-12)); }
 float receiverPlaneWeight(float curvature, float facing, mat4 view, vec4 settings) {
     vec3 axis = vec3(view[0][0], view[1][0], view[2][0]);
     float texelPitch = 2.0 * settings.y / max(length(axis), 1e-12);
     float curved = smoothstep(0.00001, 0.0001, curvature * texelPitch);
     return mix(1.0, smoothstep(0.0, 0.15, facing), curved);
 }
-// glTF isotropic GGX, height-correlated Smith visibility and Schlick Fresnel.
-vec3 light(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float metallic, float alpha) {
-    float nl = max(dot(n, l), 0.0), nv = max(dot(n, v), 0.0);
-    if (nl <= 0.0 || nv <= 0.0)
-        return vec3(0);
-    vec3 h = unit(v + l);
-    float nh = max(dot(n, h), 0.0), vh = max(dot(v, h), 0.0);
-    float a2 = alpha * alpha;
-    float d = (1.0 - nh * nh) + a2 * nh * nh;
-    float distribution = a2 / max(PI * d * d, 1e-12);
-    float visibility = 0.5 / max(nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2), 1e-6);
-    vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - vh, 5.0);
-    vec3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo / PI;
-    return (diffuse + fresnel * distribution * visibility) * nl;
-}
 void main() {
-    // In its visibility range's margins an object dissolves, keeping the share of its pixels that its visibility
-    // gives.
-    if (dissolved(visibility, gl_FragCoord.xy))
-        discard;
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.
     float facing = (gl_FrontFacing ? 1.0 : -1.0) * orientation;
-    // A single-sided material draws only the side its faces front.
+    // A single-sided material draws only the side its faces front. Facing is constant across a primitive, so this
+    // discards whole quads and leaves derivatives defined.
     if (material.maps.y < 0.5 && facing < 0.0)
         discard;
     vec3 n = unit(worldNormal);
@@ -107,31 +85,23 @@ void main() {
     }
     n *= facing;
     vec4 base = texture(baseColorTexture, texcoord);
+    vec4 mr = texture(metallicRoughnessTexture, texcoord);
+    float occlusion = mix(1.0, texture(occlusionTexture, texcoord).r, material.detail.z);
+    vec3 emission = texture(emissiveTexture, texcoord).rgb;
     // The alpha that masking tests and blending composites with.
     float alpha = base.a * material.emissiveAlpha.a * vertexAlpha;
-    if (material.detail.y >= 0.0 && alpha < material.detail.y)
+    // Every texture is sampled before a pixel discards, since a discard leaves undefined the derivatives that choose
+    // mip levels for the rest of its 2x2 quad. In its visibility range's margins an object dissolves, keeping the share
+    // of its pixels that its visibility gives, and a masked material discards what lies below its cutoff.
+    if (dissolved(visibility, gl_FragCoord.xy) || (material.detail.y >= 0.0 && alpha < material.detail.y))
         discard;
     vec3 albedo = clamp(base.rgb * baseColor, 0.0, 1.0);
-    vec3 v = unit(surface.viewOrigin.xyz - worldPosition * surface.viewOrigin.w);
-    vec4 mr = texture(metallicRoughnessTexture, texcoord);
-    float metallic = surface.factors.x * mr.b;
-    float roughness = max(surface.factors.y * mr.g, minimumRoughness);
-    vec3 f0 = mix(vec3(dielectricReflectance), albedo, metallic);
-    float occlusion = mix(1.0, texture(occlusionTexture, texcoord).r, material.detail.z);
-    vec3 ambient = mix(environment.ambientGround.rgb, environment.ambientSky.rgb, n.y * 0.5 + 0.5);
-    vec3 color = occlusion * (ambient * (1.0 - metallic) * albedo + environment.ambientSpecular.rgb * f0);
-    color += sunVisibility(worldPosition, n, receiverGradient, detailGradient) * environment.sunRadiance.rgb *
-             light(n, v, environment.sunDirection.xyz, albedo, f0, metallic, roughness * roughness);
-    color += environment.fillRadiance.rgb *
-             light(n, v, environment.fillDirection.xyz, albedo, f0, metallic, roughness * roughness);
-    color += material.emissiveAlpha.rgb * texture(emissiveTexture, texcoord).rgb;
+    vec3 color = reflectedLight(n, worldPosition, surface.viewOrigin, albedo, surface.factors.x * mr.b,
+                                surface.factors.y * mr.g, occlusion, receiverGradient, detailGradient);
+    color += material.emissiveAlpha.rgb * emission;
     if (material.detail.w > 0.5)
         color = albedo;
-    if (surface.viewOrigin.w > 0.5 && environment.fog.w > 0.0) {
-        float transmittance = exp(-environment.fog.w * length(surface.viewOrigin.xyz - worldPosition));
-        color = mix(environment.fog.rgb, color, transmittance);
-    }
-    color = clamp(color, vec3(0), vec3(maximumHalfFloat));
+    color = fogged(color, worldPosition, surface.viewOrigin);
     // Blending scales the whole shaded and fogged color, emission included, by the straight alpha.
     alpha = clamp(alpha, 0.0, 1.0);
     outColor = blended ? vec4(color * alpha, alpha) : vec4(color, 1.0);
