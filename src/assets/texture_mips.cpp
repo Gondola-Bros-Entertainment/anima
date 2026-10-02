@@ -73,6 +73,9 @@ MipLevel downsample(const MipLevel &previous, TextureEncoding encoding, bool wei
             const auto y0 = std::uint64_t(y) * previous.height / next.height;
             const auto y1 = (std::uint64_t(y) + 1) * previous.height / next.height;
             std::array<double, channel_count> sums{};
+            // Unweighted colour, which a texel whose sources all have zero alpha takes, so that colour spread into
+            // transparent texels still reaches the edges that filtering blends with them.
+            std::array<double, alpha_channel> plain{};
             double colour_weight = 0;
             for (auto sy = y0; sy < y1; ++sy)
                 for (auto sx = x0; sx < x1; ++sx) {
@@ -81,14 +84,17 @@ MipLevel downsample(const MipLevel &previous, TextureEncoding encoding, bool wei
                     const auto weight = weight_colour_by_alpha ? alpha : 1.0;
                     colour_weight += weight;
                     for (unsigned c = 0; c < alpha_channel; ++c) {
-                        const auto value = previous.rgba[offset + c] / double(channel_max);
-                        sums[c] += (encoding == TextureEncoding::srgb ? decode_srgb(value) : value) * weight;
+                        auto value = previous.rgba[offset + c] / double(channel_max);
+                        value = encoding == TextureEncoding::srgb ? decode_srgb(value) : value;
+                        sums[c] += value * weight;
+                        plain[c] += value;
                     }
                     sums[alpha_channel] += alpha;
                 }
+            const auto texels = double((x1 - x0) * (y1 - y0));
             for (unsigned c = 0; c < channel_count; ++c) {
-                const auto weight = c == alpha_channel ? double((x1 - x0) * (y1 - y0)) : colour_weight;
-                auto average = weight > 0 ? sums[c] / weight : 0;
+                const auto weight = c == alpha_channel ? texels : colour_weight;
+                auto average = weight > 0 ? sums[c] / weight : plain[c] / texels;
                 if (c < alpha_channel && encoding == TextureEncoding::srgb)
                     average = encode_srgb(average);
                 next.rgba[(std::size_t(y) * next.width + x) * channel_count + c] = byte(average * channel_max);

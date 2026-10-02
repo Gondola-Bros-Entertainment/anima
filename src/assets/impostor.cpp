@@ -637,7 +637,13 @@ std::shared_ptr<const Mesh> Mesh::compile_impostor(const ImpostorAtlas &atlas, T
     Asset asset;
     asset.nodes.resize(1);
     asset.nodes[0].name = "Impostor";
-    asset.textures = {atlas.color, atlas.normal_depth, atlas.surface};
+    // The shaders read each frame up to half a texel of the level they sample from its edges, so every map filters
+    // linearly within and between levels and clamps at the atlas's edges, whatever its sampler says.
+    const auto clamped = [](Texture texture) {
+        texture.sampler = {Filter::linear, Filter::linear, Filter::linear, Wrap::clamp, Wrap::clamp, true};
+        return texture;
+    };
+    asset.textures = {clamped(atlas.color), clamped(atlas.normal_depth), clamped(atlas.surface)};
     Material material;
     material.name = "Impostor";
     material.texture = 0;
@@ -647,7 +653,7 @@ std::shared_ptr<const Mesh> Mesh::compile_impostor(const ImpostorAtlas &atlas, T
     material.alpha_mode = AlphaMode::mask;
     material.alpha_cutoff = .5F;
     if (atlas.emissive) {
-        asset.textures.push_back(*atlas.emissive);
+        asset.textures.push_back(clamped(*atlas.emissive));
         material.emissive_texture = 3;
         material.emissive = {atlas.emission_scale, atlas.emission_scale, atlas.emission_scale};
     }

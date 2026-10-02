@@ -4,10 +4,10 @@
 // discards pays only for the first: impostorHit() for every pixel, and impostorShade() for the pixels that stay.
 
 // The atlas coordinates of the point @p offset from the sphere's center on the plane of @p frame, whose axes are
-// @p right and @p up, kept half a texel inside the frame.
-vec2 impostorAtlas(uvec2 frame, uint count, vec3 offset, vec3 right, vec3 up, float radius, float frameTexels) {
+// @p right and @p up, kept @p inset, a share of the frame, inside it.
+vec2 impostorAtlas(uvec2 frame, uint count, vec3 offset, vec3 right, vec3 up, float radius, float inset) {
     vec2 local = vec2(dot(offset, right), dot(offset, up)) / (2.0 * radius) + 0.5;
-    local = clamp(local, vec2(0.5 / frameTexels), vec2(1.0 - 0.5 / frameTexels));
+    local = clamp(local, vec2(inset), vec2(1.0 - inset));
     return (vec2(frame) + local) / float(count);
 }
 // Where a pixel's ray meets the surfaces of its three frames, in the mesh's space.
@@ -43,20 +43,27 @@ ImpostorHit impostorHit(uint count, uint arrangement, vec4 sphere, vec3 origin, 
         steps[k] = hit.weights[k] > 0.0 ? 1.0 / along : -1.0;
         crossings[k] = origin + direction * (dot(sphere.xyz - origin, directions[k]) * steps[k]);
         hit.atlas[k] = impostorAtlas(impostorUnpack(frames[k]), count, crossings[k] - sphere.xyz, rights[k], ups[k],
-                                     sphere.w, frameTexels);
+                                     sphere.w, 0.5 / frameTexels);
         total += hit.weights[k];
     }
     hit.weights /= max(total, 1e-6);
     int heaviest = weights.x >= weights.y && weights.x >= weights.z ? 0 : weights.y >= weights.z ? 1 : 2;
-    // The coarsest level keeps four texels across a frame, so that filtering stays within the frame.
-    hit.lod = min(textureQueryLod(baseColorTexture, hit.atlas[heaviest]).y, max(log2(frameTexels) - 2.0, 0.0));
+    // The coarsest level keeps four texels across a frame, and frames that split evenly into its texels, so that no
+    // texel of a level straddles two frames.
+    float coarsest = max(min(log2(frameTexels) - 2.0, float(findLSB(uint(frameTexels)))), 0.0);
+    hit.lod = clamp(textureQueryLod(baseColorTexture, hit.atlas[heaviest]).y, 0.0, coarsest);
+    // Linear filtering reads half a texel around a sample, of the coarser of the two levels that it blends, so samples
+    // keep that far inside their frame.
+    float inset = 0.5 * exp2(ceil(hit.lod)) / frameTexels;
     hit.color = vec4(0);
     hit.point = vec3(0);
     for (int k = 0; k < 3; ++k) {
-        float height = (textureLod(normalTexture, hit.atlas[k], hit.lod).a * 2.0 - 1.0) * sphere.w;
+        uvec2 frame = impostorUnpack(frames[k]);
+        vec2 crossing = impostorAtlas(frame, count, crossings[k] - sphere.xyz, rights[k], ups[k], sphere.w, inset);
+        float height = (textureLod(normalTexture, crossing, hit.lod).a * 2.0 - 1.0) * sphere.w;
         vec3 surface = crossings[k] + direction * (height * steps[k]);
-        hit.atlas[k] = impostorAtlas(impostorUnpack(frames[k]), count, surface - directions[k] * height - sphere.xyz,
-                                     rights[k], ups[k], sphere.w, frameTexels);
+        hit.atlas[k] =
+            impostorAtlas(frame, count, surface - directions[k] * height - sphere.xyz, rights[k], ups[k], sphere.w, inset);
         hit.color += textureLod(baseColorTexture, hit.atlas[k], hit.lod) * hit.weights[k];
         hit.point += surface * hit.weights[k];
     }

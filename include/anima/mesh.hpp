@@ -199,9 +199,10 @@ class Mesh {
     /// cutoff 0.5 and double-sided, with ImpostorAtlas::color as its base color, ImpostorAtlas::normal_depth as its
     /// normal map, ImpostorAtlas::surface as both its metallic-roughness and occlusion maps, and
     /// ImpostorAtlas::emissive, when present, as its emissive map with ImpostorAtlas::emission_scale as its factor.
-    /// Each texture keeps its sampler; an
-    /// ImageFormat::rgba8 base color's mips keep its alpha coverage at 0.5, as a masked material's do. impostor()
-    /// returns @p atlas's frames.
+    /// Every map samples with linear filtering within and between mip levels and clamps at its edges, whatever its
+    /// Texture::sampler says, so that no frame wraps across the atlas; mips are sampled, built on the CPU for an
+    /// ImageFormat::rgba8 map and read as stored for a block-compressed one. An ImageFormat::rgba8 base color's mips
+    /// keep its alpha coverage at 0.5, as a masked material's do. impostor() returns @p atlas's frames.
     ///
     /// Throws `std::invalid_argument` for frames out of range ("Impostor frames must number from 2 to 32 per side, with
     /// a finite center and a positive finite radius"), for an unknown layout ("Unknown impostor layout"), and for
