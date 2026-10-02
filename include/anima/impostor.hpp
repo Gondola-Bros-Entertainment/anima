@@ -33,8 +33,8 @@ struct ImpostorOptions {
 /// Each image holds ImpostorFrames::count by ImpostorFrames::count frames of equal size, as ImpostorFrames lays them
 /// out. A texel describes the surface nearest the frame's viewpoint along the frame's direction through the texel's
 /// center, its values averaged over the samples that a surface covers. A texel that no surface covers holds the values
-/// of the nearest covered texel of its frame, with coverage 0, so that filtering and mips do not darken silhouettes;
-/// a frame that nothing covers holds zeros.
+/// of the nearest covered texel of its frame, with coverage 0, so that filtering, and the mips that texture_mips()
+/// builds from it, do not darken silhouettes; a frame that nothing covers holds zeros.
 struct ImpostorAtlas {
     ImpostorFrames frames;
     /// TextureEncoding::srgb. RGB is the base color, the material's factor times its map times the vertex color; alpha
@@ -59,17 +59,18 @@ struct ImpostorAtlas {
 ///
 /// The frames cover the sphere around the center of Mesh::rest_bounds() that holds every vertex. Each samples the
 /// surfaces as the standard material does: the base-color map's alpha times the material's alpha and the vertex alpha
-/// against a masked material's cutoff, single-sided materials from their front only, with linear filtering from the
-/// mip level whose texels best match a sample's footprint in each triangle, wrapped as each texture's sampler says.
+/// against a masked material's cutoff, single-sided materials from their front only, filtered and wrapped as each
+/// texture's sampler says, from the mip level whose texels best match a sample's footprint in each triangle.
 /// Every draw bakes, whatever an instance's visibility. The images are ImageFormat::rgba8 and mipmapped with linear
 /// filtering, clamped at their edges.
 ///
 /// Throws `std::invalid_argument` for options out of range ("Impostor options must give 2 to 32 frames of 8 to 1024
 /// texels, at most 8192 in all, and 1 to 8 samples"), an unknown layout ("Unknown impostor layout"), a mesh with a
 /// skinned draw ("Impostors bake only rigid meshes"), a blended or unlit material ("Impostors bake only lit opaque and
-/// masked materials") or no triangles ("An impostor requires a mesh with triangles"), and `std::logic_error` as
-/// Mesh::texel_images() does once the texels of a Mesh compiled with TexelRetention::until_upload are gone. Takes time
-/// proportional to the frames times the triangles plus the frames times the samples.
+/// masked materials"), or no triangles, or vertices that all lie at the center of its bounds or too far from it for a
+/// float ("An impostor requires a mesh with triangles"), and `std::logic_error` as Mesh::texel_images() does once the
+/// texels of a Mesh compiled with TexelRetention::until_upload are gone. Takes time proportional to the frames times
+/// `T log T` for `T` triangles, which each frame sorts by depth, plus the frames times the samples.
 ///
 /// Calls may run concurrently on any thread. Each reads @p mesh, which never changes, and its images.
 [[nodiscard]] ImpostorAtlas bake_impostor(const Mesh &mesh, const ImpostorOptions &options = {});

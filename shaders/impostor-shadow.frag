@@ -17,8 +17,9 @@ layout(push_constant) uniform Draw {
 draw;
 #include "impostor.glsl"
 #include "impostor_sample.glsl"
-// The quad lies across the side of the sphere facing the sun, so in the shadow regions' forward depth the depth
-// written is never less than the quad's own, and the depth test may reject hidden pixels before they are shaded.
+// The quad lies across the side of the sphere facing the sun, and the depth written is clamped to the quad's own where
+// the parallax step carries the blended point in front of it, so in the shadow regions' forward depth it is never less
+// than the quad's, and the depth test may reject hidden pixels before they are shaded.
 layout(depth_greater) out float gl_FragDepth;
 void main() {
     ImpostorHit hit = impostorHit(draw.indices.y & 255u, draw.indices.y >> 8, draw.sphere, rayOrigin, rayDirection,
@@ -26,5 +27,5 @@ void main() {
     if (hit.color.a < material.detail.y)
         discard;
     vec4 clip = draw.viewProjection * (model * vec4(hit.point, 1.0));
-    gl_FragDepth = clip.z / clip.w;
+    gl_FragDepth = max(clip.z / clip.w, gl_FragCoord.z);
 }

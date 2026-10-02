@@ -24,9 +24,10 @@ surface;
 #include "impostor.glsl"
 #include "impostor_sample.glsl"
 layout(location = 0) out vec4 outColor;
-// The quad lies across the front of the sphere that holds every surface point, so the depth written is never nearer
-// than the quad's own, which in reversed depth is never greater: the depth test may reject hidden pixels before they
-// are shaded, as it does for surfaces that write no depth.
+// The quad lies across the front of the sphere that holds every surface point, and the depth written is clamped to the
+// quad's own where the parallax step carries the blended point in front of it, so in reversed depth it is never
+// greater than the quad's: the depth test may reject hidden pixels before they are shaded, as it does for surfaces that
+// write no depth.
 layout(depth_less) out float gl_FragDepth;
 void main() {
     // impostorHit() chooses its mip level before any pixel of the quad discards, and every sample after reads it
@@ -40,7 +41,7 @@ void main() {
     impostorShade(hit, any(greaterThan(material.emissiveAlpha.rgb, vec3(0))), normal, maps, emission);
     vec3 position = (model * vec4(hit.point, 1.0)).xyz;
     vec4 clip = surface.viewProjection * vec4(position, 1.0);
-    gl_FragDepth = clip.z / clip.w;
+    gl_FragDepth = min(clip.z / clip.w, gl_FragCoord.z);
     // As the CPU's normal(): the cofactor matrix keeps the normal's direction under any affine matrix.
     vec3 a = model[0].xyz, b = model[1].xyz, c = model[2].xyz;
     vec3 n = cross(b, c) * normal.x + cross(c, a) * normal.y + cross(a, b) * normal.z;

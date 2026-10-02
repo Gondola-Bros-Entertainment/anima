@@ -361,6 +361,46 @@ TEST_CASE("An impostor mesh draws one quad around its source's center") {
     CHECK(material.emissive.x == 3);
 }
 
+TEST_CASE("Mips of an impostor's color keep the color spread into its uncovered texels") {
+    // Every texel of the sphere's frames holds its base color, those it covers and those that dilation fills around
+    // them. Mips built as the renderer builds a masked base color's keep that color at every level whose texels lie
+    // within one frame, transparent texels included, so filtering never blends black into a silhouette.
+    const auto atlas = bake_impostor(*Mesh::compile(sphere_asset()), options(4, 16, 2));
+    const std::array expected{255, srgb_byte(.5F), srgb_byte(.25F)};
+    const auto mips = texture_mips(atlas.color, {.alpha_coverage_cutoff = .5F});
+    for (std::size_t level = 0; level <= 4; ++level) {
+        CAPTURE(level);
+        const auto &mip = mips.at(level);
+        std::size_t uncovered = 0, off_color = 0;
+        for (std::size_t i = 0; i < mip.rgba.size(); i += 4) {
+            uncovered += mip.rgba[i + 3] == 0;
+            for (std::size_t c = 0; c < 3; ++c)
+                off_color += std::abs(int(mip.rgba[i + c]) - expected[c]) > 1;
+        }
+        CHECK(off_color == 0);
+        if (level == 1)
+            CHECK(uncovered > 0); // Whole blocks of uncovered texels, which zero-weighted averaging used to blacken.
+    }
+}
+
+TEST_CASE("An impostor's maps sample linearly and clamped, whatever their samplers say") {
+    auto atlas = bake_impostor(*Mesh::compile(sphere_asset()), options(4, 16, 1));
+    atlas.emissive = atlas.color;
+    for (auto *texture : {&atlas.color, &atlas.normal_depth, &atlas.surface, &*atlas.emissive})
+        texture->sampler = {Filter::nearest, Filter::nearest, Filter::nearest, Wrap::repeat, Wrap::mirror, false};
+    const auto mesh = Mesh::compile_impostor(atlas);
+    const auto &textures = mesh->materials()->textures;
+    REQUIRE(textures.size() == 4);
+    for (const auto &texture : textures) {
+        CHECK(texture.sampler.mag == Filter::linear);
+        CHECK(texture.sampler.min == Filter::linear);
+        CHECK(texture.sampler.mip == Filter::linear);
+        CHECK(texture.sampler.u == Wrap::clamp);
+        CHECK(texture.sampler.v == Wrap::clamp);
+        CHECK(texture.sampler.mipmapped);
+    }
+}
+
 TEST_CASE("Compiling an impostor rejects frames and images it cannot draw") {
     const auto atlas = bake_impostor(*Mesh::compile(sphere_asset()), options(4, 16, 1));
     const char *frames_message =

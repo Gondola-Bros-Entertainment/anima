@@ -265,9 +265,11 @@ struct TextureMipOptions {
     ///
     /// Each smaller level's premultiplied color, its alpha times its color as texture_mips() averages it (sRGB
     /// color in linear light, data maps as stored), is then the mean of the premultiplied colors of the texels of
-    /// the previous level that it averages, within 8-bit rounding, so texels with zero alpha add no color. A
-    /// level whose texels all have zero alpha gets zero color. Alpha is averaged as stored, and the base level is
-    /// kept. #alpha_coverage_cutoff weights color this way too.
+    /// the previous level that it averages, within 8-bit rounding, so texels with zero alpha add no color. A texel
+    /// whose source texels all have zero alpha takes their unweighted average color instead, so color that an image
+    /// spreads into its transparent texels, as bake_impostor() spreads it, still reaches the edges that filtering
+    /// blends them with at every level; transparent texels that hold black stay black. Alpha is averaged as stored,
+    /// and the base level is kept. #alpha_coverage_cutoff weights color this way too.
     bool alpha_weighted_color = false;
     bool operator==(const TextureMipOptions &) const = default;
 };

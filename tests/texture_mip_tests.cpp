@@ -197,6 +197,28 @@ TEST_CASE("Alpha-weighted color makes each level's premultiplied color the mean 
     }
 }
 
+TEST_CASE("A texel whose sources all have zero alpha takes their unweighted color") {
+    // A 4x2 image whose left half holds transparent red and blue, as an image spreads color around the edges of what
+    // it covers, and whose right half holds transparent black beside one opaque white texel.
+    const auto source = texture_of({4, 2, {255, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 255, 255, 255, 255,
+                                           255, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0,   0,   0,   0}});
+    for (const auto &options :
+         {TextureMipOptions{.alpha_coverage_cutoff = .5F}, TextureMipOptions{.alpha_weighted_color = true}}) {
+        CAPTURE(options.alpha_weighted_color);
+        const auto level = texture_mips(source, options).at(1);
+        REQUIRE(level.width == 2);
+        // Red and blue average in linear light to half of each, encoded as sRGB 188.
+        CHECK(level.rgba[0] == 188);
+        CHECK(level.rgba[1] == 0);
+        CHECK(level.rgba[2] == 188);
+        CHECK(level.rgba[3] == 0);
+        // Where any source has alpha, only those sources' color counts: the transparent black adds none.
+        CHECK(level.rgba[4] == 255);
+        CHECK(level.rgba[5] == 255);
+        CHECK(level.rgba[6] == 255);
+    }
+}
+
 TEST_CASE("Invalid mip inputs are rejected") {
     const auto source = cutout();
     for (const auto cutoff : {0.F, -1.F, 1.01F, std::numeric_limits<float>::quiet_NaN()}) {
