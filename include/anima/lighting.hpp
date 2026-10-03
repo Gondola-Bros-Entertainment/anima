@@ -95,15 +95,16 @@ class SceneEnvironment {
 /// each prefab instance maps them to its own objects; a link to a stale object or outside the captured
 /// objects fails to capture, and a key the document lacks fails to decode.
 ///
-/// `settings` has exactly the EnvironmentSettings field names. Colors and centers are three numbers and flags
-/// are booleans. `shadow_cascades` has exactly `enabled`, `count`, `distance`, `logarithmic_split`, `blend`,
-/// `resolution`, `constant_bias` and `slope_bias`, and `detail_shadow` exactly `enabled`, `center`, `extent`, `depth`,
-/// `resolution`, `constant_bias` and `slope_bias`, where each count and resolution is an integer from 1 to
-/// 4,294,967,295 that validate_environment_settings() then limits. Numbers must be finite, and payloads are at most
-/// 64 KiB. Unknown, missing or duplicate fields, wrong types and invalid values are rejected. The
-/// scene or prefab stores transforms and enabled state. A missing or inactive light is not a decoding error;
-/// lighting_environment() rejects it later. The scene-environment codec reports SceneEnvironment::sun and
-/// SceneEnvironment::fill as links, so SceneSet::replace and SceneSet::unload repair them (see
-/// ComponentCodecs::add).
+/// `settings` has the EnvironmentSettings field names. `fog_height`, `fog_falloff`, `fog_sun_scattering`,
+/// `fog_sun_anisotropy` and `fog_sky_distance` may be omitted, and then keep their defaults; the codec writes every
+/// field. Colors and centers are three numbers and flags are booleans. `shadow_cascades` has exactly `enabled`,
+/// `count`, `distance`, `logarithmic_split`, `blend`, `resolution`, `constant_bias` and `slope_bias`, and
+/// `detail_shadow` exactly `enabled`, `center`, `extent`, `depth`, `resolution`, `constant_bias` and `slope_bias`,
+/// where each count and resolution is an integer from 1 to 4,294,967,295 that validate_environment_settings() then
+/// limits. Numbers must be finite, and payloads are at most 64 KiB. Unknown or duplicate fields, any other missing
+/// field, wrong types and invalid values are rejected. The scene or prefab stores transforms and enabled state. A
+/// missing or inactive light is not a decoding error; lighting_environment() rejects it later. The scene-environment
+/// codec reports SceneEnvironment::sun and SceneEnvironment::fill as links, so SceneSet::replace and SceneSet::unload
+/// repair them (see ComponentCodecs::add).
 void add_lighting_component_codecs(ComponentCodecs &codecs);
 } // namespace anima

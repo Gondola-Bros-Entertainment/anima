@@ -9,5 +9,8 @@ void main() {
     vec3 ray = environment.viewOrigin.w > 0.5 ? normalize(position.xyz / position.w - environment.viewOrigin.xyz)
                                               : -environment.viewOrigin.xyz;
     vec3 color = skyRadiance(ray);
+    // Fogged as a surface fog_sky_distance along the ray would be, so distant geometry fades into it.
+    if (environment.fogShape.z > 0.0)
+        color = environmentFog(color, environment.viewOrigin.xyz + ray * environment.fogShape.z, environment.viewOrigin);
     outColor = vec4(clamp(color, vec3(0), vec3(65504)), 1.0);
 }

@@ -262,6 +262,20 @@ inline int run(int argc, char **argv) {
     const auto placed_center = anima::point(placement, center);
     view(placed_center + anima::Vec3{40, 12, 44}, placed_center);
     compare_views("placed", alone(tree, placement), alone(impostor, placement));
+    // In height fog lit by the sun, which the view's height fog pipelines apply at each one's own pixels, the impostor
+    // keeps the tree's parity.
+    {
+        anima::Environment hazy;
+        hazy.fog_color = {.45F, .5F, .55F};
+        hazy.fog_density = .02F;
+        hazy.fog_height = center.y;
+        hazy.fog_falloff = .3F;
+        hazy.fog_sun_scattering = {.2F, .2F, .2F};
+        renderer.set_environment(hazy);
+        view(center + anima::Vec3{60, 8, 0}, center);
+        compare_views("height-fog", alone(tree), alone(impostor));
+        renderer.set_environment({});
+    }
 
     // The shadow each casts on the ground from a low sun, seen from above where the tree itself is out of view: the
     // pixels that it darkens by more than 12 levels against the bare ground.
@@ -378,8 +392,8 @@ inline int run(int argc, char **argv) {
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Impostor validation failed");
     std::cout << "PASS impostors: a tree's impostor matches it within the stated parity from six directions, in "
-                 "orthographic and placed views and in its shadow, hands over without leaving a pixel uncovered, and "
-                 "draws 10,000 copies with under a hundredth of the indices; validation_warnings=0 "
+                 "orthographic and placed views, in height fog and in its shadow, hands over without leaving a pixel "
+                 "uncovered, and draws 10,000 copies with under a hundredth of the indices; validation_warnings=0 "
                  "validation_errors=0\n";
     return 0;
 }

@@ -50,6 +50,18 @@ void main() {
                             vec4(1, 2, 3, 1)),
                      0.5);
         break;
+    case 11u:
+        color = animaFrame.fogShape.xyz;
+        break;
+    case 12u:
+        color = animaFrame.fogSun.rgb;
+        break;
+    case 13u:
+        color = vec3(animaFrame.fogShape.w, animaFrame.fogSun.w + 0.25, 0.5);
+        break;
+    case 14u:
+        color = animaFogged(vec3(0.6, 0.4, 0.2), worldPosition);
+        break;
     }
     outColor = vec4(color, 1.0);
 }

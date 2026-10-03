@@ -51,9 +51,11 @@ bool same(const Environment &a, const Environment &b) {
            near(a.ambient_sky, b.ambient_sky) && near(a.ambient_ground, b.ambient_ground) &&
            near(a.ambient_specular, b.ambient_specular) && near(a.sky_zenith, b.sky_zenith) &&
            near(a.sky_horizon, b.sky_horizon) && near(a.sky_ground, b.sky_ground) && near(a.fog_color, b.fog_color) &&
-           near(a.fog_density, b.fog_density) && near(a.exposure, b.exposure) && a.sky == b.sky &&
-           a.tone_mapping == b.tone_mapping && same(a.shadow_cascades, b.shadow_cascades) &&
-           same(a.detail_shadow, b.detail_shadow);
+           near(a.fog_density, b.fog_density) && near(a.fog_height, b.fog_height) &&
+           near(a.fog_falloff, b.fog_falloff) && near(a.fog_sun_scattering, b.fog_sun_scattering) &&
+           near(a.fog_sun_anisotropy, b.fog_sun_anisotropy) && near(a.fog_sky_distance, b.fog_sky_distance) &&
+           near(a.exposure, b.exposure) && a.sky == b.sky && a.tone_mapping == b.tone_mapping &&
+           same(a.shadow_cascades, b.shadow_cascades) && same(a.detail_shadow, b.detail_shadow);
 }
 GameObject light(Scene &scene, Vec3 radiance = {1, 2, 3}) {
     auto object = scene.create("light");
@@ -71,6 +73,16 @@ std::string replace(std::string value, std::string_view from, std::string_view t
     const auto position = value.find(from);
     REQUIRE(position != std::string::npos);
     value.replace(position, from.size(), to);
+    return value;
+}
+// @p value without the field @p key and the comma after it, where its value is a number or an array of numbers and
+// another field follows it.
+std::string without(std::string value, std::string_view key) {
+    const auto start = value.find("\"" + std::string(key) + "\":");
+    REQUIRE(start != std::string::npos);
+    const auto end = value.find(',', value.find(value[start + key.size() + 3] == '[' ? ']' : ',', start));
+    REQUIRE(end != std::string::npos);
+    value.erase(start, end + 1 - start);
     return value;
 }
 // A component payload and the message its decoding throws.
@@ -117,6 +129,11 @@ EnvironmentSettings changed_settings() {
     settings.sky_ground = {.6F, .5F, .4F};
     settings.fog_color = {.3F, .2F, .1F};
     settings.fog_density = .05F;
+    settings.fog_height = -3;
+    settings.fog_falloff = .2F;
+    settings.fog_sun_scattering = {.4F, .3F, .2F};
+    settings.fog_sun_anisotropy = -.25F;
+    settings.fog_sky_distance = 900;
     settings.exposure = 1.5F;
     settings.tone_mapping = true;
     settings.shadow_cascades = {true, 3, 150, .6F, .2F, 1024, 1.5F, 2.5F};
@@ -204,13 +221,24 @@ TEST_CASE("Invalid environment settings are rejected and keep the accepted envir
     const auto configured = lighting_environment(scene);
     CHECK(point(detail_shadow_matrix(configured), {0, 0, 0}).z == Near{.5F, tolerance});
     constexpr auto colours = "Environment colours must be finite nonnegative linear RGB";
-    constexpr auto cascades = "Invalid shadow cascades", region = "Invalid directional shadow region";
+    constexpr auto cascades = "Invalid shadow cascades", region = "Invalid directional shadow region",
+                   height_fog = "Invalid environment height fog";
     constexpr auto infinite = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
     const std::vector<std::pair<std::function<void(EnvironmentSettings &)>, const char *>> breaks{
         {[](auto &bad) { bad.exposure = 0; }, invalid_exposure},
         {[](auto &bad) { bad.fog_density = -1; }, invalid_exposure},
         {[](auto &bad) { bad.ambient_specular.x = -1; }, colours},
         {[](auto &bad) { bad.sky_zenith.y = infinite; }, colours},
+        {[](auto &bad) { bad.fog_sun_scattering.z = -1; }, colours},
+        {[](auto &bad) { bad.fog_height = infinite; }, height_fog},
+        {[](auto &bad) { bad.fog_falloff = -.1F; }, height_fog},
+        {[](auto &bad) { bad.fog_falloff = nan; }, height_fog},
+        {[](auto &bad) { bad.fog_sky_distance = -1; }, height_fog},
+        {[](auto &bad) { bad.fog_sky_distance = infinite; }, height_fog},
+        {[](auto &bad) { bad.fog_sky_distance = 2e9F; }, height_fog},
+        {[](auto &bad) { bad.fog_sun_anisotropy = 1; }, height_fog},
+        {[](auto &bad) { bad.fog_sun_anisotropy = -1; }, height_fog},
+        {[](auto &bad) { bad.fog_sun_anisotropy = nan; }, height_fog},
         {[](auto &bad) { bad.shadow_cascades.count = 0; }, cascades},
         {[](auto &bad) { bad.shadow_cascades.count = 5; }, cascades},
         {[](auto &bad) { bad.shadow_cascades.distance = 0; }, cascades},
@@ -409,6 +437,15 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
                                 "Duplicate JSON document field"});
             payloads.push_back(
                 {replace(valid, "\"fog_density\":", "\"unexpected\":"), "Missing JSON field: fog_density"});
+            // The height fog's fields may be omitted, but are still checked when present, and a misspelled one is
+            // unknown rather than ignored.
+            payloads.push_back({replace(valid, "\"fog_height\":-3.0", "\"fog_height\":true"), needs_number});
+            payloads.push_back({replace(valid, "\"fog_sky_distance\":900.0", "\"fog_sky_distance\":-900"),
+                                "Invalid environment height fog"});
+            payloads.push_back({replace(valid, "\"fog_sun_anisotropy\":-0.25", "\"fog_sun_anisotropy\":1"),
+                                "Invalid environment height fog"});
+            payloads.push_back(
+                {replace(valid, "\"fog_height\":", "\"fog_heigth\":"), "Unknown JSON field: fog_heigth"});
             // The cascades are the only object with a count, of 3.
             for (const auto &[bad, error] : {std::pair{"0", "Shadow cascade count exceeds its range"},
                                              std::pair{"2.5", "Shadow cascade count requires a positive integer"},
@@ -437,6 +474,26 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
         }
         data = valid;
     }
+}
+
+TEST_CASE_FIXTURE(Rig, "Saved settings may omit the height fog's fields, which then keep their defaults") {
+    const auto prefab = Prefab::capture(root, codecs);
+    auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
+    auto &state = nodes[0].components[0].state;
+    for (const auto *field :
+         {"fog_height", "fog_falloff", "fog_sun_scattering", "fog_sun_anisotropy", "fog_sky_distance"})
+        state = without(state, field);
+    const auto instance = Prefab(nodes, codecs).instantiate(scene);
+    const EnvironmentSettings defaults;
+    Environment expected, restored;
+    static_cast<EnvironmentSettings &>(expected) = settings;
+    expected.fog_height = defaults.fog_height;
+    expected.fog_falloff = defaults.fog_falloff;
+    expected.fog_sun_scattering = defaults.fog_sun_scattering;
+    expected.fog_sun_anisotropy = defaults.fog_sun_anisotropy;
+    expected.fog_sky_distance = defaults.fog_sky_distance;
+    static_cast<EnvironmentSettings &>(restored) = instance.get_component<SceneEnvironment>()->settings();
+    CHECK(same(expected, restored));
 }
 
 TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes first, and a stale link fails to save") {

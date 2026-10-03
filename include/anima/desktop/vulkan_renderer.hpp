@@ -369,8 +369,9 @@ struct ResourceStats {
 /// and masked surfaces hide them and they hide nothing. Their alpha is the product that masking tests. The shader
 /// shades the straight (unpremultiplied) albedo as it shades an opaque material, fog included, which applies at the
 /// surface's own distance, then writes its color times alpha with that alpha, blended as `ONE, ONE_MINUS_SRC_ALPHA`:
-/// the glTF "over" operator, applied to the whole shaded color, emission included, in linear light. For this fog model,
-/// fogging each surface before blending equals fogging the path from the eye through it to what lies behind.
+/// the glTF "over" operator, applied to the whole shaded color, emission included, in linear light. Since the fog's
+/// light depends only on a path's direction (EnvironmentSettings::fog_density), fogging each surface before blending
+/// equals fogging the path from the eye through it to what lies behind.
 /// Exposure scales the composite, so it commutes with blending; tone mapping, which is not linear, applies to the
 /// composite. Texels stay straight alpha: mip chains of blended base-color maps weight color by alpha
 /// (TextureMipOptions::alpha_weighted_color), but filtering within a level interpolates straight color, so the
@@ -402,9 +403,9 @@ struct ResourceStats {
 /// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and
 /// released with the swapchain. A custom material casts shadows only through its depth-only variant, which draws
 /// into each shadow pass, each cascade and the detail region, with that pass's view-projection; without one it casts
-/// none. Custom shaders
-/// read no shadow maps, and fog is theirs to apply from the documented inputs, while exposure and tone mapping
-/// apply to the whole target at display conversion. A CustomMaterial's shader modules, pipelines, parameter
+/// none. Custom shaders read no shadow maps, and fog is theirs to apply, through `animaFogged()` or from the
+/// documented inputs, while exposure and tone mapping apply to the whole target at display conversion. A
+/// CustomMaterial's shader modules, pipelines, parameter
 /// buffer, textures and descriptors are created the first time a preparation draws it and are released as cached
 /// meshes are, once only the renderer references the material; creating them fails as a mesh upload does.
 ///

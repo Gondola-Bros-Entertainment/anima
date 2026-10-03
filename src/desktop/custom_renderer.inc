@@ -8,12 +8,14 @@ struct CustomFrameUniform {
         ambient_ground, ambient_specular, fog, viewport;
     float time;
     std::array<float, 3> padding;
+    std::array<float, 4> fog_shape, fog_sun;
 };
 static_assert(offsetof(CustomFrameUniform, inverse_view_projection) == 64 &&
               offsetof(CustomFrameUniform, view_origin) == 128 && offsetof(CustomFrameUniform, sun_direction) == 144 &&
               offsetof(CustomFrameUniform, ambient_specular) == 240 && offsetof(CustomFrameUniform, fog) == 256 &&
               offsetof(CustomFrameUniform, viewport) == 272 && offsetof(CustomFrameUniform, time) == 288 &&
-              sizeof(CustomFrameUniform) == 304);
+              offsetof(CustomFrameUniform, fog_shape) == 304 && offsetof(CustomFrameUniform, fog_sun) == 320 &&
+              sizeof(CustomFrameUniform) == 336);
 // The per-draw push constants of custom shaders.
 struct CustomPush {
     Mat4 view;
@@ -170,7 +172,9 @@ void update_custom_frame() {
                                   {e.fog_color.x, e.fog_color.y, e.fog_color.z, e.fog_density},
                                   {width, height, 1 / width, 1 / height},
                                   shader_time,
-                                  {}};
+                                  {},
+                                  fog_shape(e),
+                                  fog_sunlight(e)};
     std::memcpy(custom_frame_buffer->mapping, &data, sizeof(data));
     flush_resource(*custom_frame_buffer);
 }

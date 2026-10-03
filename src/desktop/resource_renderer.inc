@@ -94,10 +94,12 @@ static constexpr auto resource_attributes = std::to_array<VkVertexInputAttribute
 VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};
-VkPipeline resource_pipeline{}, blended_resource_pipeline{};
+// The view's mesh pipelines, indexed by whether they compile the height fog's code (uses_height_fog()).
+std::array<VkPipeline, 2> resource_pipelines{}, blended_resource_pipelines{};
 // Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow passes.
 VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
-VkPipeline impostor_pipeline{}, shadow_impostor_pipeline{};
+std::array<VkPipeline, 2> impostor_pipelines{};
+VkPipeline shadow_impostor_pipeline{};
 VkDescriptorPool pose_pool{};
 VkDescriptorSet pose_set{};
 std::vector<std::shared_ptr<const Scene>> resource_scenes;
@@ -810,8 +812,9 @@ void record_resources(const ShadowPass *shadow = nullptr) {
         if (group == Group::masked_meshes && !shadow)
             continue;
         const bool impostors = group == Group::impostors;
-        const auto group_pipeline = impostors                ? (shadow ? shadow_impostor_pipeline : impostor_pipeline)
-                                    : !shadow                ? resource_pipeline
+        const auto group_pipeline = impostors
+                                        ? (shadow ? shadow_impostor_pipeline : impostor_pipelines[uses_height_fog()])
+                                    : !shadow                ? resource_pipelines[uses_height_fog()]
                                     : group == Group::meshes ? shadow_opaque_pipeline
                                                              : shadow_masked_pipeline;
         bool bound = false;
@@ -863,12 +866,13 @@ void record_blended() {
         find_placement_runs(render_instance, frustum);
         if (placement_runs.empty())
             continue;
-        const auto draw_pipeline = blended.custom ? blended.custom->pipeline : blended_resource_pipeline;
+        const auto draw_pipeline =
+            blended.custom ? blended.custom->pipeline : blended_resource_pipelines[uses_height_fog()];
         if (draw_pipeline != bound_pipeline) {
             if (blended.custom)
                 bind_custom(*blended.custom, false);
             else
-                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, blended_resource_pipeline);
+                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw_pipeline);
             bound_pipeline = draw_pipeline;
         }
         if (&render_instance != bound) {

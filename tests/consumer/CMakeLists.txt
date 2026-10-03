@@ -158,6 +158,7 @@ function(add_anima_consumer mode target test_name)
                 COMMAND Vulkan::glslc --target-env=vulkan1.1 -mfmt=c -I "${ANIMA_SOURCE_DIR}/include"
                     "${CMAKE_CURRENT_SOURCE_DIR}/${shader}" -o "${output}"
                 DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${shader}" "${ANIMA_SOURCE_DIR}/include/anima/custom_material.glsl"
+                    "${ANIMA_SOURCE_DIR}/include/anima/fog.glsl"
                 VERBATIM)
             list(APPEND shader_outputs "${output}")
         endforeach()

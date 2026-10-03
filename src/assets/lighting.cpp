@@ -119,15 +119,23 @@ Json settings_json(const EnvironmentSettings &s) {
                 {"sky_ground", vector_json(s.sky_ground)},
                 {"fog_color", vector_json(s.fog_color)},
                 {"fog_density", s.fog_density},
+                {"fog_height", s.fog_height},
+                {"fog_falloff", s.fog_falloff},
+                {"fog_sun_scattering", vector_json(s.fog_sun_scattering)},
+                {"fog_sun_anisotropy", s.fog_sun_anisotropy},
+                {"fog_sky_distance", s.fog_sky_distance},
                 {"exposure", s.exposure},
                 {"tone_mapping", s.tone_mapping},
                 {"shadow_cascades", cascades_json(s.shadow_cascades)},
                 {"detail_shadow", shadow_json(s.detail_shadow)}};
 }
 EnvironmentSettings settings(const Json &j) {
-    detail::json_fields(j, {"ambient_sky", "ambient_ground", "ambient_specular", "sky", "sky_zenith", "sky_horizon",
-                            "sky_ground", "fog_color", "fog_density", "exposure", "tone_mapping", "shadow_cascades",
-                            "detail_shadow"});
+    // The height fog's fields have defaults that draw uniform fog, so documents may omit them.
+    detail::json_fields(j,
+                        {"ambient_sky", "ambient_ground", "ambient_specular", "sky", "sky_zenith", "sky_horizon",
+                         "sky_ground", "fog_color", "fog_density", "exposure", "tone_mapping", "shadow_cascades",
+                         "detail_shadow"},
+                        {"fog_height", "fog_falloff", "fog_sun_scattering", "fog_sun_anisotropy", "fog_sky_distance"});
     EnvironmentSettings result;
     result.ambient_sky = vector(j.at("ambient_sky"));
     result.ambient_ground = vector(j.at("ambient_ground"));
@@ -138,6 +146,16 @@ EnvironmentSettings settings(const Json &j) {
     result.sky_ground = vector(j.at("sky_ground"));
     result.fog_color = vector(j.at("fog_color"));
     result.fog_density = number(j.at("fog_density"));
+    if (j.contains("fog_height"))
+        result.fog_height = number(j.at("fog_height"));
+    if (j.contains("fog_falloff"))
+        result.fog_falloff = number(j.at("fog_falloff"));
+    if (j.contains("fog_sun_scattering"))
+        result.fog_sun_scattering = vector(j.at("fog_sun_scattering"));
+    if (j.contains("fog_sun_anisotropy"))
+        result.fog_sun_anisotropy = number(j.at("fog_sun_anisotropy"));
+    if (j.contains("fog_sky_distance"))
+        result.fog_sky_distance = number(j.at("fog_sky_distance"));
     result.exposure = number(j.at("exposure"));
     result.tone_mapping = boolean(j.at("tone_mapping"));
     result.shadow_cascades = cascades(j.at("shadow_cascades"));

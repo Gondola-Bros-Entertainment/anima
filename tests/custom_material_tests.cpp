@@ -431,6 +431,18 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
     (void)vertex.resource(uniform, vertex.structure({{vertex.scalar(), 292}}), 0, 0);
     rejects(definition(vertex), "The vertex shader declares the frame block member at offset 292 as float, but the "
                                 "custom material interface has no member there");
+    // The fog's shape and sunlight follow the time, and nothing follows them.
+    vertex = vertex_module();
+    (void)vertex.resource(uniform, vertex.structure({{vertex.vector(4), 304}, {vertex.vector(4), 320}}), 0, 0);
+    CHECK_NOTHROW((void)CustomMaterial(definition(vertex)));
+    vertex = vertex_module();
+    (void)vertex.resource(uniform, vertex.structure({{vertex.scalar(), 304}}), 0, 0);
+    rejects(definition(vertex), "The vertex shader declares the frame block member at offset 304 as float, but the "
+                                "custom material interface has a vec4 there");
+    vertex = vertex_module();
+    (void)vertex.resource(uniform, vertex.structure({{vertex.vector(4), 336}}), 0, 0);
+    rejects(definition(vertex), "The vertex shader declares the frame block member at offset 336 as vec4, but the "
+                                "custom material interface has no member there");
     vertex = vertex_module();
     (void)vertex.variable(push_constant, vertex.structure({{vertex.scalar(), 72}}));
     rejects(definition(vertex), "The vertex shader declares the draw push constant member at offset 72 as float, "
