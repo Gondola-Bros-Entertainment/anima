@@ -16,8 +16,9 @@ struct ResourceInstance {
     // Where the instance's matrices start in the pose buffer: its palette, or with placements the rest pose's node
     // matrices, which object_offset's world matrix and each placement place.
     std::uint32_t palette_offset{};
-    // Ranges of resource_draws, the instance's opaque and masked main-view draws, and of resource_shadow_draws.
-    std::size_t first_draw{}, draw_count{}, first_shadow{}, shadow_count{};
+    // Ranges of resource_draws, the instance's opaque and masked main-view draws, and of resource_shadow_draws, its
+    // casters: the first opaque_shadow_count opaque, then the masked ones.
+    std::size_t first_draw{}, draw_count{}, first_shadow{}, shadow_count{}, opaque_shadow_count{};
     // With placements, their GPU rows. With placements or a visibility range, the pose buffer holds the object's world
     // matrix at object_offset, then a matrix whose first column is the range, as range_columns() encodes it, and whose
     // second holds the center of the mesh's rest bounds.
@@ -433,6 +434,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     std::vector<Mat4> palettes;
     std::vector<ResourceInstance> instances;
     std::vector<std::size_t> draws, shadows;
+    // The current instance's masked casters, which follow its opaque ones in shadows.
+    std::vector<std::size_t> masked_shadows;
     std::vector<BlendedDraw> blended;
     std::vector<CustomDraw> custom_draws, custom_shadows;
     std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0,
@@ -496,10 +499,15 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                     if (custom)
                         custom_shadows.push_back(
                             {instances.size(), i, &gpu_custom(render_instance.custom_materials[material_index])});
+                    else if (material && material->alpha_mode == AlphaMode::mask)
+                        masked_shadows.push_back(i);
                     else
                         shadows.push_back(i);
                 }
             }
+            const auto opaque_shadow_count = shadows.size() - first_shadow;
+            shadows.insert(shadows.end(), masked_shadows.begin(), masked_shadows.end());
+            masked_shadows.clear();
             if (!candidate)
                 continue;
             ++candidate_instances;
@@ -537,6 +545,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                                       draws.size() - first_draw,
                                       first_shadow,
                                       shadows.size() - first_shadow,
+                                      opaque_shadow_count,
                                       {},
                                       first_matrix,
                                       ranged};
@@ -781,7 +790,8 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
 }
 // Records the casters of shadow pass @p shadow or, without one, the main view: every opaque and masked draw in
 // selection, instance and draw order, then the opaque custom material draws, then the sky where none of them drew,
-// then, unless the frame copies opaque inputs first, the blended draws back to front.
+// then, unless the frame copies opaque inputs first, the blended draws back to front. A shadow pass records its meshes'
+// opaque casters before their masked ones.
 void record_resources(const ShadowPass *shadow = nullptr) {
     if (!shadow) {
         resources.draw_calls = 0;
@@ -791,15 +801,33 @@ void record_resources(const ShadowPass *shadow = nullptr) {
     }
     const auto &view = shadow ? shadow->view : view_projection;
     const auto *frustum = shadow ? &shadow->frustum : options.frustum_culling ? &resource_frustum : nullptr;
-    // Meshes, then impostors, each through their pipeline, bound once their first draw records.
-    for (const bool impostors : {false, true}) {
-        const auto group_pipeline = impostors ? (shadow ? shadow_impostor_pipeline : impostor_pipeline)
-                                              : (shadow ? shadow_resource_pipeline : resource_pipeline);
+    // Meshes, then impostors, each through their pipeline, bound once their first draw records. A shadow pass draws
+    // its meshes' opaque casters through a pipeline without a fragment shader, then their masked ones, whose discard
+    // keeps a tile-based GPU from removing hidden surfaces before it shades them. A shadow map keeps the least depth
+    // of each texel whatever the order.
+    enum class Group { meshes, masked_meshes, impostors };
+    for (const auto group : {Group::meshes, Group::masked_meshes, Group::impostors}) {
+        if (group == Group::masked_meshes && !shadow)
+            continue;
+        const bool impostors = group == Group::impostors;
+        const auto group_pipeline = impostors                ? (shadow ? shadow_impostor_pipeline : impostor_pipeline)
+                                    : !shadow                ? resource_pipeline
+                                    : group == Group::meshes ? shadow_opaque_pipeline
+                                                             : shadow_masked_pipeline;
         bool bound = false;
         for (const auto &render_instance : resource_instances) {
-            const auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
-            const auto count = shadow ? render_instance.shadow_count : render_instance.draw_count;
-            if (!count || (render_instance.gpu->asset->impostor() != nullptr) != impostors)
+            if ((render_instance.gpu->asset->impostor() != nullptr) != impostors)
+                continue;
+            auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
+            auto count = shadow ? render_instance.shadow_count : render_instance.draw_count;
+            // An impostor's casters all draw through its own pipeline.
+            if (shadow && group == Group::meshes)
+                count = render_instance.opaque_shadow_count;
+            else if (group == Group::masked_meshes) {
+                first += render_instance.opaque_shadow_count;
+                count -= render_instance.opaque_shadow_count;
+            }
+            if (!count)
                 continue;
             find_placement_runs(render_instance, frustum);
             if (placement_runs.empty())

@@ -33,7 +33,8 @@ std::unique_ptr<ShadowTarget> detail_shadow_target;
 VkFormat shadow_format{};
 VkRenderPass shadow_pass{};
 VkShaderModule shadow_resource_vertex_shader{}, shadow_fragment_shader{};
-VkPipeline shadow_resource_pipeline{};
+// Opaque casters write depth without a fragment shader; masked ones discard through shadow.frag.
+VkPipeline shadow_opaque_pipeline{}, shadow_masked_pipeline{};
 // Whether set_view() has given a view, which the cascades fit.
 bool view_set{};
 // The sun's axes (detail::sun_axes()) and the cascades fitted to the latest view, none while the cascades are disabled
