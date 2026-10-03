@@ -660,7 +660,8 @@ struct VulkanRenderer::Impl {
         make_shaders(impostor_vertex_code, impostor_fragment_code, impostor_vertex_shader, impostor_fragment_shader);
         make_fragment(impostor_shadow_fragment_code, impostor_shadow_fragment_shader);
         create_shadow_pass();
-        create_pipeline(PipelineKind::shadow_resource, shadow_resource_pipeline);
+        create_pipeline(PipelineKind::shadow_opaque, shadow_opaque_pipeline);
+        create_pipeline(PipelineKind::shadow_masked, shadow_masked_pipeline);
         create_pipeline(PipelineKind::shadow_impostor, shadow_impostor_pipeline);
 #endif
     }
@@ -909,21 +910,24 @@ struct VulkanRenderer::Impl {
 #endif
     }
     // blended_resource draws meshes as resource does, but composites premultiplied color over the target and
-    // writes no depth. impostor and shadow_impostor draw impostor meshes (Mesh::impostor()) in the view and the shadow
-    // regions.
+    // writes no depth. shadow_opaque and shadow_masked draw meshes' opaque and masked casters into the shadow maps,
+    // shadow_opaque without a fragment shader. impostor and shadow_impostor draw impostor meshes (Mesh::impostor()) in
+    // the view and the shadow maps.
     enum class PipelineKind {
         diagnostic,
         ui,
         resource,
         blended_resource,
         sky,
-        shadow_resource,
+        shadow_opaque,
+        shadow_masked,
         impostor,
         shadow_impostor
     };
     void create_pipeline(PipelineKind mode, VkPipeline &output) {
         const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
-        const bool shadow = mode == PipelineKind::shadow_resource || mode == PipelineKind::shadow_impostor;
+        const bool shadow = mode == PipelineKind::shadow_opaque || mode == PipelineKind::shadow_masked ||
+                            mode == PipelineKind::shadow_impostor;
         const bool blended = mode == PipelineKind::blended_resource;
 #ifdef ANIMA_HAS_ASSETS
         const bool resource = mode == PipelineKind::resource || blended || shadow || impostor;
@@ -1047,7 +1051,8 @@ struct VulkanRenderer::Impl {
         dynamic.dynamicStateCount = 2;
         dynamic.pDynamicStates = dynamic_states;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        info.stageCount = 2;
+        // Without a fragment shader, rasterization still writes each covered texel's depth.
+        info.stageCount = mode == PipelineKind::shadow_opaque ? 1 : 2;
         info.pStages = stages.data();
         info.pVertexInputState = &vertex;
         info.pInputAssemblyState = &assembly;
@@ -1891,8 +1896,10 @@ struct VulkanRenderer::Impl {
             pose_buffer.reset();
             cascade_target.reset();
             detail_shadow_target.reset();
-            if (shadow_resource_pipeline)
-                vkDestroyPipeline(device, shadow_resource_pipeline, nullptr);
+            if (shadow_opaque_pipeline)
+                vkDestroyPipeline(device, shadow_opaque_pipeline, nullptr);
+            if (shadow_masked_pipeline)
+                vkDestroyPipeline(device, shadow_masked_pipeline, nullptr);
             if (shadow_impostor_pipeline)
                 vkDestroyPipeline(device, shadow_impostor_pipeline, nullptr);
             if (impostor_vertex_shader)

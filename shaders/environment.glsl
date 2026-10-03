@@ -68,6 +68,18 @@ float shadowFilter(sampler2DArray depth, float layer, vec3 p, vec2 gradient, flo
     vec2 pixel = p.xy * vec2(size) - 0.5;
     ivec2 base = ivec2(floor(pixel));
     vec2 fraction = fract(pixel);
+    // The 4x4 texels' depths, gathered as four 2x2 blocks. Each gather is at the corner that its block's texels share,
+    // where choosing another block would take an error of half a texel. The sampler clamps to the edge, as the texel
+    // coordinates below are clamped. textureGather returns a block's texels (0, 1), (1, 1), (1, 0) and (0, 0).
+    float stored[4][4];
+    for (int y = 0; y < 4; y += 2)
+        for (int x = 0; x < 4; x += 2) {
+            vec4 block = textureGather(depth, vec3(vec2(base + ivec2(x, y)) / vec2(size), layer));
+            stored[y][x] = block.w;
+            stored[y][x + 1] = block.z;
+            stored[y + 1][x] = block.x;
+            stored[y + 1][x + 1] = block.y;
+        }
     for (int y = -1; y <= 2; ++y)
         for (int x = -1; x <= 2; ++x) {
             vec2 weight = vec2(x == -1  ? 1.0 - fraction.x
@@ -79,8 +91,7 @@ float shadowFilter(sampler2DArray depth, float layer, vec3 p, vec2 gradient, flo
             ivec2 texel = clamp(base + ivec2(x, y), ivec2(0), size - 1);
             vec2 center = (vec2(texel) + 0.5) / vec2(size);
             float receiverDepth = p.z + min(dot(gradient, center - p.xy), 0.0);
-            visible += receiverDepth - bias <= texelFetch(depth, ivec3(texel, int(layer)), 0).r ? weight.x * weight.y
-                                                                                              : 0.0;
+            visible += receiverDepth - bias <= stored[y + 1][x + 1] ? weight.x * weight.y : 0.0;
         }
     return visible / 9.0;
 }
