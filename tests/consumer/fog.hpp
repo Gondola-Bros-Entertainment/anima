@@ -4,8 +4,8 @@
 // repeating the shaders' closed form; sunlight scattered forward and backward through the Henyey-Greenstein phase
 // function; a blended quad composited over a fogged one as each is fogged at its own distance; uniform fog, with and
 // without sunlight, whose height leaves the same frame; the sky fogged at fog_sky_distance, so that a quad there meets
-// it without a seam that the unfogged sky shows; and animaFogged(), which fogs a custom material as the standard
-// material is fogged.
+// it without a seam that the unfogged sky shows, and the atmosphere's sky dimmed there by the fog; and animaFogged(),
+// which fogs a custom material as the standard material is fogged.
 #include "blending.hpp"
 #include "custom_materials.hpp"
 #include <anima/environment.hpp>
@@ -62,9 +62,10 @@ inline Color fogged(const anima::Environment &e, const Point &at, const Color &c
     const auto cosine = (path[0] * sun.x + path[1] * sun.y + path[2] * sun.z) / std::hypot(path[0], path[1], path[2]);
     const double g = e.fog_sun_anisotropy;
     const auto phase = (1 - g * g) / (4 * std::numbers::pi * std::pow(1 + g * g - 2 * g * cosine, 1.5));
-    const std::array scattering{double(e.fog_sun_scattering.x) * e.sun.radiance.x,
-                                double(e.fog_sun_scattering.y) * e.sun.radiance.y,
-                                double(e.fog_sun_scattering.z) * e.sun.radiance.z};
+    const auto sunlight = anima::atmosphere_sunlight(e);
+    const std::array scattering{double(e.fog_sun_scattering.x) * sunlight.x,
+                                double(e.fog_sun_scattering.y) * sunlight.y,
+                                double(e.fog_sun_scattering.z) * sunlight.z};
     const Color fog{e.fog_color.x, e.fog_color.y, e.fog_color.z};
     const auto kept = transmittance(e, at);
     Color result{};
@@ -182,22 +183,30 @@ inline void check_uniform(blending_test::Harness &harness) {
     harness.images.discard({"uniform", "uniform-sunlit", "uniform-sunlit-moved"});
 }
 
-// A sky of one color, fogged at fog_sky_distance, meets a quad of the same color there; unfogged, it shows a seam.
+// The linear value that display level @p level encodes; the inverse of blending_test::encoded().
+inline double decoded(double level) {
+    const auto value = level / 255;
+    return value <= .04045 ? value / 12.92 : std::pow((value + .055) / 1.055, 2.4);
+}
+// A black sky, from an atmosphere that neither scatters nor absorbs over a black ground, fogged at fog_sky_distance,
+// meets a black quad there; unfogged, it shows a seam. A sky that scatters keeps its own color dimmed by the fog's
+// transmittance there: its fogged pixel is its unfogged pixel fogged as a quad at that distance would be.
 inline void check_sky(blending_test::Harness &harness) {
     const auto view_projection = view(harness.aspect());
     constexpr float distance = 250;
-    const Color sky{.25, .4, .6};
     anima::Environment environment;
-    environment.sky = true;
-    environment.sky_zenith = environment.sky_horizon = environment.sky_ground = {.25F, .4F, .6F};
-    // Behind the eye, so that no sun disc or glow shows.
+    auto &atmosphere = environment.atmosphere;
+    atmosphere.enabled = true;
+    atmosphere.rayleigh_scattering = atmosphere.mie_scattering = atmosphere.mie_absorption =
+        atmosphere.ozone_absorption = atmosphere.ground_albedo = {0, 0, 0};
+    // Behind the eye, so that no sun disc shows.
     environment.sun = {{0, .4F, 1}, {1, 1, 1}};
     environment.fog_color = {.6F, .6F, .6F};
     environment.fog_density = .004F;
     environment.fog_falloff = .02F;
     environment.fog_sky_distance = distance;
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(sky), {0, eye.y, -distance}, 6, 6));
+    (void)scene->add(blending_test::facing(blending_test::opaque(blending_test::black), {0, eye.y, -distance}, 6, 6));
     const anima::Vec3 on_quad{4, eye.y, -distance}, on_sky{8, eye.y, -distance};
     harness.render("horizon", {scene}, view_projection, environment);
     const auto &image = harness.images["horizon"];
@@ -205,9 +214,10 @@ inline void check_sky(blending_test::Harness &harness) {
     const auto beyond = ray(inverse, blending_test::pixel_of(view_projection, on_sky, image), image);
     const Point sky_point{eye.x + beyond[0] * distance, eye.y + beyond[1] * distance, eye.z + beyond[2] * distance};
     harness.expect("horizon", view_projection, on_quad,
-                   fogged(environment, seen(view_projection, image, on_quad, -distance), sky),
-                   "A quad at the sky's fog distance");
-    harness.expect("horizon", view_projection, on_sky, fogged(environment, sky_point, sky), "The fogged sky beside it");
+                   fogged(environment, seen(view_projection, image, on_quad, -distance), blending_test::black),
+                   "A black quad at the sky's fog distance");
+    harness.expect("horizon", view_projection, on_sky, fogged(environment, sky_point, blending_test::black),
+                   "The fogged black sky beside it");
     const auto quad_pixel = blending_test::pixel_of(view_projection, on_quad, image);
     const auto sky_pixel = blending_test::pixel_of(view_projection, on_sky, image);
     const auto quad_color = gpu_check::pixel(image, quad_pixel[0], quad_pixel[1]);
@@ -217,16 +227,33 @@ inline void check_sky(blending_test::Harness &harness) {
                                "A quad at the sky's fog distance differs from the sky beside it by " +
                                    gpu_check::text(quad_color) + " against " + gpu_check::text(sky_color),
                                {"horizon"});
-    // The control: the unfogged sky keeps its own color, which the fogged quad does not match.
+    // The control: the unfogged sky stays black, which the fogged quad does not match.
     environment.fog_sky_distance = 0;
     harness.render("horizon-unfogged", {scene}, view_projection, environment);
-    harness.expect("horizon-unfogged", view_projection, on_sky, sky, "The unfogged sky");
+    harness.expect("horizon-unfogged", view_projection, on_sky, blending_test::black, "The unfogged black sky");
     const auto &unfogged = harness.images["horizon-unfogged"];
     const auto seam = gpu_check::pixel(unfogged, sky_pixel[0], sky_pixel[1])[0] -
                       gpu_check::pixel(unfogged, quad_pixel[0], quad_pixel[1])[0];
     harness.images.require(std::abs(seam) > 20, "Without sky fog the quad still matched the sky, so the check is blind",
                            {"horizon-unfogged"});
-    harness.images.discard({"horizon", "horizon-unfogged"});
+    // The default atmosphere's sky, lit brightly, under an orange fog far from its pale horizon, so that the share of
+    // its own color the fog keeps shows plainly.
+    environment.atmosphere = {};
+    environment.atmosphere.enabled = true;
+    environment.sun.radiance = {6, 6, 6};
+    environment.fog_color = {.5F, .2F, .05F};
+    harness.render("sky-unfogged", {}, view_projection, environment);
+    const auto shown = gpu_check::pixel(harness.images["sky-unfogged"], sky_pixel[0], sky_pixel[1]);
+    const Color sky{decoded(shown[0]), decoded(shown[1]), decoded(shown[2])};
+    harness.images.require(sky[2] - environment.fog_color.z > .2,
+                           "The default atmosphere's sky is too near the fog's color to show its fog: " +
+                               gpu_check::text(shown),
+                           {"sky-unfogged"});
+    environment.fog_sky_distance = distance;
+    harness.render("sky-fogged", {}, view_projection, environment);
+    harness.expect("sky-fogged", view_projection, on_sky, fogged(environment, sky_point, sky),
+                   "The default atmosphere's sky fogged at fog_sky_distance");
+    harness.images.discard({"horizon", "horizon-unfogged", "sky-unfogged", "sky-fogged"});
 }
 
 // A custom quad that writes animaFogged() of a color beside a standard unlit quad of that color, mirrored across the

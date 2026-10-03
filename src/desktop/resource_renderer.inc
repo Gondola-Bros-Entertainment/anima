@@ -913,6 +913,7 @@ ResourceStats resource_stats() const {
         opaque_inputs ? opaque_inputs->color.allocation_bytes + opaque_inputs->depth.allocation_bytes : 0;
     value.shadow_bytes = cascade_target ? cascade_target->texture.allocation_bytes : 0;
     value.shadow_bytes += detail_shadow_target ? detail_shadow_target->texture.allocation_bytes : 0;
+    value.atmosphere_bytes = atmosphere_bytes();
     value.pose_buffer_bytes = pose_buffer ? pose_buffer->allocation_bytes : 0;
     return value;
 }

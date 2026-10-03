@@ -26,6 +26,8 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -78,6 +80,15 @@ constexpr std::uint32_t impostor_fragment_code[] =
 constexpr std::uint32_t impostor_shadow_fragment_code[] =
 #include "impostor-shadow.frag.inc"
     ;
+constexpr std::uint32_t atmosphere_transmittance_code[] =
+#include "atmosphere-transmittance.comp.inc"
+    ;
+constexpr std::uint32_t atmosphere_scattering_code[] =
+#include "atmosphere-scattering.comp.inc"
+    ;
+constexpr std::uint32_t atmosphere_sky_code[] =
+#include "atmosphere-sky.comp.inc"
+    ;
 #endif
 struct VulkanFailure : std::runtime_error {
     VkResult result;
@@ -122,7 +133,7 @@ struct VulkanRenderer::Impl {
     // Timestamps of a profiled frame, in the order draw() writes them; FrameProfile's GPU fields are the
     // intervals between them.
     struct TimingQuery {
-        enum : std::uint32_t { start, after_shadows, after_scene, after_resolve, end, count };
+        enum : std::uint32_t { start, after_atmosphere, after_shadows, after_scene, after_resolve, end, count };
     };
     VkQueryPool timing_queries{};
     std::uint32_t timestamp_bits{};
@@ -283,6 +294,7 @@ struct VulkanRenderer::Impl {
         UploadBatch &operator=(const UploadBatch &) = delete;
     };
 #ifdef ANIMA_HAS_ASSETS
+#include "atmosphere_renderer.inc"
 #include "environment_renderer.inc"
 #include "resource_renderer.inc"
 #include "shadow_renderer.inc"
@@ -485,11 +497,14 @@ struct VulkanRenderer::Impl {
                     continue;
                 VkBool32 supported = VK_FALSE;
                 check(vkGetPhysicalDeviceSurfaceSupportKHR(candidate, i, surface, &supported), "Query present support");
-                if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                // The atmosphere's tables are built by compute dispatches on the graphics queue; a device with a
+                // graphics family has one that also computes.
+                constexpr VkQueueFlags world = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+                if ((families[i].queueFlags & world) == world)
                     graphics = i;
                 if (supported)
                     present = i;
-                if (supported && (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+                if (supported && (families[i].queueFlags & world) == world)
                     break;
             }
             if (graphics == UINT32_MAX || present == UINT32_MAX)
@@ -626,6 +641,7 @@ struct VulkanRenderer::Impl {
 #endif
 #ifdef ANIMA_HAS_ASSETS
         create_environment_layout();
+        create_atmosphere(atmosphere_transmittance_code, atmosphere_scattering_code, atmosphere_sky_code);
         make_shaders(sky_vertex_code, sky_fragment_code, sky_vertex_shader, sky_fragment_shader);
         const auto make_fragment = [&](const auto &code, VkShaderModule &shader) {
             VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -1570,7 +1586,8 @@ struct VulkanRenderer::Impl {
                     return std::chrono::duration<double, std::milli>(elapsed).count();
                 };
                 profile.gpu_ms = milliseconds(TimingQuery::start, TimingQuery::end);
-                profile.gpu_shadow_ms = milliseconds(TimingQuery::start, TimingQuery::after_shadows);
+                profile.gpu_atmosphere_ms = milliseconds(TimingQuery::start, TimingQuery::after_atmosphere);
+                profile.gpu_shadow_ms = milliseconds(TimingQuery::after_atmosphere, TimingQuery::after_shadows);
                 profile.gpu_scene_ms = milliseconds(TimingQuery::after_shadows, TimingQuery::after_scene);
                 profile.gpu_resolve_ms = milliseconds(TimingQuery::after_scene, TimingQuery::after_resolve);
                 profile.gpu_transfer_ms = milliseconds(TimingQuery::after_resolve, TimingQuery::end);
@@ -1649,6 +1666,12 @@ struct VulkanRenderer::Impl {
             vkCmdResetQueryPool(command, timing_queries, 0, TimingQuery::count);
             vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timing_queries, TimingQuery::start);
         }
+#ifdef ANIMA_HAS_ASSETS
+        record_atmosphere();
+#endif
+        if (timing_queries)
+            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
+                                TimingQuery::after_atmosphere);
 #ifdef ANIMA_HAS_ASSETS
         record_shadow();
 #endif
@@ -1922,6 +1945,7 @@ struct VulkanRenderer::Impl {
             if (shadow_fragment_shader)
                 vkDestroyShaderModule(device, shadow_fragment_shader, nullptr);
             environment_buffer.reset();
+            destroy_atmosphere();
             if (post_pipeline_layout)
                 vkDestroyPipelineLayout(device, post_pipeline_layout, nullptr);
             if (scene_input_layout)
@@ -2045,6 +2069,7 @@ void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
     impl_->view_origin = origin;
     impl_->resource_frustum = frustum;
     impl_->inverse_view = inverted;
+    impl_->view_rays = Impl::rays_of(view_projection, origin);
     impl_->view_set = true;
 #endif
     impl_->view_projection = view_projection;
@@ -2134,6 +2159,7 @@ void VulkanRenderer::set_environment(const Environment &environment) {
         (environment.detail_shadow.enabled && !fits(environment.detail_shadow.resolution)))
         throw std::invalid_argument("Shadow resolution exceeds device capabilities");
     impl_->environment = environment;
+    impl_->sunlight = atmosphere_sunlight(environment);
     impl_->detail_pass = {detail, detail_frustum};
 #else
     throw std::logic_error("Environment rendering requires asset support");

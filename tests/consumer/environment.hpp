@@ -545,7 +545,7 @@ inline int run(int argc, char **argv) {
     environment.fill.radiance = {0, 0, 0};
     environment.ambient_sky = {.16F, .18F, .3F};
     environment.ambient_ground = {.08F, .06F, .09F};
-    environment.sky = true;
+    environment.atmosphere.enabled = true;
     // One cascade over the 25 m around the scene, which every view below keeps in it.
     environment.shadow_cascades.count = 1;
     environment.shadow_cascades.distance = 25;

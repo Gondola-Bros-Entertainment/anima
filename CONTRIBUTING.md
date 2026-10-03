@@ -10,8 +10,8 @@ add compatibility readers or forwarding APIs for removed contracts.
 Use C++20 and the repository's `.clang-format`; CI rejects first-party sources
 that clang-format 22.1.8 would change. Keep backend types private where the public
 module promises dependency isolation. Validate inputs before publishing state, and
-make resource ownership explicit. A new document field with a natural default may be
-omitted, and adding it keeps the version; renaming or removing a field changes it.
+make resource ownership explicit. Every field of a document is required, and adding,
+renaming or removing one changes the document's version.
 
 Document every public declaration with a `///` comment stating its contract:
 ownership and lifetime, threading, units and ranges, failures and their exception
@@ -103,49 +103,8 @@ library, such as one on the static buffer that glibc's `localeconv()` rewrites.
 
 CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
 drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic scenes
-through the public API. `consumer_desktop` runs one mode per check: its default
-instances check, `--allocations`, `--culling`, `--placements`, which draws a field of
-copies through one object's placements and as separate objects over a shadowed ground,
-requires identical frames in and out of view, with mirrored copies and under a shared
-visibility range, and
-reports both at 10,000 copies, `--lod`, which draws dense spheres far away with
-simplified levels, in the view and the shadow passes, within pixel parity of their full
-draws, finer levels up close, a skinned sphere's levels by its joints' scale and a
-flat-shaded sphere's within the same parity,
-`--impostors`, which bakes a tree of masked leaf cards into an impostor and requires it
-to match the tree from six directions, in an orthographic view, under a turned,
-unevenly scaled placement and in height fog lit by the sun, and in the shadow it casts,
-within the parity the check states, requires their handover to leave no pixel uncovered,
-and reports 10,000 placed trees as meshes and as impostors,
-`--cascades`, which draws the same plate near the camera and far from it and requires
-each one's shadow edge to span about 2.4 texels of the cascade that
-fit_shadow_cascades() says holds it, an edge to stay put while the camera moves by part
-of a texel, a wall's edge to keep its place across every seam between cascades, and a
-caster toward the sun beyond every cascade's sphere to shadow the ground in view, and
-reports the shadow passes' time for one to four cascades over 10,000 copies,
-`--fog`, which compares height fog and the sunlight it scatters forward and backward
-with the documented density integrated along each pixel's ray, for opaque and blended
-quads and through `animaFogged()`, requires uniform fog lit by the sun to ignore its
-height, and requires the sky fogged at its distance to meet a quad there without the
-seam that the unfogged sky shows,
-`--foliage`, `--environment`, `--resources`, `--replace`, `--material-sampling`, which
-also requests an anisotropy of 64, above the 16 that devices commonly allow, and requires
-the device's limit,
-`--pbr`, `--surface-maps`, `--sidedness`, `--blending`, which compares blended
-materials with the renderer's documented compositing, fog, exposure, draw order and
-shadow policy,
-`--custom-materials`, which draws the consumer's own water, effect, probe, depth probe and
-fading shaders, compiled by glslc in its build, and compares their frame inputs, passes,
-sorting, time, opaque depth, raw and as world positions, and color, skinning, shadows,
-placed copies and fading across both margins of visibility ranges with the renderer's
-contract, and requires two objects that hand over across the same distances, with the
-standard material and with the fading shaders, to keep complementary pixels,
-`--texture-memory`, which measures the CPU texels and device images of a 2048-texel
-texture and checks that meshes and custom materials compiled with
-`TexelRetention::until_upload` let their texels go once uploaded and keep drawing, and
-`--compressed-textures`, which draws BC7 images from `tests/textures` within their
-encoding error of their sources, compares the device's BC7 sampling with the CPU
-decoding that devices without it get, and measures the memory of both formats.
+through the public API. `consumer_desktop` runs one mode per check, such as
+`--cascades` or `--fog`, each defined by its header in `tests/consumer`.
 Each check opens a window, requires Khronos validation, compares its frames in memory,
 and fails on a pixel mismatch or any validation message. The checks run one at a time:
 

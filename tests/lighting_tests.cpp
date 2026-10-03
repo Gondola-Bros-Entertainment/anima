@@ -25,6 +25,7 @@ constexpr auto collapsed_axes = "Directional light world axes must be nonzero";
 constexpr auto skewed_axes = "Directional light world axes must be orthogonal and right-handed";
 constexpr auto invalid_radiance = "Directional light radiance must be finite nonnegative linear RGB";
 constexpr auto invalid_exposure = "Invalid environment exposure or fog density";
+constexpr auto invalid_atmosphere = "Invalid atmosphere";
 constexpr auto duplicate_codec = "Duplicate component codec";
 constexpr auto outside_graph = "Object reference is stale or outside the captured graph";
 constexpr auto needs_number = "Lighting field requires a number";
@@ -45,16 +46,24 @@ bool same(const ShadowCascades &a, const ShadowCascades &b) {
            near(a.distance, b.distance) && near(a.logarithmic_split, b.logarithmic_split) && near(a.blend, b.blend) &&
            near(a.constant_bias, b.constant_bias) && near(a.slope_bias, b.slope_bias);
 }
+bool same(const Atmosphere &a, const Atmosphere &b) {
+    return a.enabled == b.enabled && near(a.ground_height, b.ground_height) && near(a.planet_radius, b.planet_radius) &&
+           near(a.thickness, b.thickness) && near(a.rayleigh_scattering, b.rayleigh_scattering) &&
+           near(a.rayleigh_scale_height, b.rayleigh_scale_height) && near(a.mie_scattering, b.mie_scattering) &&
+           near(a.mie_absorption, b.mie_absorption) && near(a.mie_scale_height, b.mie_scale_height) &&
+           near(a.ozone_absorption, b.ozone_absorption) && near(a.ozone_altitude, b.ozone_altitude) &&
+           near(a.ozone_width, b.ozone_width) && near(a.mie_anisotropy, b.mie_anisotropy) &&
+           near(a.ground_albedo, b.ground_albedo) && near(a.sun_angular_radius, b.sun_angular_radius);
+}
 bool same(const Environment &a, const Environment &b) {
     return near(a.sun.direction, b.sun.direction) && near(a.fill.direction, b.fill.direction) &&
            near(a.sun.radiance, b.sun.radiance) && near(a.fill.radiance, b.fill.radiance) &&
            near(a.ambient_sky, b.ambient_sky) && near(a.ambient_ground, b.ambient_ground) &&
-           near(a.ambient_specular, b.ambient_specular) && near(a.sky_zenith, b.sky_zenith) &&
-           near(a.sky_horizon, b.sky_horizon) && near(a.sky_ground, b.sky_ground) && near(a.fog_color, b.fog_color) &&
-           near(a.fog_density, b.fog_density) && near(a.fog_height, b.fog_height) &&
+           near(a.ambient_specular, b.ambient_specular) && same(a.atmosphere, b.atmosphere) &&
+           near(a.fog_color, b.fog_color) && near(a.fog_density, b.fog_density) && near(a.fog_height, b.fog_height) &&
            near(a.fog_falloff, b.fog_falloff) && near(a.fog_sun_scattering, b.fog_sun_scattering) &&
            near(a.fog_sun_anisotropy, b.fog_sun_anisotropy) && near(a.fog_sky_distance, b.fog_sky_distance) &&
-           near(a.exposure, b.exposure) && a.sky == b.sky && a.tone_mapping == b.tone_mapping &&
+           near(a.exposure, b.exposure) && a.tone_mapping == b.tone_mapping &&
            same(a.shadow_cascades, b.shadow_cascades) && same(a.detail_shadow, b.detail_shadow);
 }
 GameObject light(Scene &scene, Vec3 radiance = {1, 2, 3}) {
@@ -73,16 +82,6 @@ std::string replace(std::string value, std::string_view from, std::string_view t
     const auto position = value.find(from);
     REQUIRE(position != std::string::npos);
     value.replace(position, from.size(), to);
-    return value;
-}
-// @p value without the field @p key and the comma after it, where its value is a number or an array of numbers and
-// another field follows it.
-std::string without(std::string value, std::string_view key) {
-    const auto start = value.find("\"" + std::string(key) + "\":");
-    REQUIRE(start != std::string::npos);
-    const auto end = value.find(',', value.find(value[start + key.size() + 3] == '[' ? ']' : ',', start));
-    REQUIRE(end != std::string::npos);
-    value.erase(start, end + 1 - start);
     return value;
 }
 // A component payload and the message its decoding throws.
@@ -123,10 +122,22 @@ EnvironmentSettings changed_settings() {
     settings.ambient_sky = {.2F, .3F, .4F};
     settings.ambient_ground = {.4F, .3F, .2F};
     settings.ambient_specular = {.5F, .6F, .7F};
-    settings.sky = true;
-    settings.sky_zenith = {.7F, .8F, .9F};
-    settings.sky_horizon = {.9F, .8F, .7F};
-    settings.sky_ground = {.6F, .5F, .4F};
+    auto &atmosphere = settings.atmosphere;
+    atmosphere.enabled = true;
+    atmosphere.ground_height = -5;
+    atmosphere.planet_radius = 6'400'000;
+    atmosphere.thickness = 80'000;
+    atmosphere.rayleigh_scattering = {6e-6F, 14e-6F, 32e-6F};
+    atmosphere.rayleigh_scale_height = 7'500;
+    atmosphere.mie_scattering = {4e-6F, 5e-6F, 6e-6F};
+    atmosphere.mie_absorption = {5e-7F, 6e-7F, 7e-7F};
+    atmosphere.mie_scale_height = 1'100;
+    atmosphere.ozone_absorption = {7e-7F, 2e-6F, 9e-8F};
+    atmosphere.ozone_altitude = 24'000;
+    atmosphere.ozone_width = 28'000;
+    atmosphere.mie_anisotropy = .75F;
+    atmosphere.ground_albedo = {.2F, .25F, .3F};
+    atmosphere.sun_angular_radius = .005F;
     settings.fog_color = {.3F, .2F, .1F};
     settings.fog_density = .05F;
     settings.fog_height = -3;
@@ -212,7 +223,7 @@ TEST_CASE("Invalid environment settings are rejected and keep the accepted envir
     auto sun = light(scene);
     auto selected = environment(scene, sun, light(scene, {}));
     auto settings = selected->settings();
-    settings.sky = true;
+    settings.atmosphere.enabled = true;
     settings.tone_mapping = true;
     settings.exposure = 1.5F;
     settings.shadow_cascades.enabled = true;
@@ -228,7 +239,12 @@ TEST_CASE("Invalid environment settings are rejected and keep the accepted envir
         {[](auto &bad) { bad.exposure = 0; }, invalid_exposure},
         {[](auto &bad) { bad.fog_density = -1; }, invalid_exposure},
         {[](auto &bad) { bad.ambient_specular.x = -1; }, colours},
-        {[](auto &bad) { bad.sky_zenith.y = infinite; }, colours},
+        {[](auto &bad) { bad.ambient_ground.y = infinite; }, colours},
+        {[](auto &bad) { bad.atmosphere.ground_albedo.x = 1.5F; }, invalid_atmosphere},
+        {[](auto &bad) { bad.atmosphere.mie_anisotropy = 1; }, invalid_atmosphere},
+        {[](auto &bad) { bad.atmosphere.sun_angular_radius = 0; }, invalid_atmosphere},
+        {[](auto &bad) { bad.atmosphere.ground_height = nan; }, invalid_atmosphere},
+        {[](auto &bad) { bad.atmosphere.rayleigh_scale_height = -1; }, invalid_atmosphere},
         {[](auto &bad) { bad.fog_sun_scattering.z = -1; }, colours},
         {[](auto &bad) { bad.fog_height = infinite; }, height_fog},
         {[](auto &bad) { bad.fog_falloff = -.1F; }, height_fog},
@@ -356,7 +372,7 @@ TEST_CASE("An environment in one member follows its lights through a replacement
     REQUIRE(cleared.size() == 2);
     for (const auto &link : cleared) {
         CHECK(link.owner.id() == selected.object().id());
-        CHECK(link.component == "anima.scene-environment.v2");
+        CHECK(link.component == "anima.scene-environment.v3");
         CHECK(link.target == SceneAddress{"lights", sun_key});
     }
     CHECK(selected->sun.id() == Scene::Id{});
@@ -430,22 +446,29 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
             for (const auto &[bad, error] : {std::pair{"true", needs_number}, std::pair{"\"1\"", needs_number},
                                              std::pair{"-1", invalid_exposure}, std::pair{"1e100", float_range}})
                 payloads.push_back({replace(valid, "\"exposure\":1.5", "\"exposure\":" + std::string(bad)), error});
-            payloads.push_back({replace(valid, "\"sky\":true", "\"sky\":1"), needs_boolean});
+            payloads.push_back({replace(valid, "\"tone_mapping\":true", "\"tone_mapping\":1"), needs_boolean});
             payloads.push_back({replace(valid, "\"enabled\":true", "\"enabled\":\"true\""), needs_boolean});
             payloads.push_back({replace(valid, "\"center\":[4.0,5.0,6.0]", "\"center\":[4,5]"), needs_vector});
             payloads.push_back({replace(valid, "\"slope_bias\":", "\"slope_bias\":0,\"slope_bias\":"),
                                 "Duplicate JSON document field"});
             payloads.push_back(
                 {replace(valid, "\"fog_density\":", "\"unexpected\":"), "Missing JSON field: fog_density"});
-            // The height fog's fields may be omitted, but are still checked when present, and a misspelled one is
-            // unknown rather than ignored.
+            // Every field is required, the height fog's and the atmosphere's included.
             payloads.push_back({replace(valid, "\"fog_height\":-3.0", "\"fog_height\":true"), needs_number});
             payloads.push_back({replace(valid, "\"fog_sky_distance\":900.0", "\"fog_sky_distance\":-900"),
                                 "Invalid environment height fog"});
             payloads.push_back({replace(valid, "\"fog_sun_anisotropy\":-0.25", "\"fog_sun_anisotropy\":1"),
                                 "Invalid environment height fog"});
             payloads.push_back(
-                {replace(valid, "\"fog_height\":", "\"fog_heigth\":"), "Unknown JSON field: fog_heigth"});
+                {replace(valid, "\"fog_height\":", "\"fog_heigth\":"), "Missing JSON field: fog_height"});
+            payloads.push_back(
+                {replace(valid, "\"ozone_width\":", "\"unexpected\":"), "Missing JSON field: ozone_width"});
+            payloads.push_back({replace(valid, "\"mie_anisotropy\":0.75", "\"mie_anisotropy\":1"), invalid_atmosphere});
+            payloads.push_back({replace(valid, "\"ozone_altitude\":", "\"ozone_altitude\":0,\"ozone_altitude\":"),
+                                "Duplicate JSON document field"});
+            // The gradient sky that the atmosphere replaced is gone, not ignored.
+            payloads.push_back(
+                {replace(valid, "\"exposure\":", "\"sky\":true,\"exposure\":"), "Unknown JSON field: sky"});
             // The cascades are the only object with a count, of 3.
             for (const auto &[bad, error] : {std::pair{"0", "Shadow cascade count exceeds its range"},
                                              std::pair{"2.5", "Shadow cascade count requires a positive integer"},
@@ -476,24 +499,13 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
     }
 }
 
-TEST_CASE_FIXTURE(Rig, "Saved settings may omit the height fog's fields, which then keep their defaults") {
-    const auto prefab = Prefab::capture(root, codecs);
-    auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
-    auto &state = nodes[0].components[0].state;
-    for (const auto *field :
-         {"fog_height", "fog_falloff", "fog_sun_scattering", "fog_sun_anisotropy", "fog_sky_distance"})
-        state = without(state, field);
-    const auto instance = Prefab(nodes, codecs).instantiate(scene);
-    const EnvironmentSettings defaults;
-    Environment expected, restored;
-    static_cast<EnvironmentSettings &>(expected) = settings;
-    expected.fog_height = defaults.fog_height;
-    expected.fog_falloff = defaults.fog_falloff;
-    expected.fog_sun_scattering = defaults.fog_sun_scattering;
-    expected.fog_sun_anisotropy = defaults.fog_sun_anisotropy;
-    expected.fog_sky_distance = defaults.fog_sky_distance;
-    static_cast<EnvironmentSettings &>(restored) = instance.get_component<SceneEnvironment>()->settings();
-    CHECK(same(expected, restored));
+TEST_CASE_FIXTURE(Rig, "A scene environment of an earlier version is not read") {
+    auto document = serialize_scene(scene, {}, codecs);
+    const std::string current = "anima.scene-environment.v3";
+    const auto at = document.find(current);
+    REQUIRE(at != std::string::npos);
+    document.replace(at, current.size(), "anima.scene-environment.v2");
+    CHECK_THROWS_WITH_AS(load_scene(document, {}, codecs), "Unknown serialized component type", std::invalid_argument);
 }
 
 TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes first, and a stale link fails to save") {
@@ -522,7 +534,7 @@ TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes fi
 TEST_CASE("A failed codec registration publishes neither codec") {
     ComponentCodecs conflict;
     conflict.add<SceneEnvironment>(
-        "anima.scene-environment.v2", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
+        "anima.scene-environment.v3", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
         [](GameObject o, std::string_view, const ObjectReferences &) { o.add_component<SceneEnvironment>(); });
     CHECK_THROWS_WITH_AS(add_lighting_component_codecs(conflict), duplicate_codec, std::invalid_argument);
     Scene scene;

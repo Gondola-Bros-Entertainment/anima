@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 
 /// @file
@@ -53,11 +54,10 @@ inline void set_translation(Mat4 &m, Vec3 t) {
     m[13] = t.y;
     m[14] = t.z;
 }
-/// Returns the inverse of @p matrix, computed in double precision. Throws MathError with
-/// MathErrorCode::nonfinite_matrix for a nonfinite element, MathErrorCode::singular_matrix when
-/// elimination meets a zero pivot, or MathErrorCode::inverse_overflow when a result element is not
-/// a finite `float`.
-inline Mat4 inverse(const Mat4 &matrix) {
+namespace detail {
+/// The inverse of @p matrix in double precision, column-major; inverse() states its failures, except the overflow of a
+/// `float` element, which it alone checks.
+inline std::array<double, 16> inverse_in_double(const Mat4 &matrix) {
     double rows[4][8]{};
     for (unsigned r = 0; r < 4; ++r)
         for (unsigned c = 0; c < 4; ++c) {
@@ -85,13 +85,25 @@ inline Mat4 inverse(const Mat4 &matrix) {
                     rows[r][k] -= f * rows[c][k];
             }
     }
-    Mat4 result{};
+    std::array<double, 16> result{};
     for (unsigned r = 0; r < 4; ++r)
-        for (unsigned c = 0; c < 4; ++c) {
-            result[c * 4 + r] = static_cast<float>(rows[r][c + 4]);
-            if (!std::isfinite(result[c * 4 + r]))
-                throw MathError(MathErrorCode::inverse_overflow);
-        }
+        for (unsigned c = 0; c < 4; ++c)
+            result[c * 4 + r] = rows[r][c + 4];
+    return result;
+}
+} // namespace detail
+/// Returns the inverse of @p matrix, computed in double precision. Throws MathError with
+/// MathErrorCode::nonfinite_matrix for a nonfinite element, MathErrorCode::singular_matrix when
+/// elimination meets a zero pivot, or MathErrorCode::inverse_overflow when a result element is not
+/// a finite `float`.
+inline Mat4 inverse(const Mat4 &matrix) {
+    const auto exact = detail::inverse_in_double(matrix);
+    Mat4 result{};
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        result[i] = static_cast<float>(exact[i]);
+        if (!std::isfinite(result[i]))
+            throw MathError(MathErrorCode::inverse_overflow);
+    }
     return result;
 }
 /// Matrix product; applied to a column vector, `a * b` applies @p b first.

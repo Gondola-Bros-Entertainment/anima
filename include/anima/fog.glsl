@@ -1,7 +1,7 @@
 // The fog of anima::EnvironmentSettings, as the renderer's shaders and custom materials (custom_material.glsl) apply
 // it. Its inputs are the frame's fog vectors: @p fog holds fog_color with fog_density in w, @p shape holds
 // fog_height, fog_falloff, fog_sky_distance and fog_sun_anisotropy, and @p sun holds fog_sun_scattering times
-// Environment::sun's radiance.
+// the sun as it reaches the ground, anima::atmosphere_sunlight().
 #ifndef ANIMA_FOG_GLSL
 #define ANIMA_FOG_GLSL
 

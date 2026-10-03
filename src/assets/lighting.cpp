@@ -109,14 +109,51 @@ DirectionalShadow shadow(const Json &j) {
             number(j.at("constant_bias")),
             number(j.at("slope_bias"))};
 }
+Json atmosphere_json(const Atmosphere &a) {
+    return Json{{"enabled", a.enabled},
+                {"ground_height", a.ground_height},
+                {"planet_radius", a.planet_radius},
+                {"thickness", a.thickness},
+                {"rayleigh_scattering", vector_json(a.rayleigh_scattering)},
+                {"rayleigh_scale_height", a.rayleigh_scale_height},
+                {"mie_scattering", vector_json(a.mie_scattering)},
+                {"mie_absorption", vector_json(a.mie_absorption)},
+                {"mie_scale_height", a.mie_scale_height},
+                {"ozone_absorption", vector_json(a.ozone_absorption)},
+                {"ozone_altitude", a.ozone_altitude},
+                {"ozone_width", a.ozone_width},
+                {"mie_anisotropy", a.mie_anisotropy},
+                {"ground_albedo", vector_json(a.ground_albedo)},
+                {"sun_angular_radius", a.sun_angular_radius}};
+}
+Atmosphere atmosphere(const Json &j) {
+    detail::json_fields(j, {"enabled", "ground_height", "planet_radius", "thickness", "rayleigh_scattering",
+                            "rayleigh_scale_height", "mie_scattering", "mie_absorption", "mie_scale_height",
+                            "ozone_absorption", "ozone_altitude", "ozone_width", "mie_anisotropy", "ground_albedo",
+                            "sun_angular_radius"});
+    Atmosphere a;
+    a.enabled = boolean(j.at("enabled"));
+    a.ground_height = number(j.at("ground_height"));
+    a.planet_radius = number(j.at("planet_radius"));
+    a.thickness = number(j.at("thickness"));
+    a.rayleigh_scattering = vector(j.at("rayleigh_scattering"));
+    a.rayleigh_scale_height = number(j.at("rayleigh_scale_height"));
+    a.mie_scattering = vector(j.at("mie_scattering"));
+    a.mie_absorption = vector(j.at("mie_absorption"));
+    a.mie_scale_height = number(j.at("mie_scale_height"));
+    a.ozone_absorption = vector(j.at("ozone_absorption"));
+    a.ozone_altitude = number(j.at("ozone_altitude"));
+    a.ozone_width = number(j.at("ozone_width"));
+    a.mie_anisotropy = number(j.at("mie_anisotropy"));
+    a.ground_albedo = vector(j.at("ground_albedo"));
+    a.sun_angular_radius = number(j.at("sun_angular_radius"));
+    return a;
+}
 Json settings_json(const EnvironmentSettings &s) {
     return Json{{"ambient_sky", vector_json(s.ambient_sky)},
                 {"ambient_ground", vector_json(s.ambient_ground)},
                 {"ambient_specular", vector_json(s.ambient_specular)},
-                {"sky", s.sky},
-                {"sky_zenith", vector_json(s.sky_zenith)},
-                {"sky_horizon", vector_json(s.sky_horizon)},
-                {"sky_ground", vector_json(s.sky_ground)},
+                {"atmosphere", atmosphere_json(s.atmosphere)},
                 {"fog_color", vector_json(s.fog_color)},
                 {"fog_density", s.fog_density},
                 {"fog_height", s.fog_height},
@@ -130,32 +167,21 @@ Json settings_json(const EnvironmentSettings &s) {
                 {"detail_shadow", shadow_json(s.detail_shadow)}};
 }
 EnvironmentSettings settings(const Json &j) {
-    // The height fog's fields have defaults that draw uniform fog, so documents may omit them.
-    detail::json_fields(j,
-                        {"ambient_sky", "ambient_ground", "ambient_specular", "sky", "sky_zenith", "sky_horizon",
-                         "sky_ground", "fog_color", "fog_density", "exposure", "tone_mapping", "shadow_cascades",
-                         "detail_shadow"},
-                        {"fog_height", "fog_falloff", "fog_sun_scattering", "fog_sun_anisotropy", "fog_sky_distance"});
+    detail::json_fields(j, {"ambient_sky", "ambient_ground", "ambient_specular", "atmosphere", "fog_color",
+                            "fog_density", "fog_height", "fog_falloff", "fog_sun_scattering", "fog_sun_anisotropy",
+                            "fog_sky_distance", "exposure", "tone_mapping", "shadow_cascades", "detail_shadow"});
     EnvironmentSettings result;
     result.ambient_sky = vector(j.at("ambient_sky"));
     result.ambient_ground = vector(j.at("ambient_ground"));
     result.ambient_specular = vector(j.at("ambient_specular"));
-    result.sky = boolean(j.at("sky"));
-    result.sky_zenith = vector(j.at("sky_zenith"));
-    result.sky_horizon = vector(j.at("sky_horizon"));
-    result.sky_ground = vector(j.at("sky_ground"));
+    result.atmosphere = atmosphere(j.at("atmosphere"));
     result.fog_color = vector(j.at("fog_color"));
     result.fog_density = number(j.at("fog_density"));
-    if (j.contains("fog_height"))
-        result.fog_height = number(j.at("fog_height"));
-    if (j.contains("fog_falloff"))
-        result.fog_falloff = number(j.at("fog_falloff"));
-    if (j.contains("fog_sun_scattering"))
-        result.fog_sun_scattering = vector(j.at("fog_sun_scattering"));
-    if (j.contains("fog_sun_anisotropy"))
-        result.fog_sun_anisotropy = number(j.at("fog_sun_anisotropy"));
-    if (j.contains("fog_sky_distance"))
-        result.fog_sky_distance = number(j.at("fog_sky_distance"));
+    result.fog_height = number(j.at("fog_height"));
+    result.fog_falloff = number(j.at("fog_falloff"));
+    result.fog_sun_scattering = vector(j.at("fog_sun_scattering"));
+    result.fog_sun_anisotropy = number(j.at("fog_sun_anisotropy"));
+    result.fog_sky_distance = number(j.at("fog_sky_distance"));
     result.exposure = number(j.at("exposure"));
     result.tone_mapping = boolean(j.at("tone_mapping"));
     result.shadow_cascades = cascades(j.at("shadow_cascades"));
@@ -195,7 +221,7 @@ void add_lighting_component_codecs(ComponentCodecs &codecs) {
             object.add_component<DirectionalLightComponent>(vector(j.at("radiance")));
         });
     pending.add<SceneEnvironment>(
-        "anima.scene-environment.v2",
+        "anima.scene-environment.v3",
         [](const SceneEnvironment &environment, const ObjectReferences &references) {
             return Json{{"sun", references.key(environment.sun).string()},
                         {"fill", references.key(environment.fill).string()},

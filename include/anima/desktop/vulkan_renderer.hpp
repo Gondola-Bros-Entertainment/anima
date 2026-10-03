@@ -59,7 +59,7 @@ struct RendererOptions {
     /// Draws a built-in triangle while no scene is selected, even without asset support. A selected scene
     /// with no instances shows only the background.
     bool diagnostic_triangle = false;
-    /// Enables FrameProfile timings, with five GPU timestamp queries when the graphics queue supports
+    /// Enables FrameProfile timings, with six GPU timestamp queries when the graphics queue supports
     /// them. When false there is no query pool and no clock is read.
     bool profile = false;
     /// Initial main-view culling state; see VulkanRenderer::set_frustum_culling.
@@ -176,6 +176,8 @@ struct FrameProfile {
     bool gpu_available{};
     /// The whole command buffer.
     double gpu_ms{};
+    /// The atmosphere's compute dispatches, which build its tables while it is enabled.
+    double gpu_atmosphere_ms{};
     /// Every shadow pass: each shadow cascade and the detail region.
     double gpu_shadow_ms{};
     /// Sky and meshes into the scene target, with the copy of opaque inputs on frames that make one.
@@ -252,6 +254,9 @@ struct ResourceStats {
     std::uint64_t shadow_submitted_indices{};
     /// Device allocation bytes of the shadow depth images: the cascades' layers and the detail region's.
     std::uint64_t shadow_bytes{};
+    /// Device allocation bytes of the atmosphere's transmittance, multiple scattering and sky view tables, allocated
+    /// with the renderer whether the atmosphere is enabled or not.
+    std::uint64_t atmosphere_bytes{};
     /// Allocation bytes of the scene color and depth targets; excludes the swapchain and shadow images.
     std::uint64_t world_target_bytes{};
 };
@@ -427,15 +432,15 @@ class VulkanRenderer {
     /// Creates the Vulkan instance, surface and device for @p window, then selects RendererOptions::scenes.
     ///
     /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that
-    /// supports swapchains and can present to the window; the first draw() with a drawable window creates the
-    /// swapchain. Throws `std::invalid_argument` for a RendererOptions::fail_after stage that the option says
-    /// construction rejects, before anything else, then for a RendererOptions::max_anisotropy that is not finite or
-    /// is below 1 ("Maximum anisotropy must be finite and at least 1"), for a RendererOptions::lod_threshold that is
-    /// not finite or is negative ("LOD threshold must be finite and nonnegative") and for a null @p window;
-    /// RendererUnavailableError when no driver or device can present to the window; what set_scenes() throws for
-    /// the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
-    /// other failures, including failed Vulkan calls. Completed stages are released before the exception
-    /// propagates.
+    /// supports swapchains, has a queue family for both graphics and compute, and can present to the window; the
+    /// first draw() with a drawable window creates the swapchain. Throws `std::invalid_argument` for a
+    /// RendererOptions::fail_after stage that the option says construction rejects, before anything else, then for a
+    /// RendererOptions::max_anisotropy that is not finite or is below 1 ("Maximum anisotropy must be finite and at
+    /// least 1"), for a RendererOptions::lod_threshold that is not finite or is negative ("LOD threshold must be finite
+    /// and nonnegative") and for a null @p window; RendererUnavailableError when no driver or device can present to the
+    /// window; what set_scenes() throws for the initial selection; InjectedRendererFailure for
+    /// RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
+    /// Completed stages are released before the exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();

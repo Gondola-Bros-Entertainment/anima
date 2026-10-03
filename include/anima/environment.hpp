@@ -115,6 +115,76 @@ struct DirectionalShadow {
     /// finite and nonnegative.
     float slope_bias = .0015F;
 };
+/// A planet's atmosphere after Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique"
+/// (EGSR 2020), over a spherical ground: Rayleigh and Mie scattering whose densities fall exponentially with altitude,
+/// Mie absorption, and ozone absorption in a tent around an altitude. Lengths are in meters and coefficients per meter,
+/// each at its medium's densest. The defaults are Earth's, as the paper's reference implementation sets them;
+/// validate_atmosphere() defines the accepted values.
+///
+/// The sky's radiance along a view ray, per unit of the sun's radiance above the atmosphere, integrates what the media
+/// scatter toward the eye, dimmed by the transmittance back to it: the sun transmitted to each point, zero where the
+/// ground blocks it, through Rayleigh's phase function and Cornette-Shanks' with #mie_anisotropy; plus the paper's
+/// isotropic approximation of light scattered more than once, `L2 / (1 - f_ms)` per unit of scattering, with `L2` and
+/// `f_ms` averaged over every direction from the point and `f_ms` limited to 0.99, so that a dense medium that loses
+/// little light keeps the series finite; and, where the ray meets the ground, the ground's Lambertian reflection of
+/// the transmitted sun. The renderer tabulates it, so it matches this integral to within the tables' resolution and
+/// half-precision storage, which also limits the radiance to 65504 per unit of sunlight.
+struct Atmosphere {
+    /// Draws the sky from this atmosphere and lights the scene with the sun it transmits; see
+    /// EnvironmentSettings::atmosphere.
+    bool enabled = false;
+    /// World height along +Y of the ground, altitude 0.
+    float ground_height = 0;
+    /// Radius of the ground.
+    float planet_radius = 6'360'000;
+    /// Height of the atmosphere's top above the ground, more than 2, so that the eye, kept 1 m inside the ground and
+    /// the top, has room.
+    float thickness = 100'000;
+    /// Rayleigh scattering per channel at the ground. Rayleigh scattering absorbs nothing.
+    Vec3 rayleigh_scattering{5.802e-6F, 13.558e-6F, 33.1e-6F};
+    /// Altitude over which Rayleigh density falls by a factor of e.
+    float rayleigh_scale_height = 8'000;
+    /// Mie scattering per channel at the ground.
+    Vec3 mie_scattering{3.996e-6F, 3.996e-6F, 3.996e-6F};
+    /// Mie absorption per channel at the ground.
+    Vec3 mie_absorption{4.44e-7F, 4.44e-7F, 4.44e-7F};
+    /// Altitude over which Mie density falls by a factor of e.
+    float mie_scale_height = 1'200;
+    /// Ozone absorption per channel at #ozone_altitude, falling linearly to zero #ozone_width / 2 above and below it.
+    Vec3 ozone_absorption{6.50e-7F, 1.881e-6F, 8.5e-8F};
+    /// Altitude of the ozone layer's peak.
+    float ozone_altitude = 25'000;
+    /// Width of the ozone layer.
+    float ozone_width = 30'000;
+    /// Asymmetry `g` of Mie scattering's Cornette-Shanks phase function, greater than -1 and less than 1; positive
+    /// values scatter forward, into a halo around the sun.
+    float mie_anisotropy = .8F;
+    /// Albedo of the ground per channel, from 0 to 1, which reflects the transmitted sun into the sky.
+    Vec3 ground_albedo{.3F, .3F, .3F};
+    /// Angular radius of the sun's disc, in radians, greater than 0 and less than pi / 2.
+    float sun_angular_radius = .004675F;
+};
+/// Throws `std::invalid_argument("Invalid atmosphere")` unless @p a's radius, scale heights and ozone width are finite
+/// and positive, its thickness is finite and more than 2, `planet_radius + thickness` is at most 1,000,000,000, every
+/// coefficient is finite and nonnegative, `ground_height` and `ozone_altitude` are finite, `mie_anisotropy` lies
+/// strictly between -1 and 1, each channel of `ground_albedo` lies from 0 to 1, and `sun_angular_radius` lies strictly
+/// between 0 and pi / 2, whether the atmosphere is enabled or not.
+inline void validate_atmosphere(const Atmosphere &a) {
+    const auto positive = [](float v) { return std::isfinite(v) && v > 0; };
+    const auto coefficients = [](Vec3 c) {
+        return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
+    };
+    constexpr double maximum_radius = 1e9;
+    if (!positive(a.planet_radius) || !std::isfinite(a.thickness) || !(a.thickness > 2) ||
+        double(a.planet_radius) + a.thickness > maximum_radius || !positive(a.rayleigh_scale_height) ||
+        !positive(a.mie_scale_height) || !positive(a.ozone_width) || !std::isfinite(a.ozone_altitude) ||
+        !coefficients(a.rayleigh_scattering) || !coefficients(a.mie_scattering) || !coefficients(a.mie_absorption) ||
+        !coefficients(a.ozone_absorption) || !std::isfinite(a.ground_height) ||
+        !(a.mie_anisotropy > -1 && a.mie_anisotropy < 1) || !coefficients(a.ground_albedo) || a.ground_albedo.x > 1 ||
+        a.ground_albedo.y > 1 || a.ground_albedo.z > 1 ||
+        !(a.sun_angular_radius > 0 && a.sun_angular_radius < std::numbers::pi_v<float> / 2))
+        throw std::invalid_argument("Invalid atmosphere");
+}
 /// Lighting settings other than the two lights, shared by SceneEnvironment and Environment.
 ///
 /// validate_environment_settings() defines the accepted values. Fog, exposure and tone mapping do not apply
@@ -128,16 +198,14 @@ struct EnvironmentSettings {
     /// Constant specular ambient light, times the surface's normal-incidence reflectance. Occlusion scales
     /// both ambient terms.
     Vec3 ambient_specular{.08F, .08F, .08F};
-    /// Draws a gradient sky behind the scene instead of the fixed clear color, with a disc and glow toward
-    /// Environment::sun scaled by its radiance. In perspective views fog applies to it as to a surface
-    /// #fog_sky_distance along each view ray.
-    bool sky = false;
-    /// Sky color straight up, blending toward #sky_horizon as the view ray nears the horizon.
-    Vec3 sky_zenith{.10F, .25F, .48F};
-    /// Sky color at the horizon.
-    Vec3 sky_horizon{.55F, .65F, .75F};
-    /// Sky color below the horizon, reached where the view ray's Y component is -0.25 or lower.
-    Vec3 sky_ground{.12F, .15F, .18F};
+    /// The planet's atmosphere. While it is enabled, the renderer draws the sky from it behind the scene instead of
+    /// the fixed clear color, with the sun's disc, and lights surfaces and fog with the sun as it reaches the ground,
+    /// atmosphere_sunlight(); the sky itself scatters the sun's radiance above the atmosphere. The sky is seen from the
+    /// eye's altitude above Atmosphere::ground_height, kept between 1 m and 1 m below the atmosphere's top, with the
+    /// planet's center straight below the eye, so that +Y is up wherever the eye moves; an orthographic view sees it
+    /// from 1 m above the ground. In perspective views fog applies to the sky as to a surface #fog_sky_distance along
+    /// each view ray. Disabled, nothing draws behind the scene and the sun keeps its radiance.
+    Atmosphere atmosphere;
     /// Ambient light that fog scatters toward the eye.
     Vec3 fog_color{.55F, .65F, .75F};
     /// Fog density per world unit at #fog_height, finite and nonnegative; zero disables fog. The density at height
@@ -159,8 +227,8 @@ struct EnvironmentSettings {
     /// Rate per world unit at which the fog's density falls with height above #fog_height, and rises below it;
     /// finite and nonnegative. Zero makes the density uniform.
     float fog_falloff = 0;
-    /// Share of Environment::sun's radiance, per channel, that the fog scatters toward the eye, weighted by the phase
-    /// function; finite and nonnegative. Zero scatters no sunlight.
+    /// Share of the sun as it reaches the ground, atmosphere_sunlight(), per channel, that the fog scatters toward the
+    /// eye, weighted by the phase function; finite and nonnegative. Zero scatters no sunlight.
     Vec3 fog_sun_scattering{0, 0, 0};
     /// Asymmetry `g` of the fog's phase function, greater than -1 and less than 1. Positive values scatter
     /// sunlight forward, so the fog brightens toward the sun; zero scatters it evenly.
@@ -193,14 +261,13 @@ struct Environment : EnvironmentSettings {
 /// nonnegative, `fog_density` is finite and nonnegative, `exposure` is finite and positive, `fog_height` is finite,
 /// `fog_falloff` is finite and nonnegative, `fog_sky_distance` lies from 0 to 1,000,000,000, `fog_sun_anisotropy`
 /// lies strictly between -1 and 1, the shadow cascades, enabled or not, meet the ranges that ShadowCascades states,
-/// and the detail region, enabled or not, has a finite center, finite positive `extent` and `depth`, nonzero
-/// `resolution` and finite nonnegative biases.
+/// the detail region, enabled or not, has a finite center, finite positive `extent` and `depth`, nonzero
+/// `resolution` and finite nonnegative biases, and the atmosphere passes validate_atmosphere().
 inline void validate_environment_settings(const EnvironmentSettings &e) {
     const auto color = [](Vec3 c) {
         return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
     };
-    for (const auto c : {e.ambient_sky, e.ambient_ground, e.ambient_specular, e.sky_zenith, e.sky_horizon, e.sky_ground,
-                         e.fog_color, e.fog_sun_scattering})
+    for (const auto c : {e.ambient_sky, e.ambient_ground, e.ambient_specular, e.fog_color, e.fog_sun_scattering})
         if (!color(c))
             throw std::invalid_argument("Environment colours must be finite nonnegative linear RGB");
     if (!std::isfinite(e.fog_density) || e.fog_density < 0 || !std::isfinite(e.exposure) || e.exposure <= 0)
@@ -223,6 +290,7 @@ inline void validate_environment_settings(const EnvironmentSettings &e) {
         !std::isfinite(s.extent) || s.extent <= 0 || !std::isfinite(s.depth) || s.depth <= 0 || !s.resolution ||
         !std::isfinite(s.constant_bias) || s.constant_bias < 0 || !std::isfinite(s.slope_bias) || s.slope_bias < 0)
         throw std::invalid_argument("Invalid directional shadow region");
+    validate_atmosphere(e.atmosphere);
 }
 /// Validates @p e as validate_environment_settings() does, and requires each light to have finite, nonnegative
 /// radiance and a direction whose squared length is finite and at least `1e-12`. Throws `std::invalid_argument`.
@@ -235,49 +303,6 @@ inline void validate_environment(const Environment &e) {
             !std::isfinite(c.z) || c.x < 0 || c.y < 0 || c.z < 0)
             throw std::invalid_argument("Invalid directional light");
     }
-}
-/// A planet's atmosphere after Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique"
-/// (EGSR 2020), over a spherical ground: Rayleigh and Mie scattering whose densities fall exponentially with altitude,
-/// Mie absorption, and ozone absorption in a tent around an altitude. Lengths are in meters and coefficients per meter,
-/// each at its medium's densest. The defaults are Earth's, as the paper's reference implementation sets them;
-/// validate_atmosphere() defines the accepted values.
-struct Atmosphere {
-    /// Radius of the ground.
-    float planet_radius = 6'360'000;
-    /// Height of the atmosphere's top above the ground.
-    float thickness = 100'000;
-    /// Rayleigh scattering per channel at the ground. Rayleigh scattering absorbs nothing.
-    Vec3 rayleigh_scattering{5.802e-6F, 13.558e-6F, 33.1e-6F};
-    /// Altitude over which Rayleigh density falls by a factor of e.
-    float rayleigh_scale_height = 8'000;
-    /// Mie scattering per channel at the ground.
-    Vec3 mie_scattering{3.996e-6F, 3.996e-6F, 3.996e-6F};
-    /// Mie absorption per channel at the ground.
-    Vec3 mie_absorption{4.44e-7F, 4.44e-7F, 4.44e-7F};
-    /// Altitude over which Mie density falls by a factor of e.
-    float mie_scale_height = 1'200;
-    /// Ozone absorption per channel at #ozone_altitude, falling linearly to zero #ozone_width / 2 above and below it.
-    Vec3 ozone_absorption{6.50e-7F, 1.881e-6F, 8.5e-8F};
-    /// Altitude of the ozone layer's peak.
-    float ozone_altitude = 25'000;
-    /// Width of the ozone layer.
-    float ozone_width = 30'000;
-};
-/// Throws `std::invalid_argument("Invalid atmosphere")` unless @p a's radius, thickness, scale heights and ozone
-/// width are finite and positive, `planet_radius + thickness` is at most 1,000,000,000, every coefficient is finite
-/// and nonnegative, and `ozone_altitude` is finite.
-inline void validate_atmosphere(const Atmosphere &a) {
-    const auto positive = [](float v) { return std::isfinite(v) && v > 0; };
-    const auto coefficients = [](Vec3 c) {
-        return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
-    };
-    constexpr double maximum_radius = 1e9;
-    if (!positive(a.planet_radius) || !positive(a.thickness) ||
-        double(a.planet_radius) + a.thickness > maximum_radius || !positive(a.rayleigh_scale_height) ||
-        !positive(a.mie_scale_height) || !positive(a.ozone_width) || !std::isfinite(a.ozone_altitude) ||
-        !coefficients(a.rayleigh_scattering) || !coefficients(a.mie_scattering) || !coefficients(a.mie_absorption) ||
-        !coefficients(a.ozone_absorption))
-        throw std::invalid_argument("Invalid atmosphere");
 }
 /// The share of light, per channel, that crosses @p a from @p altitude meters above the ground to its top, along the
 /// direction whose cosine with the zenith is @p cos_zenith: `exp(-t)`, where `t` integrates the extinction along the
@@ -316,6 +341,26 @@ inline void validate_atmosphere(const Atmosphere &a) {
             depth[c] += extinction[c] * weight;
     }
     return {float(std::exp(-depth[0])), float(std::exp(-depth[1])), float(std::exp(-depth[2]))};
+}
+/// The radiance of @p e's sun as it reaches the ground. With the atmosphere enabled, Environment::sun's radiance is
+/// the light above the atmosphere, and this is that times atmosphere_transmittance() from the ground toward the sun,
+/// along the horizon once the sun is below it, times the share of its disc above the horizon, `clamp((elevation +
+/// r) / (2 * r), 0, 1)` for the sun's elevation and angular radius `r`; so the sun dims and reddens toward the horizon
+/// and fades out across it. With the atmosphere disabled it is the sun's radiance. Throws `std::invalid_argument` as
+/// validate_environment() does.
+[[nodiscard]] inline Vec3 atmosphere_sunlight(const Environment &e) {
+    validate_environment(e);
+    const auto &a = e.atmosphere;
+    if (!a.enabled)
+        return e.sun.radiance;
+    const auto toward = normalized(e.sun.direction);
+    const double elevation = std::asin(std::clamp(double(toward.y), -1.0, 1.0)), radius = a.sun_angular_radius;
+    const double share = std::clamp((elevation + radius) / (2 * radius), 0.0, 1.0);
+    if (share <= 0)
+        return {0, 0, 0};
+    const auto through = atmosphere_transmittance(a, 0, std::max(double(toward.y), 0.0));
+    return {float(double(e.sun.radiance.x) * through.x * share), float(double(e.sun.radiance.y) * through.y * share),
+            float(double(e.sun.radiance.z) * through.z * share)};
 }
 namespace detail {
 /// Axes of a view along the sun with direction @p sun toward it: right, up and forward (away from the sun), in

@@ -1,0 +1,36 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The transmittance table: for each altitude and zenith cosine of a path that stays above the ground, the share of
+// light that crosses the atmosphere to its top. It integrates the extinction as atmosphere_transmittance() does, with
+// midpoint steps in the square root of the distance.
+layout(local_size_x = 8, local_size_y = 8) in;
+#include "environment_data.glsl"
+#include "atmosphere.glsl"
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D transmittanceTable;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, transmittanceSize)))
+        return;
+    vec2 uv = (vec2(texel) + 0.5) / vec2(transmittanceSize);
+    // Invert transmittanceCoordinates(): the distance to the horizon gives the altitude, and the share of the way
+    // between the nearest and farthest distances to the top gives the zenith cosine.
+    float horizonTop = sqrt(thickness() * (groundRadius() + topRadius()));
+    float horizon = horizonTop * unitFromTexture(uv.y, transmittanceSize.y);
+    float altitude = horizon * horizon / (sqrt(horizon * horizon + groundRadius() * groundRadius()) + groundRadius());
+    float nearest = thickness() - altitude, farthest = horizon + horizonTop;
+    float distance = nearest + unitFromTexture(uv.x, transmittanceSize.x) * (farthest - nearest);
+    float r = groundRadius() + altitude;
+    float mu = distance <= 0.0
+                   ? 1.0
+                   : clamp((horizonTop * horizonTop - horizon * horizon - distance * distance) / (2.0 * r * distance),
+                           -1.0, 1.0);
+    const int steps = 128;
+    float span = distanceToTop(altitude, mu);
+    vec3 depth = vec3(0.0);
+    for (int i = 0; i < steps; ++i) {
+        float u = (float(i) + 0.5) / float(steps);
+        depth += extinctionAt(altitudeAlong(altitude, mu, span * u * u)) * (2.0 * span * u / float(steps));
+    }
+    imageStore(transmittanceTable, texel, vec4(exp(-depth), 1.0));
+}

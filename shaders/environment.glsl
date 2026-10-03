@@ -1,28 +1,4 @@
-layout(set = 1, binding = 0, std140) uniform EnvironmentData {
-    vec4 sunDirection, sunRadiance, fillDirection, fillRadiance;
-    vec4 ambientSky, ambientGround, ambientSpecular;
-    vec4 skyZenith, skyHorizon, skyGround, fog, controls;
-    mat4 inverseView;
-    vec4 viewOrigin;
-    // The sun's shadow cascades fitted to the view: each one's view-projection,
-    mat4 cascadeView[4];
-    // the view depth where each one ends,
-    vec4 cascadeEnd;
-    // and its constant and slope biases in its normalized depth, and the world size of its texels.
-    vec4 cascadeBias[4];
-    // The point that view depths are measured from, with the depth where the first cascade begins in w.
-    vec4 cascadeOrigin;
-    // The unit view direction along which they are measured, with the share of each cascade that blends into the next
-    // in w.
-    vec4 cascadeAxis;
-    // The number of cascades, none while they are disabled.
-    vec4 cascades;
-    mat4 detailShadowView;
-    vec4 detailShadow; // enabled, inverse resolution, constant bias, slope bias
-    // The fog's height, falloff, sky distance and phase asymmetry, and the sunlight it scatters (fog.glsl).
-    vec4 fogShape, fogSun;
-}
-environment;
+#include "environment_data.glsl"
 #include "../include/anima/fog.glsl"
 // False in the pipelines that draw uniform fog without sunlight, which then compile without the height fog's code:
 // unused, it still costs the registers of its longest path in every fragment.
