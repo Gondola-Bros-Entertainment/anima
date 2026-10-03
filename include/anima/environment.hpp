@@ -236,6 +236,87 @@ inline void validate_environment(const Environment &e) {
             throw std::invalid_argument("Invalid directional light");
     }
 }
+/// A planet's atmosphere after Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique"
+/// (EGSR 2020), over a spherical ground: Rayleigh and Mie scattering whose densities fall exponentially with altitude,
+/// Mie absorption, and ozone absorption in a tent around an altitude. Lengths are in meters and coefficients per meter,
+/// each at its medium's densest. The defaults are Earth's, as the paper's reference implementation sets them;
+/// validate_atmosphere() defines the accepted values.
+struct Atmosphere {
+    /// Radius of the ground.
+    float planet_radius = 6'360'000;
+    /// Height of the atmosphere's top above the ground.
+    float thickness = 100'000;
+    /// Rayleigh scattering per channel at the ground. Rayleigh scattering absorbs nothing.
+    Vec3 rayleigh_scattering{5.802e-6F, 13.558e-6F, 33.1e-6F};
+    /// Altitude over which Rayleigh density falls by a factor of e.
+    float rayleigh_scale_height = 8'000;
+    /// Mie scattering per channel at the ground.
+    Vec3 mie_scattering{3.996e-6F, 3.996e-6F, 3.996e-6F};
+    /// Mie absorption per channel at the ground.
+    Vec3 mie_absorption{4.44e-7F, 4.44e-7F, 4.44e-7F};
+    /// Altitude over which Mie density falls by a factor of e.
+    float mie_scale_height = 1'200;
+    /// Ozone absorption per channel at #ozone_altitude, falling linearly to zero #ozone_width / 2 above and below it.
+    Vec3 ozone_absorption{6.50e-7F, 1.881e-6F, 8.5e-8F};
+    /// Altitude of the ozone layer's peak.
+    float ozone_altitude = 25'000;
+    /// Width of the ozone layer.
+    float ozone_width = 30'000;
+};
+/// Throws `std::invalid_argument("Invalid atmosphere")` unless @p a's radius, thickness, scale heights and ozone
+/// width are finite and positive, `planet_radius + thickness` is at most 1,000,000,000, every coefficient is finite
+/// and nonnegative, and `ozone_altitude` is finite.
+inline void validate_atmosphere(const Atmosphere &a) {
+    const auto positive = [](float v) { return std::isfinite(v) && v > 0; };
+    const auto coefficients = [](Vec3 c) {
+        return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
+    };
+    constexpr double maximum_radius = 1e9;
+    if (!positive(a.planet_radius) || !positive(a.thickness) ||
+        double(a.planet_radius) + a.thickness > maximum_radius || !positive(a.rayleigh_scale_height) ||
+        !positive(a.mie_scale_height) || !positive(a.ozone_width) || !std::isfinite(a.ozone_altitude) ||
+        !coefficients(a.rayleigh_scattering) || !coefficients(a.mie_scattering) || !coefficients(a.mie_absorption) ||
+        !coefficients(a.ozone_absorption))
+        throw std::invalid_argument("Invalid atmosphere");
+}
+/// The share of light, per channel, that crosses @p a from @p altitude meters above the ground to its top, along the
+/// direction whose cosine with the zenith is @p cos_zenith: `exp(-t)`, where `t` integrates the extinction along the
+/// straight path, Rayleigh scattering, Mie scattering and absorption and ozone absorption, each its coefficient times
+/// its density. Zero where the path meets the ground, which a path below the horizon does from the ground; a path
+/// along the horizon from the ground is open. The integral takes 1,024 midpoint steps in the square root of the
+/// distance, which crowds them toward the start, in double precision. Throws `std::invalid_argument` as
+/// validate_atmosphere() does, or with "Invalid atmosphere sample" unless @p altitude lies from 0 to the thickness and
+/// @p cos_zenith from -1 to 1.
+[[nodiscard]] inline Vec3 atmosphere_transmittance(const Atmosphere &a, double altitude, double cos_zenith) {
+    validate_atmosphere(a);
+    if (!(altitude >= 0 && altitude <= a.thickness) || !(cos_zenith >= -1 && cos_zenith <= 1))
+        throw std::invalid_argument("Invalid atmosphere sample");
+    const double ground = a.planet_radius, top = ground + double(a.thickness), r = ground + altitude, mu = cos_zenith;
+    if (mu < 0 && r * r * (mu * mu - 1) + ground * ground >= 0)
+        return {0, 0, 0};
+    const double span = -r * mu + std::sqrt(std::max(r * r * (mu * mu - 1) + top * top, 0.0));
+    // Midpoints in u, at t = span * u^2, weighted by dt/du = 2 * span * u.
+    constexpr int steps = 1024;
+    std::array<double, 3> depth{};
+    for (int i = 0; i < steps; ++i) {
+        const double u = (i + .5) / steps, t = span * u * u;
+        const double height = std::sqrt(r * r + 2 * r * mu * t + t * t) - ground;
+        const double rayleigh = std::exp(-height / a.rayleigh_scale_height),
+                     mie = std::exp(-height / a.mie_scale_height),
+                     ozone = std::max(0.0, 1 - std::abs(height - a.ozone_altitude) / (a.ozone_width / 2.0));
+        const double weight = 2 * span * u / steps;
+        const std::array extinction{
+            a.rayleigh_scattering.x * rayleigh + (double(a.mie_scattering.x) + a.mie_absorption.x) * mie +
+                a.ozone_absorption.x * ozone,
+            a.rayleigh_scattering.y * rayleigh + (double(a.mie_scattering.y) + a.mie_absorption.y) * mie +
+                a.ozone_absorption.y * ozone,
+            a.rayleigh_scattering.z * rayleigh + (double(a.mie_scattering.z) + a.mie_absorption.z) * mie +
+                a.ozone_absorption.z * ozone};
+        for (std::size_t c = 0; c < depth.size(); ++c)
+            depth[c] += extinction[c] * weight;
+    }
+    return {float(std::exp(-depth[0])), float(std::exp(-depth[1])), float(std::exp(-depth[2]))};
+}
 namespace detail {
 /// Axes of a view along the sun with direction @p sun toward it: right, up and forward (away from the sun), in
 /// double. They depend only on the sun's direction.
