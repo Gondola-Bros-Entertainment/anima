@@ -805,9 +805,11 @@ struct VulkanRenderer::Impl {
 #endif
         create_pipeline(PipelineKind::diagnostic, pipeline);
 #ifdef ANIMA_HAS_ASSETS
-        create_pipeline(PipelineKind::resource, resource_pipeline);
-        create_pipeline(PipelineKind::blended_resource, blended_resource_pipeline);
-        create_pipeline(PipelineKind::impostor, impostor_pipeline);
+        for (const bool height_fog : {false, true}) {
+            create_pipeline(PipelineKind::resource, resource_pipelines[height_fog], height_fog);
+            create_pipeline(PipelineKind::blended_resource, blended_resource_pipelines[height_fog], height_fog);
+            create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
+        }
         create_pipeline(PipelineKind::sky, sky_pipeline);
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
@@ -924,7 +926,9 @@ struct VulkanRenderer::Impl {
         impostor,
         shadow_impostor
     };
-    void create_pipeline(PipelineKind mode, VkPipeline &output) {
+    // Creates the pipeline of @p mode in @p output; one that draws the view with mesh.frag or impostor.frag compiles
+    // the height fog's code only with @p height_fog.
+    void create_pipeline(PipelineKind mode, VkPipeline &output, [[maybe_unused]] bool height_fog = true) {
         const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
         const bool shadow = mode == PipelineKind::shadow_opaque || mode == PipelineKind::shadow_masked ||
                             mode == PipelineKind::shadow_impostor;
@@ -949,13 +953,19 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         if (resource)
             stages[1].module = mesh_fragment_shader;
-        // Sets a shader's constant 0: mesh.frag's selects premultiplied output, impostor.vert's the shadow passes'
-        // view.
+        // Sets impostor.vert's constant 0, which selects the shadow passes' view.
         const VkBool32 enabled = VK_TRUE;
         const VkSpecializationMapEntry constant_entry{0, 0, sizeof(enabled)};
         const VkSpecializationInfo constant_enabled{1, &constant_entry, sizeof(enabled), &enabled};
-        if (blended)
-            stages[1].pSpecializationInfo = &constant_enabled;
+        // The view's fragment constants: mesh.frag's 0 selects premultiplied output, and 1 (environment.glsl) the
+        // height fog's code, in mesh.frag and impostor.frag.
+        const std::array<VkBool32, 2> fragment_constants{blended ? VK_TRUE : VK_FALSE, height_fog ? VK_TRUE : VK_FALSE};
+        const std::array<VkSpecializationMapEntry, 2> fragment_entries{
+            {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)}}};
+        const VkSpecializationInfo fragment_specialization{2, fragment_entries.data(), sizeof(fragment_constants),
+                                                           fragment_constants.data()};
+        if (mode == PipelineKind::resource || blended || mode == PipelineKind::impostor)
+            stages[1].pSpecializationInfo = &fragment_specialization;
         if (sky) {
             stages[0].module = sky_vertex_shader;
             stages[1].module = sky_fragment_shader;
@@ -1832,15 +1842,12 @@ struct VulkanRenderer::Impl {
         depth_image = VK_NULL_HANDLE;
         depth_allocation = VK_NULL_HANDLE;
 #ifdef ANIMA_HAS_ASSETS
-        if (resource_pipeline)
-            vkDestroyPipeline(device, resource_pipeline, nullptr);
-        resource_pipeline = VK_NULL_HANDLE;
-        if (blended_resource_pipeline)
-            vkDestroyPipeline(device, blended_resource_pipeline, nullptr);
-        blended_resource_pipeline = VK_NULL_HANDLE;
-        if (impostor_pipeline)
-            vkDestroyPipeline(device, impostor_pipeline, nullptr);
-        impostor_pipeline = VK_NULL_HANDLE;
+        for (auto *pipelines : {&resource_pipelines, &blended_resource_pipelines, &impostor_pipelines})
+            for (auto &value : *pipelines) {
+                if (value)
+                    vkDestroyPipeline(device, value, nullptr);
+                value = VK_NULL_HANDLE;
+            }
         if (sky_pipeline)
             vkDestroyPipeline(device, sky_pipeline, nullptr);
         sky_pipeline = VK_NULL_HANDLE;

@@ -147,6 +147,15 @@ TEST_CASE("Invalid lights, exposure, fog and shadow settings are rejected") {
     CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment exposure or fog density",
                          std::invalid_argument);
     bad = env;
+    bad.fog_falloff = -1;
+    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment height fog", std::invalid_argument);
+    // The phase function's asymmetry lies strictly between -1 and 1.
+    bad = env;
+    bad.fog_sun_anisotropy = -.99F;
+    CHECK_NOTHROW(validate_environment(bad));
+    bad.fog_sun_anisotropy = 1;
+    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment height fog", std::invalid_argument);
+    bad = env;
     bad.detail_shadow.extent = std::numeric_limits<float>::max();
     CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), texel_range, std::invalid_argument);
     bad = env;

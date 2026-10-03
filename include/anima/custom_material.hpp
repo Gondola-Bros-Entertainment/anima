@@ -35,9 +35,12 @@
 ///   position with w 1 in a perspective view, or the unit direction toward the camera with w 0 in an orthographic
 ///   one; then Environment's lights as `vec4`s with w 0: 144 `sunDirection` (unit, toward the sun), 160
 ///   `sunRadiance`, 176 `fillDirection`, 192 `fillRadiance`, 208 `ambientSky`, 224 `ambientGround` and 240
-///   `ambientSpecular`; 256 `vec4 fog`, the fog color with its density per unit in w (0 for none); 272 `vec4
-///   viewport`, the target's width and height in pixels and their reciprocals; and 288 `float time`, the seconds
-///   that VulkanRenderer::set_time received.
+///   `ambientSpecular`; 256 `vec4 fog`, EnvironmentSettings::fog_color with fog_density in w, the density per unit at
+///   fog_height (0 for no fog); 272 `vec4 viewport`, the target's width and height in pixels and their reciprocals;
+///   288 `float time`, the seconds that VulkanRenderer::set_time received; 304 `vec4 fogShape`,
+///   EnvironmentSettings::fog_height, fog_falloff, fog_sky_distance and fog_sun_anisotropy; and 320 `vec4 fogSun`,
+///   fog_sun_scattering times Environment::sun's radiance, capped at the largest float, with w 0. `animaFogged()` in
+///   custom_material.glsl applies this fog as the standard material does.
 /// - Set 0, binding 1, fragment shaders of blended and additive materials only: `sampler2D` opaque depth, the
 ///   depth buffer after every opaque draw of the frame, reversed Vulkan depth from 1 at the near plane to 0 at the
 ///   far one in `r`, 0 where nothing opaque drew, sampled with nearest filtering and clamped at the edges. Nearer

@@ -481,6 +481,7 @@ if(ANIMA_BUILD_DESKTOP)
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/material.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/include/anima/fog.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sky.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/visibility.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/lighting.glsl"
@@ -689,7 +690,7 @@ if(ANIMA_BUILD_TESTS)
         set(desktop "${anima_consumer_executable_dir}/consumer_desktop${CMAKE_EXECUTABLE_SUFFIX}")
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
-        foreach(check_mode IN ITEMS allocations culling placements lod impostors cascades foliage environment resources
+        foreach(check_mode IN ITEMS allocations culling placements lod impostors cascades foliage fog environment resources
             material-sampling pbr surface-maps sidedness blending custom-materials texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")

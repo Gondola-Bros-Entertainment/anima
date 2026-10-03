@@ -1,8 +1,8 @@
 // GLSL declarations of the custom material shader interface that anima/custom_material.hpp documents. Include it
 // in shaders compiled for Vulkan 1.1, for example with `glslc --target-env=vulkan1.1 -I <anima>/include`.
 //
-// Every stage receives the frame block (animaFrame), the draw push constants (animaDraw), animaDissolved() and
-// animaWorldPosition(). Define these before including the file to declare more:
+// Every stage receives the frame block (animaFrame), the draw push constants (animaDraw), animaDissolved(),
+// animaWorldPosition() and animaFogged(). Define these before including the file to declare more:
 // - ANIMA_VERTEX in vertex shaders: the vertex attributes, the placement rows, the pose buffer, animaModelMatrix(),
 //   animaWorldNormal() and animaVisibility();
 // - ANIMA_OPAQUE_DEPTH and ANIMA_OPAQUE_COLOR in the fragment shader of a blended or additive material: the
@@ -23,13 +23,28 @@ layout(set = 0, binding = 0, std140) uniform AnimaFrame {
     vec4 ambientSky;
     vec4 ambientGround;
     vec4 ambientSpecular;
-    // Fog color, and its density per unit in w.
+    // The fog's color, and in w its density per unit at its height (fogShape.x), which fogShape.y's falloff varies.
     vec4 fog;
     // Width and height in pixels, and their reciprocals.
     vec4 viewport;
     float time;
+    // The fog's height, falloff, sky distance and phase asymmetry.
+    vec4 fogShape;
+    // The sunlight that the fog scatters, before its phase function: fog_sun_scattering times the sun's radiance.
+    vec4 fogSun;
 }
 animaFrame;
+
+#include "fog.glsl"
+
+// @p color at world position @p position as the standard material fogs it: seen from the eye through the
+// environment's fog in a perspective view with fog, and unchanged otherwise.
+vec3 animaFogged(vec3 color, vec3 position) {
+    if (animaFrame.viewOrigin.w > 0.5 && animaFrame.fog.w > 0.0)
+        color = animaFog(color, animaFrame.viewOrigin.xyz, position, animaFrame.fog, animaFrame.fogShape,
+                         animaFrame.fogSun, animaFrame.sunDirection.xyz);
+    return color;
+}
 
 layout(push_constant) uniform AnimaDraw {
     // The camera's view-projection, or in the depth-only variant a shadow pass's: a cascade's or the detail region's.

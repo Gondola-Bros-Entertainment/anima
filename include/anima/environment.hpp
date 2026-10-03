@@ -129,7 +129,8 @@ struct EnvironmentSettings {
     /// both ambient terms.
     Vec3 ambient_specular{.08F, .08F, .08F};
     /// Draws a gradient sky behind the scene instead of the fixed clear color, with a disc and glow toward
-    /// Environment::sun scaled by its radiance. The sky is not fogged.
+    /// Environment::sun scaled by its radiance. In perspective views fog applies to it as to a surface
+    /// #fog_sky_distance along each view ray.
     bool sky = false;
     /// Sky color straight up, blending toward #sky_horizon as the view ray nears the horizon.
     Vec3 sky_zenith{.10F, .25F, .48F};
@@ -137,12 +138,37 @@ struct EnvironmentSettings {
     Vec3 sky_horizon{.55F, .65F, .75F};
     /// Sky color below the horizon, reached where the view ray's Y component is -0.25 or lower.
     Vec3 sky_ground{.12F, .15F, .18F};
-    /// Color that fog blends toward.
+    /// Ambient light that fog scatters toward the eye.
     Vec3 fog_color{.55F, .65F, .75F};
-    /// Fog density per world unit, finite and nonnegative; zero disables fog. In perspective views a mesh
-    /// surface keeps `exp(-fog_density * distance)` of its color, `distance` being from the eye, and takes the
-    /// rest from #fog_color. Orthographic views are not fogged.
+    /// Fog density per world unit at #fog_height, finite and nonnegative; zero disables fog. The density at height
+    /// `y` is `fog_density * exp(-fog_falloff * (y - fog_height))`.
+    ///
+    /// In perspective views a mesh surface keeps the share `exp(-t)` of its color and takes the rest from the fog's
+    /// light. `t` integrates the density along the straight path of length `d` from the eye to the surface: with `k`
+    /// the falloff, `y` the height of the path's lower end and `r` the height between its ends, `t = fog_density * d *
+    /// exp(-k * (y - fog_height)) * (1 - exp(-k * r)) / (k * r)`, where the last factor is 1 when `k * r` is zero,
+    /// so that uniform fog keeps `exp(-fog_density * d)`. The fog's light is #fog_color plus Environment::sun's
+    /// radiance times #fog_sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 + g^2 -
+    /// 2 * g * c)^1.5)`, with `g` the #fog_sun_anisotropy and `c` the cosine of the angle between the path, from the
+    /// eye, and the direction toward the sun. It depends on the path's direction alone, not on its length, and each
+    /// of its channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor
+    /// the scene's own light reach the fog. Orthographic views are not fogged.
     float fog_density = 0;
+    /// Height along +Y at which the fog's density is #fog_density; finite.
+    float fog_height = 0;
+    /// Rate per world unit at which the fog's density falls with height above #fog_height, and rises below it;
+    /// finite and nonnegative. Zero makes the density uniform.
+    float fog_falloff = 0;
+    /// Share of Environment::sun's radiance, per channel, that the fog scatters toward the eye, weighted by the phase
+    /// function; finite and nonnegative. Zero scatters no sunlight.
+    Vec3 fog_sun_scattering{0, 0, 0};
+    /// Asymmetry `g` of the fog's phase function, greater than -1 and less than 1. Positive values scatter
+    /// sunlight forward, so the fog brightens toward the sun; zero scatters it evenly.
+    float fog_sun_anisotropy = .6F;
+    /// Distance along each view ray at which fog applies to the sky, from 0 to 1,000,000,000. Geometry at this
+    /// distance meets the sky behind it in the same fog, so a horizon of distant terrain fades into the sky. Zero
+    /// leaves the sky unfogged.
+    float fog_sky_distance = 0;
     /// Multiplies linear scene color, including the sky and background, before tone mapping; finite and
     /// positive.
     float exposure = 1;
@@ -163,24 +189,31 @@ struct Environment : EnvironmentSettings {
     /// Fill light, without shadows.
     DirectionalLight fill{{.8F, .3F, -.5F}, {.314159265F, .314159265F, .314159265F}};
 };
-/// Throws `std::invalid_argument` unless every color in @p e is finite and nonnegative, `fog_density` is finite
-/// and nonnegative, `exposure` is finite and positive, the shadow cascades, enabled or not, meet the ranges that
-/// ShadowCascades states, and the detail region, enabled or not, has a finite center, finite positive `extent`
-/// and `depth`, nonzero `resolution` and finite nonnegative biases.
+/// Throws `std::invalid_argument` unless every color in @p e, `fog_sun_scattering` included, is finite and
+/// nonnegative, `fog_density` is finite and nonnegative, `exposure` is finite and positive, `fog_height` is finite,
+/// `fog_falloff` is finite and nonnegative, `fog_sky_distance` lies from 0 to 1,000,000,000, `fog_sun_anisotropy`
+/// lies strictly between -1 and 1, the shadow cascades, enabled or not, meet the ranges that ShadowCascades states,
+/// and the detail region, enabled or not, has a finite center, finite positive `extent` and `depth`, nonzero
+/// `resolution` and finite nonnegative biases.
 inline void validate_environment_settings(const EnvironmentSettings &e) {
     const auto color = [](Vec3 c) {
         return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
     };
-    for (const auto c :
-         {e.ambient_sky, e.ambient_ground, e.ambient_specular, e.sky_zenith, e.sky_horizon, e.sky_ground, e.fog_color})
+    for (const auto c : {e.ambient_sky, e.ambient_ground, e.ambient_specular, e.sky_zenith, e.sky_horizon, e.sky_ground,
+                         e.fog_color, e.fog_sun_scattering})
         if (!color(c))
             throw std::invalid_argument("Environment colours must be finite nonnegative linear RGB");
     if (!std::isfinite(e.fog_density) || e.fog_density < 0 || !std::isfinite(e.exposure) || e.exposure <= 0)
         throw std::invalid_argument("Invalid environment exposure or fog density");
-    constexpr float maximum_shadow_distance = 1e9F;
+    // Bounding distances keeps their products with the fog's density and falloff within float range. Negated
+    // comparisons also reject NaN.
+    constexpr float maximum_distance = 1e9F;
+    if (!std::isfinite(e.fog_height) || !(e.fog_falloff >= 0 && std::isfinite(e.fog_falloff)) ||
+        !(e.fog_sky_distance >= 0 && e.fog_sky_distance <= maximum_distance) ||
+        !(e.fog_sun_anisotropy > -1 && e.fog_sun_anisotropy < 1))
+        throw std::invalid_argument("Invalid environment height fog");
     const auto &c = e.shadow_cascades;
-    // Negated comparisons also reject NaN.
-    if (c.count < 1 || c.count > 4 || !(c.distance > 0 && c.distance <= maximum_shadow_distance) ||
+    if (c.count < 1 || c.count > 4 || !(c.distance > 0 && c.distance <= maximum_distance) ||
         !(c.logarithmic_split >= 0 && c.logarithmic_split <= 1) || !(c.blend >= 0 && c.blend <= 1) ||
         c.resolution < 16 || !std::isfinite(c.constant_bias) || c.constant_bias < 0 || !std::isfinite(c.slope_bias) ||
         c.slope_bias < 0)

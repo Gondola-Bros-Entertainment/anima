@@ -51,7 +51,7 @@ struct Member {
     std::uint32_t offset;
     std::string_view type;
 };
-constexpr std::array<Member, 13> frame_members{{{0, "mat4"},
+constexpr std::array<Member, 15> frame_members{{{0, "mat4"},
                                                 {64, "mat4"},
                                                 {128, "vec4"},
                                                 {144, "vec4"},
@@ -63,7 +63,9 @@ constexpr std::array<Member, 13> frame_members{{{0, "mat4"},
                                                 {240, "vec4"},
                                                 {256, "vec4"},
                                                 {272, "vec4"},
-                                                {288, "float"}}};
+                                                {288, "float"},
+                                                {304, "vec4"},
+                                                {320, "vec4"}}};
 constexpr std::array<Member, 7> draw_members{
     {{0, "mat4"}, {64, "uint"}, {68, "uint"}, {72, "uint"}, {76, "uint"}, {80, "vec4"}, {96, "uint"}}};
 // The SourceVertex attributes, then the three placement rows.

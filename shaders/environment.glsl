@@ -19,8 +19,25 @@ layout(set = 1, binding = 0, std140) uniform EnvironmentData {
     vec4 cascades;
     mat4 detailShadowView;
     vec4 detailShadow; // enabled, inverse resolution, constant bias, slope bias
+    // The fog's height, falloff, sky distance and phase asymmetry, and the sunlight it scatters (fog.glsl).
+    vec4 fogShape, fogSun;
 }
 environment;
+#include "../include/anima/fog.glsl"
+// False in the pipelines that draw uniform fog without sunlight, which then compile without the height fog's code:
+// unused, it still costs the registers of its longest path in every fragment.
+layout(constant_id = 1) const bool environmentHeightFog = true;
+// @p color at @p position as seen from the eye through the fog, in a perspective view with fog; otherwise @p color.
+vec3 environmentFog(vec3 color, vec3 position, vec4 viewOrigin) {
+    if (viewOrigin.w > 0.5 && environment.fog.w > 0.0) {
+        if (environmentHeightFog)
+            color = animaFog(color, viewOrigin.xyz, position, environment.fog, environment.fogShape,
+                             environment.fogSun, environment.sunDirection.xyz);
+        else
+            color = mix(environment.fog.rgb, color, exp(-environment.fog.w * length(viewOrigin.xyz - position)));
+    }
+    return color;
+}
 layout(set = 1, binding = 1) uniform sampler2DArray cascadeDepth;
 layout(set = 1, binding = 2) uniform sampler2DArray detailShadowDepth;
 // What the shadow filter knows about a receiver: the screen-space derivatives of its world position, the variation of

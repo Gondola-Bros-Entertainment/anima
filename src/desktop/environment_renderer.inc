@@ -18,6 +18,8 @@ struct EnvironmentUniform {
     std::array<float, 4> cascade_origin, cascade_axis, cascades;
     Mat4 detail_shadow_view;
     std::array<float, 4> detail_shadow;
+    // The fog's height, falloff, sky distance and phase asymmetry, and fog_sun_scattering times the sun's radiance.
+    std::array<float, 4> fog_shape, fog_sun;
 };
 static_assert(offsetof(EnvironmentUniform, inverse_view) == 192);
 static_assert(offsetof(EnvironmentUniform, view_origin) == 256);
@@ -25,7 +27,8 @@ static_assert(offsetof(EnvironmentUniform, cascade_views) == 272 && offsetof(Env
               offsetof(EnvironmentUniform, cascade_biases) == 544 &&
               offsetof(EnvironmentUniform, cascade_origin) == 608 && offsetof(EnvironmentUniform, cascades) == 640);
 static_assert(offsetof(EnvironmentUniform, detail_shadow_view) == 656 &&
-              offsetof(EnvironmentUniform, detail_shadow) == 720 && sizeof(EnvironmentUniform) == 736);
+              offsetof(EnvironmentUniform, detail_shadow) == 720 && offsetof(EnvironmentUniform, fog_shape) == 736 &&
+              offsetof(EnvironmentUniform, fog_sun) == 752 && sizeof(EnvironmentUniform) == 768);
 VkDescriptorSetLayout environment_layout{};
 VkDescriptorPool environment_pool{};
 VkDescriptorSet environment_set{};
@@ -76,6 +79,26 @@ void record_sky() {
                             &environment_set, 0, nullptr);
     vkCmdDraw(command, 3, 1, 0, 0);
 }
+// Whether the view's fog needs the shaders' height fog code: fog whose density falls with height or that scatters
+// sunlight. Uniform fog without sunlight, or none, draws through pipelines compiled without it.
+[[nodiscard]] bool uses_height_fog() const {
+    const auto &e = environment;
+    return e.fog_density > 0 && (e.fog_falloff > 0 || e.fog_sun_scattering.x > 0 || e.fog_sun_scattering.y > 0 ||
+                                 e.fog_sun_scattering.z > 0);
+}
+// The fog's height, falloff, sky distance and phase asymmetry, as fog.glsl reads them.
+static std::array<float, 4> fog_shape(const Environment &e) {
+    return {e.fog_height, e.fog_falloff, e.fog_sky_distance, e.fog_sun_anisotropy};
+}
+// The sunlight that the fog scatters, before its phase function: fog_sun_scattering times the sun's radiance, formed
+// in double and capped at the largest float, so that no finite inputs make it infinite.
+static std::array<float, 4> fog_sunlight(const Environment &e) {
+    const auto times = [](float share, float radiance) {
+        return float(std::min(double(share) * radiance, double(std::numeric_limits<float>::max())));
+    };
+    const auto &share = e.fog_sun_scattering, &radiance = e.sun.radiance;
+    return {times(share.x, radiance.x), times(share.y, radiance.y), times(share.z, radiance.z), 0};
+}
 // Writes the environment and the latest fit of the shadow cascades (finish_shadow_cascades()) for the next frame.
 void update_environment() {
     const auto vec = [](Vec3 v, float w = 0.F) { return std::array<float, 4>{v.x, v.y, v.z, w}; };
@@ -102,7 +125,9 @@ void update_environment() {
                             {},
                             detail_pass.view,
                             {e.detail_shadow.enabled ? 1.F : 0.F, 1.F / static_cast<float>(e.detail_shadow.resolution),
-                             e.detail_shadow.constant_bias, e.detail_shadow.slope_bias}};
+                             e.detail_shadow.constant_bias, e.detail_shadow.slope_bias},
+                            fog_shape(e),
+                            fog_sunlight(e)};
     const auto &settings = e.shadow_cascades;
     // A 16-bit map stores depth in steps of 1/65535, which the bias must also cover.
     const double step = shadow_format == VK_FORMAT_D16_UNORM ? 1. / 65535 : 0;

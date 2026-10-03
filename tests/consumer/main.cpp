@@ -47,6 +47,7 @@
 #include "culling.hpp"
 #include "custom_materials.hpp"
 #include "environment.hpp"
+#include "fog.hpp"
 #include "foliage.hpp"
 #include "impostors.hpp"
 #include "lod.hpp"
@@ -308,6 +309,8 @@ int main(int argc, char **argv) {
         material_test::reject_invalid_anisotropy();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--fog")
+            return fog_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--foliage")
             return foliage_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--allocations")
