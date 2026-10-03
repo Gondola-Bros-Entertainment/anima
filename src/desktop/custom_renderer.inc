@@ -163,7 +163,7 @@ void update_custom_frame() {
                                   inverse_view,
                                   view_origin,
                                   vec(normalized(e.sun.direction)),
-                                  vec(e.sun.radiance),
+                                  vec(sunlight),
                                   vec(normalized(e.fill.direction)),
                                   vec(e.fill.radiance),
                                   vec(e.ambient_sky),
@@ -174,7 +174,7 @@ void update_custom_frame() {
                                   shader_time,
                                   {},
                                   fog_shape(e),
-                                  fog_sunlight(e)};
+                                  fog_sunlight(e, sunlight)};
     std::memcpy(custom_frame_buffer->mapping, &data, sizeof(data));
     flush_resource(*custom_frame_buffer);
 }

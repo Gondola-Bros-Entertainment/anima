@@ -454,19 +454,29 @@ TEST_CASE("An atmosphere reddens and dims the light as the path lowers, and the 
 TEST_CASE("Invalid atmospheres and samples are rejected") {
     constexpr auto invalid = "Invalid atmosphere", sample = "Invalid atmosphere sample";
     constexpr auto nan = std::numeric_limits<float>::quiet_NaN(), infinite = std::numeric_limits<float>::infinity();
-    const std::vector<std::function<void(Atmosphere &)>> breaks{[](Atmosphere &a) { a.planet_radius = 0; },
-                                                                [](Atmosphere &a) { a.planet_radius = infinite; },
-                                                                [](Atmosphere &a) { a.thickness = -1; },
-                                                                [](Atmosphere &a) { a.thickness = nan; },
-                                                                [](Atmosphere &a) { a.planet_radius = 9.9999e8F; },
-                                                                [](Atmosphere &a) { a.rayleigh_scattering.y = -1e-6F; },
-                                                                [](Atmosphere &a) { a.rayleigh_scale_height = 0; },
-                                                                [](Atmosphere &a) { a.mie_scattering.z = nan; },
-                                                                [](Atmosphere &a) { a.mie_absorption.x = infinite; },
-                                                                [](Atmosphere &a) { a.mie_scale_height = -1; },
-                                                                [](Atmosphere &a) { a.ozone_absorption.x = -1e-9F; },
-                                                                [](Atmosphere &a) { a.ozone_altitude = nan; },
-                                                                [](Atmosphere &a) { a.ozone_width = 0; }};
+    const std::vector<std::function<void(Atmosphere &)>> breaks{
+        [](Atmosphere &a) { a.planet_radius = 0; },
+        [](Atmosphere &a) { a.planet_radius = infinite; },
+        [](Atmosphere &a) { a.thickness = -1; },
+        [](Atmosphere &a) { a.thickness = nan; },
+        [](Atmosphere &a) { a.thickness = 2; },
+        [](Atmosphere &a) { a.thickness = infinite; },
+        [](Atmosphere &a) { a.planet_radius = 9.9999e8F; },
+        [](Atmosphere &a) { a.rayleigh_scattering.y = -1e-6F; },
+        [](Atmosphere &a) { a.rayleigh_scale_height = 0; },
+        [](Atmosphere &a) { a.mie_scattering.z = nan; },
+        [](Atmosphere &a) { a.mie_absorption.x = infinite; },
+        [](Atmosphere &a) { a.mie_scale_height = -1; },
+        [](Atmosphere &a) { a.ozone_absorption.x = -1e-9F; },
+        [](Atmosphere &a) { a.ozone_altitude = nan; },
+        [](Atmosphere &a) { a.ozone_width = 0; },
+        [](Atmosphere &a) { a.ground_height = nan; },
+        [](Atmosphere &a) { a.mie_anisotropy = 1; },
+        [](Atmosphere &a) { a.mie_anisotropy = -1; },
+        [](Atmosphere &a) { a.ground_albedo.y = 1.01F; },
+        [](Atmosphere &a) { a.ground_albedo.z = -.01F; },
+        [](Atmosphere &a) { a.sun_angular_radius = 0; },
+        [](Atmosphere &a) { a.sun_angular_radius = std::numbers::pi_v<float> / 2; }};
     for (std::size_t index = 0; index < breaks.size(); ++index) {
         CAPTURE(index);
         Atmosphere bad;
@@ -476,10 +486,66 @@ TEST_CASE("Invalid atmospheres and samples are rejected") {
     }
     const Atmosphere earth;
     CHECK_NOTHROW(validate_atmosphere(earth));
+    // The bounds that the ranges include.
+    Atmosphere edge;
+    edge.mie_anisotropy = -.99F;
+    edge.ground_albedo = {0, 1, 0};
+    edge.ground_height = -1e6F;
+    edge.thickness = 2.5F;
+    CHECK_NOTHROW(validate_atmosphere(edge));
     for (const auto &[altitude, cosine] : {std::pair{-1.0, 1.0}, std::pair{100'001.0, 1.0}, std::pair{double(nan), 1.0},
                                            std::pair{0.0, 1.5}, std::pair{0.0, -1.01}, std::pair{0.0, double(nan)}}) {
         CAPTURE(altitude);
         CAPTURE(cosine);
         CHECK_THROWS_WITH_AS((void)atmosphere_transmittance(earth, altitude, cosine), sample, std::invalid_argument);
     }
+}
+
+TEST_CASE("The sun reaches the ground through the atmosphere, and fades out across the horizon") {
+    Environment env;
+    env.sun.radiance = {2, 3, 4};
+    // Disabled, the atmosphere leaves the sun as it is.
+    env.sun.direction = {0, .2F, -1};
+    CHECK(atmosphere_sunlight(env).x == 2);
+    CHECK(atmosphere_sunlight(env).z == 4);
+    env.atmosphere.enabled = true;
+    const auto &a = env.atmosphere;
+    const auto at = [&](double degrees) {
+        const double angle = degrees * std::numbers::pi / 180;
+        env.sun.direction = {float(std::cos(angle)), float(std::sin(angle)), 0};
+        return atmosphere_sunlight(env);
+    };
+    // Above the disc's radius from the horizon, the radiance times the transmittance toward the sun.
+    for (const double degrees : {90.0, 30.0, 5.0}) {
+        CAPTURE(degrees);
+        const auto light = at(degrees);
+        const auto through = atmosphere_transmittance(a, 0, std::sin(degrees * std::numbers::pi / 180));
+        CHECK(light.x == Near{2 * through.x, 1e-6});
+        CHECK(light.y == Near{3 * through.y, 1e-6});
+        CHECK(light.z == Near{4 * through.z, 1e-6});
+    }
+    CHECK(at(5).z / at(5).x < at(30).z / at(30).x);
+    // Across the horizon, the share of the disc above it times the transmittance toward the sun, or along the
+    // horizon once the sun is below it.
+    const double radius = a.sun_angular_radius * 180 / std::numbers::pi;
+    for (const auto &[degrees, share] :
+         {std::pair{0.0, .5}, std::pair{-.5 * radius, .25}, std::pair{.5 * radius, .75}}) {
+        CAPTURE(degrees);
+        const auto light = at(degrees);
+        const auto through = atmosphere_transmittance(a, 0, std::max(std::sin(degrees * std::numbers::pi / 180), 0.0));
+        CHECK(light.x == Near{2 * through.x * share, 1e-5});
+        CHECK(light.z == Near{4 * through.z * share, 1e-5});
+    }
+    for (const double degrees : {-radius * 1.01, -10.0, -90.0}) {
+        CAPTURE(degrees);
+        const auto light = at(degrees);
+        CHECK(light.x == 0);
+        CHECK(light.y == 0);
+        CHECK(light.z == 0);
+    }
+    env.atmosphere.mie_anisotropy = 1;
+    CHECK_THROWS_WITH_AS((void)atmosphere_sunlight(env), "Invalid atmosphere", std::invalid_argument);
+    env.atmosphere.mie_anisotropy = .8F;
+    env.sun.direction = {};
+    CHECK_THROWS_WITH_AS((void)atmosphere_sunlight(env), "Invalid directional light", std::invalid_argument);
 }

@@ -41,6 +41,7 @@
 #include "navigation.hpp"
 #ifdef CONSUMER_DESKTOP
 #include "allocations.hpp"
+#include "atmosphere.hpp"
 #include "blending.hpp"
 #include "cascades.hpp"
 #include "compressed_textures.hpp"
@@ -311,6 +312,8 @@ int main(int argc, char **argv) {
             return environment_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--fog")
             return fog_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--atmosphere")
+            return atmosphere_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--foliage")
             return foliage_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--allocations")
