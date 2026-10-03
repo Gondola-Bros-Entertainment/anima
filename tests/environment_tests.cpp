@@ -5,10 +5,15 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace anima;
 namespace {
@@ -337,4 +342,135 @@ TEST_CASE("A tangent handedness other than 0, 1 or -1 is rejected") {
     auto source = seams();
     source->primitives[0].vertices[0].tangent[3] = .5F;
     CHECK_THROWS_WITH_AS(Mesh::compile(*source), "Invalid render vertex", std::invalid_argument);
+}
+
+namespace {
+// The transmittance of @p a from @p altitude along the direction at @p elevation degrees above the horizon, by
+// uniform midpoint steps along a point that marches from the ground's center outward, independently of
+// atmosphere_transmittance()'s substitution; zero where the path meets the ground.
+std::array<double, 3> brute_transmittance(const Atmosphere &a, double altitude, double elevation) {
+    const double angle = elevation * std::numbers::pi / 180, ground = a.planet_radius, top = ground + a.thickness;
+    const double x0 = 0, y0 = ground + altitude, dx = std::cos(angle), dy = std::sin(angle);
+    // Where the path leaves the top: |p0 + t d| = top.
+    const double b = x0 * dx + y0 * dy, c = x0 * x0 + y0 * y0 - top * top;
+    const double end = -b + std::sqrt(b * b - c);
+    constexpr int steps = 100'000;
+    std::array<double, 3> depth{};
+    for (int i = 0; i < steps; ++i) {
+        const double t = end * (i + .5) / steps, x = x0 + t * dx, y = y0 + t * dy;
+        const double height = std::hypot(x, y) - ground;
+        if (height < 0)
+            return {0, 0, 0};
+        const double rayleigh = std::exp(-height / a.rayleigh_scale_height),
+                     mie = std::exp(-height / a.mie_scale_height),
+                     ozone = std::max(0.0, 1 - std::abs(height - a.ozone_altitude) / (a.ozone_width / 2.0));
+        const std::array<std::array<float, 3>, 4> c3{
+            {{a.rayleigh_scattering.x, a.rayleigh_scattering.y, a.rayleigh_scattering.z},
+             {a.mie_scattering.x, a.mie_scattering.y, a.mie_scattering.z},
+             {a.mie_absorption.x, a.mie_absorption.y, a.mie_absorption.z},
+             {a.ozone_absorption.x, a.ozone_absorption.y, a.ozone_absorption.z}}};
+        for (std::size_t k = 0; k < 3; ++k)
+            depth[k] += (c3[0][k] * rayleigh + (double(c3[1][k]) + c3[2][k]) * mie + c3[3][k] * ozone) * end / steps;
+    }
+    return {std::exp(-depth[0]), std::exp(-depth[1]), std::exp(-depth[2])};
+}
+} // namespace
+
+TEST_CASE("An atmosphere's transmittance matches an independent integral of its media") {
+    const Atmosphere earth;
+    // Straight up from the ground the optical depth has a closed form: each exponential medium's coefficient times
+    // its scale height times 1 - exp(-thickness / height), and the ozone tent's coefficient times half its width.
+    const auto zenith = atmosphere_transmittance(earth, 0, 1);
+    const auto closed = [&](float rayleigh, float mie, float ozone) {
+        return std::exp(
+            -(rayleigh * earth.rayleigh_scale_height *
+                  (1 - std::exp(-double(earth.thickness) / earth.rayleigh_scale_height)) +
+              mie * earth.mie_scale_height * (1 - std::exp(-double(earth.thickness) / earth.mie_scale_height)) +
+              ozone * earth.ozone_width / 2.0));
+    };
+    CHECK(zenith.x == Near{closed(earth.rayleigh_scattering.x, earth.mie_scattering.x + earth.mie_absorption.x,
+                                  earth.ozone_absorption.x),
+                           1e-5});
+    CHECK(zenith.y == Near{closed(earth.rayleigh_scattering.y, earth.mie_scattering.y + earth.mie_absorption.y,
+                                  earth.ozone_absorption.y),
+                           1e-5});
+    CHECK(zenith.z == Near{closed(earth.rayleigh_scattering.z, earth.mie_scattering.z + earth.mie_absorption.z,
+                                  earth.ozone_absorption.z),
+                           1e-5});
+    // Along low and grazing paths from the ground and above it, against uniform steps along a marching point.
+    for (const double altitude : {0.0, 2'000.0, 20'000.0})
+        for (const double elevation : {10.0, 2.0, 0.0, -.5}) {
+            CAPTURE(altitude);
+            CAPTURE(elevation);
+            const auto expected = brute_transmittance(earth, altitude, elevation);
+            const auto actual = atmosphere_transmittance(earth, altitude, std::sin(elevation * std::numbers::pi / 180));
+            CHECK(actual.x == Near{expected[0], 1e-4});
+            CHECK(actual.y == Near{expected[1], 1e-4});
+            CHECK(actual.z == Near{expected[2], 1e-4});
+        }
+    // Earth's values at the zenith, 10 and 2 degrees, which two independent integrations gave to three places.
+    const std::array<std::pair<double, std::array<double, 3>>, 3> rows{
+        {{90, {.940, .868, .762}}, {10, {.713, .459, .222}}, {2, {.331, .085, .006}}}};
+    for (const auto &[elevation, values] : rows) {
+        CAPTURE(elevation);
+        const auto actual = atmosphere_transmittance(earth, 0, std::sin(elevation * std::numbers::pi / 180));
+        CHECK(actual.x == Near{values[0], 1e-3});
+        CHECK(actual.y == Near{values[1], 1e-3});
+        CHECK(actual.z == Near{values[2], 1e-3});
+    }
+}
+
+TEST_CASE("An atmosphere reddens and dims the light as the path lowers, and the ground blocks it") {
+    const Atmosphere earth;
+    // From the ground any path below the horizon meets it; from above, a path just below the horizon passes.
+    for (const double cosine : {-1e-6, -.01, -1.0})
+        CHECK(atmosphere_transmittance(earth, 0, cosine).x == 0);
+    CHECK(atmosphere_transmittance(earth, 2'000, std::sin(-.5 * std::numbers::pi / 180)).x > 0);
+    CHECK(atmosphere_transmittance(earth, 0, 0).x > 0);
+    Vec3 previous{0, 0, 0};
+    double previous_ratio = std::numeric_limits<double>::infinity();
+    for (int degrees = 0; degrees <= 90; degrees += 5) {
+        CAPTURE(degrees);
+        const auto t = atmosphere_transmittance(earth, 0, std::sin(degrees * std::numbers::pi / 180));
+        CHECK(t.x >= previous.x);
+        CHECK(t.y >= previous.y);
+        CHECK(t.z >= previous.z);
+        const double ratio = double(t.x) / t.z;
+        CHECK(ratio < previous_ratio);
+        previous = t;
+        previous_ratio = ratio;
+    }
+}
+
+TEST_CASE("Invalid atmospheres and samples are rejected") {
+    constexpr auto invalid = "Invalid atmosphere", sample = "Invalid atmosphere sample";
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN(), infinite = std::numeric_limits<float>::infinity();
+    const std::vector<std::function<void(Atmosphere &)>> breaks{[](Atmosphere &a) { a.planet_radius = 0; },
+                                                                [](Atmosphere &a) { a.planet_radius = infinite; },
+                                                                [](Atmosphere &a) { a.thickness = -1; },
+                                                                [](Atmosphere &a) { a.thickness = nan; },
+                                                                [](Atmosphere &a) { a.planet_radius = 9.9999e8F; },
+                                                                [](Atmosphere &a) { a.rayleigh_scattering.y = -1e-6F; },
+                                                                [](Atmosphere &a) { a.rayleigh_scale_height = 0; },
+                                                                [](Atmosphere &a) { a.mie_scattering.z = nan; },
+                                                                [](Atmosphere &a) { a.mie_absorption.x = infinite; },
+                                                                [](Atmosphere &a) { a.mie_scale_height = -1; },
+                                                                [](Atmosphere &a) { a.ozone_absorption.x = -1e-9F; },
+                                                                [](Atmosphere &a) { a.ozone_altitude = nan; },
+                                                                [](Atmosphere &a) { a.ozone_width = 0; }};
+    for (std::size_t index = 0; index < breaks.size(); ++index) {
+        CAPTURE(index);
+        Atmosphere bad;
+        breaks[index](bad);
+        CHECK_THROWS_WITH_AS(validate_atmosphere(bad), invalid, std::invalid_argument);
+        CHECK_THROWS_WITH_AS((void)atmosphere_transmittance(bad, 0, 1), invalid, std::invalid_argument);
+    }
+    const Atmosphere earth;
+    CHECK_NOTHROW(validate_atmosphere(earth));
+    for (const auto &[altitude, cosine] : {std::pair{-1.0, 1.0}, std::pair{100'001.0, 1.0}, std::pair{double(nan), 1.0},
+                                           std::pair{0.0, 1.5}, std::pair{0.0, -1.01}, std::pair{0.0, double(nan)}}) {
+        CAPTURE(altitude);
+        CAPTURE(cosine);
+        CHECK_THROWS_WITH_AS((void)atmosphere_transmittance(earth, altitude, cosine), sample, std::invalid_argument);
+    }
 }
