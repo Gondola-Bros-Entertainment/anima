@@ -55,6 +55,7 @@
 #include "lod.hpp"
 #include "materials.hpp"
 #include "placements.hpp"
+#include "present_modes.hpp"
 #include "profile.hpp"
 #include "rejection.hpp"
 #include "replacement.hpp"
@@ -314,6 +315,7 @@ int main(int argc, char **argv) {
         replacement_test::reject_unfireable_injection();
         replacement_test::reject_invalid_lod_threshold();
         replacement_test::reject_invalid_frames_in_flight();
+        present_mode_test::reject_unknown_mode();
         material_test::reject_invalid_anisotropy();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
@@ -339,6 +341,8 @@ int main(int argc, char **argv) {
             return profile_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--frames-in-flight")
             return frames_in_flight_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--present-modes")
+            return present_mode_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")

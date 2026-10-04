@@ -14,8 +14,9 @@
 // duration, releasing cached meshes counts in prepare_ms, the GPU fields time the frame submitted
 // RendererOptions::frames_in_flight submissions earlier, and where the renderer measures it, the GPU's idle time
 // between two frames is absent from the first timed frame, which follows no timed frame, lies within the calls around
-// the two frames and, with one frame in flight, spans the CPU work that separated them. After
-// VulkanRenderer::wait_for_frame(), which an application calls before reading input, draw() waits for no frame.
+// the two frames and, with one frame in flight, spans the CPU work that separated them, and a present interval is
+// reported only where the renderer measures one, and then by some calls. After VulkanRenderer::wait_for_frame(), which
+// an application calls before reading input, draw() waits for no frame.
 namespace profile_test {
 inline void require(bool condition, const std::string &message) {
     if (!condition)
@@ -76,6 +77,8 @@ class Check {
     }
     /// The GPU idle time of every call that reported one.
     [[nodiscard]] const std::vector<double> &idle_ms() const noexcept { return idle_ms_; }
+    /// The present interval of every call that reported one.
+    [[nodiscard]] const std::vector<double> &interval_ms() const noexcept { return interval_ms_; }
 
   private:
     // Checks the latest call against the frames_ + 1 before it.
@@ -85,6 +88,12 @@ class Check {
         for (const double field : {profile.fence_wait_ms, profile.prepare_ms, profile.upload_ms, profile.acquire_ms,
                                    profile.record_submit_ms, profile.present_ms})
             require(std::isfinite(field) && field >= 0, "A CPU field is negative or not finite");
+        if (profile.present_interval_ms) {
+            require(renderer_.measures_present_interval(), "A present interval was reported without display timing");
+            require(std::isfinite(*profile.present_interval_ms) && *profile.present_interval_ms >= 0,
+                    "A present interval is negative or not finite");
+            interval_ms_.push_back(*profile.present_interval_ms);
+        }
         // The fields divide the call's own clock readings, so only rounding can carry their sum past its duration.
         constexpr double rounding_ms = 1e-6;
         require(call.cpu_ms() <= call.wall_ms() + rounding_ms, "The CPU fields add up to more than the draw() call");
@@ -135,7 +144,7 @@ class Check {
     std::deque<gpu_check::TimedDraw> calls_;
     // Whether a call has read a timed frame.
     bool timed_{};
-    std::vector<double> idle_ms_;
+    std::vector<double> idle_ms_, interval_ms_;
 };
 
 // What one renderer's checks measured.
@@ -143,7 +152,7 @@ struct Summary {
     double steady_untimed{}, release_untimed{}, release_prepare{}, steady_prepare{};
     // Median fence_wait_ms of the steady calls, and of the calls that followed wait_for_frame().
     double steady_fence{}, waited_fence{};
-    std::vector<double> idle, release_idle;
+    std::vector<double> idle, release_idle, interval;
     // Median contrast of the rebuilt frame's atmosphere time over the longest other one, where measured.
     std::optional<double> lag_contrast;
 };
@@ -298,6 +307,9 @@ inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     if (renderer.measures_gpu_idle())
         require(!check.idle_ms().empty(), "No frame reported GPU idle time");
     summary.idle = check.idle_ms();
+    if (renderer.measures_present_interval())
+        require(!check.interval_ms().empty(), "No draw() reported a present interval");
+    summary.interval = check.interval_ms();
 
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Profile check validation failed");
@@ -329,6 +341,11 @@ inline int run(int argc, char **) {
                 report << ", " << median(summary.release_idle) << " ms around a release";
         } else
             report << "no calibrated timestamps, so no GPU idle time";
+        if (!summary.interval.empty())
+            report << ", present intervals in " << summary.interval.size() << " draws, median "
+                   << median(summary.interval) << " ms";
+        else
+            report << ", no display timing, so no present intervals";
     }
     std::cout << "PASS profile" << report.str() << '\n';
     return 0;
