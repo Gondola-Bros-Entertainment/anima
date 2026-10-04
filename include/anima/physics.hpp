@@ -1,6 +1,9 @@
 #pragma once
 #include <anima/core/transform.hpp>
+#include <compare>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -180,10 +183,16 @@ class Body {
     void remove();
     /// Identity comparison; safe on invalid handles.
     bool operator==(const Body &other) const noexcept;
+    /// Total order consistent with operator==, for ordered containers; safe on invalid handles.
+    /// Handles order first by their body's position in its world's creation sequence, so a body
+    /// created earlier in a world orders first and a default-constructed handle orders before every
+    /// body, then by world, in an unspecified order that stays fixed while both handles exist.
+    [[nodiscard]] std::strong_ordering operator<=>(const Body &other) const noexcept;
 
   private:
     friend class World;
     friend struct detail::WorldState;
+    friend struct std::hash<Body>;
     Body(std::weak_ptr<detail::WorldState> world, std::uint64_t id) : world_(std::move(world)), id_(id) {}
     std::shared_ptr<detail::WorldState> lock() const;
     std::weak_ptr<detail::WorldState> world_;
@@ -272,3 +281,13 @@ class World {
     std::shared_ptr<int> lifetime_ = std::make_shared<int>(0);
 };
 } // namespace anima::physics
+namespace std {
+/// Hashes body handles consistently with anima::physics::Body::operator==, so equal handles, invalid
+/// ones included, hash alike and handles can key unordered containers. Bodies of different worlds
+/// can share a hash.
+template <> struct hash<anima::physics::Body> {
+    [[nodiscard]] size_t operator()(const anima::physics::Body &body) const noexcept {
+        return hash<uint64_t>{}(body.id_);
+    }
+};
+} // namespace std

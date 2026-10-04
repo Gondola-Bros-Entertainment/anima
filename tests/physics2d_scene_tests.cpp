@@ -1,14 +1,17 @@
 #include "component_payloads.hpp"
 #include <anima/physics2d_scene.hpp>
 #include <anima/prefab.hpp>
+#include <anima/scene_set.hpp>
 #include <doctest/doctest.h>
 
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 using namespace anima;
@@ -354,4 +357,67 @@ TEST_CASE("The 2D rigid body codec keeps mass and damping and stores shape and m
     const std::vector<ComponentData> version_1{{"anima.rigid-body-2d.v1", payload, true}};
     CHECK_THROWS_WITH_AS(codecs.restore(scene.create(), version_1, {}), "Unknown serialized component type",
                          std::invalid_argument);
+}
+
+TEST_CASE("A 2D contact's bodies map back to their rigid bodies") {
+    p::World world;
+    Scene scene;
+    p::BodySettings settings;
+    settings.collider.half_extent = {10, .5F};
+    auto floor = scene.create("floor");
+    floor.set_position({0, -.5F, 0});
+    floor.add_component<p::RigidBody>(world, settings);
+    auto ball = scene.create("ball");
+    ball.set_position({0, .6F, 0});
+    settings.collider.shape = p::Shape::circle;
+    settings.motion = p::Motion::dynamic;
+    const auto ball_body = ball.add_component<p::RigidBody>(world, settings)->body();
+    p::BodySettings apart;
+    apart.pose.position = {50, 0};
+    const auto standalone = world.create(apart);
+    std::unordered_map<p::Body, ComponentRef<p::RigidBody>> owners;
+    for (const auto &component : scene.components<p::RigidBody>())
+        owners.emplace(component->body(), component);
+    std::vector<p::ContactEvent> events;
+    for (int i = 0; i < 60 && events.empty(); ++i) {
+        p::step(scene, world, 1. / 60);
+        events = world.take_events();
+    }
+    REQUIRE(events.size() == 1u);
+    CHECK(events[0].phase == p::ContactPhase::begin);
+    const auto first = p::find_rigid_body(scene, events[0].first);
+    const auto second = p::find_rigid_body(scene, events[0].second);
+    REQUIRE((first && second));
+    CHECK(std::set{first.object().id(), second.object().id()} == std::set{floor.id(), ball.id()});
+    CHECK(owners.at(events[0].first).object().id() == first.object().id());
+    CHECK(owners.at(events[0].second).object().id() == second.object().id());
+
+    // Disabled components are found; standalone bodies and default handles have no owner.
+    auto ground = floor.get_component<p::RigidBody>();
+    ground.set_enabled(false);
+    CHECK(p::find_rigid_body(scene, ground->body()).object().id() == floor.id());
+    CHECK_FALSE(p::find_rigid_body(scene, standalone));
+    CHECK_FALSE(p::find_rigid_body(scene, p::Body{}));
+
+    // Destroying the ball removes its component before the end event is read, but the event's body still keys the map.
+    ball.destroy();
+    events = world.take_events();
+    REQUIRE(events.size() == 1u);
+    CHECK(events[0].phase == p::ContactPhase::end);
+    const auto removed = events[0].first == ball_body ? events[0].first : events[0].second;
+    REQUIRE(removed == ball_body);
+    CHECK_FALSE(p::find_rigid_body(scene, removed));
+    CHECK_FALSE_MESSAGE(owners.at(removed), "The destroyed ball's component handle is still valid");
+
+    SceneSet scenes;
+    (void)scenes.create("empty");
+    auto crate = scenes.create("member")->create("crate");
+    crate.set_position({-50, 0, 0});
+    const auto owner = crate.add_component<p::RigidBody>(world, p::BodySettings{});
+    CHECK(p::find_rigid_body(scenes, owner->body()).object().id() == crate.id());
+    CHECK_FALSE(p::find_rigid_body(scenes, standalone));
+    // Identity outlives the body: a body removed through its handle still finds its component.
+    auto body = owner->body();
+    body.remove();
+    CHECK(p::find_rigid_body(scenes, body).object().id() == crate.id());
 }

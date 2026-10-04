@@ -68,6 +68,19 @@ void step(Scene &scene, World &world, double seconds);
 /// Steps every scene of @p scenes as step(Scene &, World &, double) does, validating all of
 /// them before any changes. Also throws `std::logic_error` while the set is busy, as SceneSet describes.
 void step(SceneSet &scenes, World &world, double seconds);
+/// The RigidBody of @p scene that owns @p body, such as a ContactEvent's or a Hit's, or an invalid
+/// handle when there is none: for a standalone body, another scene's body or a default-constructed
+/// Body, and once the owning component is destroyed, as it is for the end events its destruction
+/// records. It compares identities without reading body state, so it still finds the owner of a
+/// body removed through Body::remove(), and it includes disabled components and those on inactive
+/// objects.
+///
+/// It scans what Scene::components returns for RigidBody, so it costs that query plus time linear
+/// in the scene's RigidBody components. To look up many bodies, such as every event of a step, key
+/// an `std::unordered_map` by RigidBody::body() once instead.
+[[nodiscard]] ComponentRef<RigidBody> find_rigid_body(Scene &scene, const Body &body);
+/// Searches every member of @p scenes as find_rigid_body(Scene &, const Body &) searches one scene.
+[[nodiscard]] ComponentRef<RigidBody> find_rigid_body(SceneSet &scenes, const Body &body);
 /// Registers the `anima.rigid-body.v3` component codec, bound weakly to @p world: the codec does
 /// not keep the world alive. Restoring after the world is destroyed, or capturing a component
 /// whose body no longer exists, throws `std::out_of_range`. Throws `std::invalid_argument` if

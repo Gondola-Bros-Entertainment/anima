@@ -356,6 +356,13 @@ bool Body::valid() const noexcept {
 bool Body::operator==(const Body &other) const noexcept {
     return id_ == other.id_ && !world_.owner_before(other.world_) && !other.world_.owner_before(world_);
 }
+std::strong_ordering Body::operator<=>(const Body &other) const noexcept {
+    if (const auto order = id_ <=> other.id_; order != 0)
+        return order;
+    if (world_.owner_before(other.world_))
+        return std::strong_ordering::less;
+    return other.world_.owner_before(world_) ? std::strong_ordering::greater : std::strong_ordering::equal;
+}
 Pose Body::pose() const {
     auto w = lock();
     const auto id = w->entries.at(id_).id;

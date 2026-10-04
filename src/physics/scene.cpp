@@ -158,9 +158,17 @@ template <class Scenes> void step_scenes(Scenes &scenes, World &world, double se
         }
     }
 }
+template <class Scenes> ComponentRef<RigidBody> find_owner(Scenes &scenes, const Body &body) {
+    for (auto &component : scenes.template components<RigidBody>())
+        if (component->body() == body)
+            return component;
+    return {};
+}
 } // namespace
 void step(Scene &scene, World &world, double seconds) { step_scenes(scene, world, seconds); }
 void step(SceneSet &scenes, World &world, double seconds) { step_scenes(scenes, world, seconds); }
+ComponentRef<RigidBody> find_rigid_body(Scene &scene, const Body &body) { return find_owner(scene, body); }
+ComponentRef<RigidBody> find_rigid_body(SceneSet &scenes, const Body &body) { return find_owner(scenes, body); }
 void add_component_codec(ComponentCodecs &codecs, World &world) {
     const std::weak_ptr<int> lifetime = world.lifetime_;
     codecs.add<RigidBody>(
