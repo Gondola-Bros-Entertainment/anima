@@ -601,7 +601,7 @@ class MeshRenderer {
     /// only as a transform change does (see GameObject). Throws `std::logic_error` when the renderer
     /// draws placements, whose copies keep the rest pose ("A renderer that draws placements keeps the
     /// rest pose"), and `std::invalid_argument` when @p pose has another node count ("Pose does not
-    /// match render asset") or a matrix of @p pose, or of the palette it gives, is not finite and
+    /// match the mesh") or a matrix of @p pose, or of the palette it gives, is not finite and
     /// affine.
     void set_pose(const Pose &pose);
     /// Sets the animation pose and the object's world matrix in one update, as set_pose(const Pose &)

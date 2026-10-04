@@ -99,9 +99,9 @@ template <class T> class ModelCache {
 // @p texel_retention. Throws as Mesh::accepts_animation_source and Mesh::compile do.
 [[nodiscard]] inline std::shared_ptr<const Mesh>
 resident_or_compile(const Asset &source, std::shared_ptr<const Mesh> resident, TexelRetention texel_retention) {
-    if (resident && resident->materials()->textures.size() == source.textures.size() &&
+    if (resident && resident->description()->textures.size() == source.textures.size() &&
         resident->accepts_animation_source(source))
         return resident;
-    return Mesh::compile(source, texel_retention);
+    return Mesh::compile(source, {.texel_retention = texel_retention});
 }
 } // namespace anima::detail

@@ -25,7 +25,7 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
         manifest = anima::read_manifest(manifest_override.value_or(profile.parent_path() / relative));
         auto model = anima::load_asset(manifest.directory / manifest.model, options);
         anima::validate_manifest(manifest, *model);
-        render = anima::Mesh::compile(*model, texel_retention);
+        render = anima::Mesh::compile(*model, {.texel_retention = texel_retention});
         // The motion runtime holds the model, which the interaction actor reads through it, so it gets the copy that
         // keeps none of the texels that the Mesh lets go.
         model = anima::detail::without_texels(std::move(model), *render);

@@ -36,8 +36,8 @@ bool reference(const anima::Mat4 &view, const anima::RenderBounds &bounds) {
     return std::none_of(std::begin(outside), std::end(outside), [](bool value) { return value; });
 }
 // Levels of detail with @p errors, in order.
-std::vector<anima::DrawLevel> levels(std::initializer_list<float> errors) {
-    std::vector<anima::DrawLevel> result;
+std::vector<anima::PrimitiveLevel> levels(std::initializer_list<float> errors) {
+    std::vector<anima::PrimitiveLevel> result;
     for (const auto error : errors)
         result.push_back({0, 0, error});
     return result;

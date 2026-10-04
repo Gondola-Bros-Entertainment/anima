@@ -530,8 +530,7 @@ TEST_CASE("A renderer's pose keeps the object's world matrix unless the call als
     // A pose rejected with a world matrix leaves the object where it was.
     auto mismatched = pose;
     mismatched.world.pop_back();
-    CHECK_THROWS_WITH_AS(renderer.set_pose(mismatched, moved), "Pose does not match render asset",
-                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(renderer.set_pose(mismatched, moved), "Pose does not match the mesh", std::invalid_argument);
     CHECK(object.world_matrix() == placed);
 
     // Under a collapsed parent only the call that sets a world matrix needs the parent's inverse.

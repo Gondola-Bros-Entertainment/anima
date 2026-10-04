@@ -896,7 +896,7 @@ const Pose &MeshRenderer::pose() const {
     const auto &scene = object_.scene();
     const auto &value = scene.instance(object_.id_);
     const auto &entry = scene.slot(object_.id_);
-    return entry.pose ? *entry.pose : value.asset->rest_pose();
+    return entry.pose ? *entry.pose : value.mesh->rest_pose();
 }
 void MeshRenderer::set_pose(const Pose &pose) { object_.scene().set_pose(object_.id_, pose, object_.world_matrix()); }
 void MeshRenderer::set_pose(const Pose &pose, const Mat4 &world) { object_.scene().set_pose(object_.id_, pose, world); }

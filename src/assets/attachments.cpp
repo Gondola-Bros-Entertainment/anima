@@ -405,7 +405,7 @@ AttachmentFollower::AttachmentFollower(ComponentOwner owner, AttachmentSet attac
         follows_.emplace(role, Follow{{}, item.binding});
     attachments_.add(owner_);
     auto &target = owner_.scene();
-    mesh_ = target.slot(owner_.id()).value.asset;
+    mesh_ = target.slot(owner_.id()).value.mesh;
     for (auto &[role, follow] : follows_)
         follow.object = target.object(*attachments_.roles.at(role).instance);
 }
@@ -419,7 +419,7 @@ AttachmentFollower::~AttachmentFollower() {
 Scene &AttachmentFollower::scene() const {
     auto &target = owner_.scene();
     // Bindings name nodes of the original mesh, so another mesh would place the items on unrelated nodes.
-    if (target.slot(owner_.id()).value.asset != mesh_)
+    if (target.slot(owner_.id()).value.mesh != mesh_)
         throw std::invalid_argument("Attachment follower requires its original owner mesh");
     return target;
 }
