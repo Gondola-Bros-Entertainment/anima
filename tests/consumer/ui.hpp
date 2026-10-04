@@ -677,7 +677,8 @@ inline int run(int argc, char **argv) {
         require(!unsupported.stats().log_errors, "Unsupported-feature fixture emitted an RmlUi error");
     }
     { // As in RmlUi, an image that cannot be loaded is a warning, and the frames after it still render.
-        constexpr unsigned unloadable_images = 2;  // A missing file and a file that is not PNG or JPEG.
+        // A missing file, a file that is not PNG or JPEG, and a PNG one pixel wider than 8,192.
+        constexpr unsigned unloadable_images = 3;
         constexpr unsigned warnings_per_image = 2; // The reason, then RmlUi's own report of the texture.
         constexpr unsigned checked_frames = 2;
         // The unreadable file lives only as long as this check.
@@ -690,12 +691,18 @@ inline int run(int argc, char **argv) {
         } fixture{output / "unloadable-images"};
         std::filesystem::create_directories(fixture.directory);
         std::ofstream(fixture.directory / "unsupported.tga", std::ios::binary) << "not a PNG or JPEG image";
+        constexpr std::uint32_t oversized_width = 8193;
+        const auto oversized = gpu_check::png::encode(oversized_width, 1, 3,
+                                                      std::vector<std::uint8_t>(std::size_t{oversized_width} * 3, 255));
+        std::ofstream(fixture.directory / "oversized.png", std::ios::binary)
+            .write(reinterpret_cast<const char *>(oversized.data()), static_cast<std::streamsize>(oversized.size()));
         anima::UiContext unloadable_context(window.get(), renderer);
         // RmlUi resolves decorator images against their style sheet, which an inline style lacks.
         auto unloadable = unloadable_context.documents().from_memory(
             "<rml><head><style>#decorated { display: block; width: 32px; height: 32px; "
             "decorator: image(unsupported.tga); }</style></head><body>"
-            "<img src='missing.png' style='width:32px;height:32px;'/><div id='decorated'></div></body></rml>",
+            "<img src='missing.png' style='width:32px;height:32px;'/><div id='decorated'></div>"
+            "<img src='oversized.png' style='width:32px;height:32px;'/></body></rml>",
             (fixture.directory / "unloadable-images.rml").string());
         unloadable.show();
         for (unsigned frame_index = 0; frame_index < checked_frames; ++frame_index) {

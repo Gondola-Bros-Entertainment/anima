@@ -1,3 +1,4 @@
+#include "../detail/image_limits.hpp"
 #include "ui_draw.hpp"
 #include <RmlUi_Platform_SDL.h>
 #include <algorithm>
@@ -10,12 +11,13 @@
 #include <map>
 #include <set>
 #include <stb_image.h>
+#include <string>
 #include <string_view>
+#include <utility>
 
 namespace anima {
 namespace {
 constexpr std::size_t maximum_frame_vertices = 2'000'000;
-constexpr int maximum_texture_dimension = 8192; // Matches the shared stb decoder's dimension bound.
 constexpr std::streamoff maximum_encoded_texture_bytes = 64 * 1024 * 1024;
 // Largest framebuffer pointer coordinate magnitude that still rounds into RmlUi's int coordinates.
 constexpr double maximum_pointer_coordinate = std::numeric_limits<int>::max() - 1.0;
@@ -27,6 +29,11 @@ constexpr std::string_view input_type_attribute = "type";
 constexpr std::string_view default_input_type = "text";
 constexpr std::array<std::string_view, 4> activation_input_types{"button", "submit", "checkbox", "radio"};
 bool ui_active{}; // RmlUi process globals; all access is on the UI/render thread.
+// Whether neither axis of @p dimensions exceeds the image edge limit that the shared decoder applies.
+bool within_image_edge(Rml::Vector2i dimensions) {
+    return std::cmp_less_equal(dimensions.x, detail::maximum_image_edge) &&
+           std::cmp_less_equal(dimensions.y, detail::maximum_image_edge);
+}
 std::string utf8(const std::filesystem::path &path) {
     const auto text = path.u8string();
     return {text.begin(), text.end()};
@@ -180,9 +187,8 @@ class Render final : public Rml::RenderInterface {
     }
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override { geometries.erase(handle); }
     Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> bytes, Rml::Vector2i dimensions) override {
-        if (dimensions.x <= 0 || dimensions.y <= 0 || dimensions.x > maximum_texture_dimension ||
-            dimensions.y > maximum_texture_dimension ||
-            bytes.size() != std::uint64_t(dimensions.x) * std::uint64_t(dimensions.y) * 4) {
+        if (dimensions.x <= 0 || dimensions.y <= 0 || !within_image_edge(dimensions) ||
+            bytes.size() != std::uint64_t(dimensions.x) * std::uint64_t(dimensions.y) * detail::rgba_bytes_per_pixel) {
             unsupported("invalid texture dimensions or bytes");
             return 0;
         }
@@ -219,7 +225,7 @@ class Render final : public Rml::RenderInterface {
         int channels = 0;
         std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels{
             stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()), &dimensions.x, &dimensions.y,
-                                  &channels, 4),
+                                  &channels, STBI_rgb_alpha),
             stbi_image_free};
         if (!pixels) {
             const char *reason = stbi_failure_reason();
@@ -228,8 +234,13 @@ class Render final : public Rml::RenderInterface {
                                   (reason ? reason : "no reason given") + ")",
                               path);
         }
-        const auto count = size_t(dimensions.x) * size_t(dimensions.y) * 4;
-        for (size_t i = 0; i < count; i += 4)
+        // The shared decoder rejects a larger image too, as image.cpp asserts. Checking here keeps one a warning, as
+        // UiUnsupportedFeature promises, whatever the decoder accepts, not the failure that GenerateTexture latches.
+        if (!within_image_edge(dimensions))
+            return unloadable(
+                dimensions, "is wider or taller than " + std::to_string(detail::maximum_image_edge) + " pixels", path);
+        const auto count = size_t(dimensions.x) * size_t(dimensions.y) * detail::rgba_bytes_per_pixel;
+        for (size_t i = 0; i < count; i += detail::rgba_bytes_per_pixel)
             for (size_t channel = 0; channel < 3; ++channel)
                 pixels.get()[i + channel] =
                     static_cast<unsigned char>((unsigned(pixels.get()[i + channel]) * pixels.get()[i + 3] + 127) / 255);

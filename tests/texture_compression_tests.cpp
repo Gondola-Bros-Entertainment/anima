@@ -96,9 +96,8 @@ constexpr std::uint32_t basislz = 1, zstandard = 2, zlib = 3;
 // of a cube map; a descriptor block from a vendor other than Khronos.
 constexpr std::uint8_t eight_texel_dimension = 7, bc1_bytes_plane0 = 8;
 constexpr std::uint32_t r32_type_size = 4, cube_faces = 6, other_vendor = 1;
-// The reader's limits.
+// The reader's file size limit.
 constexpr std::size_t maximum_file_bytes = 64 * 1024 * 1024;
-constexpr std::uint32_t maximum_edge = 8192, maximum_texels = 16 * 1024 * 1024;
 // Bytes of one BC7 block.
 constexpr std::uint32_t bc7_block_bytes = 16;
 
@@ -374,13 +373,13 @@ TEST_CASE("KTX2 files outside the supported subset are rejected with the rule th
         rejects(with([&](auto &b) { put32(b, field, value); }),
                 "KTX2 must hold one 2D image, not an array, cube map or volume");
     }
-    rejects(with([](auto &b) { put32(b, width_field, maximum_edge + 1); }),
+    rejects(with([](auto &b) { put32(b, width_field, max_image_edge + 1); }),
             "KTX2 image exceeds import dimensions or texel limit");
-    rejects(with([](auto &b) { put32(b, height_field, maximum_edge + 1); }),
+    rejects(with([](auto &b) { put32(b, height_field, max_image_edge + 1); }),
             "KTX2 image exceeds import dimensions or texel limit");
     rejects(with([](auto &b) {
-                put32(b, width_field, maximum_edge);
-                put32(b, height_field, maximum_texels / maximum_edge + 1);
+                put32(b, width_field, max_image_edge);
+                put32(b, height_field, static_cast<std::uint32_t>(max_image_texels / max_image_edge + 1));
             }),
             "KTX2 image exceeds import dimensions or texel limit");
     rejects(with([](auto &b) { put32(b, levels_field, 0); }),

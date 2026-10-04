@@ -17,14 +17,23 @@
 namespace anima {
 /// Options for bake_impostor().
 struct ImpostorOptions {
+    /// Fewest #frame_size.
+    static constexpr std::uint32_t min_frame_size = 8;
+    /// Most #frame_size.
+    static constexpr std::uint32_t max_frame_size = 1024;
+    /// Most texels along each side of the atlas, `frames_per_side * frame_size`.
+    static constexpr std::uint32_t max_atlas_edge = 8192;
+    /// Most #samples.
+    static constexpr std::uint32_t max_samples = 8;
     /// The directions that the frames cover.
     ImpostorLayout layout = ImpostorLayout::hemisphere;
-    /// Frames along each side of the atlas, from 2 to 32.
+    /// Frames along each side of the atlas, from ImpostorFrames::min_frames_per_side to
+    /// ImpostorFrames::max_frames_per_side.
     std::uint32_t frames_per_side = 12;
-    /// Texels along each side of each frame, from 8 to 1024; the atlas spans `frames_per_side * frame_size` texels, at
-    /// most 8192.
+    /// Texels along each side of each frame, from #min_frame_size to #max_frame_size; the atlas spans
+    /// `frames_per_side * frame_size` texels, at most #max_atlas_edge.
     std::uint32_t frame_size = 128;
-    /// Samples along each side of each texel, from 1 to 8, whose covered share sets the texel's coverage.
+    /// Samples along each side of each texel, from 1 to #max_samples, whose covered share sets the texel's coverage.
     std::uint32_t samples = 4;
 };
 

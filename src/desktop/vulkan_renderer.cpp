@@ -9,6 +9,7 @@
 #include "../assets/bc7.hpp"
 #endif
 #ifdef ANIMA_UI
+#include "../detail/image_limits.hpp"
 #include "ui_draw.hpp"
 #include <map>
 #endif

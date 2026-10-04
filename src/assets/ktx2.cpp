@@ -12,8 +12,6 @@
 namespace anima {
 namespace {
 constexpr std::size_t maximum_file_bytes = 64 * 1024 * 1024;
-constexpr std::uint32_t maximum_edge = 8192;
-constexpr std::size_t maximum_texels = 16 * 1024 * 1024;
 constexpr std::array<std::uint8_t, 12> identifier{0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
 // Offsets of the header fields that follow the identifier, and of the level index that follows them.
 constexpr std::size_t format_offset = 12, type_size_offset = 16, width_offset = 20, height_offset = 24,
@@ -88,7 +86,7 @@ std::shared_ptr<const Image> load_ktx2(std::span<const std::byte> bytes, Texture
     const auto width = file.u32(width_offset), height = file.u32(height_offset);
     require(width && height && !file.u32(depth_offset) && !file.u32(layers_offset) && file.u32(faces_offset) == 1,
             "KTX2 must hold one 2D image, not an array, cube map or volume");
-    require(width <= maximum_edge && height <= maximum_edge && std::size_t{width} * height <= maximum_texels,
+    require(width <= max_image_edge && height <= max_image_edge && std::size_t{width} * height <= max_image_texels,
             "KTX2 image exceeds import dimensions or texel limit");
     const auto levels = file.u32(levels_offset);
     require(levels != 0, "KTX2 level count 0 asks for generated mip levels, which BC7 images cannot have");

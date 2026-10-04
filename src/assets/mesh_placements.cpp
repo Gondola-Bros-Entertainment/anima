@@ -44,6 +44,7 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
     require(std::none_of(mesh->primitives_.begin(), mesh->primitives_.end(),
                          [](const MeshPrimitive &draw) { return draw.skinned; }),
             "Placements draw only rigid meshes");
+    static_assert(max_count == 1048576, "The count message states the limit");
     require(!transforms.empty() && transforms.size() <= max_count, "Placement count must be from 1 to 1048576");
     for (const auto &m : transforms)
         require(detail::is_affine(m), "Placement transforms must be finite and affine");
