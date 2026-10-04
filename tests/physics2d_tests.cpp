@@ -5,6 +5,7 @@
 #include <compare>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -143,6 +144,54 @@ TEST_CASE("Rays, sweeps and overlaps honor surfaces, filters, enablement and rot
     CHECK_THROWS_WITH_AS(world.sweep(query, {}, {}), zero_cast, std::invalid_argument);
     CHECK_THROWS_WITH_AS(world.overlap(query, {{}, std::numeric_limits<float>::quiet_NaN()}),
                          "2D physics value outside finite supported range", std::invalid_argument);
+}
+
+TEST_CASE("Collider factories build bodies of their shapes and leave other fields at their defaults") {
+    constexpr float surface_tolerance = .001F;
+    constexpr auto dimensions = "2D collider dimensions outside [0.01, 10000]";
+    const Collider defaults;
+    const auto box_collider = Collider::box({1, .25F});
+    CHECK((box_collider.shape == Shape::box && box_collider.half_extent.x == 1 && box_collider.half_extent.y == .25F &&
+           box_collider.radius == defaults.radius && box_collider.half_height == defaults.half_height));
+    const auto circle = Collider::circle(.25F);
+    CHECK((circle.shape == Shape::circle && circle.radius == .25F && circle.half_extent.x == defaults.half_extent.x &&
+           circle.half_extent.y == defaults.half_extent.y && circle.half_height == defaults.half_height));
+    const auto capsule = Collider::capsule(.25F, 1);
+    CHECK((capsule.shape == Shape::capsule && capsule.radius == .25F && capsule.half_height == 1 &&
+           capsule.half_extent.x == defaults.half_extent.x && capsule.half_extent.y == defaults.half_extent.y));
+
+    World world({{0, 0}, 8});
+    // Each body stands at x = 10 i; a vertical ray from y = 5 finds its top surface, or nothing.
+    const auto top = [&](float x) -> std::optional<float> {
+        const auto hit = world.raycast({x, 5}, {0, -10});
+        if (!hit)
+            return std::nullopt;
+        return hit->point.y;
+    };
+    const auto at = [&](const Collider &collider, float x) {
+        BodySettings settings;
+        settings.collider = collider;
+        settings.pose.position = {x, 0};
+        return world.create(settings);
+    };
+    const auto on = [](std::optional<float> y, float expected) {
+        return y && std::abs(*y - expected) < surface_tolerance;
+    };
+    (void)at(box_collider, 0);
+    CHECK_MESSAGE((on(top(.9F), .25F) && !top(1.1F)), "Box factory built the wrong extent");
+    (void)at(circle, 10);
+    // A box of half size 0.25 would be flat at x = 10.2; the circle's top there is at 0.15.
+    CHECK_MESSAGE((on(top(10), .25F) && on(top(10.2F), .15F)), "Circle factory built the wrong shape");
+    (void)at(capsule, 20);
+    CHECK_MESSAGE((on(top(20), 1.25F) && on(top(20.2F), 1.15F) && !top(20.3F)),
+                  "Capsule factory built the wrong shape");
+    CHECK(world.size() == 3u);
+    // The factories validate nothing; World::create rejects their invalid dimensions.
+    BodySettings invalid;
+    invalid.collider = Collider::circle(0);
+    CHECK_THROWS_WITH_AS(world.create(invalid), dimensions, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(world.overlap(Collider::capsule(.25F, 0), {}), dimensions, std::invalid_argument);
+    CHECK(world.size() == 3u);
 }
 
 TEST_CASE("Sensors honor layers, report each transition once and kinematic bodies reach their targets") {

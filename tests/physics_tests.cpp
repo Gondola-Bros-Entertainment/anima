@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -314,6 +315,75 @@ TEST_CASE("Hull and compound queries use their authored origins") {
     const auto initial = world.sweep(compound, {{1, 0, 0}}, {10, 0, 0});
     REQUIRE_MESSAGE((initial && initial->fraction == 0 && initial->penetration > 0),
                     "Compound initial overlap missing");
+}
+
+TEST_CASE("Collider factories build bodies of their shapes and leave other fields at their defaults") {
+    const Collider defaults;
+    const auto keeps_defaults = [&](const Collider &c, bool extent, bool radius, bool height) {
+        return (!extent || identical(c.half_extent, defaults.half_extent)) &&
+               (!radius || c.radius == defaults.radius) && (!height || c.half_height == defaults.half_height);
+    };
+    const auto box_collider = Collider::box({1, .25F, .5F});
+    CHECK((box_collider.shape == Shape::box && identical(box_collider.half_extent, {1, .25F, .5F}) &&
+           keeps_defaults(box_collider, false, true, true) && box_collider.vertices.empty()));
+    const auto sphere = Collider::sphere(.25F);
+    CHECK((sphere.shape == Shape::sphere && sphere.radius == .25F && keeps_defaults(sphere, true, false, true)));
+    const auto capsule = Collider::capsule(.25F, 1);
+    CHECK((capsule.shape == Shape::capsule && capsule.radius == .25F && capsule.half_height == 1 &&
+           keeps_defaults(capsule, true, false, false)));
+    const auto hull = Collider::convex_hull(tetrahedron().vertices);
+    CHECK((hull.shape == Shape::convex_hull && hull.vertices.size() == 4u && hull.indices.empty() &&
+           keeps_defaults(hull, true, true, true)));
+    // One triangle facing +Y over x, z >= 0 with x + z <= 1.
+    const auto mesh = Collider::mesh({{0, 0, 0}, {0, 0, 1}, {1, 0, 0}}, {0, 1, 2});
+    CHECK((mesh.shape == Shape::mesh && mesh.vertices.size() == 3u && mesh.indices.size() == 3u &&
+           keeps_defaults(mesh, true, true, true)));
+    ColliderChild left, right;
+    left.pose.position = {-1, 0, 0};
+    left.collider = Collider::box({.25F, .25F, .25F});
+    right.pose.position = {1, 0, 0};
+    right.collider = left.collider;
+    const auto compound = Collider::compound({left, right});
+    CHECK((compound.shape == Shape::compound && compound.children.size() == 2u && compound.vertices.empty() &&
+           keeps_defaults(compound, true, true, true)));
+
+    World world(weightless(16));
+    // Each body stands at x = 10 i; a vertical ray from y = 5 finds its top surface, or nothing.
+    const auto top = [&](float x, float z) -> std::optional<float> {
+        const auto hit = world.raycast({x, 5, z}, {0, -10, 0});
+        if (!hit)
+            return std::nullopt;
+        return hit->point.y;
+    };
+    const auto at = [&](const Collider &collider, float x) {
+        BodySettings settings;
+        settings.collider = collider;
+        settings.pose.position = {x, 0, 0};
+        return world.create(settings);
+    };
+    const auto on = [](std::optional<float> y, float expected) {
+        return y && std::abs(*y - expected) < surface_tolerance;
+    };
+    (void)at(box_collider, 0);
+    CHECK_MESSAGE((on(top(.9F, .4F), .25F) && !top(1.1F, 0)), "Box factory built the wrong extent");
+    (void)at(sphere, 10);
+    // A box of half size 0.25 would cover (0.2, 0.2); the sphere leaves it open.
+    CHECK_MESSAGE((on(top(10, 0), .25F) && !top(10.2F, .2F)), "Sphere factory built the wrong shape");
+    (void)at(capsule, 20);
+    CHECK_MESSAGE((on(top(20, 0), 1.25F) && on(top(20.2F, 0), 1.15F) && !top(20.2F, .2F)),
+                  "Capsule factory built the wrong shape");
+    (void)at(hull, 30);
+    // The tetrahedron's slanted face is x / 2 + y + z = 1.
+    CHECK_MESSAGE((on(top(30.25F, .25F), .625F) && !top(31.5F, .5F)), "Hull factory built the wrong shape");
+    (void)at(mesh, 40);
+    CHECK_MESSAGE((on(top(40.25F, .25F), 0) && !top(40.75F, .75F)), "Mesh factory built the wrong shape");
+    (void)at(compound, 50);
+    CHECK_MESSAGE((on(top(49, 0), .25F) && !top(50, 0) && on(top(51, 0), .25F)),
+                  "Compound factory misplaced its children");
+    CHECK(world.size() == 6u);
+    // The factories validate nothing; World::create rejects their invalid geometry.
+    World empty(weightless(1));
+    rejects_collider<std::invalid_argument>(empty, Collider::sphere(0), "Invalid collider dimensions");
 }
 
 TEST_CASE("Invalid colliders and centers of mass are rejected without leaking bodies") {

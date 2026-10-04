@@ -60,8 +60,26 @@ struct ColliderChild;
 /// or be destroyed afterwards; the body's shape is then immutable.
 ///
 /// The dimension fields must each be in [0.001, 1,000,000] even when #shape does not use
-/// them, so direct calls and persisted data share one contract.
+/// them, so direct calls and persisted data share one contract. The static factories set
+/// #shape and its fields and leave every other field at its default, which meets this rule.
 struct Collider {
+    /// Box with @p half_extent, its half size on each axis.
+    ///
+    /// Like the other factories, it validates nothing; World::create, World::sweep and
+    /// World::overlap reject invalid geometry as they would any other Collider.
+    [[nodiscard]] static Collider box(Vec3 half_extent);
+    /// Sphere of @p radius.
+    [[nodiscard]] static Collider sphere(float radius);
+    /// Capsule along local Y of @p radius, whose cylinder is 2 @p half_height long; see
+    /// #half_height.
+    [[nodiscard]] static Collider capsule(float radius, float half_height);
+    /// Convex hull of @p points; see #vertices.
+    [[nodiscard]] static Collider convex_hull(std::vector<Vec3> points);
+    /// Triangle mesh of @p vertices and @p indices; see #vertices and #indices. Meshes require
+    /// Motion::stationary.
+    [[nodiscard]] static Collider mesh(std::vector<Vec3> vertices, std::vector<std::uint32_t> indices);
+    /// Compound of @p children; see #children.
+    [[nodiscard]] static Collider compound(std::vector<ColliderChild> children);
     Shape shape = Shape::box;
     /// Box half size on each axis.
     Vec3 half_extent{.5F, .5F, .5F};

@@ -243,6 +243,24 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
     }
 };
 } // namespace detail
+Collider Collider::box(Vec2 half_extent) {
+    Collider collider;
+    collider.half_extent = half_extent;
+    return collider;
+}
+Collider Collider::circle(float radius) {
+    Collider collider;
+    collider.shape = Shape::circle;
+    collider.radius = radius;
+    return collider;
+}
+Collider Collider::capsule(float radius, float half_height) {
+    Collider collider;
+    collider.shape = Shape::capsule;
+    collider.radius = radius;
+    collider.half_height = half_height;
+    return collider;
+}
 bool Body::valid() const noexcept {
     auto world = world_.lock();
     return world && world->entries.contains(id_);
