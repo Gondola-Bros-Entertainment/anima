@@ -64,16 +64,24 @@ void Animator::seek(double seconds) {
     playback_ = std::move(next);
     bind_ = false;
 }
+void Animator::set_speed(double multiplier) {
+    if (!std::isfinite(multiplier) || multiplier < 0)
+        throw std::invalid_argument("Animator speed must be finite and nonnegative");
+    speed_ = multiplier;
+}
 std::vector<ClipEvent> Animator::update(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0)
         throw std::invalid_argument("Invalid Animator time step");
+    const auto scaled = seconds * speed_;
+    if (!std::isfinite(scaled))
+        throw std::invalid_argument("Animator time step times its speed is not finite");
     // Validate even while paused, so expired/replaced components cannot hide.
     if (object_.renderer().mesh() != mesh_)
         throw std::logic_error("Animator mesh was replaced");
     if (bind_ || !playback_.playing())
         return {};
     auto next = playback_;
-    auto events = next.advance(seconds);
+    auto events = next.advance(scaled);
     publish(next);
     playback_ = std::move(next);
     return events;
