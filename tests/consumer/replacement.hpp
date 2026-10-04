@@ -6,6 +6,7 @@
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/scene.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -107,6 +108,27 @@ inline void reject_invalid_lod_threshold() {
                                    "Unknown initialization failure stage");
     rejects<std::invalid_argument>([&] { construct(-1, 0, no_failure); },
                                    "Maximum anisotropy must be finite and at least 1");
+}
+// Construction rejects a RendererOptions::shadow_caster_threshold that is not finite, is negative or is at least 1,
+// after the LOD threshold and before the frames in flight and anything that needs a window or GPU.
+inline void reject_invalid_shadow_caster_threshold() {
+    constexpr std::string_view invalid = "Shadow caster threshold must be finite, at least 0 and below 1";
+    const auto construct = [](float share, float threshold, std::uint32_t frames) {
+        anima::RendererOptions options;
+        options.shadow_caster_threshold = share;
+        options.lod_threshold = threshold;
+        options.frames_in_flight = frames;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    for (const auto share : {-1.F, -std::numeric_limits<float>::denorm_min(), 1.F, 2.F, -infinity, infinity,
+                             std::numeric_limits<float>::quiet_NaN()})
+        rejects<std::invalid_argument>([&] { construct(share, 1, 2); }, invalid);
+    for (const auto share : {0.F, -0.F, .01F, std::nextafter(1.F, 0.F)})
+        rejects<std::invalid_argument>([&] { construct(share, 1, 2); }, "Renderer requires an SDL window");
+    // The LOD threshold is checked first, and the frames in flight after.
+    rejects<std::invalid_argument>([&] { construct(1, -1, 2); }, "LOD threshold must be finite and nonnegative");
+    rejects<std::invalid_argument>([&] { construct(1, 1, 3); }, invalid);
 }
 // Construction rejects a RendererOptions::frames_in_flight other than 1 or 2, after the LOD threshold and before it
 // needs a window or GPU.

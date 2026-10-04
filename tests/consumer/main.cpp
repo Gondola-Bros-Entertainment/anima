@@ -316,6 +316,7 @@ int main(int argc, char **argv) {
 #ifdef CONSUMER_DESKTOP
         replacement_test::reject_unfireable_injection();
         replacement_test::reject_invalid_lod_threshold();
+        replacement_test::reject_invalid_shadow_caster_threshold();
         replacement_test::reject_invalid_frames_in_flight();
         present_mode_test::reject_unknown_mode();
         render_scale_test::reject_invalid_render_scale();

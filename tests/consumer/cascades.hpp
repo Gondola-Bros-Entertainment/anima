@@ -3,11 +3,16 @@
 #include "gpu_checks.hpp"
 #include "materials.hpp"
 #include "placements.hpp"
+#include "rejection.hpp"
 #include "resources.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 // The sun's shadow cascades against what ShadowCascades states. The same plate casts an edge 4 m from the camera and
@@ -15,8 +20,9 @@
 // holds it, so the far edge widens by the ratio of their texels. Moving the camera by less than a texel leaves an edge
 // where it lies on the ground, since cascades move by whole texels. A wall's long edge stays where its geometry puts it
 // across every seam between cascades and within their blends, and a caster toward the sun beyond every cascade's sphere
-// still shadows the ground in view. Last, the cost of one to four cascades over a field of 10,000 copies, reported for
-// comparison on one machine rather than checked.
+// still shadows the ground in view. A small caster, alone or placed, is drawn only by the cascades whose share of their
+// radius under the shadow caster threshold it reaches. Last, the cost of one to four cascades over a field of 10,000
+// copies, reported for comparison on one machine rather than checked.
 namespace cascades_test {
 using gpu_check::Image;
 // The camera's eye and target, 3 m above the ground looking along -Z, and a sun 31 degrees up in +X, so that shadows
@@ -295,6 +301,107 @@ inline int run(int argc, char **argv) {
         captures.discard({"overhead"});
     }
 
+    // The shadow caster threshold over a pebble 20 cm across that lies within the first two cascades' spheres, alone
+    // and as 16 placed copies around the same point, against the ground alone. At 0 both cascades draw it. Between its
+    // share of the first cascade's radius and its share of the second's, only the first draws it, in one call, and the
+    // second skips the placed copies' only cluster as it records. At 0.5 no cascade draws it, so the shadow passes draw
+    // what they draw for the ground, also after a rejected threshold. Back at 0 they draw as they first did.
+    {
+        constexpr std::string_view invalid = "Shadow caster threshold must be finite, at least 0 and below 1";
+        constexpr anima::Vec3 spot{0, .1F, -6};
+        const auto pebble = anima::Mesh::compile(*environment_test::box_fixture({.1F, .1F, .1F}));
+        require(pebble->draws().size() == 1, "The pebble compiled to more than one draw");
+        const std::uint64_t pebble_indices = pebble->draws()[0].index_count;
+        // Half the diagonal of @p bounds, as the threshold measures a caster.
+        const auto radius_of = [](const anima::RenderBounds &bounds) {
+            return double(anima::length(bounds.maximum - bounds.minimum)) / 2;
+        };
+        // Whether @p bounds lie within @p cascade's sphere, so that the cascade draws them at threshold 0.
+        const auto within = [&](const anima::RenderBounds &bounds, const anima::ShadowCascade &cascade) {
+            return double(anima::length((bounds.minimum + bounds.maximum) * .5F - cascade.center)) + radius_of(bounds) <
+                   cascade.radius;
+        };
+        auto bare = std::make_shared<anima::Scene>();
+        (void)bare->add(ground);
+        auto alone = std::make_shared<anima::Scene>();
+        (void)alone->add(ground);
+        const auto stone = alone->add(pebble);
+        auto world = anima::identity();
+        anima::set_translation(world, spot);
+        alone->set_pose(stone, pebble->rest_pose(), world);
+        // Copies 30 cm apart on a 4 by 4 grid around the spot, which form one cluster.
+        std::vector<anima::Mat4> spots;
+        for (int i = 0; i < 16; ++i) {
+            auto placement = anima::identity();
+            anima::set_translation(placement,
+                                   spot + anima::Vec3{(float(i % 4) - 1.5F) * .3F, 0, (float(i / 4) - 1.5F) * .3F});
+            spots.push_back(placement);
+        }
+        auto placed = std::make_shared<anima::Scene>();
+        (void)placed->add(ground);
+        const auto copies = placed->add(pebble);
+        placed->set_placements(copies, anima::MeshPlacements::create(pebble, spots));
+        const auto &first = cascades[0], &second = cascades[1];
+        for (const auto *bounds :
+             {&alone->instance(stone).primitive_bounds[0], &placed->instance(copies).primitive_bounds[0]})
+            require(within(*bounds, first) && within(*bounds, second),
+                    "A pebble lies outside the first two cascades' spheres");
+        // The threshold measures the placed copies by the mesh's rest bounds, since neither the object nor the
+        // placements scale them.
+        const auto stone_radius = radius_of(alone->instance(stone).primitive_bounds[0]),
+                   copy_radius = radius_of(pebble->rest_bounds());
+        const auto share = float(stone_radius / std::sqrt(double(first.radius) * second.radius));
+        for (const auto radius : {stone_radius, copy_radius})
+            require(double(share) * first.radius < radius && radius < double(share) * second.radius &&
+                        radius < .5 * first.radius,
+                    "The pebble's radius does not fall between the cascades' shares of their radii");
+
+        renderer.set_environment(lighting());
+        renderer.set_view(view());
+        struct Cast {
+            std::uint64_t calls{}, indices{};
+            bool operator==(const Cast &) const = default;
+        };
+        const auto cast = [&](const std::shared_ptr<anima::Scene> &scene, float threshold) {
+            renderer.set_scenes({scene});
+            renderer.set_shadow_caster_threshold(threshold);
+            present();
+            const auto stats = renderer.resource_stats();
+            return Cast{stats.shadow_draw_calls, stats.shadow_submitted_indices};
+        };
+        const auto describe = [](const Cast &value) {
+            return std::to_string(value.calls) + " calls of " + std::to_string(value.indices) + " indices";
+        };
+        const auto expect = [](bool value, const std::string &message) { require(value, message.c_str()); };
+        const auto bare_cast = cast(bare, 0);
+        for (const auto &[scene, drawn, name] : {std::tuple{alone, std::uint64_t{1}, "pebble"},
+                                                 std::tuple{placed, std::uint64_t{spots.size()}, "placed pebbles"}}) {
+            const auto all = cast(scene, 0);
+            expect(all.calls >= bare_cast.calls + 2,
+                   std::string("The first two cascades did not both draw the ") + name + " at threshold 0");
+            const auto between = cast(scene, share);
+            const Cast first_only{bare_cast.calls + 1, bare_cast.indices + drawn * pebble_indices};
+            expect(between == first_only, std::string("Between the cascades' shares, the ") + name + " cast " +
+                                              describe(between) + " where the first cascade alone casts " +
+                                              describe(first_only));
+            const auto none = cast(scene, .5F);
+            expect(none == bare_cast, std::string("At 0.5, the ") + name + " scene cast " + describe(none) +
+                                          " where the ground alone casts " + describe(bare_cast));
+            for (const auto rejected :
+                 {-.01F, 1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
+                rejection::rejects<std::invalid_argument>([&] { renderer.set_shadow_caster_threshold(rejected); },
+                                                          invalid);
+            present();
+            const auto kept = renderer.resource_stats();
+            require(Cast{kept.shadow_draw_calls, kept.shadow_submitted_indices} == bare_cast,
+                    "A rejected shadow caster threshold replaced the threshold of 0.5");
+            const auto again = cast(scene, 0);
+            expect(again == all, std::string("Back at threshold 0, the ") + name + " scene cast " + describe(again) +
+                                     " where it first cast " + describe(all));
+        }
+        std::cout << "CASCADES {\"caster_share\":" << share << ",\"pebble_radius_m\":" << stone_radius << "}\n";
+    }
+
     // The cost of each count of cascades over 10,000 copies, as medians of 60 frames after 10 more.
     const auto copies = placements_test::field(100);
     const auto shape = placements_test::pyramid();
@@ -337,7 +444,8 @@ inline int run(int argc, char **argv) {
     require(!stats.validation_errors && !stats.validation_warnings, "Cascade validation failed");
     std::cout
         << "PASS shadow cascades: edges span their cascades' stated texels near and far, stay put under sub-texel "
-           "camera motion and across seams; validation_warnings=0 validation_errors=0\n";
+           "camera motion and across seams, and small casters keep out of the cascades whose threshold they miss; "
+           "validation_warnings=0 validation_errors=0\n";
     return 0;
 }
 } // namespace cascades_test
