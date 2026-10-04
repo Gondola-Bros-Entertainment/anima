@@ -14,14 +14,14 @@ struct Health {
     int value;
 };
 struct OwnedData {
-    GameObject owner;
+    ComponentOwner owner;
     double speed;
 };
 struct Driver {
     GameObject object;
     double elapsed{}, simulated{};
     unsigned frames{}, fixed{}, late{};
-    explicit Driver(GameObject owner) : object(owner) {}
+    explicit Driver(ComponentOwner owner) : object(owner.object) {}
     void on_update(double seconds) {
         elapsed += seconds;
         ++frames;
@@ -44,7 +44,8 @@ struct SelfRemoving {
     GameObject object;
     int *destroyed;
     bool *finished;
-    SelfRemoving(GameObject owner, int &count, bool &done) : object(owner), destroyed(&count), finished(&done) {}
+    SelfRemoving(ComponentOwner owner, int &count, bool &done)
+        : object(owner.object), destroyed(&count), finished(&done) {}
     ~SelfRemoving() { ++*destroyed; }
     void remove() {
         object.remove_component<SelfRemoving>();
@@ -54,13 +55,13 @@ struct SelfRemoving {
     void on_update(double) { remove(); }
 };
 struct Throwing {
-    explicit Throwing(GameObject) { throw std::runtime_error("Constructor failure"); }
+    explicit Throwing(ComponentOwner) { throw std::runtime_error("Constructor failure"); }
 };
 struct Recursive {
-    explicit Recursive(GameObject owner) { (void)owner.add_component<Recursive>(); }
+    explicit Recursive(ComponentOwner owner) { (void)owner.object.add_component<Recursive>(); }
 };
 struct DestroyingConstructor {
-    explicit DestroyingConstructor(GameObject owner) { owner.destroy(); }
+    explicit DestroyingConstructor(ComponentOwner owner) { owner.object.destroy(); }
 };
 struct GrowingConstructor {
     explicit GrowingConstructor(Scene &scene) {
@@ -79,7 +80,7 @@ inline void run(const std::shared_ptr<const Asset> &source, const std::shared_pt
     check(renderer->mesh() == mesh && scene.instances().size() == 1 && object.component_types().size() == 3,
           "Native mesh component does not use the same component registry");
     auto owned = object.add_component<OwnedData>(2.5);
-    check(owned->owner.id() == object.id() && owned->speed == 2.5,
+    check(owned->owner.object == object && owned->speed == 2.5,
           "Aggregate component did not receive its owner and data");
     renderer.set_enabled(false);
     check(!scene.instance(object.id()).visible, "Disabling a renderer component left it visible");

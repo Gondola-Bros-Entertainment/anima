@@ -150,7 +150,8 @@ inline void run() {
                                    "Animation parameter has another type: pace");
     rejects<std::out_of_range>([&] { animator->play("sky"); }, "Unknown animation state: sky");
     rejects<std::invalid_argument>([&] { (void)animator->update(-1); }, "Invalid StateMachineAnimator time step");
-    rejects<std::invalid_argument>([&] { (void)StateMachineAnimator(scene.create("other", mesh), nullptr); },
-                                   "StateMachineAnimator requires a state machine");
+    rejects<std::invalid_argument>(
+        [&] { (void)StateMachineAnimator(ComponentOwner{scene.create("other", mesh)}, nullptr); },
+        "StateMachineAnimator requires a state machine");
 }
 } // namespace state_machine_consumer

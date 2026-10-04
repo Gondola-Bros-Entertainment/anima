@@ -658,8 +658,8 @@ AnimationStateMachine AnimationStateMachine::deserialize(std::shared_ptr<const A
     return AnimationStateMachine(std::move(source), clips, std::move(decoded));
 }
 
-StateMachineAnimator::StateMachineAnimator(GameObject object, std::shared_ptr<const AnimationStateMachine> machine)
-    : object_(std::move(object)), mesh_(object_.renderer().mesh()), machine_(std::move(machine)) {
+StateMachineAnimator::StateMachineAnimator(ComponentOwner owner, std::shared_ptr<const AnimationStateMachine> machine)
+    : object_(std::move(owner.object)), mesh_(object_.renderer().mesh()), machine_(std::move(machine)) {
     if (!machine_)
         throw std::invalid_argument("StateMachineAnimator requires a state machine");
     if (!mesh_->accepts_animation_source(*machine_->source()))

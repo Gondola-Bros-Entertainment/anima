@@ -18,7 +18,7 @@ struct Counts {
 struct Probe {
     GameObject owner;
     Counts *counts;
-    Probe(GameObject object, Counts &value) : owner(object), counts(&value) {}
+    Probe(ComponentOwner attached, Counts &value) : owner(attached.object), counts(&value) {}
     ~Probe() { ++counts->destroyed; }
     void on_enable() noexcept { ++counts->enables; }
     void on_disable() noexcept {

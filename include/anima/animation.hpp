@@ -84,12 +84,12 @@ class Playback {
 /// `std::logic_error`.
 class Animator {
   public:
-    /// Binds @p source to @p object's mesh and publishes the rest pose. Throws
+    /// Binds @p source to the mesh of @p owner's object and publishes the rest pose. Throws
     /// `std::invalid_argument` for a null source or one whose node names, parents or rest pose
-    /// (within `1e-5`) differ from the mesh's; fails as GameObject::renderer does when @p object
+    /// (within `1e-5`) differ from the mesh's; fails as GameObject::renderer does when the object
     /// has no mesh. The Animator holds @p source, and with it the images of its textures, until it
     /// is destroyed; TexelRetention describes how to let them go.
-    Animator(GameObject object, std::shared_ptr<const Asset> source);
+    Animator(ComponentOwner owner, std::shared_ptr<const Asset> source);
     /// Selects @p clip with no events and plays it; see select().
     void play(std::string_view clip, bool loop = true);
     /// Selects the source clip that @p clip names, publishes its first pose and plays when @p play

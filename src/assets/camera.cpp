@@ -126,7 +126,7 @@ void add_camera_component_codecs(ComponentCodecs &codecs) {
             if (!j.at("camera").is_string())
                 throw std::invalid_argument("Camera view requires an object key string");
             const auto camera = references.resolve(ObjectKey::parse(j.at("camera").get<std::string>()));
-            object.add_component<CameraView>()->camera = camera;
+            object.add_component<CameraView>(camera);
         },
         [](CameraView &view, ObjectLinks &links) { links.add(view.camera); });
     codecs = std::move(pending);

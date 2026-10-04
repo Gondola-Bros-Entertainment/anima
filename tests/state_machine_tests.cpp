@@ -1108,15 +1108,15 @@ TEST_CASE("The animator rejects invalid bindings, parameters, states and steps")
     Actor actor(states("run"));
     auto &animator = actor.animator;
     auto spare = actor.scene.create("spare", actor.object.renderer().mesh());
-    CHECK_THROWS_WITH_AS(StateMachineAnimator(spare, nullptr), "StateMachineAnimator requires a state machine",
-                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(StateMachineAnimator(ComponentOwner{spare}, nullptr),
+                         "StateMachineAnimator requires a state machine", std::invalid_argument);
     auto other = std::make_shared<Asset>(*actor.asset);
     other->nodes[0].rest.translation = {0, 1, 0};
     auto moved = actor.scene.create("moved", Mesh::compile(*other));
-    CHECK_THROWS_WITH_AS(StateMachineAnimator(moved, actor.machine),
+    CHECK_THROWS_WITH_AS(StateMachineAnimator(ComponentOwner{moved}, actor.machine),
                          "StateMachineAnimator source does not match the object's mesh hierarchy and bind",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(StateMachineAnimator(actor.scene.create("bare"), actor.machine),
+    CHECK_THROWS_WITH_AS(StateMachineAnimator(ComponentOwner{actor.scene.create("bare")}, actor.machine),
                          "GameObject has no MeshRenderer", std::logic_error);
 
     CHECK_THROWS_WITH_AS(animator->set_float("pace", 1), "Unknown animation parameter: pace", std::out_of_range);

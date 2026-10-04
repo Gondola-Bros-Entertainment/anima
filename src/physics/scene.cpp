@@ -89,8 +89,8 @@ Collider collider(const Json &j, bool child) {
     return c;
 }
 } // namespace
-RigidBody::RigidBody(GameObject object, World &world, BodySettings settings) : settings_(std::move(settings)) {
-    settings_.pose = rigid_pose(object, settings_.motion);
+RigidBody::RigidBody(ComponentOwner owner, World &world, BodySettings settings) : settings_(std::move(settings)) {
+    settings_.pose = rigid_pose(owner.object, settings_.motion);
     body_ = world.create(settings_);
 }
 RigidBody::~RigidBody() { body_.remove(); }

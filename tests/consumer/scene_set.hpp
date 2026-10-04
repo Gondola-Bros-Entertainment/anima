@@ -19,8 +19,8 @@ struct Probe {
     GameObject owner, other;
     Counts *counts;
     SceneSet *set;
-    Probe(GameObject object, Counts &values, SceneSet &collection, GameObject peer = {})
-        : owner(object), other(peer), counts(&values), set(&collection) {}
+    Probe(ComponentOwner attached, Counts &values, SceneSet &collection, GameObject peer = {})
+        : owner(attached.object), other(peer), counts(&values), set(&collection) {}
     ~Probe() { ++counts->destroyed; }
     void on_enable() noexcept { ++counts->enabled; }
     void on_disable() noexcept {
@@ -43,11 +43,11 @@ struct Probe {
     }
 };
 struct Construct {
-    Construct(GameObject object, SceneSet &set) {
+    Construct(ComponentOwner owner, SceneSet &set) {
         rejects<std::logic_error>([&] { set.unload(set.active()); }, "A member scene is running callbacks");
         rejects<std::logic_error>([&] { set.update(0); }, "A member scene is running callbacks");
         rejects<std::logic_error>([&] { set.active()->synchronize_lifecycle(); }, "Component updates cannot be nested");
-        object.set_name("constructed");
+        owner.object.set_name("constructed");
     }
 };
 struct PhaseCounts {
@@ -84,8 +84,8 @@ struct PinnedCleanup {
     GameObject owner;
     SceneSet *set;
     PhaseCounts *counts;
-    PinnedCleanup(GameObject object, SceneSet &scenes, PhaseCounts &values)
-        : owner(object), set(&scenes), counts(&values) {}
+    PinnedCleanup(ComponentOwner attached, SceneSet &scenes, PhaseCounts &values)
+        : owner(attached.object), set(&scenes), counts(&values) {}
     void on_update(double) { owner.remove_component<PinnedCleanup>(); }
     ~PinnedCleanup() {
         // A destructor cannot propagate an exception, so it counts the rejection that has the expected message.
