@@ -511,6 +511,41 @@ TEST_CASE("An Animator plays a clip of zero duration as its pose") {
     CHECK(root_x() == Near{3, tolerance});
 }
 
+TEST_CASE("An Animator scales each step by its speed") {
+    constexpr auto invalid_speed = "Animator speed must be finite and nonnegative";
+    const auto source = std::make_shared<const Asset>(fixture());
+    Scene scene;
+    const auto object = scene.create("body", Mesh::compile(*source));
+    Animator animator(object, source);
+    CHECK(animator.speed() == 1);
+    const ClipMetadata clip{"test", false, {{.45, "marker"}}, {}};
+    // Steps of .125 cross the event on the fourth at speed 1, and on the second at speed 2.
+    animator.select(clip);
+    for (int step = 0; step < 3; ++step)
+        CHECK(animator.update(.125).empty());
+    CHECK(animator.update(.125).size() == 1);
+    animator.set_speed(2);
+    animator.select(clip);
+    animator.on_update(.125);
+    CHECK(animator.events().empty());
+    animator.on_update(.125);
+    CHECK(animator.events().size() == 1);
+    CHECK(animator.playback().time() == Near{.5, tolerance});
+    // Speed 0 holds the pose without pausing.
+    animator.set_speed(0);
+    CHECK(animator.update(1).empty());
+    CHECK(animator.playback().playing());
+    CHECK(animator.playback().time() == Near{.5, tolerance});
+    CHECK_THROWS_WITH_AS(animator.set_speed(std::numeric_limits<double>::quiet_NaN()), invalid_speed,
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator.set_speed(-1), invalid_speed, std::invalid_argument);
+    CHECK(animator.speed() == 0);
+    animator.set_speed(1e300);
+    CHECK_THROWS_WITH_AS(animator.update(1e10), "Animator time step times its speed is not finite",
+                         std::invalid_argument);
+    CHECK(animator.playback().time() == Near{.5, tolerance});
+}
+
 TEST_CASE("A fitted model binds to the body's joints by name") {
     const auto asset = fixture();
     CHECK(compatible_skin(asset, asset).size() == 2);

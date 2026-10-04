@@ -24,7 +24,8 @@ struct ClipMetadata {
     std::vector<ClipEvent> events;
     /// Optional authored travel speed of an in-place travel clip, in asset units per second;
     /// positive and finite when set. Anima validates but does not apply it: to match actual
-    /// travel without editing keys, scale playback by `actual_speed / reference_speed`.
+    /// travel without editing keys, scale playback by `actual_speed / reference_speed`, with
+    /// Animator::set_speed or, in a state machine, AnimationStateMachine::State::speed_parameter.
     std::optional<double> reference_speed = {};
 };
 /// Playback clock for one clip: time, looping, pausing and event crossing, without posing.
@@ -107,11 +108,21 @@ class Animator {
     void restart();
     /// Seeks without events and publishes the pose; see Playback::seek.
     void seek(double seconds);
-    /// Advances playback by @p seconds, publishes the new pose and returns the events crossed.
+    /// Sets the playback rate, a multiplier of each update() step: 1 (the default) plays in real
+    /// time, 2 twice as fast, and 0 holds the pose. It scales update() only, not seek(), and
+    /// select(), play() and the other controls keep it.
+    /// Throws `std::invalid_argument` with "Animator speed must be finite and nonnegative" unless
+    /// @p multiplier is finite and at least 0, leaving the rate unchanged.
+    void set_speed(double multiplier);
+    /// The playback rate that set_speed() last set, 1 by default.
+    [[nodiscard]] double speed() const noexcept { return speed_; }
+    /// Advances playback by @p seconds times speed(), publishes the new pose and returns the
+    /// events crossed.
     ///
-    /// Returns nothing in the bind pose or while paused. Throws `std::invalid_argument` for a
-    /// negative or nonfinite step, and `std::logic_error` once the mesh was replaced, even while
-    /// paused.
+    /// Returns nothing in the bind pose or while paused. Throws `std::invalid_argument` with
+    /// "Invalid Animator time step" for a negative or nonfinite @p seconds, with "Animator time step
+    /// times its speed is not finite" when the scaled step overflows, and as Playback::advance
+    /// does; throws `std::logic_error` once the mesh was replaced, even while paused.
     [[nodiscard]] std::vector<ClipEvent> update(double seconds);
     /// Component hook: runs update() and keeps its events for events().
     void on_update(double seconds) { events_ = update(seconds); }
@@ -129,6 +140,7 @@ class Animator {
     Playback playback_;
     Pose pose_;
     std::vector<ClipEvent> events_;
+    double speed_ = 1;
     bool bind_ = true;
 };
 } // namespace anima
