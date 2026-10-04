@@ -610,7 +610,7 @@ TEST_CASE("An attachment follower checks its roles, bindings and owner, and dest
     CHECK_FALSE(spare.valid());
     CHECK(scene.size() == 3);
     // A follower outlives its owner: it then fails to sync, and its destruction changes nothing.
-    auto standalone = std::make_unique<AttachmentFollower>(owner, set);
+    auto standalone = std::make_unique<AttachmentFollower>(ComponentOwner{owner}, set);
     CHECK(scene.size() == 5);
     owner.destroy();
     CHECK(scene.size() == 2);
