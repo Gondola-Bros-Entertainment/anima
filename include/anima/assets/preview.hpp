@@ -67,7 +67,7 @@ class AssetPreview {
     /// Selects the manifest clip named @p clip with its manifest metadata, playing it from the
     /// start when @p play is true. Throws `std::out_of_range` for a clip the manifest does not
     /// declare.
-    void select(const std::string &clip, bool play = true);
+    void select(std::string_view clip, bool play = true);
     /// Shows the rest pose and pauses.
     void bind_pose();
     /// Resumes the clip when paused or showing the bind pose, otherwise pauses it. Does nothing

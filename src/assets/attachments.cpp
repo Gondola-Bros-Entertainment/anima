@@ -127,7 +127,7 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
     const auto &rest_joints = anima::detail::json_object(adapter, "rest_joints");
     for (const auto &[name, value] : rest_joints.items()) {
         const auto expected = matrix(value, false);
-        const auto &actual = rest.world.at(anima::unique_node(body, name));
+        const auto &actual = rest.world.at(anima::find_node(body, name));
         for (std::size_t i = 0; i < actual.size(); ++i)
             if (std::abs(actual[i] - expected[i]) > anima::mesh_limits::rest_pose_tolerance)
                 throw std::invalid_argument("Body attachment rest frame changed: " + name);
@@ -138,7 +138,7 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
         const auto bone = text(value.at("node"));
         if (name.empty() || !rest_joints.contains(bone))
             throw std::invalid_argument("Socket requires a named, checked rest joint");
-        result.emplace(name, AttachmentSocket{anima::unique_node(body, bone), matrix(value.at("local"), false)});
+        result.emplace(name, AttachmentSocket{anima::find_node(body, bone), matrix(value.at("local"), false)});
     }
     return result;
 }
@@ -198,10 +198,10 @@ void AttachmentLibrary::validate(const anima::Asset &source, const AttachmentVis
     // A model that lacks a node or clip its visual names, or has several, fails to load.
     try {
         if (!visual.primary_node.empty())
-            (void)anima::unique_node(source, visual.primary_node);
+            (void)anima::find_node(source, visual.primary_node);
         for (const auto &[marker, node] : visual.marker_nodes) {
             (void)marker;
-            (void)anima::unique_node(source, node);
+            (void)anima::find_node(source, node);
         }
         for (const auto &[track, clip] : visual.animation_tracks) {
             (void)track;
@@ -239,7 +239,7 @@ AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, 
     if (visual.primary_node.empty())
         return binding;
     using anima::operator*;
-    const auto primary = pose.world.at(anima::unique_node(asset, visual.primary_node)) * visual.primary_grip;
+    const auto primary = pose.world.at(anima::find_node(asset, visual.primary_node)) * visual.primary_grip;
     return {binding.node, binding.local * visual.primary_grip * anima::inverse(primary)};
 }
 anima::Mat4 attachment_marker(const AttachmentVisual &visual, const anima::Asset *asset, const anima::Pose *pose,
@@ -250,7 +250,7 @@ anima::Mat4 attachment_marker(const AttachmentVisual &visual, const anima::Asset
         return local;
     if (!asset || !pose)
         throw std::invalid_argument("Animated attachment marker requires the sampled prop pose");
-    return anima::operator*(pose->world.at(anima::unique_node(*asset, found->second)), local);
+    return anima::operator*(pose->world.at(anima::find_node(*asset, found->second)), local);
 }
 bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &library,
                                  const std::map<std::string, AttachmentSocket, std::less<>> &sockets,

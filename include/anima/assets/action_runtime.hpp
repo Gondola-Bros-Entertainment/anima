@@ -199,7 +199,7 @@ class ActionRuntime {
     /// during the call, as prefab.hpp describes for documents.
     ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document);
     /// Action @p id. Throws `std::out_of_range` for an unknown id.
-    const ActionDefinition &definition(std::string_view id) const;
+    [[nodiscard]] const ActionDefinition &definition(std::string_view id) const;
     /// Checks @p roles, which maps attachment roles to handling profiles, against the roles that
     /// action @p id requires: each must be present with a profile the action accepts for it.
     /// Roles the action does not require are ignored.
@@ -209,12 +209,12 @@ class ActionRuntime {
     /// `std::invalid_argument` naming the first unmet role in role-name order.
     void validate_roles(std::string_view id, const std::map<std::string, std::string, std::less<>> &roles) const;
     /// Every action, by id.
-    const Definitions &definitions() const;
+    [[nodiscard]] const Definitions &definitions() const;
     /// Playback rate for @p request: 1, or the action's duration divided by
     /// ActionRequest::duration when that is set. Throws `std::out_of_range` for an unknown action,
     /// and `std::invalid_argument` for a duration that is not positive and finite or that is set for
     /// a held action.
-    double scale(const ActionRequest &request) const;
+    [[nodiscard]] double scale(const ActionRequest &request) const;
     /// Evaluates @p request over @p base, a pose of the motion's model.
     ///
     /// The timeline is sampled at ActionRequest::elapsed and ActionRequest::released_at times
@@ -223,13 +223,13 @@ class ActionRuntime {
     /// MotionRuntime::blend and masked layers apply through MotionRuntime::evaluate. Prop track
     /// progress and contact weights are reported for the same progress. @p handling is the
     /// caller's choice among ActionDefinition::handling; throws also when it is not one of them.
-    ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
+    [[nodiscard]] ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
     /// Decodes a JSON weight curve: 2 to 32 [progress, weight] pairs, both in [0, 1], with
     /// progress strictly increasing from 0 to 1. A value that is not an array of at most 32 keys
     /// throws as an ActionWeight with too many keys does, a key that is not two numbers in [0, 1]
     /// throws before the curve is built, and the decoded keys are then checked by the ActionWeight
     /// constructor. May run concurrently on any thread; reads the C locale as the constructor does.
-    static ActionWeight weight(std::string_view document);
+    [[nodiscard]] static ActionWeight weight(std::string_view document);
 
   private:
     struct Impl;

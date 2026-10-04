@@ -31,7 +31,7 @@ struct FittedAsset {
     /// World-only pose of #render that copies each mapped joint's world matrix from @p body, a pose
     /// of the body model; other nodes keep their rest matrices. Throws `std::out_of_range` when
     /// @p body lacks a mapped joint.
-    Pose pose(const Pose &body) const;
+    [[nodiscard]] Pose pose(const Pose &body) const;
 };
 /// One catalog item that fits the library's body.
 struct FittedDefinition {
@@ -58,27 +58,29 @@ class FittedLibrary {
     FittedLibrary(std::shared_ptr<const Asset> body, const Manifest &manifest, std::string_view profile,
                   std::string_view document, TexelRetention texel_retention = TexelRetention::keep);
     /// Whether no item fits this body.
-    bool empty() const { return definitions_.empty(); }
+    [[nodiscard]] bool empty() const noexcept { return definitions_.empty(); }
     /// Number of items that fit this body.
-    std::size_t size() const { return definitions_.size(); }
+    [[nodiscard]] std::size_t size() const noexcept { return definitions_.size(); }
     /// Whether item @p id fits this body.
-    bool contains(std::string_view id) const { return definitions_.contains(id); }
+    [[nodiscard]] bool contains(std::string_view id) const { return definitions_.contains(id); }
     /// Whether the catalog lists item @p id for any body.
-    bool known(std::string_view id) const { return known_ids_.contains(id); }
+    [[nodiscard]] bool known(std::string_view id) const { return known_ids_.contains(id); }
     /// Forgets every item, as for an empty catalog; loaded models are unaffected.
     void clear() {
         definitions_.clear();
         known_ids_.clear();
     }
     /// Items that fit this body, by id.
-    const auto &definitions() const { return definitions_; }
+    [[nodiscard]] const std::map<std::string, FittedDefinition, std::less<>> &definitions() const noexcept {
+        return definitions_;
+    }
     /// Item @p id. Throws `std::out_of_range` unless it fits this body.
-    const FittedDefinition &definition(std::string_view id) const;
+    [[nodiscard]] const FittedDefinition &definition(std::string_view id) const;
     /// Loads item @p id, sharing one FittedAsset per model file while it is alive. Throws
     /// `std::out_of_range` unless the item fits this body, and as load_asset and FittedAsset do.
-    std::shared_ptr<const FittedAsset> load(std::string_view id) const;
+    [[nodiscard]] std::shared_ptr<const FittedAsset> load(std::string_view id) const;
     /// Meshes of loaded items that are still alive.
-    std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
+    [[nodiscard]] std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
 
   private:
     friend class FittedSet;
@@ -126,7 +128,7 @@ class FittedSet {
     /// Component hook: runs sync().
     void on_late_update(double) { sync(); }
     /// Active items.
-    const std::vector<Instance> &instances() const { return instances_; }
+    [[nodiscard]] const std::vector<Instance> &instances() const noexcept { return instances_; }
 
   private:
     Scene &scene() const;

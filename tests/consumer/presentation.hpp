@@ -487,7 +487,7 @@ inline void run() {
         check(scene.contains(bound) && scene.instances().size() == 3,
               "Repeated/foreign attachment operation lost objects");
         const auto before = scene.instances().size();
-        rejects<std::out_of_range>([&] { AttachmentSet::prepare(library, sockets, {{"unknown", "missing"}}); },
+        rejects<std::out_of_range>([&] { (void)AttachmentSet::prepare(library, sockets, {{"unknown", "missing"}}); },
                                    "Missing presentation reference: missing");
         check(scene.instances().size() == before, "Invalid preparation changed the live scene");
         const auto &visual = library.visual("instrument");
@@ -497,7 +497,7 @@ inline void run() {
         const auto tip0 = point(attachment_marker(visual, resource->source.get(), &rest_prop, "tip"), {});
         const auto tip1 = point(attachment_marker(visual, resource->source.get(), &end_prop, "tip"), {});
         check(std::abs(tip1.z - tip0.z - .25F) < 1e-5F, "Animated attachment marker did not move");
-        rejects<std::invalid_argument>([&] { sample_attachment_pose(*resource, visual, "missing", .5); },
+        rejects<std::invalid_argument>([&] { (void)sample_attachment_pose(*resource, visual, "missing", .5); },
                                        "Attachment visual lacks required track: missing");
         const auto binding =
             animated_attachment_binding(attachments.roles.at("probe").binding, visual, *resource->source, end_prop);
@@ -634,7 +634,7 @@ inline void run() {
         [&] { InteractionRuntime cycle(observed, interaction_document(edge + "," + reverse, observed_roles)); },
         "Cyclic interaction placement ownership");
     worlds.erase("pilot");
-    rejects<std::invalid_argument>([&] { interaction.sample(.5, {}, worlds); },
+    rejects<std::invalid_argument>([&] { (void)interaction.sample(.5, {}, worlds); },
                                    "Every interaction role needs a free placement");
     std::cout << "PASS standalone presentation: independent 7/13-joint actors, separate motion, two attachments, "
                  "capabilities, held/released actions, markers, contacts, coordinated actors and rejection gates\n";

@@ -52,7 +52,7 @@ struct AttachmentHandling {
     /// At most 4 support contacts, with distinct chains; empty for none.
     std::vector<AttachmentContact> support_contacts{};
     /// Layer clip for base clip @p clip: its override, else #layer.
-    std::string_view layer_for(std::string_view clip) const {
+    [[nodiscard]] std::string_view layer_for(std::string_view clip) const {
         const auto found = layer_overrides.find(clip);
         return found == layer_overrides.end() ? std::string_view(layer) : std::string_view(found->second);
     }
@@ -120,7 +120,8 @@ struct AttachmentSocket {
 /// `handling`; its visual must have every marker that its handling's contacts use. Every field is
 /// required. Frames are 16 column-major numbers. Layer clips and chains are checked against a
 /// MotionRuntime by validate_attachment_ownership, not here.
-AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory);
+[[nodiscard]] AttachmentCatalog decode_attachment_catalog(std::string_view document,
+                                                          const std::filesystem::path &directory);
 /// Decodes the body sockets of @p body, the model of @p manifest.
 ///
 /// The document has the integer `version` 1, checked before any other field; `skeleton` and
@@ -129,7 +130,7 @@ AttachmentCatalog decode_attachment_catalog(std::string_view document, const std
 /// names to `node`, one of the rest joints, and `local`, an affine frame relative to it. Frames are
 /// 16 column-major numbers. Another version throws "Unsupported attachment socket document
 /// version".
-std::map<std::string, AttachmentSocket, std::less<>>
+[[nodiscard]] std::map<std::string, AttachmentSocket, std::less<>>
 decode_attachment_sockets(std::string_view document, const Manifest &manifest, const Asset &body);
 /// A loaded prop model.
 struct AttachmentAsset {
@@ -150,21 +151,21 @@ class AttachmentLibrary {
     /// `std::invalid_argument` for an unknown @p texel_retention.
     explicit AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention = TexelRetention::keep);
     /// Item @p id. Throws `std::out_of_range` for an unknown id.
-    const AttachmentDefinition &item(std::string_view id) const;
+    [[nodiscard]] const AttachmentDefinition &item(std::string_view id) const;
     /// Visual @p id. Throws `std::out_of_range` for an unknown id.
-    const AttachmentVisual &visual(std::string_view id) const;
+    [[nodiscard]] const AttachmentVisual &visual(std::string_view id) const;
     /// Handling profile of item @p item_id, or the empty handling for an empty id. Throws
     /// `std::out_of_range` for an unknown id.
-    const AttachmentHandling &motion(std::string_view item_id) const;
+    [[nodiscard]] const AttachmentHandling &motion(std::string_view item_id) const;
     /// Loads the model of visual @p visual_id; loads of the same file share its Asset and Mesh
     /// while they are alive.
     ///
     /// Throws `std::out_of_range` for an unknown visual, `std::invalid_argument` for an animated
     /// model without AttachmentVisual::animation_tracks, and `std::runtime_error` when the model
     /// fails to load or does not have exactly one node or clip of each name that the visual uses.
-    std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id) const;
+    [[nodiscard]] std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id) const;
     /// Meshes of loaded models that are still alive.
-    std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
+    [[nodiscard]] std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
 
   private:
     static void validate(const Asset &source, const AttachmentVisual &visual);
@@ -181,25 +182,28 @@ class AttachmentLibrary {
 using AttachmentBinding = AttachmentSocket;
 /// Binding that puts @p visual's primary grip on @p socket. Throws anima::MathError when the grip
 /// cannot be inverted.
-AttachmentBinding bind_attachment(const AttachmentSocket &socket, const AttachmentVisual &visual);
+[[nodiscard]] AttachmentBinding bind_attachment(const AttachmentSocket &socket, const AttachmentVisual &visual);
 /// Prop model-to-world matrix, `actor * pose.world[binding.node] * binding.local`; with the
 /// default @p actor it is in the body's model space. Throws `std::out_of_range` for a node outside
 /// @p pose.
-Mat4 attachment_placement(const Pose &pose, const AttachmentBinding &binding, const Mat4 &actor = identity());
+[[nodiscard]] Mat4 attachment_placement(const Pose &pose, const AttachmentBinding &binding,
+                                        const Mat4 &actor = identity());
 /// Prop pose for semantic @p track at normalized @p progress in [0, 1]: its clip sampled at
 /// `progress * duration`. An empty track, or a track the visual lacks when @p required is false,
 /// gives the rest pose. Throws for invalid progress or a missing required track.
-Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual, std::string_view track = {},
-                            double progress = 0, bool required = true);
+[[nodiscard]] Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual,
+                                          std::string_view track = {}, double progress = 0, bool required = true);
 /// @p binding adjusted so that the grip as moved by AttachmentVisual::primary_node in @p pose,
 /// rather than the static grip, meets the socket. Returns @p binding unchanged when the visual has
 /// no primary node.
-AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, const AttachmentVisual &visual,
-                                              const Asset &asset, const Pose &pose);
+[[nodiscard]] AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding,
+                                                            const AttachmentVisual &visual, const Asset &asset,
+                                                            const Pose &pose);
 /// Marker @p name in prop model space. A marker listed in AttachmentVisual::marker_nodes follows
 /// its node in @p pose, so it needs @p asset and @p pose. Throws `std::out_of_range` for an unknown
 /// marker and `std::invalid_argument` for a missing pose.
-Mat4 attachment_marker(const AttachmentVisual &visual, const Asset *asset, const Pose *pose, std::string_view name);
+[[nodiscard]] Mat4 attachment_marker(const AttachmentVisual &visual, const Asset *asset, const Pose *pose,
+                                     std::string_view name);
 /// One attached item in a scene.
 struct AttachmentInstance {
     /// Scene instance, once added.
@@ -223,13 +227,13 @@ struct AttachmentSet {
     /// Instances by role.
     std::map<std::string, AttachmentInstance, std::less<>> roles;
     /// Whether the set holds exactly @p desired, a map from role to item id.
-    bool matches(const std::map<std::string, std::string, std::less<>> &desired) const;
+    [[nodiscard]] bool matches(const std::map<std::string, std::string, std::less<>> &desired) const;
     /// Loads the items of @p desired, a map from role to item id, and binds them to @p sockets,
     /// without touching any scene. There is no fixed limit on the number of roles. Throws for an
     /// empty role or item id, or an unknown item or socket, and as AttachmentLibrary::load does.
-    static AttachmentSet prepare(const AttachmentLibrary &library,
-                                 const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                                 const std::map<std::string, std::string, std::less<>> &desired);
+    [[nodiscard]] static AttachmentSet prepare(const AttachmentLibrary &library,
+                                               const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
+                                               const std::map<std::string, std::string, std::less<>> &desired);
     /// Adds every prepared item to @p scene as a root instance with an identity transform; place
     /// them with attachment_placement. On failure the instances already added are removed. Throws
     /// unless every role is prepared and not yet added.
@@ -259,13 +263,12 @@ struct AttachmentSet {
 /// @p source unchanged. Throws `std::invalid_argument` for an invalid weight or a collapsed contact
 /// frame (see affine_rotation), `std::out_of_range` for an unknown socket, and as
 /// MotionRuntime::evaluate and attachment_marker do.
-MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const Pose &source, std::string_view clip,
-                                           const AttachmentHandling &handling, const AttachmentVisual &visual,
-                                           const AttachmentBinding &primary,
-                                           const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                                           const Asset *prop_asset = nullptr, const Pose *prop_pose = nullptr,
-                                           std::string_view action = {},
-                                           const std::map<std::string, float, std::less<>> *weights = nullptr);
+[[nodiscard]] MotionEvaluation apply_attachment_contacts(
+    const MotionRuntime &runtime, const Pose &source, std::string_view clip, const AttachmentHandling &handling,
+    const AttachmentVisual &visual, const AttachmentBinding &primary,
+    const std::map<std::string, AttachmentSocket, std::less<>> &sockets, const Asset *prop_asset = nullptr,
+    const Pose *prop_pose = nullptr, std::string_view action = {},
+    const std::map<std::string, float, std::less<>> *weights = nullptr);
 /// Checks that the items of @p attachments can be held together; call it before adding a prepared
 /// set to a scene.
 ///

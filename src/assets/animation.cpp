@@ -120,16 +120,16 @@ const Animation &find_animation(const Asset &asset, std::string_view name) {
         throw std::out_of_range("Missing animation: " + std::string(name));
     return *result;
 }
-std::size_t unique_node(const Asset &asset, const std::string &name) {
+std::size_t find_node(const Asset &asset, std::string_view name) {
     auto result = asset.nodes.size();
     for (std::size_t i = 0; i < asset.nodes.size(); ++i)
         if (asset.nodes[i].name == name) {
             if (result != asset.nodes.size())
-                throw std::invalid_argument("Ambiguous node name: " + name);
+                throw std::invalid_argument("Ambiguous node name: " + std::string(name));
             result = i;
         }
     if (result == asset.nodes.size())
-        throw std::out_of_range("Missing node: " + name);
+        throw std::out_of_range("Missing node: " + std::string(name));
     return result;
 }
 } // namespace anima

@@ -273,12 +273,12 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
 TEST_CASE("Lookups report a missing name as std::out_of_range and an ambiguous one as std::invalid_argument") {
     const auto asset = fixture();
     CHECK_THROWS_WITH_AS(find_animation(asset, "missing"), "Missing animation: missing", std::out_of_range);
-    CHECK_THROWS_WITH_AS(unique_node(asset, "missing"), "Missing node: missing", std::out_of_range);
+    CHECK_THROWS_WITH_AS(find_node(asset, "missing"), "Missing node: missing", std::out_of_range);
     auto doubled = asset;
     doubled.animations.push_back(doubled.animations[0]);
     doubled.nodes[2].name = "hand";
     CHECK_THROWS_WITH_AS(find_animation(doubled, "test"), "Ambiguous animation name: test", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(unique_node(doubled, "hand"), "Ambiguous node name: hand", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(find_node(doubled, "hand"), "Ambiguous node name: hand", std::invalid_argument);
 }
 
 TEST_CASE("A joint scaled to zero collapses the part it skins") {
