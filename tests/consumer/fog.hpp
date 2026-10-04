@@ -4,10 +4,12 @@
 // repeating the shaders' closed form; sunlight scattered forward and backward through the Henyey-Greenstein phase
 // function; a blended quad composited over a fogged one as each is fogged at its own distance; uniform fog, with and
 // without sunlight, whose height leaves the same frame; the sky fogged at fog_sky_distance, so that a quad there meets
-// it without a seam that the unfogged sky shows, and the atmosphere's sky dimmed there by the fog; and animaFogged(),
-// which fogs a custom material as the standard material is fogged.
+// it without a seam that the unfogged sky shows, and the atmosphere's sky dimmed there by the fog; animaFogged(),
+// which fogs a custom material as the standard material is fogged; and the cap on the fog's light, which a fog color
+// above the largest half float meets on every path without sunlight.
 #include "blending.hpp"
 #include "custom_materials.hpp"
+#include <algorithm>
 #include <anima/environment.hpp>
 #include <array>
 #include <cmath>
@@ -55,7 +57,10 @@ inline double transmittance(const anima::EnvironmentSettings &e, const Point &to
     }
     return std::exp(-depth * std::hypot(path[0], path[1], path[2]) / steps);
 }
-// @p color at @p at, as the fog's documented transmittance and light show it from the eye.
+// The largest half float, at which the fog's light is capped in each channel.
+constexpr double maximum_half_float = 65504;
+// @p color at @p at, as the fog's documented transmittance and light, capped at the largest half float, show it from
+// the eye, times the exposure.
 inline Color fogged(const anima::Environment &e, const Point &at, const Color &color) {
     const Point path{at[0] - eye.x, at[1] - eye.y, at[2] - eye.z};
     const auto sun = anima::normalized(e.sun.direction);
@@ -70,7 +75,8 @@ inline Color fogged(const anima::Environment &e, const Point &at, const Color &c
     const auto kept = transmittance(e, at);
     Color result{};
     for (std::size_t c = 0; c < result.size(); ++c) {
-        result[c] = kept * color[c] + (1 - kept) * (fog[c] + scattering[c] * phase);
+        const auto light = std::min(fog[c] + scattering[c] * phase, maximum_half_float);
+        result[c] = double(e.exposure) * (kept * color[c] + (1 - kept) * light);
         require(result[c] < 1, "The fog check's expected color reaches display white, which would hide errors");
     }
     return result;
@@ -256,6 +262,20 @@ inline void check_sky(blending_test::Harness &harness) {
     harness.images.discard({"horizon", "horizon-unfogged", "sky-unfogged", "sky-fogged"});
 }
 
+// The color that fogged_probe() writes animaFogged() of.
+constexpr Color probe_color{.6, .4, .2};
+// A custom material whose fragment shader, custom_probe.frag, writes animaFogged() of probe_color.
+inline std::shared_ptr<const anima::CustomMaterial> fogged_probe() {
+    anima::CustomMaterialDefinition definition;
+    definition.name = "fogged probe";
+    definition.vertex_shader = custom_material_test::words(custom_material_test::surface_vertex);
+    definition.fragment_shader = custom_material_test::words(custom_material_test::probe_fragment);
+    definition.parameters = custom_material_test::parameters({{0, 0, 0, 0}});
+    constexpr std::uint32_t probe = 14; // The probe that custom_probe.frag fogs probe_color in.
+    std::memcpy(definition.parameters.data(), &probe, sizeof(probe));
+    return std::make_shared<const anima::CustomMaterial>(std::move(definition));
+}
+
 // A custom quad that writes animaFogged() of a color beside a standard unlit quad of that color, mirrored across the
 // view's axis below a sun in its vertical plane, so both lie as far from the eye, as high and at the same angle to
 // the sun: both show the documented fog.
@@ -264,27 +284,76 @@ inline void check_custom(blending_test::Harness &harness) {
     auto environment = height_fog();
     environment.sun = {{0, .3F, -1}, {1.2F, 1.1F, 1}};
     environment.fog_sun_scattering = {.3F, .25F, .2F};
-    const Color color{.6, .4, .2};
     const anima::Vec3 standard{-1.2F, .8F, -8}, custom{1.2F, .8F, -8};
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(color), standard, .4F, .4F));
-    anima::CustomMaterialDefinition definition;
-    definition.name = "fogged probe";
-    definition.vertex_shader = custom_material_test::words(custom_material_test::surface_vertex);
-    definition.fragment_shader = custom_material_test::words(custom_material_test::probe_fragment);
-    definition.parameters = custom_material_test::parameters({{0, 0, 0, 0}});
-    constexpr std::uint32_t fogged_probe = 14; // custom_probe.frag writes animaFogged() of this color.
-    std::memcpy(definition.parameters.data(), &fogged_probe, sizeof(fogged_probe));
-    (void)custom_material_test::add(*scene, custom_material_test::surface(custom, .4F, .4F),
-                                    std::make_shared<const anima::CustomMaterial>(std::move(definition)));
+    (void)scene->add(blending_test::facing(blending_test::opaque(probe_color), standard, .4F, .4F));
+    (void)custom_material_test::add(*scene, custom_material_test::surface(custom, .4F, .4F), fogged_probe());
     harness.render("custom", {scene}, view_projection, environment);
     const auto &image = harness.images["custom"];
     for (const auto &[center, what] :
          {std::pair{standard, "A standard unlit quad"}, std::pair{custom, "A custom quad through animaFogged()"}})
         harness.expect("custom", view_projection, center,
-                       fogged(environment, seen(view_projection, image, center, center.z), color),
+                       fogged(environment, seen(view_projection, image, center, center.z), probe_color),
                        std::string(what) + " in height fog lit by the sun");
     harness.images.discard({"custom"});
+}
+
+// Fog without sunlight whose color lies far above the largest half float in red and green and below it in blue draws
+// the frame that its color capped at that float in each channel draws: in uniform fog, through the pipelines compiled
+// without the height fog's code, and in height fog, on the plates, a custom quad through animaFogged() and a black sky
+// fogged at fog_sky_distance. An exposure of 1 / 65504 shows the cap as display white, so each pixel shows the
+// documented fog short of white, where the uncapped color would show white.
+inline void check_capped_light(blending_test::Harness &harness) {
+    const auto view_projection = view(harness.aspect());
+    auto scene = plate_scene();
+    const anima::Vec3 custom{1.2F, .8F, -8};
+    (void)custom_material_test::add(*scene, custom_material_test::surface(custom, .4F, .4F), fogged_probe());
+    auto environment = height_fog();
+    const auto height_falloff = environment.fog_falloff;
+    // A black sky, from an atmosphere that neither scatters nor absorbs over a black ground, under a sun behind the
+    // eye, so that no sun disc shows, fogged as a surface beyond the plates would be.
+    auto &atmosphere = environment.atmosphere;
+    atmosphere.enabled = true;
+    atmosphere.rayleigh_scattering = atmosphere.mie_scattering = atmosphere.mie_absorption =
+        atmosphere.ozone_absorption = atmosphere.ground_albedo = {0, 0, 0};
+    environment.sun = {{0, .4F, 1}, {1, 1, 1}};
+    constexpr float sky_distance = 25; // Beyond the farthest plate, 20 m ahead.
+    environment.fog_sky_distance = sky_distance;
+    environment.exposure = float(1 / maximum_half_float);
+    constexpr anima::Vec3 beyond{1e6F, 1e6F, 3e4F};
+    constexpr auto cap = float(maximum_half_float);
+    const anima::Vec3 capped{std::min(beyond.x, cap), std::min(beyond.y, cap), std::min(beyond.z, cap)};
+    // A point far ahead, on the horizon right of every quad.
+    const anima::Vec3 on_sky{8, eye.y, -250};
+    for (const auto &[falloff, kind] : {std::pair{0.F, "uniform"}, std::pair{height_falloff, "height"}}) {
+        const std::string what = std::string(kind) + " fog", name = std::string("capped-") + kind,
+                          at_cap = name + "-at-cap";
+        environment.fog_falloff = falloff;
+        environment.fog_color = beyond;
+        harness.render(name, {scene}, view_projection, environment);
+        const auto &image = harness.images[name];
+        const auto expect = [&](anima::Vec3 world, const Point &at, const Color &color, const std::string &which) {
+            require((1 - transmittance(environment, at)) * beyond.x * environment.exposure > 1,
+                    which + " in " + what + " is fogged too little for the uncapped fog's light to show white");
+            harness.expect(name, view_projection, world, fogged(environment, at, color),
+                           which + " in " + what + " of a color above the largest half float");
+        };
+        for (const auto &plate : plates())
+            expect(plate.center, seen(view_projection, image, plate.center, plate.center.z), plate.color, "A quad");
+        expect(custom, seen(view_projection, image, custom, custom.z), probe_color,
+               "A custom quad through animaFogged()");
+        const auto beside =
+            ray(anima::inverse(view_projection), blending_test::pixel_of(view_projection, on_sky, image), image);
+        expect(on_sky,
+               {eye.x + beside[0] * sky_distance, eye.y + beside[1] * sky_distance, eye.z + beside[2] * sky_distance},
+               blending_test::black, "The black sky");
+        environment.fog_color = capped;
+        harness.render(at_cap, {scene}, view_projection, environment);
+        const auto mismatch =
+            "A fog color above the largest half float drew another frame in " + what + " than the color capped at it";
+        harness.images.require_same(name, at_cap, mismatch);
+        harness.images.discard({name, at_cap});
+    }
 }
 
 inline int run(int argc, char **argv) {
@@ -295,11 +364,13 @@ inline int run(int argc, char **argv) {
     check_uniform(harness);
     check_sky(harness);
     check_custom(harness);
+    check_capped_light(harness);
     harness.finish();
     std::cout << "PASS fog: height fog and sunlight scattered forward and backward match the documented density "
                  "integrated along each ray, for opaque and blended quads and through animaFogged(), uniform fog lit "
-                 "by the sun ignores its height, and the sky fogged at its distance meets a quad there without the "
-                 "seam that the unfogged sky shows\n";
+                 "by the sun ignores its height, the sky fogged at its distance meets a quad there without the "
+                 "seam that the unfogged sky shows, and a fog color above the largest half float lights the fog as "
+                 "that color capped at it does\n";
     return 0;
 }
 } // namespace fog_test

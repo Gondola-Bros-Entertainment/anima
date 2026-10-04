@@ -5,6 +5,10 @@
 #ifndef ANIMA_FOG_GLSL
 #define ANIMA_FOG_GLSL
 
+// The largest finite half float, (2 - 2^-10) * 2^15, and so the largest finite value that a channel of the scene's
+// 16-bit float color target holds.
+const float animaMaximumHalfFloat = 65504.0;
+
 // The share of light that reaches @p eye from @p position through fog of positive density: exp(-t), where t
 // integrates the density along the straight path between them, in closed form.
 float animaFogTransmittance(vec3 eye, vec3 position, vec4 fog, vec4 shape) {
@@ -27,13 +31,13 @@ float animaFogTransmittance(vec3 eye, vec3 position, vec4 fog, vec4 shape) {
 }
 
 // The light that the fog scatters toward @p eye along the path to @p position: the ambient fog color, plus sunlight
-// toward unit @p sunDirection through a Henyey-Greenstein phase function, capped at the largest half float, which is
-// all that the scene target holds.
+// toward unit @p sunDirection through a Henyey-Greenstein phase function, each channel capped at
+// animaMaximumHalfFloat, with or without sunlight.
 vec3 animaFogLight(vec3 eye, vec3 position, vec4 fog, vec4 shape, vec4 sun, vec3 sunDirection) {
     vec3 path = position - eye;
     float length2 = dot(path, path);
     if (all(equal(sun.rgb, vec3(0.0))) || length2 <= 0.0)
-        return fog.rgb;
+        return min(fog.rgb, vec3(animaMaximumHalfFloat));
     const float pi = 3.14159265359;
     float g = shape.w, a = abs(g);
     // 1 + g^2 - 2 g c = (1 - |g|)^2 + |g| |u - sign(g) s|^2 for unit u and s with cosine c: a sum of nonnegative
@@ -41,7 +45,7 @@ vec3 animaFogLight(vec3 eye, vec3 position, vec4 fog, vec4 shape, vec4 sun, vec3
     vec3 offset = path * inversesqrt(length2) - (g < 0.0 ? -sunDirection : sunDirection);
     float base = (1.0 - a) * (1.0 - a) + a * dot(offset, offset);
     float phase = (1.0 - a) * (1.0 + a) / (4.0 * pi * base * sqrt(base));
-    return min(fog.rgb + sun.rgb * phase, vec3(65504.0));
+    return min(fog.rgb + sun.rgb * phase, vec3(animaMaximumHalfFloat));
 }
 
 // @p color at @p position as seen from @p eye through fog of positive density.
