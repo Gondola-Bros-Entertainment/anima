@@ -6,8 +6,8 @@
 #include <set>
 
 /// @file
-/// Attachments: props held at body sockets, with their catalogs, shared loading, placement,
-/// support contacts and ownership checks.
+/// Attachments: props held at body sockets, with their catalogs, shared loading, placement, a
+/// follower that keeps them on their sockets, support contacts and ownership checks.
 ///
 /// Part of the `anima::assets` target. Animation ownership (handling), item identity and geometry
 /// (visuals) are independent records. Frames are column-major matrices; distances are in meters.
@@ -252,8 +252,9 @@ struct AttachmentSet {
     void add(Scene &scene);
     /// Adds every prepared item as a child of @p owner, starting at its socket in the owner's
     /// current pose and with the owner's visibility. The children inherit the owner's transform and
-    /// lifetime but do not follow later poses. Throws as add(Scene &) does, and when @p owner has
-    /// no mesh.
+    /// lifetime, but not later poses or visibility; AttachmentFollower keeps them on their sockets.
+    /// Throws as add(Scene &) does, when @p owner has no mesh, and `std::out_of_range` for a
+    /// binding node outside the owner's pose, before adding anything.
     void add(GameObject owner);
     /// Removes the set's instances that still exist from @p scene and clears every handle. Throws,
     /// before removing anything, when an instance belongs to another scene.
@@ -264,6 +265,68 @@ struct AttachmentSet {
 
   private:
     void add_to(Scene &scene, const GameObject *owner);
+};
+/// Owns the items of an AttachmentSet held by one body object, and keeps them on their sockets as
+/// the body's pose changes.
+///
+/// The items are children of the body. Construction and sync() need the body and its scene;
+/// destruction is safe after either expires. Attached as a component, on_late_update syncs after
+/// every on_update hook of the frame, such as an Animator's. Use it from the thread that uses its
+/// scene.
+class AttachmentFollower {
+  public:
+    /// Adds @p attachments as children of @p owner, as AttachmentSet::add(GameObject) does, and
+    /// keeps the owner's mesh, which sync() requires. Each role starts with its
+    /// AttachmentInstance::binding. Throws as AttachmentSet::add(GameObject) does, including
+    /// `std::out_of_range` ("Expired GameObject handle") for an expired @p owner; on failure no
+    /// item stays in the scene.
+    AttachmentFollower(GameObject owner, AttachmentSet attachments);
+    /// Destroys the item objects that still exist, with their descendants, wherever they have been
+    /// moved in the hierarchy.
+    ~AttachmentFollower();
+    AttachmentFollower(const AttachmentFollower &) = delete;
+    AttachmentFollower &operator=(const AttachmentFollower &) = delete;
+    /// The set as added. Its bindings are the ones each role started with, whatever set_binding()
+    /// has chosen since.
+    const AttachmentSet &attachments() const noexcept { return attachments_; }
+    /// Object that renders the item of @p role; the handle is invalid once that object is
+    /// destroyed. Throws `std::out_of_range` ("Unknown attachment role: " followed by @p role) for a
+    /// role the set does not hold.
+    GameObject object(std::string_view role) const;
+    /// Places the item of @p role with @p binding from the next sync() on, for example with the
+    /// result of animated_attachment_binding for the item's current prop pose, which the caller
+    /// sets on object(). Pass the role's binding from attachments() to return to it. Throws
+    /// `std::out_of_range` for an unknown role, as object() does, or for a node outside the owner's
+    /// mesh ("Attachment binding node is outside the owner mesh"), and `std::invalid_argument`
+    /// ("Attachment binding frame must be finite and affine") for a frame that is not a valid scene
+    /// matrix (see scene.hpp); on failure nothing changes.
+    void set_binding(std::string_view role, const AttachmentBinding &binding);
+    /// While the owner's renderer is visible, sets each item's local matrix to
+    /// attachment_placement of the owner's current pose, its mesh's rest pose when none was set,
+    /// and the role's binding. Each item's renderer takes the owner's visibility either way, and
+    /// items whose objects no longer exist are skipped. Call it after publishing the owner's final
+    /// pose and visibility; it does not drive animation.
+    ///
+    /// Throws `std::out_of_range` ("Expired GameObject handle") when the owner no longer exists,
+    /// `std::invalid_argument` ("Attachment follower requires its original owner mesh") when the
+    /// owner's mesh was replaced or removed, and `std::logic_error` ("GameObject has no
+    /// MeshRenderer") when an item's renderer was removed, each before changing anything; and as
+    /// GameObject::set_local_matrix does for a placement that overflows the float range.
+    void sync();
+    /// Component hook: runs sync().
+    void on_late_update(double) { sync(); }
+
+  private:
+    // An item's object and the binding that sync() places it with.
+    struct Follow {
+        GameObject object;
+        AttachmentBinding binding;
+    };
+    Scene &scene() const;
+    GameObject owner_;
+    std::shared_ptr<const Mesh> mesh_;
+    AttachmentSet attachments_;
+    std::map<std::string, Follow, std::less<>> follows_;
 };
 /// Solves the support contacts of @p handling that are active for base clip @p clip or action
 /// @p action, in order, with one MotionRuntime::evaluate of @p source.

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -449,6 +450,117 @@ TEST_CASE("Replacing an attachment counts a removed instance as gone, and checks
     CHECK(held.replace(scene, library, fixture.sockets, ""));
     CHECK_FALSE(held.instance);
     CHECK(scene.size() == 0);
+}
+
+TEST_CASE("An attachment follower keeps its items on their sockets as the owner's pose and visibility change") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    const auto set = AttachmentSet::prepare(library, fixture.sockets, {{"tool", "prop"}});
+    const auto binding = set.roles.at("tool").binding;
+    Scene scene;
+    auto owner = scene.create("Owner", Mesh::compile(*fixture.body));
+    owner.set_position({2, 0, 0});
+    const auto follower = owner.add_component<AttachmentFollower>(set);
+    const auto item = follower->object("tool");
+    REQUIRE(item.parent());
+    CHECK(item.parent()->id() == owner.id());
+    const auto rest = sample_pose(*fixture.body);
+    CHECK(item.local_matrix() == attachment_placement(rest, binding));
+    // Turning the limb moves its end, which carries the grip socket, and the late update moves the item with it.
+    auto local = rest.local;
+    local[1].rotation = {0, 0, .38268343F, .92387953F}; // An eighth turn about +Z.
+    const auto turned = pose_from_local(*fixture.body, local);
+    REQUIRE(attachment_placement(turned, binding) != attachment_placement(rest, binding));
+    owner.renderer().set_pose(turned);
+    scene.update(.1);
+    CHECK(item.local_matrix() == attachment_placement(turned, binding));
+    CHECK(item.position().x == Near{2 + attachment_placement(turned, binding)[12], pose_tolerance});
+    // A hidden owner hides the item and leaves it in place until the owner shows again.
+    owner.renderer().set_visible(false);
+    owner.renderer().set_pose(rest);
+    scene.update(.1);
+    CHECK_FALSE(scene.instance(item.id()).visible);
+    CHECK(item.local_matrix() == attachment_placement(turned, binding));
+    owner.renderer().set_visible(true);
+    scene.update(.1);
+    CHECK(scene.instance(item.id()).visible);
+    CHECK(item.local_matrix() == attachment_placement(rest, binding));
+    // A binding chosen for the role, such as an animated prop's, replaces the set's, which stays available.
+    Transform frame;
+    frame.translation = {0, .2F, .1F};
+    frame.rotation = {0, .38268343F, 0, .92387953F}; // An eighth turn about +Y.
+    const AttachmentBinding chosen{5, matrix(frame)};
+    follower->set_binding("tool", chosen);
+    follower->sync();
+    CHECK(item.local_matrix() == attachment_placement(rest, chosen));
+    CHECK(follower->attachments().roles.at("tool").binding.node == binding.node);
+    CHECK(follower->attachments().roles.at("tool").binding.local == binding.local);
+    follower->set_binding("tool", follower->attachments().roles.at("tool").binding);
+    follower->sync();
+    CHECK(item.local_matrix() == attachment_placement(rest, binding));
+}
+
+TEST_CASE("An attachment follower checks its roles, bindings and owner, and destroys the items it holds") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    const auto set = AttachmentSet::prepare(library, fixture.sockets, {{"tool", "prop"}, {"spare", "brace"}});
+    Scene scene;
+    const auto mesh = Mesh::compile(*fixture.body);
+    // An owner without a mesh adds nothing.
+    auto bare = scene.create("Bare");
+    CHECK_THROWS_WITH_AS(bare.add_component<AttachmentFollower>(set), "Attachment owner requires a mesh",
+                         std::invalid_argument);
+    CHECK(scene.size() == 1);
+    auto owner = scene.create("Owner", mesh);
+    const auto follower = owner.add_component<AttachmentFollower>(set);
+    CHECK(scene.size() == 4);
+    auto item = follower->object("tool");
+    const auto placed = item.local_matrix();
+    CHECK_THROWS_WITH_AS(follower->object("absent"), "Unknown attachment role: absent", std::out_of_range);
+    const AttachmentBinding beyond{rig_joints, identity()};
+    CHECK_THROWS_WITH_AS(follower->set_binding("absent", beyond), "Unknown attachment role: absent", std::out_of_range);
+    CHECK_THROWS_WITH_AS(follower->set_binding("tool", beyond), "Attachment binding node is outside the owner mesh",
+                         std::out_of_range);
+    auto projective = identity();
+    projective[3] = .5F;
+    CHECK_THROWS_WITH_AS(follower->set_binding("tool", {0, projective}),
+                         "Attachment binding frame must be finite and affine", std::invalid_argument);
+    auto distant = identity();
+    distant[12] = std::numeric_limits<float>::infinity();
+    CHECK_THROWS_WITH_AS(follower->set_binding("tool", {0, distant}),
+                         "Attachment binding frame must be finite and affine", std::invalid_argument);
+    follower->sync();
+    CHECK(item.local_matrix() == placed); // The rejected bindings changed nothing.
+    // Replacing the owner's mesh, even with one compiled from the same model, stops the follower until the original
+    // returns.
+    owner.renderer().set_mesh(Mesh::compile(*fixture.body));
+    CHECK_THROWS_WITH_AS(follower->sync(), "Attachment follower requires its original owner mesh",
+                         std::invalid_argument);
+    owner.renderer().set_mesh(mesh);
+    follower->sync();
+    // An item without a renderer is rejected before any item changes.
+    owner.renderer().set_visible(false);
+    item.remove_mesh();
+    CHECK_THROWS_WITH_AS(follower->sync(), "GameObject has no MeshRenderer", std::logic_error);
+    CHECK(scene.instance(follower->object("spare").id()).visible);
+    // An item destroyed directly is skipped, and removing the follower destroys the other, wherever it was moved.
+    item.destroy();
+    follower->sync();
+    auto spare = follower->object("spare");
+    CHECK_FALSE(scene.instance(spare.id()).visible);
+    auto shelf = scene.create("Shelf");
+    spare.set_parent(shelf);
+    CHECK(owner.remove_component<AttachmentFollower>());
+    CHECK_FALSE(spare.valid());
+    CHECK(scene.size() == 3);
+    // A follower outlives its owner: it then fails to sync, and its destruction changes nothing.
+    auto standalone = std::make_unique<AttachmentFollower>(owner, set);
+    CHECK(scene.size() == 5);
+    owner.destroy();
+    CHECK(scene.size() == 2);
+    CHECK_THROWS_WITH_AS(standalone->sync(), "Expired GameObject handle", std::out_of_range);
+    standalone.reset();
+    CHECK(scene.size() == 2);
 }
 
 TEST_CASE("Layer clips compose over a base clip on disjoint masks, and overlapping masks are rejected") {
