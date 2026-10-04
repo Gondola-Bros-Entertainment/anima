@@ -26,7 +26,7 @@ namespace anima {
 /// One glTF node.
 struct AssetNode {
     /// Node name, or `(unnamed)` when the file gives none. Names need not be unique; see
-    /// unique_node.
+    /// find_node.
     std::string name;
     /// Index of the parent node, or -1 for a root.
     int parent = -1;
@@ -464,5 +464,5 @@ struct Pose {
 [[nodiscard]] const Animation &find_animation(const Asset &asset, std::string_view name);
 /// Index of the one node of @p asset named @p name. Throws `std::out_of_range` when no node has
 /// that name and `std::invalid_argument` when several do.
-[[nodiscard]] std::size_t unique_node(const Asset &asset, const std::string &name);
+[[nodiscard]] std::size_t find_node(const Asset &asset, std::string_view name);
 } // namespace anima

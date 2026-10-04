@@ -74,7 +74,7 @@ struct MotionControls {
     std::vector<JointOffset> offsets;
     std::vector<MotionContact> contacts;
     /// Whether there are no controls, in which case evaluation returns its source unchanged.
-    bool empty() const { return layers.empty() && offsets.empty() && contacts.empty(); }
+    [[nodiscard]] bool empty() const noexcept { return layers.empty() && offsets.empty() && contacts.empty(); }
 };
 /// Result of MotionRuntime::evaluate.
 struct MotionEvaluation {
@@ -128,17 +128,18 @@ class MotionRuntime {
     /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
     /// file is missing or larger than 4 MiB. May run concurrently on any thread, and reads the C
     /// locale as the constructor does.
-    static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset, const Manifest &manifest);
+    [[nodiscard]] static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset,
+                                                                   const Manifest &manifest);
     /// The model bound at construction, which the runtime holds; not null, and shared with every
     /// copy of the runtime. sample(), compose() and the other evaluations return poses of its nodes.
     [[nodiscard]] const std::shared_ptr<const Asset> &model() const noexcept;
     /// Evaluation rig built from the contract's `parents`; joint names are model node names.
-    const EvaluationRig &rig() const;
+    [[nodiscard]] const EvaluationRig &rig() const;
     /// Whether the contract declares mask @p name.
-    bool has_mask(std::string_view name) const;
+    [[nodiscard]] bool has_mask(std::string_view name) const;
     /// Model node of the end joint of chain @p chain. Throws `std::out_of_range` for an unknown
     /// chain.
-    std::size_t contact_end_node(std::string_view chain) const;
+    [[nodiscard]] std::size_t contact_end_node(std::string_view chain) const;
     /// Whether solving chain @p chain can move model node @p node: whether the nearest evaluation
     /// joint at or above the node in the model's hierarchy is at or below the chain's start joint in
     /// the evaluation rig, whose hierarchy may differ. A node that is not an evaluation joint, such
@@ -146,38 +147,39 @@ class MotionRuntime {
     /// node with no evaluation joint at or above it never moves. The model's nodes and hierarchy are
     /// those the asset had at construction. Throws `std::out_of_range` for an unknown chain or a
     /// node index past the model.
-    bool contact_affects_node(std::string_view chain, std::size_t node) const;
+    [[nodiscard]] bool contact_affects_node(std::string_view chain, std::size_t node) const;
     /// Whether one chain's start joint is at or below the other's. Throws `std::out_of_range` for an
     /// unknown chain.
-    bool contacts_overlap(std::string_view first, std::string_view second) const;
+    [[nodiscard]] bool contacts_overlap(std::string_view first, std::string_view second) const;
     /// Motion clip @p name, a base clip or layer clip. Throws `std::out_of_range` for an unknown
     /// name.
-    const Animation &clip(std::string_view name) const;
+    [[nodiscard]] const Animation &clip(std::string_view name) const;
     /// Metadata of base clip @p name. Throws `std::out_of_range` for layer clips and unknown names.
-    const ClipMetadata &metadata(std::string_view name) const;
+    [[nodiscard]] const ClipMetadata &metadata(std::string_view name) const;
     /// Base clips by name, without layer clips.
-    const std::map<std::string, ClipMetadata, std::less<>> &clips() const;
+    [[nodiscard]] const std::map<std::string, ClipMetadata, std::less<>> &clips() const;
     /// Whether @p name is a layer clip.
-    bool is_layer(std::string_view name) const;
+    [[nodiscard]] bool is_layer(std::string_view name) const;
     /// Mask of layer clip @p name. Throws `std::out_of_range` for other names.
-    const std::string &layer_mask(std::string_view name) const;
+    [[nodiscard]] const std::string &layer_mask(std::string_view name) const;
     /// Model pose with clip @p name sampled at @p time seconds, clamped to the clip rather than
     /// looped. Model nodes that the motion lacks keep their rest transforms.
-    Pose sample(std::string_view name, double time) const;
+    [[nodiscard]] Pose sample(std::string_view name, double time) const;
     /// Samples base clip @p motion at @p time and overrides the mask of layer clip @p layer with
     /// that clip, sampled at the same fraction of its duration. An empty @p layer returns the
     /// sampled pose, with local transforms; otherwise the result is world-only.
-    Pose compose(std::string_view motion, double time, std::string_view layer) const;
+    [[nodiscard]] Pose compose(std::string_view motion, double time, std::string_view layer) const;
     /// Checks that the masks of the nonempty layer clips in @p layers share no joint. Throws
     /// `std::invalid_argument` for overlapping masks and `std::out_of_range` for an unknown layer.
     void validate_layers(std::span<const std::string_view> layers) const;
     /// compose() with several layer clips, applied in order after validate_layers(); empty names
     /// are skipped.
-    Pose compose_layers(std::string_view motion, double time, std::span<const std::string_view> layers) const;
+    [[nodiscard]] Pose compose_layers(std::string_view motion, double time,
+                                      std::span<const std::string_view> layers) const;
     /// Blends two model poses by @p weight in [0, 1] over the evaluation rig. A weight of 0 or 1
     /// returns that input unchanged; otherwise the result is world-only and unmapped nodes follow
     /// @p to.
-    Pose blend(const Pose &from, const Pose &to, float weight) const;
+    [[nodiscard]] Pose blend(const Pose &from, const Pose &to, float weight) const;
     /// Applies @p controls to @p source: each layer, then each offset, then each contact, solved on
     /// the result so far. A layer with an empty mask covers every evaluation joint.
     ///
@@ -197,7 +199,7 @@ class MotionRuntime {
     /// one, as EvaluationRig::encode and EvaluationRig::render_pose do for @p source and
     /// solve_contact for each contact, and `std::out_of_range` for an unknown clip, mask, chain or
     /// joint.
-    MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
+    [[nodiscard]] MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 
   private:
     struct Impl;

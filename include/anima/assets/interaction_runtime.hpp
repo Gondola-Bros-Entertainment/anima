@@ -69,11 +69,12 @@ class InteractionRuntime {
     /// May run concurrently on any thread. Reads @p document and the C locale, which must not change
     /// during the call, as prefab.hpp describes for documents.
     InteractionRuntime(Actors actors, std::string_view document);
-    const ActionTimeline &timeline() const;
+    /// Timeline of the document's phases.
+    [[nodiscard]] const ActionTimeline &timeline() const;
     /// Role graph built from the attachments.
-    const InteractionBindings &bindings() const;
+    [[nodiscard]] const InteractionBindings &bindings() const;
     /// Document id.
-    const std::string &id() const;
+    [[nodiscard]] const std::string &id() const;
     /// Evaluates every role at @p elapsed seconds, with the held phase released at @p released_at.
     ///
     /// Each role's layers are evaluated over its rest pose, as ActionRuntime::sample evaluates
@@ -84,8 +85,8 @@ class InteractionRuntime {
     /// document order, each solved on the result of those before it. Throws unless @p free_worlds
     /// has one entry per role, `std::out_of_range` when its keys differ from the role ids, and as
     /// ActionTimeline::sample, InteractionBindings::sample and MotionRuntime::evaluate do.
-    InteractionSample sample(double elapsed, std::optional<double> released_at,
-                             const std::map<std::string, Mat4, std::less<>> &free_worlds) const;
+    [[nodiscard]] InteractionSample sample(double elapsed, std::optional<double> released_at,
+                                           const std::map<std::string, Mat4, std::less<>> &free_worlds) const;
 
   private:
     struct Impl;

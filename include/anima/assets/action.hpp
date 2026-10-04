@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -90,12 +91,13 @@ class ActionTimeline {
         }
         held_ = held;
     }
-    const std::vector<ActionPhase> &phases() const { return phases_; }
+    /// The phases, as given.
+    [[nodiscard]] const std::vector<ActionPhase> &phases() const noexcept { return phases_; }
     /// Whether a phase is held.
-    bool held() const { return held_; }
+    [[nodiscard]] bool held() const noexcept { return held_; }
     /// Total seconds of a timeline without a held phase. Throws `std::logic_error` when a phase is
     /// held.
-    double duration() const {
+    [[nodiscard]] double duration() const {
         if (held_)
             throw std::logic_error("Held action has no fixed duration");
         double value = 0;
@@ -106,13 +108,15 @@ class ActionTimeline {
     /// Position at @p elapsed seconds, with the held phase released at @p released_at. Throws for
     /// a negative or nonfinite time, a release time on a timeline without a held phase, or more
     /// than `1e12` loops of the held phase.
-    ActionTime sample(double elapsed, std::optional<double> released_at = {}) const {
+    [[nodiscard]] ActionTime sample(double elapsed, std::optional<double> released_at = {}) const {
         validate_time(elapsed, released_at);
         double start = 0, last_start = 0;
         for (std::size_t i = 0; i < phases_.size(); ++i) {
             const auto &p = phases_[i];
             last_start = start;
-            const double end = p.held ? (released_at ? std::max(start, *released_at) : INFINITY) : start + p.duration;
+            const double end =
+                p.held ? (released_at ? std::max(start, *released_at) : std::numeric_limits<double>::infinity())
+                       : start + p.duration;
             if (elapsed < end) {
                 const double local = elapsed - start;
                 const double cycles = p.held ? std::floor(local / p.duration) : 0;
@@ -134,13 +138,15 @@ class ActionTimeline {
     /// Held-phase cues occur once, in the first loop, and only before release; while unreleased,
     /// cues after the held phase are omitted. Continuous effects use explicit start and stop cues.
     /// Throws for a release time that sample() rejects.
-    std::vector<TimedActionCue> cues(std::optional<double> released_at = {}) const {
+    [[nodiscard]] std::vector<TimedActionCue> cues(std::optional<double> released_at = {}) const {
         validate_time(0, released_at);
         std::vector<TimedActionCue> result;
         double start = 0;
         for (std::size_t i = 0; i < phases_.size(); ++i) {
             const auto &p = phases_[i];
-            const double end = p.held ? (released_at ? std::max(start, *released_at) : INFINITY) : start + p.duration;
+            const double end =
+                p.held ? (released_at ? std::max(start, *released_at) : std::numeric_limits<double>::infinity())
+                       : start + p.duration;
             // Held cues occur once in the first cycle. Continuous effects use
             // explicit start/stop cues; seeking cannot create a catch-up burst.
             for (const auto &cue : p.cues) {
@@ -193,8 +199,9 @@ class ActionCueCursor {
     /// changed @p released_at, or a @p timeline unlike the previous call's, places at or before the
     /// previous call's time is reported by the first advance() that reaches it. Throws for an empty
     /// @p action, a zero @p instance, or times that ActionTimeline::sample rejects.
-    std::vector<TimedActionCue> advance(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline,
-                                        double elapsed, std::optional<double> released_at = {}) {
+    [[nodiscard]] std::vector<TimedActionCue> advance(std::string_view action, std::uint64_t instance,
+                                                      const ActionTimeline &timeline, double elapsed,
+                                                      std::optional<double> released_at = {}) {
         return move(action, instance, timeline, elapsed, released_at, true);
     }
     /// Moves to @p elapsed without reporting cues, as for an observer that joins @p instance after it

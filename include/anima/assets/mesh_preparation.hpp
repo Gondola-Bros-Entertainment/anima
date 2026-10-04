@@ -26,16 +26,19 @@ class MeshPreparation {
     MeshPreparation(const MeshPreparation &) = delete;
     MeshPreparation &operator=(const MeshPreparation &) = delete;
     /// The Mesh the data belongs to.
-    const std::shared_ptr<const Mesh> &asset() const { return asset_; }
-    const MaterialTexturePlan &plan() const { return plan_; }
+    [[nodiscard]] const std::shared_ptr<const Mesh> &asset() const noexcept { return asset_; }
+    /// The plan that material_texture_plan builds for the Mesh's materials and textures.
+    [[nodiscard]] const MaterialTexturePlan &plan() const noexcept { return plan_; }
     /// One mip chain per MaterialTexturePlan::images entry, base level first; textures without
     /// Sampler::mipmapped have only the base level, and those whose image is block-compressed have none,
     /// since they upload the levels that the image stores.
-    const std::vector<std::vector<MipLevel>> &images() const { return images_; }
+    [[nodiscard]] const std::vector<std::vector<MipLevel>> &images() const noexcept { return images_; }
     /// One image per MaterialTexturePlan::images entry: the block-compressed image, with its texels, that the entry
     /// uploads, or null for an entry whose mip chain images() holds. Holding these lets a preparation upload a Mesh
     /// compiled with TexelRetention::until_upload after an earlier upload let the Mesh's texels go.
-    const std::vector<std::shared_ptr<const Image>> &compressed_images() const { return compressed_images_; }
+    [[nodiscard]] const std::vector<std::shared_ptr<const Image>> &compressed_images() const noexcept {
+        return compressed_images_;
+    }
 
   private:
     std::shared_ptr<const Mesh> asset_;

@@ -138,10 +138,11 @@ class InteractionBindings {
         return found->second;
     }
     /// Roles in construction order; role indices refer to it.
-    const auto &roles() const { return roles_; }
-    const auto &attachments() const { return attachments_; }
+    [[nodiscard]] const std::vector<InteractionRole> &roles() const noexcept { return roles_; }
+    /// Attachments in construction order.
+    [[nodiscard]] const std::vector<InteractionAttachment> &attachments() const noexcept { return attachments_; }
     /// Role indices with every parent before its children.
-    const auto &role_order() const { return role_order_; }
+    [[nodiscard]] const std::vector<std::size_t> &role_order() const noexcept { return role_order_; }
 
     /// Places each attached child on its parent, parents first, and returns the frames; poses are
     /// unchanged.

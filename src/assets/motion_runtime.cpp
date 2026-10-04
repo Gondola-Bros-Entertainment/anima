@@ -240,7 +240,7 @@ struct MotionRuntime::Impl {
         for (const auto &[name, parent] : parents.items()) {
             (void)parent;
             names[name] = static_cast<int>(result.size());
-            result.push_back({name, anima::unique_node(asset, name), -1});
+            result.push_back({name, anima::find_node(asset, name), -1});
         }
         for (auto &joint : result) {
             const auto &parent = parents.at(joint.name);
@@ -258,7 +258,7 @@ struct MotionRuntime::Impl {
         rest_ = anima::sample_pose(*asset_);
         const auto source_rest = anima::sample_pose(*resource_);
         for (std::size_t i = 0; i < resource_->nodes.size(); ++i) {
-            const auto target = anima::unique_node(*asset_, resource_->nodes[i].name);
+            const auto target = anima::find_node(*asset_, resource_->nodes[i].name);
             const auto &from = resource_->nodes[i];
             const auto &to = asset_->nodes[target];
             const auto parent_name = [](const anima::Asset &a, const anima::AssetNode &n) {
@@ -272,7 +272,7 @@ struct MotionRuntime::Impl {
             binding_.emplace_back(i, target);
         }
         for (std::size_t i = 0; i < rig_.size(); ++i)
-            (void)anima::unique_node(*resource_, asset_->nodes[rig_.asset_node(i)].name);
+            (void)anima::find_node(*resource_, asset_->nodes[rig_.asset_node(i)].name);
         for (const auto &value : detail::json_array(document, "clips")) {
             detail::json_fields(value, {"name", "loop", "reference_speed", "events"});
             anima::ClipMetadata info;
