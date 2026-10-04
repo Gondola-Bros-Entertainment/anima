@@ -48,8 +48,11 @@ vec2 shadowReceiverGradient(vec3 worldDx, vec3 worldDy, mat4 view) {
 // plane gives way to the bias alone where the base normal turns noticeably within one texel, @p texel world units.
 // Constant-normal planes retain their exact depth correction even when their shading normal differs from the polygon.
 vec2 receiverPlaneGradient(ShadowReceiver receiver, mat4 view, float texel) {
-    float curved = smoothstep(0.00001, 0.0001, receiver.curvature * texel);
-    float weight = mix(1.0, smoothstep(0.0, 0.15, receiver.facing), curved);
+    // The plane gives way as the base normal's turn within a texel rises from curvatureOnset to curvatureFull, as far
+    // as the geometric normal's cosine with the sun falls from grazingFacing to 0.
+    const float curvatureOnset = 1e-5, curvatureFull = 1e-4, grazingFacing = 0.15;
+    float curved = smoothstep(curvatureOnset, curvatureFull, receiver.curvature * texel);
+    float weight = mix(1.0, smoothstep(0.0, grazingFacing, receiver.facing), curved);
     return shadowReceiverGradient(receiver.dx, receiver.dy, view) * weight;
 }
 // The share of the filter's texels around @p p, in a map's normalized coordinates, that leave the receiver lit: a
@@ -145,10 +148,10 @@ float cascadedVisibility(vec3 position, vec3 normal, ShadowReceiver receiver) {
 }
 // The share of the detail region's box on each axis, in from each face, over which the region's result fades into the
 // cascades', so that crossing its boundary neither removes their casters nor double-darkens them.
-const float detailShadowFade = 0.04;
+const float detailShadowEdgeShare = 0.04;
 // The sun's visibility at @p position: inside an enabled detail region from its map, fading into the cascades over
-// its outer detailShadowFade, and elsewhere from the cascades. Only the fade and the world outside the region sample
-// the cascades, through a single call, so that compilers inline the cascades' filters once.
+// its outer detailShadowEdgeShare, and elsewhere from the cascades. Only the fade and the world outside the region
+// sample the cascades, through a single call, so that compilers inline the cascades' filters once.
 float sunVisibility(vec3 position, vec3 normal, ShadowReceiver receiver) {
     float detail = 1.0;
     float weight = 0.0;
@@ -167,9 +170,9 @@ float sunVisibility(vec3 position, vec3 normal, ShadowReceiver receiver) {
             edge = min(edge, min(p.z, 1.0 - p.z));
             // smoothstep() is defined as 1 from its upper edge on, where the region's map alone shades. This tests
             // the edge rather than smoothstep()'s result, which Vulkan's precision lets fall just short of 1 there.
-            if (edge >= detailShadowFade)
+            if (edge >= detailShadowEdgeShare)
                 return detail;
-            weight = smoothstep(0.0, detailShadowFade, edge);
+            weight = smoothstep(0.0, detailShadowEdgeShare, edge);
         }
     }
     // A weight of 0, with the region disabled or outside its box, returns the cascades' result exactly.
