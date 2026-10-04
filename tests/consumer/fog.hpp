@@ -336,7 +336,6 @@ inline void check_background(blending_test::Harness &harness) {
                                    gpu_check::text(quad_color) + " against " + gpu_check::text(background_color),
                                {"background-fogged"});
     // Orthographic views are not fogged, so the background keeps its color in the same fog.
-    using anima::operator*;
     const auto orthographic =
         anima::orthographic(harness.aspect(), 20, .1F, 1000) * anima::look_at(eye, eye + anima::Vec3{0, 0, -1});
     harness.render("background-orthographic", {scene}, orthographic, environment);

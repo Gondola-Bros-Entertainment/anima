@@ -151,7 +151,7 @@ anima::Mat4 rest_world(const anima::Asset &asset, std::size_t index) {
         if (visited == asset.nodes.size())
             throw std::runtime_error("Cycle in asset node hierarchy");
         const auto &node = asset.nodes[index];
-        result = anima::operator*(node.has_matrix ? node.rest_matrix : anima::matrix(node.rest), result);
+        result = (node.has_matrix ? node.rest_matrix : anima::matrix(node.rest)) * result;
         if (node.parent < 0)
             return result;
         index = static_cast<std::size_t>(node.parent);
