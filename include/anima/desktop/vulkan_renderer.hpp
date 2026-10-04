@@ -318,7 +318,8 @@ struct ResourceStats {
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
     std::uint64_t pose_uploaded_bytes{};
     /// Main-view draw calls of the latest frame. A draw of an object with placements takes one call per run of
-    /// adjacent visible placement clusters that draw the same level of detail.
+    /// adjacent visible placement clusters that draw the same level of detail and, for an opaque or masked material,
+    /// through the same pipeline (#discarding_draw_calls).
     std::uint64_t draw_calls{};
     /// Copies drawn by main-view draw calls of the latest frame: one per call of an object without placements, and
     /// one per placement that a call draws.
@@ -332,6 +333,12 @@ struct ResourceStats {
     std::uint64_t range_culled{};
     /// Main-view draw calls of the latest frame that drew a simplified level (DrawLevel) instead of the full draw.
     std::uint64_t lod_draws{};
+    /// Main-view draw calls of the latest frame that drew a mesh other than an impostor with an opaque or masked
+    /// Material through the pipeline whose fragment shader may discard: those of masked materials, of objects and
+    /// placement clusters that may lie in a margin of their visibility range, and of single-sided materials whose
+    /// facing the rasterizer cannot decide, as VulkanRenderer describes. The other draw calls of such meshes never
+    /// discard, so a GPU that removes hidden surfaces before shading them, as Apple GPUs do, can treat them as opaque.
+    std::uint64_t discarding_draw_calls{};
     /// Instances with at least one main-view draw.
     std::uint64_t instances{};
     /// Meshes in the GPU cache.
@@ -469,8 +476,17 @@ struct ResourceStats {
 /// reversed. A matrix with a negative determinant, such as a scale of (-1, 1, 1), reverses the winding of the
 /// triangles it places, as glTF specifies for mirrored nodes, so a mirrored draw shades as the mirror image of
 /// its original; in a skinned triangle, the first vertex's blended matrix decides. A single-sided material
-/// (Material::double_sided false) discards the fragments of faces turned away from the viewer. The rasterizer
-/// culls nothing by facing, and shadows are cast from both sides.
+/// (Material::double_sided false) draws no face turned away from the viewer, and shadows are cast from both sides.
+/// The rasterizer culls those faces in a draw of an opaque material outside the margins of its visibility range whose
+/// placing matrices each have a determinant with a magnitude above `1e-4` of the product of the lengths of its first
+/// three columns: the back faces, or under an odd number of negative determinants the front faces. The placing matrices
+/// are the node's world matrix for an object without placements, and for the copies of a placement cluster the
+/// object's world matrix, the node's rest matrix and each copy's placement (MeshPlacements), where the placements'
+/// determinants must also share one sign. Otherwise, as in every skinned draw, the fragment shader discards those
+/// faces. Opaque and masked meshes other than impostors draw through pipelines whose fragment shader cannot discard,
+/// so that a GPU that removes hidden surfaces before shading them, as Apple GPUs do, can treat their fragments as
+/// opaque, except masked materials, objects and placement clusters that may lie in a margin of their visibility range,
+/// and single-sided draws that the rasterizer does not cull (ResourceStats::discarding_draw_calls).
 ///
 /// Blended materials (AlphaMode::blend) draw in the same pass, after every opaque and masked draw of every
 /// selected scene. They test depth with `GREATER`, since the view's depth is reversed, and write none, so nearer opaque

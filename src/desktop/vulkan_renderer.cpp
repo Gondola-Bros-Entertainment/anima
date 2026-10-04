@@ -1004,7 +1004,10 @@ struct VulkanRenderer::Impl {
         create_pipeline(PipelineKind::diagnostic, pipeline);
 #ifdef ANIMA_HAS_ASSETS
         for (const bool height_fog : {false, true}) {
-            create_pipeline(PipelineKind::resource, resource_pipelines[height_fog], height_fog);
+            for (std::size_t mesh = 0; mesh < mesh_pipeline_count; ++mesh)
+                create_pipeline(MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
+                                                                               : PipelineKind::opaque_resource,
+                                resource_pipelines[mesh][height_fog], height_fog, mesh_pipeline_culling[mesh]);
             create_pipeline(PipelineKind::blended_resource, blended_resource_pipelines[height_fog], height_fog);
             create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
         }
@@ -1113,14 +1116,16 @@ struct VulkanRenderer::Impl {
         create_opaque_input_passes(pass);
 #endif
     }
-    // blended_resource draws meshes as resource does, but composites premultiplied color over the target and
-    // writes no depth. shadow_opaque and shadow_masked draw meshes' opaque and masked casters into the shadow maps,
-    // shadow_opaque without a fragment shader. impostor and shadow_impostor draw impostor meshes (Mesh::impostor()) in
-    // the view and the shadow maps.
+    // resource draws the view's opaque and masked meshes with mesh.frag's discards, and opaque_resource draws opaque
+    // ones without them (MeshPipeline). blended_resource draws meshes as resource does, but composites premultiplied
+    // color over the target and writes no depth. shadow_opaque and shadow_masked draw meshes' opaque and masked casters
+    // into the shadow maps, shadow_opaque without a fragment shader. impostor and shadow_impostor draw impostor meshes
+    // (Mesh::impostor()) in the view and the shadow maps.
     enum class PipelineKind {
         diagnostic,
         ui,
         resource,
+        opaque_resource,
         blended_resource,
         sky,
         shadow_opaque,
@@ -1128,15 +1133,19 @@ struct VulkanRenderer::Impl {
         impostor,
         shadow_impostor
     };
-    // Creates the pipeline of @p mode in @p output; one that draws the view with mesh.frag or impostor.frag compiles
-    // the height fog's code only with @p height_fog.
-    void create_pipeline(PipelineKind mode, VkPipeline &output, [[maybe_unused]] bool height_fog = true) {
+    // Creates the pipeline of @p mode in @p output, culling the faces that @p cull_mode names; one that draws the view
+    // with mesh.frag or impostor.frag compiles the height fog's code only with @p height_fog.
+    void create_pipeline(PipelineKind mode, VkPipeline &output, [[maybe_unused]] bool height_fog = true,
+                         VkCullModeFlags cull_mode = VK_CULL_MODE_NONE) {
         const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
         const bool shadow = mode == PipelineKind::shadow_opaque || mode == PipelineKind::shadow_masked ||
                             mode == PipelineKind::shadow_impostor;
         const bool blended = mode == PipelineKind::blended_resource;
+        // The view's mesh pipelines, which draw with mesh.frag.
+        [[maybe_unused]] const bool view_mesh =
+            mode == PipelineKind::resource || mode == PipelineKind::opaque_resource || blended;
 #ifdef ANIMA_HAS_ASSETS
-        const bool resource = mode == PipelineKind::resource || blended || shadow || impostor;
+        const bool resource = view_mesh || shadow || impostor;
 #endif
         const bool ui = mode == PipelineKind::ui, sky = mode == PipelineKind::sky;
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
@@ -1159,14 +1168,17 @@ struct VulkanRenderer::Impl {
         const VkBool32 enabled = VK_TRUE;
         const VkSpecializationMapEntry constant_entry{0, 0, sizeof(enabled)};
         const VkSpecializationInfo constant_enabled{1, &constant_entry, sizeof(enabled), &enabled};
-        // The view's fragment constants: mesh.frag's 0 selects premultiplied output, and 1 (environment.glsl) the
-        // height fog's code, in mesh.frag and impostor.frag.
-        const std::array<VkBool32, 2> fragment_constants{blended ? VK_TRUE : VK_FALSE, height_fog ? VK_TRUE : VK_FALSE};
-        const std::array<VkSpecializationMapEntry, 2> fragment_entries{
-            {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)}}};
-        const VkSpecializationInfo fragment_specialization{2, fragment_entries.data(), sizeof(fragment_constants),
+        // The view's fragment constants: mesh.frag's 0 selects premultiplied output, 1 (environment.glsl) the height
+        // fog's code, in mesh.frag and impostor.frag, and mesh.frag's 2 keeps its discards.
+        const std::array<VkBool32, 3> fragment_constants{blended ? VK_TRUE : VK_FALSE, height_fog ? VK_TRUE : VK_FALSE,
+                                                         mode == PipelineKind::opaque_resource ? VK_FALSE : VK_TRUE};
+        const std::array<VkSpecializationMapEntry, 3> fragment_entries{{{0, 0, sizeof(VkBool32)},
+                                                                        {1, sizeof(VkBool32), sizeof(VkBool32)},
+                                                                        {2, 2 * sizeof(VkBool32), sizeof(VkBool32)}}};
+        const VkSpecializationInfo fragment_specialization{static_cast<std::uint32_t>(fragment_entries.size()),
+                                                           fragment_entries.data(), sizeof(fragment_constants),
                                                            fragment_constants.data()};
-        if (mode == PipelineKind::resource || blended || mode == PipelineKind::impostor)
+        if (view_mesh || mode == PipelineKind::impostor)
             stages[1].pSpecializationInfo = &fragment_specialization;
         if (sky) {
             stages[0].module = sky_vertex_shader;
@@ -1242,7 +1254,7 @@ struct VulkanRenderer::Impl {
         viewport.scissorCount = 1;
         VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         raster.polygonMode = VK_POLYGON_MODE_FILL;
-        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.cullMode = cull_mode;
         raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         raster.lineWidth = 1.0F;
         VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -2269,12 +2281,18 @@ struct VulkanRenderer::Impl {
         depth_image = VK_NULL_HANDLE;
         depth_allocation = VK_NULL_HANDLE;
 #ifdef ANIMA_HAS_ASSETS
-        for (auto *pipelines : {&resource_pipelines, &blended_resource_pipelines, &impostor_pipelines})
-            for (auto &value : *pipelines) {
+        // Each pair holds a pipeline without and with the height fog's code.
+        const auto destroy_pair = [&](std::array<VkPipeline, 2> &pipelines) noexcept {
+            for (auto &value : pipelines) {
                 if (value)
                     vkDestroyPipeline(device, value, nullptr);
                 value = VK_NULL_HANDLE;
             }
+        };
+        for (auto &pipelines : resource_pipelines)
+            destroy_pair(pipelines);
+        destroy_pair(blended_resource_pipelines);
+        destroy_pair(impostor_pipelines);
         if (sky_pipeline)
             vkDestroyPipeline(device, sky_pipeline, nullptr);
         sky_pipeline = VK_NULL_HANDLE;
