@@ -532,7 +532,7 @@ TEST_CASE("An Animator scales each step by its speed") {
     const auto source = std::make_shared<const Asset>(fixture());
     Scene scene;
     const auto object = scene.create("body", Mesh::compile(*source));
-    Animator animator(object, source);
+    Animator animator(ComponentOwner{object}, source);
     CHECK(animator.speed() == 1);
     const ClipMetadata clip{"test", false, {{.45, "marker"}}, {}};
     // Steps of .125 cross the event on the fourth at speed 1, and on the second at speed 2.
@@ -577,7 +577,7 @@ TEST_CASE("A clip selected paused holds its start until resumed") {
 
     const auto source = std::make_shared<const Asset>(asset);
     Scene scene;
-    Animator animator(scene.create("body", Mesh::compile(*source)), source);
+    Animator animator(ComponentOwner{scene.create("body", Mesh::compile(*source))}, source);
     animator.select({"test", true, {}}, PlaybackStart::paused);
     CHECK_FALSE(animator.playback().playing());
     CHECK(animator.update(.5).empty());

@@ -586,9 +586,9 @@ inline void run() {
             // An application-defined frame driver poses the body, and the native late follower keeps the
             // held item on its socket and hides it with the body.
             struct BodyDriver {
-                GameObject owner;
+                ComponentOwner owner;
                 Pose pose;
-                void on_update(double) { owner.renderer().set_pose(pose); }
+                void on_update(double) { owner.object.renderer().set_pose(pose); }
             };
             Scene follow_scene;
             auto body = follow_scene.create("Following owner", actor.render);

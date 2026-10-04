@@ -321,12 +321,12 @@ struct AttachmentSet {
 /// scene.
 class AttachmentFollower {
   public:
-    /// Adds @p attachments as children of @p owner, as AttachmentSet::add(GameObject) does, and
-    /// keeps the owner's mesh, which sync() requires. Each role starts with its
-    /// AttachmentInstance::binding. Throws as AttachmentSet::add(GameObject) does, including
-    /// `std::out_of_range` ("Expired GameObject handle") for an expired @p owner; on failure no
-    /// item stays in the scene.
-    AttachmentFollower(GameObject owner, AttachmentSet attachments);
+    /// Adds @p attachments as children of the object of @p owner, the body, as
+    /// AttachmentSet::add(GameObject) does, and keeps the body's mesh, which sync() requires. Each
+    /// role starts with its AttachmentInstance::binding. Throws as AttachmentSet::add(GameObject)
+    /// does, including `std::out_of_range` ("Expired GameObject handle") for an expired body; on
+    /// failure no item stays in the scene.
+    AttachmentFollower(ComponentOwner owner, AttachmentSet attachments);
     /// Destroys the item objects that still exist, with their descendants, wherever they have been
     /// moved in the hierarchy.
     ~AttachmentFollower();

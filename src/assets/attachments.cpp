@@ -398,8 +398,8 @@ void AttachmentSet::set_visible(Scene &scene, bool visible) const {
             scene.set_visible(*item.instance, visible);
     }
 }
-AttachmentFollower::AttachmentFollower(GameObject owner, AttachmentSet attachments)
-    : owner_(std::move(owner)), attachments_(std::move(attachments)) {
+AttachmentFollower::AttachmentFollower(ComponentOwner owner, AttachmentSet attachments)
+    : owner_(std::move(owner.object)), attachments_(std::move(attachments)) {
     // Allocate every entry before the items are added, so that nothing after the add can fail and leave them in the
     // scene without a follower to destroy them.
     for (const auto &[role, item] : attachments_.roles)
