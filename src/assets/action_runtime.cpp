@@ -141,8 +141,6 @@ struct ActionRuntime::Impl {
     const auto &definitions() const { return actions_; }
     double scale(const ActionRequest &request) const {
         const auto &action = definition(request.action);
-        if (!request.instance)
-            throw std::invalid_argument("Action needs a nonzero instance ID");
         if (!request.duration)
             return 1;
         if (action.timeline.held() || !std::isfinite(*request.duration) || *request.duration <= 0)

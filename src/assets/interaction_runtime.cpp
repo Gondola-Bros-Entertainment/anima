@@ -111,7 +111,7 @@ struct InteractionRuntime::Impl {
         for (const auto &role : bindings_->roles()) {
             const auto &actor = actors_.at(role.id);
             auto sampled = runtimes_.at(role.id)->sample(anima::sample_pose(*actor.motion->model()),
-                                                         ActionRequest{id_, 1, elapsed, released, {}}, role.id);
+                                                         ActionRequest{id_, elapsed, released, {}}, role.id);
             frames.push_back({std::move(sampled.pose), free_worlds.at(role.id)});
         }
         std::vector<anima::InteractionPlacement> placements;

@@ -22,19 +22,18 @@
 /// it, and owns any rule that relates the action's phases to its own timing.
 
 namespace anima {
-/// One evaluation of an action instance, on the caller's clock.
+/// One evaluation of an action, on the caller's clock. A caller that reports cues keeps the
+/// performance's identity itself and passes it to ActionCueCursor::advance.
 struct ActionRequest {
     /// Action id.
     std::string action;
-    /// Nonzero identity of this performance.
-    std::uint64_t instance{};
     /// Seconds since the action started.
     double elapsed{};
     /// Release time of a held action, on the same clock.
-    std::optional<double> released_at;
+    std::optional<double> released_at{};
     /// Seconds that a timed action should last; its phases are rescaled to fit. Held actions keep
     /// their declared phase timing and reject this.
-    std::optional<double> duration;
+    std::optional<double> duration{};
 };
 /// Piecewise-linear weight curve over phase progress.
 struct ActionWeight {
@@ -121,6 +120,10 @@ struct ActionSample {
     /// Pose after every layer of the current phase; world-only unless each layer was a full-body
     /// layer at weight 0 or 1.
     anima::Pose pose;
+    /// Position on the action's declared timeline: ActionTimeline::sample at
+    /// ActionRequest::elapsed and ActionRequest::released_at times ActionRuntime::scale(), so
+    /// ActionTime::elapsed and ActionTime::start are in the declared seconds that
+    /// ActionTimeline::cues and ActionCueCursor use, not the caller's.
     anima::ActionTime clock;
     /// Clip of the current phase's first layer.
     std::string clip;
@@ -170,8 +173,8 @@ class ActionRuntime {
     const Definitions &definitions() const;
     /// Playback rate for @p request: 1, or the action's duration divided by
     /// ActionRequest::duration when that is set. Throws `std::out_of_range` for an unknown action,
-    /// and for a zero instance or a duration that is not positive and finite or is set for a held
-    /// action.
+    /// and `std::invalid_argument` for a duration that is not positive and finite or that is set for
+    /// a held action.
     double scale(const ActionRequest &request) const;
     /// Evaluates @p request over @p base, a pose of the motion's model.
     ///
