@@ -42,8 +42,8 @@ template <class Scenes> void synchronize_panels(Scenes &scenes) {
     }
 }
 } // namespace
-void sync_ui_panels(Scene &scene) { synchronize_panels(scene); }
-void sync_ui_panels(SceneSet &scenes) { synchronize_panels(scenes); }
+void synchronize_ui_panels(Scene &scene) { synchronize_panels(scene); }
+void synchronize_ui_panels(SceneSet &scenes) { synchronize_panels(scenes); }
 void add_ui_component_codec(ComponentCodecs &codecs, UiDocuments &host, UiDocumentResolver resolve) {
     if (!resolve)
         throw std::invalid_argument("UI codec requires an asset resolver");

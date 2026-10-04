@@ -683,9 +683,9 @@ UiDocuments &UiContext::documents() {
     return *impl_->documents;
 }
 UiDocument UiContext::open_document(const std::filesystem::path &path) { return documents().load(path); }
-void UiContext::load_font(const std::filesystem::path &path, bool fallback) {
+void UiContext::load_font(const std::filesystem::path &path, UiFontRole role) {
     impl_->running();
-    if (!Rml::LoadFontFace(utf8(path), fallback))
+    if (!Rml::LoadFontFace(utf8(path), role == UiFontRole::fallback))
         throw std::runtime_error("Unable to load UI font: " + utf8(path));
 }
 UiInputResult UiContext::process_event(const SDL_Event &event) {

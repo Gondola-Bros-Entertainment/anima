@@ -137,8 +137,8 @@ struct PanelDriverProbe {
     // a member scene is running callbacks.
     void attempt(std::string_view set_error) noexcept {
         ++checks.calls;
-        checks.rejected &= driver_rejected([&] { sync_ui_panels(scene); }, busy_scene);
-        checks.rejected &= driver_rejected([&] { sync_ui_panels(scenes); }, set_error);
+        checks.rejected &= driver_rejected([&] { synchronize_ui_panels(scene); }, busy_scene);
+        checks.rejected &= driver_rejected([&] { synchronize_ui_panels(scenes); }, set_error);
     }
     void on_enable() noexcept { attempt(set_updating); }
     void on_disable() noexcept { attempt(member_callbacks); }
@@ -301,6 +301,41 @@ TEST_CASE("Event subscriptions expire, disconnect and report callback failures")
     shutdown.disconnect();
 }
 
+TEST_CASE("Listeners run in their dispatch phase and read fractional parameters") {
+    Session session;
+    UiDocuments host(session.context());
+    auto doc = host.from_memory(markup);
+    auto container = doc.element("container");
+    auto button = doc.element("action");
+    std::vector<std::string> order;
+    auto record = [&order](std::string entry) { return [&order, entry](const UiEvent &) { order.push_back(entry); }; };
+    auto bubbling = container.on("click", record("ancestor bubble"));
+    auto capturing = container.on("click", record("ancestor capture"), UiEventPhase::capture);
+    auto target_capture = button.on("click", record("target capture"), UiEventPhase::capture);
+    auto target_bubble = button.on("click", record("target bubble"));
+    button.native().DispatchEvent("click", {});
+    host.check_events();
+    CHECK(order == std::vector<std::string>{"ancestor capture", "target bubble", "target capture", "ancestor bubble"});
+
+    // RmlUi reports wheel deltas as floats, which precise scrolling sets to fractions.
+    doc.show();
+    session.context().Update();
+    const auto box = button.native().GetAbsoluteOffset(Rml::BoxArea::Border);
+    session.context().ProcessMouseMove(static_cast<int>(box.x) + 1, static_cast<int>(box.y) + 1, 0);
+    std::optional<float> number;
+    std::optional<int> integer;
+    auto scroll = button.on("mousescroll", [&](const UiEvent &event) {
+        number = event.number("wheel_delta_y");
+        integer = event.integer("wheel_delta_y");
+        CHECK(event.number("missing", -2.5F) == -2.5F);
+    });
+    session.context().ProcessMouseWheel(Rml::Vector2f{0, .1F}, 0);
+    host.check_events();
+    REQUIRE(number);
+    CHECK(*number == doctest::Approx(.1F));
+    CHECK(integer == 0);
+}
+
 TEST_CASE("Replacing markup, closing and moving documents invalidate their handles") {
     Session session;
     UiDocuments host(session.context());
@@ -358,19 +393,19 @@ TEST_CASE("Panels restore through prefabs, follow enablement and activation, and
     auto panel = copy.get_component<UiPanel>();
     auto element = panel->document().element("action");
     panel.set_enabled(false);
-    sync_ui_panels(scene);
+    synchronize_ui_panels(scene);
     CHECK_FALSE(panel->document().visible());
     panel.set_enabled(true);
-    sync_ui_panels(scene);
+    synchronize_ui_panels(scene);
     CHECK(panel->document().visible());
     auto parent = scene.create();
     copy.set_parent(parent);
     parent.set_active(false);
-    sync_ui_panels(scene);
+    synchronize_ui_panels(scene);
     CHECK(panel.enabled());
     CHECK_FALSE(panel->document().visible());
     parent.set_active(true);
-    sync_ui_panels(scene);
+    synchronize_ui_panels(scene);
     CHECK(panel->document().visible());
     copy.destroy();
     parent.destroy();
@@ -401,24 +436,24 @@ TEST_CASE("Scene set panel selection reconciles enablement, activation and autho
     auto other = child.add_component<UiPanel>(host, "controls", controls);
     panel.set_enabled(false);
     parent.set_active(false);
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
     CHECK_FALSE(panel->document().visible());
     CHECK(other.enabled());
     CHECK_FALSE(other->document().visible());
     panel.set_enabled(true);
     parent.set_active(true);
     other->set_visible(false);
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
     CHECK(panel->document().visible());
     CHECK_FALSE(other->document().visible());
     other->set_visible(true);
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
     CHECK(other->document().visible());
 
     // A later expired document rejects the whole snapshot before earlier panels change.
     panel->set_visible(false);
     other->document().close();
-    CHECK_THROWS_WITH_AS(sync_ui_panels(scenes), "UI panel document expired", std::out_of_range);
+    CHECK_THROWS_WITH_AS(synchronize_ui_panels(scenes), "UI panel document expired", std::out_of_range);
     CHECK(panel->document().visible());
     // A rejected snapshot must release both the set and each selected scene.
     scenes.update(0);
@@ -426,12 +461,12 @@ TEST_CASE("Scene set panel selection reconciles enablement, activation and autho
     auto recovered = scenes.create("recovered");
     scenes.unload(recovered);
     child.remove_component<UiPanel>();
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
     CHECK_FALSE(panel->document().visible());
     scenes.unload(second);
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
     scenes.clear();
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
 }
 
 TEST_CASE("Panel drivers reject reentry from UI events and component callbacks") {
@@ -448,9 +483,9 @@ TEST_CASE("Panel drivers reject reentry from UI events and component callbacks")
     unsigned events = 0;
     const auto attempt = [&](const UiEvent &) {
         ++events;
-        CHECK_THROWS_WITH_AS(sync_ui_panels(first.get()), busy_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(synchronize_ui_panels(first.get()), busy_scene, std::logic_error);
         const auto set_error = complete_set ? set_driven : member_callbacks;
-        CHECK_THROWS_WITH_AS(sync_ui_panels(scenes), set_error, std::logic_error);
+        CHECK_THROWS_WITH_AS(synchronize_ui_panels(scenes), set_error, std::logic_error);
         CHECK_THROWS_WITH_AS(first->update(0), nested_updates, std::logic_error);
         CHECK_THROWS_WITH_AS(scenes.fixed_update(0), set_error, std::logic_error);
         CHECK_THROWS_WITH_AS(scenes.create("nested"), set_error, std::logic_error);
@@ -460,13 +495,13 @@ TEST_CASE("Panel drivers reject reentry from UI events and component callbacks")
     auto show = panel->document().root().on("show", attempt);
     auto hide = panel->document().root().on("hide", attempt);
     panel->set_visible(true);
-    sync_ui_panels(scenes);
+    synchronize_ui_panels(scenes);
     host.check_events();
     CHECK(events == 1);
     CHECK(panel->document().visible());
     complete_set = false;
     panel->set_visible(false);
-    sync_ui_panels(first.get());
+    synchronize_ui_panels(first.get());
     host.check_events();
     CHECK(events == 2);
     CHECK_FALSE(panel->document().visible());
@@ -502,13 +537,13 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
                 object.remove_component<UiPanel>();
             });
             panel->set_visible(showing);
-            sync_ui_panels(scenes);
+            synchronize_ui_panels(scenes);
             host.check_events();
             CHECK(events == 1);
             CHECK_FALSE(panel);
             CHECK_FALSE(root.valid());
             CHECK_FALSE(removal.connected());
-            sync_ui_panels(scenes);
+            synchronize_ui_panels(scenes);
         }
     }
     SUBCASE("Destroying an object during dispatch retires its subtree before its panels are visited") {
@@ -527,7 +562,7 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
         auto skipped = child_root.on("show", [&](const UiEvent &) { ++child_events; });
         panel->set_visible(true);
         nested->set_visible(true);
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         CHECK(events == 1);
         CHECK(child_events == 0);
@@ -540,7 +575,7 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
         CHECK_FALSE(child_root.valid());
         CHECK_FALSE(destruction.connected());
         CHECK_FALSE(skipped.connected());
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
     }
     SUBCASE("A visibility event removes a later panel") {
         SceneSet scenes;
@@ -551,7 +586,7 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
         auto removal = panel->document().root().on("show", [&](const UiEvent &) { later.remove_component<UiPanel>(); });
         panel->set_visible(true);
         other->set_visible(true);
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         CHECK(panel->document().visible());
         CHECK_FALSE(other);
@@ -571,13 +606,13 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
         });
         panel->set_visible(true);
         old->set_visible(true);
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         CHECK_FALSE(old);
         CHECK_FALSE(old_root.valid());
         REQUIRE(replacement);
         CHECK_FALSE(replacement->document().visible());
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         CHECK(replacement->document().visible());
     }
@@ -590,13 +625,13 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
         auto closure = panel->document().root().on("hide", [&](const UiEvent &) { other->document().close(); });
         panel->set_visible(false);
         other->set_visible(false);
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         CHECK_FALSE(panel->document().visible());
         CHECK(other.valid());
         CHECK_FALSE(other->document().valid());
         later.remove_component<UiPanel>();
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
     }
     SUBCASE("A panel added during a snapshot joins the next one") {
         SceneSet scenes;
@@ -608,11 +643,11 @@ TEST_CASE("Visibility events remove, replace, close and add panels safely") {
             added->set_visible(true);
         });
         panel->set_visible(true);
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         REQUIRE(added);
         CHECK_FALSE(added->document().visible());
-        sync_ui_panels(scenes);
+        synchronize_ui_panels(scenes);
         host.check_events();
         CHECK(added->document().visible());
     }

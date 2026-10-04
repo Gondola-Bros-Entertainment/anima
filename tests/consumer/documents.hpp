@@ -56,31 +56,31 @@ inline void scene_panels(anima::UiDocuments &documents) {
     auto retained = second->document().element("marker");
     first->set_visible(true);
     second->set_visible(true);
-    anima::sync_ui_panels(scenes);
+    anima::synchronize_ui_panels(scenes);
     if (!first->document().visible() || !second->document().visible())
         throw std::runtime_error("Independent UI scene set failed to publish visibility");
     parent.set_active(false);
-    anima::sync_ui_panels(scenes);
+    anima::synchronize_ui_panels(scenes);
     if (!first->document().visible() || second->document().visible() || !second.enabled())
         throw std::runtime_error("Independent UI inherited activation leaked across scenes");
     parent.set_active(true);
     second.set_enabled(false);
     first->set_visible(false);
-    anima::sync_ui_panels(scenes);
+    anima::synchronize_ui_panels(scenes);
     if (first->document().visible() || second->document().visible())
         throw std::runtime_error("Independent UI ignored authored visibility or component enablement");
     first->set_visible(true);
     second.set_enabled(true);
-    anima::sync_ui_panels(scenes);
+    anima::synchronize_ui_panels(scenes);
     if (!first->document().visible() || !second->document().visible())
         throw std::runtime_error("Independent UI scene set failed to reactivate panels");
     scenes.unload(level);
-    anima::sync_ui_panels(scenes);
+    anima::synchronize_ui_panels(scenes);
     if (second || retained.valid() || !first->document().visible())
         throw std::runtime_error("Independent UI scene unload retained a document or affected another scene");
     auto survivor = first->document().root();
     scenes.clear();
-    anima::sync_ui_panels(scenes);
+    anima::synchronize_ui_panels(scenes);
     documents.check_events();
     if (first || survivor.valid())
         throw std::runtime_error("Independent UI scene clear retained live handles");

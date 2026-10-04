@@ -216,7 +216,7 @@ void UiElement::set_options(std::span<const UiOption> options) {
     else
         dropdown.SetSelection(kept == options.end() ? 0 : static_cast<int>(kept - options.begin()));
 }
-UiSubscription UiElement::on(std::string type, UiCallback callback, bool capture) const {
+UiSubscription UiElement::on(std::string type, UiCallback callback, UiEventPhase phase) const {
     if (type.empty() || !callback)
         throw std::invalid_argument("UI subscription needs event type and callback");
     auto &node = native();
@@ -226,10 +226,10 @@ UiSubscription UiElement::on(std::string type, UiCallback callback, bool capture
     listener->element = node.GetObserverPtr();
     listener->type = std::move(type);
     listener->callback = std::make_shared<UiCallback>(std::move(callback));
-    listener->capture = capture;
+    listener->capture = phase == UiEventPhase::capture;
     std::erase_if(doc->listeners, [](const auto &entry) { return entry.expired(); });
     doc->listeners.push_back(listener);
-    node.AddEventListener(listener->type, listener.get(), capture);
+    node.AddEventListener(listener->type, listener.get(), listener->capture);
     listener->attached = true;
     return UiSubscription(std::move(listener));
 }
@@ -244,6 +244,9 @@ UiElement UiEvent::target() const {
 }
 int UiEvent::integer(std::string_view name, int fallback) const {
     return checked_event(state_).get().GetParameter<int>(std::string(name), fallback);
+}
+float UiEvent::number(std::string_view name, float fallback) const {
+    return checked_event(state_).get().GetParameter<float>(std::string(name), fallback);
 }
 std::string UiEvent::string(std::string_view name, std::string_view fallback) const {
     return checked_event(state_).get().GetParameter<std::string>(std::string(name), std::string(fallback));
