@@ -239,6 +239,7 @@ inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     (void)scene->create({}, anima::Mesh::compile(*asset));
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     options.profile = true;
     options.frames_in_flight = frames;
     options.scenes = {scene};

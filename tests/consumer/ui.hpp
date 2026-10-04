@@ -133,6 +133,7 @@ inline int run(int argc, char **argv) {
     require(SDL_SyncWindow(window.get()), "UI initial sizing did not settle");
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     options.disable_present_fences = argc > 4 && std::string_view(argv[4]) == "--no-present-fences";
     anima::VulkanRenderer renderer(window.get(), options);
     renderer.set_view(anima::identity());
