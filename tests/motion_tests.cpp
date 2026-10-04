@@ -369,7 +369,7 @@ TEST_CASE("An attachment library compiles its models with the texel retention it
     const AttachmentLibrary released(std::move(catalog), TexelRetention::until_upload);
     const auto loaded = released.load("prop");
     CHECK(loaded->render->texel_retention() == TexelRetention::until_upload);
-    CHECK(loaded->source->textures.size() == loaded->render->materials()->textures.size());
+    CHECK(loaded->source->textures.size() == loaded->render->description()->textures.size());
     CHECK(released.load("prop")->source == loaded->source); // Loads still share the model while it lives.
 }
 

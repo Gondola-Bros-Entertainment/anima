@@ -291,7 +291,7 @@ TEST_CASE("Block-compressed images are validated against their dimensions and le
 
 TEST_CASE("BC7 textures upload their stored levels, so their uses share one planned image") {
     const auto mesh = Mesh::compile(textured_triangle(pattern()));
-    const auto plan = material_texture_plan(mesh->materials()->material_data, mesh->materials()->textures);
+    const auto plan = material_texture_plan(mesh->description()->materials, mesh->description()->textures);
     // The white fallback and the one BC7 image, which the masked material's coverage rules leave alone.
     REQUIRE(plan.images.size() == 2);
     CHECK(plan.images[1].mips == TextureMipOptions{});
@@ -305,7 +305,7 @@ TEST_CASE("A texture limit keeps a BC7 image's first stored level that fits") {
     const auto image = pattern();
     const auto meshes = Mesh::compile_static(textured_triangle(image), {.max_texture_edge = 16});
     REQUIRE(meshes.size() == 1);
-    const auto &shrunk = *meshes[0]->materials()->textures.at(0).image;
+    const auto &shrunk = *meshes[0]->description()->textures.at(0).image;
     CHECK(shrunk.format == ImageFormat::bc7);
     CHECK(shrunk.width == 16);
     CHECK(shrunk.height == 16);
@@ -330,7 +330,7 @@ TEST_CASE("A mesh compiled until upload describes a BC7 image by its format and 
         source = image;
         mesh = Mesh::compile(textured_triangle(image), {.texel_retention = TexelRetention::until_upload});
     }
-    const auto &description = *mesh->materials()->textures.at(0).image;
+    const auto &description = *mesh->description()->textures.at(0).image;
     CHECK(description.format == ImageFormat::bc7);
     CHECK(description.levels == 7);
     CHECK(description.blocks.empty());

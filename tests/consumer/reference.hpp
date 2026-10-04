@@ -10,7 +10,7 @@ inline std::shared_ptr<anima::Scene> scene(std::span<const anima::MeshSnapshot> 
     for (const auto &snapshot : snapshots) {
         anima::Asset asset;
         asset.nodes.resize(1);
-        asset.materials = snapshot.material_data;
+        asset.materials = snapshot.materials;
         asset.textures = snapshot.textures;
         // CPU deformation already applied the material's RGB factor.
         for (auto &material : asset.materials)

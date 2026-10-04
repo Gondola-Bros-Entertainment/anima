@@ -5,8 +5,8 @@ namespace anima {
 MeshPreparation::MeshPreparation(std::shared_ptr<const Mesh> asset) : asset_(std::move(asset)) {
     if (!asset_)
         throw std::invalid_argument("Cannot prepare a null render asset");
-    const auto &source = *asset_->materials();
-    plan_ = material_texture_plan(source.material_data, source.textures);
+    const auto &source = *asset_->description();
+    plan_ = material_texture_plan(source.materials, source.textures);
     const auto texels = asset_->texel_images();
     images_.reserve(plan_.images.size());
     compressed_images_.reserve(plan_.images.size());

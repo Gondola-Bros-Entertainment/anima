@@ -1,5 +1,5 @@
 #pragma once
-#include <anima/assets/mesh_snapshot.hpp>
+#include <anima/assets/asset.hpp>
 #include <cstdint>
 #include <optional>
 
@@ -47,8 +47,8 @@ struct IndexedDraw {
     /// Whether each vertex blends up to four joint matrices, with SourceVertex::joints counted from
     /// #palette_offset, instead of using its node's matrix.
     bool skinned{};
-    /// Index into the material data of Mesh::materials(), which Scene material factor overrides also use, or
-    /// no_index for a default Material.
+    /// Index into MeshDescription::materials of Mesh::description(), which Scene material factor overrides also use,
+    /// or no_index for a default Material.
     int material = no_index;
     /// Source node index; #node_name and #mesh_name name the source node and mesh.
     std::uint32_t node{};
@@ -119,6 +119,36 @@ struct ImpostorFrames {
     float radius{};
 };
 struct ImpostorAtlas;
+
+/// What a Mesh keeps of its source besides geometry and nodes: its materials and textures, and the statistics and
+/// import metadata that Scene::snapshot() adds up into a MeshSnapshot. Mesh::description() shares one, which never
+/// changes.
+struct MeshDescription {
+    /// The source's materials, in order; IndexedDraw::material and Scene's material slots index them.
+    std::vector<Material> materials;
+    /// The source's textures, in order, which the materials refer to. They share the source's images, or with
+    /// TexelRetention::until_upload refer to images with no texels; Mesh::texel_images() returns the images that have
+    /// them.
+    std::vector<Texture> textures;
+    /// Asset::mesh_nodes of the source.
+    std::size_t mesh_nodes{};
+    /// Number of skins.
+    std::size_t skins{};
+    /// Total joints over all skins.
+    std::size_t joints{};
+    /// Triangle corners of the skinned draws, three per triangle, as many as the vertices a MeshSnapshot expands them
+    /// into.
+    std::size_t skinned_vertices{};
+    /// Names of the source's clips, in order.
+    std::vector<std::string> clips;
+    /// Asset::notices of the source.
+    std::vector<std::string> notices;
+    /// Largest absolute element difference from identity of any joint's rest world matrix times its inverse bind
+    /// matrix; 0 without skins.
+    float bind_deviation{};
+    /// Whether #bind_deviation is below `2e-5`, so the rest pose is the bind pose.
+    bool default_is_bind_pose = true;
+};
 
 /// Limits for Mesh::compile_static; with #max_vertices zero the source compiles into one Mesh.
 struct MeshCompileOptions {
@@ -241,13 +271,13 @@ class Mesh {
     [[nodiscard]] std::span<const std::uint32_t> indices() const { return indices_; }
     /// One draw per source primitive, in source order.
     [[nodiscard]] std::span<const IndexedDraw> draws() const { return draws_; }
-    /// Source materials, textures and metadata; its vertices and primitives are empty. With
-    /// TexelRetention::until_upload its textures' images have no texels; texel_images() returns the images that
-    /// have them.
-    [[nodiscard]] const std::shared_ptr<const MeshSnapshot> &materials() const { return materials_; }
+    /// The materials, textures and import metadata of the source, never null. With TexelRetention::until_upload its
+    /// textures' images have no texels; texel_images() returns the images that have them. Copies of this Mesh share
+    /// it.
+    [[nodiscard]] const std::shared_ptr<const MeshDescription> &description() const noexcept { return description_; }
     /// How this Mesh holds its textures' texels.
     [[nodiscard]] TexelRetention texel_retention() const noexcept { return texel_retention_; }
-    /// The image of each texture of materials(), in order, with its texels.
+    /// The image of each texture of description(), in order, with its texels.
     ///
     /// With TexelRetention::keep these are the textures' own images. With TexelRetention::until_upload they are
     /// the source's images, which this Mesh holds until release_texels() and afterwards finds only while
@@ -280,7 +310,7 @@ class Mesh {
     friend class Scene;
     friend class MeshPlacements;
     friend class Terrain;
-    // An empty Mesh, whose null materials_ Scene and texel_images() would dereference; only compile_indexed() starts
+    // An empty Mesh, whose null description_ Scene and texel_images() would dereference; only compile_indexed() starts
     // from one.
     Mesh() = default;
     // compile(source, options), except that nonempty indices hold one triangle list per source primitive, indexing
@@ -295,7 +325,7 @@ class Mesh {
     std::vector<SourceVertex> vertices_;
     std::vector<std::uint32_t> indices_;
     std::vector<IndexedDraw> draws_;
-    std::shared_ptr<const MeshSnapshot> materials_;
+    std::shared_ptr<const MeshDescription> description_;
     Pose rest_;
     std::vector<std::pair<std::string, int>> nodes_;
     std::vector<AssetSkin> skins_;

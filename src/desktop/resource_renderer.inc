@@ -626,12 +626,12 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
     value->materials = std::make_unique<GpuMaterials>();
     value->materials->device = device;
     value->materials->allocator = allocator;
-    value->materials->source = asset->materials();
+    value->materials->source = asset->description();
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
     if (!asset->vertices().empty() && asset->vertices().size() - 1 > properties.limits.maxDrawIndexedIndexValue)
         throw std::invalid_argument("Resource index exceeds device indexed-draw range");
-    for (const auto &texture : asset->materials()->textures)
+    for (const auto &texture : asset->description()->textures)
         if (texture.image->width > properties.limits.maxImageDimension2D ||
             texture.image->height > properties.limits.maxImageDimension2D)
             throw std::invalid_argument("Resource texture exceeds device image dimensions");
@@ -732,7 +732,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 ++candidate_draws;
                 const auto material_index = source_draws[i].material;
                 const auto *material =
-                    material_index < 0 ? nullptr : &render_instance.asset->materials()->material_data[material_index];
+                    material_index < 0 ? nullptr : &render_instance.asset->description()->materials[material_index];
                 // A custom material in the draw's material slot replaces its Material in every pass.
                 const auto *custom =
                     material_index < 0 ? nullptr : render_instance.custom_materials[material_index].get();
@@ -1062,7 +1062,7 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
         bound.frame = true;
     }
     const Material fallback;
-    const auto &material = draw.material < 0 ? fallback : source.asset->materials()->material_data.at(draw.material);
+    const auto &material = draw.material < 0 ? fallback : source.asset->description()->materials.at(draw.material);
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
     // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
     // its frames per side and layout where they say whether they are skinned, which an impostor never is.

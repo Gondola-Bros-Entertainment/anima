@@ -187,7 +187,7 @@ class Baker {
   public:
     Baker(const Mesh &mesh, const ImpostorOptions &options) : options_(options) {
         const auto images = mesh.texel_images();
-        const auto &snapshot = *mesh.materials();
+        const auto &description = *mesh.description();
         // Each texture once per set of mip options; a map keeps their addresses as it grows.
         const auto sampled = [&](int index, std::optional<float> cutoff) -> const Sampled * {
             if (index < 0)
@@ -196,8 +196,8 @@ class Baker {
             auto found = samplers_.find(key);
             if (found == samplers_.end())
                 found = samplers_
-                            .emplace(key,
-                                     Sampled(snapshot.textures[std::size_t(index)], images[std::size_t(index)], cutoff))
+                            .emplace(key, Sampled(description.textures[std::size_t(index)], images[std::size_t(index)],
+                                                  cutoff))
                             .first;
             return &found->second;
         };
@@ -206,9 +206,9 @@ class Baker {
             if (draw.index_count)
                 require(!draw.skinned, "Impostors bake only rigid meshes");
         // The default Material for draws without one, then each material of the mesh.
-        materials_.resize(snapshot.material_data.size() + 1);
-        for (std::size_t m = 0; m < snapshot.material_data.size(); ++m)
-            materials_[m + 1].source = snapshot.material_data[m];
+        materials_.resize(description.materials.size() + 1);
+        for (std::size_t m = 0; m < description.materials.size(); ++m)
+            materials_[m + 1].source = description.materials[m];
         for (const auto &draw : draws) {
             if (!draw.index_count)
                 continue;

@@ -55,7 +55,7 @@ std::shared_ptr<const Asset> without_texels(std::shared_ptr<const Asset> source,
     if (mesh.texel_retention() == TexelRetention::keep)
         return source;
     auto copy = std::make_shared<Asset>(*source);
-    copy->textures = mesh.materials()->textures;
+    copy->textures = mesh.description()->textures;
     return copy;
 }
 
