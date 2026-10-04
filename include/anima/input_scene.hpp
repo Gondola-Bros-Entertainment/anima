@@ -28,30 +28,32 @@ class ActionInput {
   private:
     Context context_;
 };
-/// Encodes @p map as a version 3 JSON configuration document.
+/// Encodes @p map as a version 4 JSON configuration document.
 ///
-/// The document is an object with exactly `version` (3) and `actions`. Each action has exactly
+/// The document is an object with exactly `version` (4) and `actions`. Each action has exactly
 /// `name`, `type`, `threshold` and `bindings`; each binding has exactly `kind`, `code`,
 /// `identity`, `channel`, `scale`, `deadzone` and `modifiers` (an array, possibly empty); each
-/// modifier has exactly `kind`, `code` and `identity`. `type`, `kind` and `channel` store
-/// enumerator values. The delta kinds, ControlKind::mouse_motion and ControlKind::mouse_wheel,
-/// follow the held kinds and add no field, so they are version 3 too: a build that predates them
-/// rejects a document that uses them as an out-of-range `kind`, not as another version.
-/// `identity` stores a Control::identity as 32 lowercase hexadecimal digits,
-/// first byte first (the text `SDL_GUIDToString` writes for an SDL GUID), or null for none. A
-/// device ID names a device only while it is connected, so documents store none: every control
-/// and modifier loads with any_device, and a binding that must keep to one device selects it by
-/// identity. Only configuration is stored, never recorded controls, focus, enablement or latches.
+/// modifier has exactly `kind`, `code` and `identity`. Enumerators are stored by name, the
+/// enumerator's own spelling: `type` as `"button"`, `"axis"` or `"vector2"` (ActionType), `kind`
+/// as `"key"`, `"mouse_button"`, `"gamepad_button"`, `"gamepad_axis"`, `"mouse_motion"` or
+/// `"mouse_wheel"` (ControlKind), and `channel` as `"x"` or `"y"` (Channel). `identity` stores a
+/// Control::identity as 32 lowercase hexadecimal digits, first byte first (the text
+/// `SDL_GUIDToString` writes for an SDL GUID), or null for none. A device ID names a device only
+/// while it is connected, so documents store none: every control and modifier loads with
+/// any_device, and a binding that must keep to one device selects it by identity.
+/// Only configuration is stored, never recorded controls, focus, enablement or latches.
 /// Throws `std::invalid_argument` when validate(const Map &) rejects @p map, a control or modifier
 /// selects a device ID, or the document would exceed 1 MiB.
 std::string serialize_map(const Map &map);
-/// Decodes a version 3 configuration document of at most 1 MiB; see serialize_map().
+/// Decodes a version 4 configuration document of at most 1 MiB; see serialize_map().
 ///
 /// Throws `std::invalid_argument` for malformed JSON, another version, unknown, missing or
-/// duplicate fields, wrong types, out-of-range values, an identity that is not 32 lowercase
-/// hexadecimal digits or is all zeros, or a map that validate(const Map &) rejects.
+/// duplicate fields, wrong types, out-of-range values, a `kind`, `type` or `channel` that is not
+/// one of the names serialize_map() writes ("Invalid input control kind", "Invalid input action
+/// type" or "Invalid input binding channel"), an identity that is not 32 lowercase hexadecimal
+/// digits or is all zeros, or a map that validate(const Map &) rejects.
 Map deserialize_map(std::string_view data);
-/// Registers the `anima.action-input.v3` component codec, whose payload is the serialize_map()
+/// Registers the `anima.action-input.v4` component codec, whose payload is the serialize_map()
 /// document of the component's actions, so capturing a component whose bindings select a device ID
 /// throws `std::invalid_argument`. The scene or prefab stores component enablement; each restored
 /// component gets a new enabled, focused context with no recorded input, whose bindings match

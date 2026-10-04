@@ -22,6 +22,9 @@ constexpr auto over_capacity = "Input context exceeds 1024 active physical contr
 constexpr auto invalid_integer = "Invalid input configuration integer";
 constexpr auto invalid_envelope = "Invalid input configuration envelope";
 constexpr auto unsupported_version = "Unsupported input configuration version";
+constexpr auto invalid_kind = "Invalid input control kind";
+constexpr auto invalid_type = "Invalid input action type";
+constexpr auto invalid_channel = "Invalid input binding channel";
 constexpr auto modifier_count = "Invalid input modifier count";
 constexpr auto unknown_component = "Unknown serialized component type";
 constexpr auto duplicate_field = "Duplicate JSON document field";
@@ -89,7 +92,7 @@ std::vector<std::pair<std::string, std::string>> invalid_payloads(std::string_vi
 }
 } // namespace
 
-TEST_CASE("Chord configuration round-trips by identity, and only version 3 documents load") {
+TEST_CASE("Chord configuration round-trips by identity, and only version 4 documents load") {
     const auto map = pad_chord_map(authored_pad);
     const auto document = i::serialize_map(map);
     // Identities are stored as the text SDL_GUIDToString writes, and no identity as null.
@@ -100,9 +103,9 @@ TEST_CASE("Chord configuration round-trips by identity, and only version 3 docum
     CHECK(restored[0].bindings[0].control == map[0].bindings[0].control);
     CHECK(restored[0].bindings[0].modifiers == map[0].bindings[0].modifiers);
     CHECK(i::serialize_map(restored) == document);
-    CHECK(i::deserialize_map(R"({"version":3,"actions":[]})").empty());
-    // Any version but the integer 3 is reported as a version, before the fields are read.
-    for (const auto version : {"2", "4", "3.0", "-1", "true"}) {
+    CHECK(i::deserialize_map(R"({"version":4,"actions":[]})").empty());
+    // Any version but the integer 4 is reported as a version, before the fields are read.
+    for (const auto version : {"3", "5", "4.0", "-1", "true"}) {
         CAPTURE(version);
         const auto invalid = "{\"version\":" + std::string(version) + ",\"actions\":[],\"removed\":0}";
         CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), unsupported_version, std::invalid_argument);
@@ -129,18 +132,18 @@ TEST_CASE("Device IDs, which name a device only while it is connected, are never
     // A document cannot name one either.
     CHECK_THROWS_WITH_AS(
         i::deserialize_map(
-            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+            R"({"version":4,"actions":[{"name":"a","type":"button","threshold":0.5,"bindings":[{"kind":"key","code":4,"device":7,"channel":"x","scale":1,"deadzone":0,"modifiers":[]}]}]})"),
         "Missing JSON field: identity", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         i::deserialize_map(
-            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"device":7,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+            R"({"version":4,"actions":[{"name":"a","type":"button","threshold":0.5,"bindings":[{"kind":"key","code":4,"device":7,"identity":null,"channel":"x","scale":1,"deadzone":0,"modifiers":[]}]}]})"),
         "Unknown JSON field: device", std::invalid_argument);
 }
 
 TEST_CASE("Serialized identities are null or 32 lowercase hexadecimal digits, not all zeros") {
     const auto with_identity = [](std::string_view value) {
-        return R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":2,"code":0,"identity":)" +
-               std::string(value) + R"(,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})";
+        return R"({"version":4,"actions":[{"name":"a","type":"button","threshold":0.5,"bindings":[{"kind":"gamepad_button","code":0,"identity":)" +
+               std::string(value) + R"(,"channel":"x","scale":1,"deadzone":0,"modifiers":[]}]}]})";
     };
     CHECK(i::deserialize_map(with_identity("null"))[0].bindings[0].control.identity == i::DeviceIdentity{});
     const auto parsed = i::deserialize_map(with_identity(std::string("\"") + authored_pad_text + "\""));
@@ -165,10 +168,10 @@ TEST_CASE("Serialized identities are null or 32 lowercase hexadecimal digits, no
 
 TEST_CASE("Serialized modifiers must be a list of up to four valid, distinct and compatible controls") {
     const std::string prefix =
-        R"({"version":3,"actions":[{"name":"chord","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"identity":")" +
-        std::string(authored_pad_text) + R"(","channel":0,"scale":1,"deadzone":0)";
+        R"({"version":4,"actions":[{"name":"chord","type":"button","threshold":0.5,"bindings":[{"kind":"key","code":4,"identity":")" +
+        std::string(authored_pad_text) + R"(","channel":"x","scale":1,"deadzone":0)";
     const std::string suffix = "}]}]}";
-    const std::string modifier = R"({"kind":0,"code":224,"identity":null})";
+    const std::string modifier = R"({"kind":"key","code":224,"identity":null})";
     const auto with_modifiers = [&](std::string_view value) {
         return prefix + ",\"modifiers\":" + std::string(value) + suffix;
     };
@@ -187,13 +190,13 @@ TEST_CASE("Serialized modifiers must be a list of up to four valid, distinct and
                              std::invalid_argument);
     }
     const std::array<std::pair<std::string_view, const char *>, 6> modifiers{{
-        {R"({"kind":3,"code":0,"identity":null})", "Input chord modifiers must be digital"},
-        {R"({"kind":0,"code":224,"identity":"0300000000000000ffff000000000000"})",
+        {R"({"kind":"gamepad_axis","code":0,"identity":null})", "Input chord modifiers must be digital"},
+        {R"({"kind":"key","code":224,"identity":"0300000000000000ffff000000000000"})",
          "Input chord device selectors conflict"},
-        {R"({"kind":0,"code":4,"identity":null})", "Repeated input chord control"},
-        {R"({"kind":0,"code":512,"identity":null})", invalid_integer},
-        {R"({"kind":0,"code":224,"identity":7})", invalid_identity},
-        {R"({"kind":0,"code":224,"device":7,"identity":null})", "Unknown JSON field: device"},
+        {R"({"kind":"key","code":4,"identity":null})", "Repeated input chord control"},
+        {R"({"kind":"key","code":512,"identity":null})", invalid_integer},
+        {R"({"kind":"key","code":224,"identity":7})", invalid_identity},
+        {R"({"kind":"key","code":224,"device":7,"identity":null})", "Unknown JSON field: device"},
     }};
     for (const auto &invalid : modifiers) {
         CAPTURE(invalid.first);
@@ -233,7 +236,7 @@ TEST_CASE("Persisted chords keep their identity and follow it to each connected 
     ComponentCodecs source_codecs;
     i::add_component_codec(source_codecs);
     const auto prefab = Prefab::capture(object, source_codecs);
-    CHECK(prefab.nodes()[0].components[0].type == "anima.action-input.v3");
+    CHECK(prefab.nodes()[0].components[0].type == "anima.action-input.v4");
     input->context().set_focused(false);
     input->context().set_enabled(false);
     const auto scene_document = serialize_scene(source, {}, source_codecs);
@@ -282,7 +285,7 @@ TEST_CASE("Input components of an old type or with a malformed payload are rejec
     i::add_component_codec(codecs);
     const auto prefab = Prefab::capture(object, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
-    nodes[0].components[0].type = "anima.action-input.v2";
+    nodes[0].components[0].type = "anima.action-input.v3";
     CHECK_THROWS_WITH_AS(Prefab(nodes, codecs), unknown_component, std::invalid_argument);
     nodes[0] = prefab.nodes()[0];
     nodes.push_back(nodes[0]);
@@ -515,13 +518,85 @@ TEST_CASE("Maps round-trip, and other versions, unknown fields and out-of-range 
     CHECK(i::serialize_map(i::deserialize_map(i::serialize_map(map))) == i::serialize_map(map));
     CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":1,"actions":[]})"), unsupported_version,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":3,"actions":{}})"), invalid_envelope, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":3,"actions":[],"unknown":0})"), "Unknown JSON field: unknown",
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":4,"actions":{}})"), invalid_envelope, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(i::deserialize_map(R"({"version":4,"actions":[],"unknown":0})"), "Unknown JSON field: unknown",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         i::deserialize_map(
-            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":512,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+            R"({"version":4,"actions":[{"name":"a","type":"button","threshold":0.5,"bindings":[{"kind":"key","code":512,"identity":null,"channel":"x","scale":1,"deadzone":0,"modifiers":[]}]}]})"),
         invalid_integer, std::invalid_argument);
+}
+
+TEST_CASE("Enumerators are stored by name, and integers, other types and unknown names are rejected") {
+    // Every action type, control kind and channel.
+    const i::Map map{
+        {"move",
+         i::ActionType::vector2,
+         {{{i::ControlKind::gamepad_axis, 0}, i::Channel::x}, {{i::ControlKind::gamepad_axis, 1}, i::Channel::y}}},
+        {"jump",
+         i::ActionType::button,
+         {{{i::ControlKind::key, 44}}, {{i::ControlKind::mouse_button, 1}}, {{i::ControlKind::gamepad_button, 0}}}},
+        {"turn", i::ActionType::axis, {{{i::ControlKind::mouse_motion, 0}}, {{i::ControlKind::mouse_wheel, 1}}}}};
+    const auto document = i::serialize_map(map);
+    for (const auto name :
+         {R"("type":"vector2")", R"("type":"button")", R"("type":"axis")", R"("kind":"gamepad_axis")",
+          R"("kind":"key")", R"("kind":"mouse_button")", R"("kind":"gamepad_button")", R"("kind":"mouse_motion")",
+          R"("kind":"mouse_wheel")", R"("channel":"x")", R"("channel":"y")"}) {
+        CAPTURE(name);
+        CHECK(document.find(name) != std::string::npos);
+    }
+    const auto restored = i::deserialize_map(document);
+    REQUIRE(restored.size() == map.size());
+    for (std::size_t action = 0; action < map.size(); ++action) {
+        CAPTURE(action);
+        CHECK(restored[action].type == map[action].type);
+        REQUIRE(restored[action].bindings.size() == map[action].bindings.size());
+        for (std::size_t binding = 0; binding < map[action].bindings.size(); ++binding) {
+            CAPTURE(binding);
+            CHECK(restored[action].bindings[binding].control == map[action].bindings[binding].control);
+            CHECK(restored[action].bindings[binding].channel == map[action].bindings[binding].channel);
+        }
+    }
+    CHECK(i::serialize_map(restored) == document);
+    // A version 3 document, which stored enumerator values, is another version.
+    CHECK_THROWS_WITH_AS(
+        i::deserialize_map(
+            R"({"version":3,"actions":[{"name":"a","type":0,"threshold":0.5,"bindings":[{"kind":0,"code":4,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]}]}]})"),
+        unsupported_version, std::invalid_argument);
+    const std::string valid =
+        R"({"version":4,"actions":[{"name":"a","type":"button","threshold":0.5,"bindings":[{"kind":"key","code":4,"identity":null,"channel":"x","scale":1,"deadzone":0,"modifiers":[{"kind":"key","code":224,"identity":null}]}]}]})";
+    REQUIRE(i::deserialize_map(valid)[0].bindings[0].modifiers.size() == 1u);
+    const auto changed = [&](std::string_view from, std::string_view to) {
+        auto result = valid;
+        const auto at = result.find(from);
+        REQUIRE(at != std::string::npos);
+        return result.replace(at, from.size(), to);
+    };
+    constexpr std::string_view binding_kind = R"("kind":"key","code":4)", modifier_kind = R"("kind":"key","code":224)";
+    const std::array<std::pair<std::string, const char *>, 17> invalids{{
+        {changed(R"("type":"button")", R"("type":0)"), invalid_type},
+        {changed(R"("type":"button")", R"("type":"Button")"), invalid_type},
+        {changed(R"("type":"button")", R"("type":"trigger")"), invalid_type},
+        {changed(R"("type":"button")", R"("type":null)"), invalid_type},
+        {changed(R"("type":"button")", R"("type":["button"])"), invalid_type},
+        {changed(binding_kind, R"("kind":0,"code":4)"), invalid_kind},
+        {changed(binding_kind, R"("kind":"keyboard","code":4)"), invalid_kind},
+        {changed(binding_kind, R"("kind":"KEY","code":4)"), invalid_kind},
+        {changed(binding_kind, R"("kind":"key\u0000","code":4)"), invalid_kind},
+        {changed(binding_kind, R"("kind":"","code":4)"), invalid_kind},
+        {changed(modifier_kind, R"("kind":0,"code":224)"), invalid_kind},
+        {changed(modifier_kind, R"("kind":"ctrl","code":224)"), invalid_kind},
+        {changed(R"("channel":"x")", R"("channel":0)"), invalid_channel},
+        {changed(R"("channel":"x")", R"("channel":"X")"), invalid_channel},
+        {changed(R"("channel":"x")", R"("channel":"z")"), invalid_channel},
+        {changed(R"("channel":"x")", R"("channel":true)"), invalid_channel},
+        // A known name still passes validate(), which allows the second channel only in vector2 actions.
+        {changed(R"("channel":"x")", R"("channel":"y")"), "Invalid input binding channel/scale/deadzone"},
+    }};
+    for (const auto &[invalid, error] : invalids) {
+        CAPTURE(invalid);
+        CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), error, std::invalid_argument);
+    }
 }
 
 TEST_CASE("Scene input follows enablement and activation, and prefab copies restore only configuration") {
@@ -596,13 +671,13 @@ TEST_CASE("A malformed input payload fails its prefab without leaking objects") 
     }
 }
 
-TEST_CASE("Delta bindings round-trip with their modifiers in version 3, and invalid delta documents are rejected") {
+TEST_CASE("Delta bindings round-trip with their modifiers, and invalid delta documents are rejected") {
     const auto map = pointer_map();
     const auto document = i::serialize_map(map);
-    // The delta kinds are stored as their enumerator values, in a version 3 document.
-    CHECK(document.find(R"("version":3)") != std::string::npos);
-    CHECK(document.find(R"("kind":4)") != std::string::npos);
-    CHECK(document.find(R"("kind":5)") != std::string::npos);
+    // The delta kinds are stored by name.
+    CHECK(document.find(R"("version":4)") != std::string::npos);
+    CHECK(document.find(R"("kind":"mouse_motion")") != std::string::npos);
+    CHECK(document.find(R"("kind":"mouse_wheel")") != std::string::npos);
     const auto restored = i::deserialize_map(document);
     REQUIRE(restored.size() == map.size());
     for (std::size_t action = 0; action < map.size(); ++action) {
@@ -622,30 +697,38 @@ TEST_CASE("Delta bindings round-trip with their modifiers in version 3, and inva
         }
     }
     CHECK(i::serialize_map(restored) == document);
-    // The component codec keeps its version 3 key.
+    // The component codec's key names the document version.
     Scene scene;
     auto object = scene.create();
     object.add_component<i::ActionInput>(map);
     ComponentCodecs codecs;
     i::add_component_codec(codecs);
-    CHECK(Prefab::capture(object, codecs).nodes()[0].components[0].type == "anima.action-input.v3");
-    const auto with_bindings = [](int type, std::string_view bindings) {
-        return R"({"version":3,"actions":[{"name":"a","type":)" + std::to_string(type) +
-               R"(,"threshold":0.5,"bindings":[)" + std::string(bindings) + "]}]}";
+    CHECK(Prefab::capture(object, codecs).nodes()[0].components[0].type == "anima.action-input.v4");
+    const auto with_bindings = [](std::string_view type, std::string_view bindings) {
+        return R"({"version":4,"actions":[{"name":"a","type":")" + std::string(type) +
+               R"(","threshold":0.5,"bindings":[)" + std::string(bindings) + "]}]}";
     };
-    constexpr auto wheel_binding = R"({"kind":5,"code":1,"identity":null,"channel":0,"scale":1,"deadzone":0)";
+    constexpr auto wheel_binding =
+        R"({"kind":"mouse_wheel","code":1,"identity":null,"channel":"x","scale":1,"deadzone":0)";
     const std::array<std::pair<std::string, const char *>, 5> invalids{{
-        {with_bindings(1, R"({"kind":4,"code":2,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]})"),
+        {with_bindings(
+             "axis",
+             R"({"kind":"mouse_motion","code":2,"identity":null,"channel":"x","scale":1,"deadzone":0,"modifiers":[]})"),
          "Input control code outside supported range"},
-        {with_bindings(1, R"({"kind":6,"code":0,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]})"),
-         invalid_integer},
-        {with_bindings(1, std::string(wheel_binding) + R"(,"modifiers":[{"kind":4,"code":0,"identity":null}]})"),
+        {with_bindings(
+             "axis",
+             R"({"kind":"joystick","code":0,"identity":null,"channel":"x","scale":1,"deadzone":0,"modifiers":[]})"),
+         invalid_kind},
+        {with_bindings("axis", std::string(wheel_binding) +
+                                   R"(,"modifiers":[{"kind":"mouse_motion","code":0,"identity":null}]})"),
          "Input chord modifiers must be digital"},
-        {with_bindings(1,
-                       R"({"kind":5,"code":1,"identity":null,"channel":0,"scale":1,"deadzone":0.25,"modifiers":[]})"),
+        {with_bindings(
+             "axis",
+             R"({"kind":"mouse_wheel","code":1,"identity":null,"channel":"x","scale":1,"deadzone":0.25,"modifiers":[]})"),
          "Input delta bindings require a zero deadzone"},
-        {with_bindings(1, R"({"kind":0,"code":4,"identity":null,"channel":0,"scale":1,"deadzone":0,"modifiers":[]},)" +
-                              std::string(wheel_binding) + R"(,"modifiers":[]})"),
+        {with_bindings(
+             "axis", R"({"kind":"key","code":4,"identity":null,"channel":"x","scale":1,"deadzone":0,"modifiers":[]},)" +
+                         std::string(wheel_binding) + R"(,"modifiers":[]})"),
          "Input axis and vector2 actions cannot mix held and delta controls"},
     }};
     for (const auto &[invalid, error] : invalids) {
@@ -653,10 +736,11 @@ TEST_CASE("Delta bindings round-trip with their modifiers in version 3, and inva
         CHECK_THROWS_WITH_AS(i::deserialize_map(invalid), error, std::invalid_argument);
     }
     // A button may mix them.
-    CHECK(i::deserialize_map(with_bindings(0, R"({"kind":0,"code":4,"identity":null,"channel":0,"scale":1,)"
-                                              R"("deadzone":0,"modifiers":[]},)" +
-                                                  std::string(wheel_binding) + R"(,"modifiers":[]})"))
-              .size() == 1u);
+    CHECK(
+        i::deserialize_map(with_bindings("button", R"({"kind":"key","code":4,"identity":null,"channel":"x","scale":1,)"
+                                                   R"("deadzone":0,"modifiers":[]},)" +
+                                                       std::string(wheel_binding) + R"(,"modifiers":[]})"))
+            .size() == 1u);
 }
 
 TEST_CASE("A scene set's frame of increments reaches every scene, and the next frame starts at zero") {
