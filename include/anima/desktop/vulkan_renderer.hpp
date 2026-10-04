@@ -110,6 +110,9 @@ struct RendererOptions {
     /// VulkanRenderer::set_shadow_caster_threshold. Must be finite, at least 0 and below 1, or construction throws
     /// `std::invalid_argument`.
     float shadow_caster_threshold = 0;
+    /// Initial view distance scale; see VulkanRenderer::set_view_distance_scale. Must be finite and positive, or
+    /// construction throws `std::invalid_argument`.
+    float view_distance_scale = 1;
     /// Initial render scale; see VulkanRenderer::set_render_scale. Must be finite and from
     /// VulkanRenderer::min_render_scale to VulkanRenderer::max_render_scale, and 1 without asset support, or
     /// construction throws `std::invalid_argument`.
@@ -469,14 +472,15 @@ struct ResourceStats {
 /// its transforms once into a device buffer, cached per object and released as meshes are, and the vertex shaders
 /// compose each placement with the object's world matrix and the mesh's rest pose.
 ///
-/// An object with a visibility range (Scene::set_visibility_range) draws only at the distances the range allows from
-/// the eye of the current view, in the shadow passes too, measured to the center of its mesh's rest bounds
-/// (Mesh::rest_bounds()) as the object, or each copy, places it. Objects, and placement clusters, entirely outside it
-/// are culled in every pass. In the range's margins the standard material discards the share of a copy's pixels that
-/// a 4x4 ordered dither gives, keeping in a begin margin the pixels complementary to those an end margin keeps, so it
-/// fades without blending or sorting, and a copy casts shadows while more than half of it draws; its vertex shaders
-/// hide the copies outside the range in a cluster that is not culled. Custom materials fade and hide copies only
-/// through animaVisibility() and animaDissolved(), as custom_material.hpp describes.
+/// An object with a visibility range (Scene::set_visibility_range) draws only at the distances the range allows, times
+/// the view distance scale (set_view_distance_scale()), from the eye of the current view, in the shadow passes too,
+/// measured to the center of its mesh's rest bounds (Mesh::rest_bounds()) as the object, or each copy, places it.
+/// Objects, and placement clusters, entirely outside it are culled in every pass. In the range's margins the standard
+/// material discards the share of a copy's pixels that a 4x4 ordered dither gives, keeping in a begin margin the pixels
+/// complementary to those an end margin keeps, so it fades without blending or sorting, and a copy casts shadows while
+/// more than half of it draws; its vertex shaders hide the copies outside the range in a cluster that is not culled.
+/// Custom materials fade and hide copies only through animaVisibility() and animaDissolved(), as custom_material.hpp
+/// describes.
 ///
 /// A draw with levels of detail (IndexedDraw::levels) draws, for each object or placement cluster, the coarsest level
 /// whose error stays within set_lod_threshold() pixels of the scene targets, which set_render_scale() sizes; its index
@@ -611,9 +615,9 @@ struct ResourceStats {
 /// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard output.
 ///
 /// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(),
-/// set_shadow_caster_threshold(), set_present_mode(), set_render_scale(), set_environment(), set_time(), set_scenes(),
-/// prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw `std::logic_error`; after a RendererFatalError
-/// they throw RendererFatalError.
+/// set_shadow_caster_threshold(), set_view_distance_scale(), set_present_mode(), set_render_scale(), set_environment(),
+/// set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw `std::logic_error`;
+/// after a RendererFatalError they throw RendererFatalError.
 class VulkanRenderer {
   public:
     /// Smallest render scale that set_render_scale() and RendererOptions::render_scale accept.
@@ -631,8 +635,9 @@ class VulkanRenderer {
     /// least 1"), for a RendererOptions::lod_threshold that is not finite or is negative ("LOD threshold must be finite
     /// and nonnegative"), for a RendererOptions::shadow_caster_threshold that is not finite, is negative or is at
     /// least 1 ("Shadow caster threshold must be finite, at least 0 and below 1"), for a
-    /// RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or 2"), for a
-    /// RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
+    /// RendererOptions::view_distance_scale that is not finite or is not positive ("View distance scale must be finite
+    /// and positive"), for a RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or 2"),
+    /// for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
     /// RendererOptions::render_scale that is not finite or lies outside min_render_scale to max_render_scale ("Render
     /// scale must be finite and from 0.25 to 2"), or without asset support is not 1 ("Render scale requires asset
     /// support"), and for a null @p window; RendererUnavailableError when no driver or device can present to the
@@ -717,6 +722,21 @@ class VulkanRenderer {
     /// count what the shadow passes draw. Throws `std::invalid_argument` unless @p share is finite, at least 0 and
     /// below 1 ("Shadow caster threshold must be finite, at least 0 and below 1"), keeping the previous threshold.
     void set_shadow_caster_threshold(float share);
+    /// Sets the view distance scale from the next draw(): the factor by which every visibility range (VisibilityRange)
+    /// multiplies its begin, end and margins in every pass, shadow passes included, both where the renderer culls
+    /// objects and placement clusters and in the range that the shaders read, the standard material's and custom
+    /// materials' alike (custom_material.hpp). It starts as RendererOptions::view_distance_scale, and 1 applies each
+    /// range as set, so a quality preset can draw objects farther or nearer without changing the ranges that scenes
+    /// and documents hold, as Unreal's `r.ViewDistanceScale` does. At 2 an object draws out to twice its range's end
+    /// and dissolves over twice its margins. An endless range stays endless; a finite distance that the scale carries
+    /// past the largest finite `float` stops there. Distances are scaled in double and rounded to `float`, so ranges
+    /// whose margins hand over, as a mesh's and its impostor's do, keep complementary pixels exactly at a scale that
+    /// is a power of two and otherwise to within that rounding. Throws `std::invalid_argument` unless @p scale is
+    /// finite and positive ("View distance scale must be finite and positive"), keeping the previous scale.
+    void set_view_distance_scale(float scale);
+    /// The view distance scale that RendererOptions::view_distance_scale or the latest accepted
+    /// set_view_distance_scale() set.
+    [[nodiscard]] float view_distance_scale() const noexcept;
     /// Requests @p mode for presentation; it starts as RendererOptions::present_mode. When @p mode differs from the
     /// current request, the next draw() recreates the swapchain, as after request_resize(), in @p mode where the
     /// surface offers it and otherwise in PresentMode::fifo, which Vulkan requires every surface to offer;

@@ -513,9 +513,9 @@ static Vec3 range_center(const Mesh &mesh) {
     const auto &bounds = mesh.rest_bounds();
     return bounds.valid ? (bounds.minimum + bounds.maximum) * .5F : Vec3{};
 }
-// The pose buffer matrix after a ranged object's world matrix: @p range's begin, begin margin, end and end margin, then
-// @p center. Shaders may assume that no value is infinite, so an endless range, which validation leaves no end margin,
-// ends at the largest float, which no distance reaches.
+// The pose buffer matrix after a ranged object's world matrix: the begin, begin margin, end and end margin of @p range,
+// which scaled_range() has scaled, then @p center. Shaders may assume that no value is infinite, so an endless range,
+// which validation leaves no end margin, ends at the largest float, which no distance reaches.
 static Mat4 range_columns(const VisibilityRange &range, Vec3 center) {
     Mat4 columns{};
     columns[0] = range.begin;
@@ -545,8 +545,8 @@ static RenderBounds cluster_bounds(const MeshPlacements::Cluster &cluster, const
 }
 // Whether @p frustum, when given, contains @p bounds, and @p range, when given, can draw a copy at their distance from
 // @p eye.
-static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *frustum, const VisibilityRange *range,
-                            Vec3 eye) {
+static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *frustum,
+                            const std::optional<VisibilityRange> &range, Vec3 eye) {
     return (!frustum || frustum->intersects(bounds)) &&
            (!range || within_range(*range, eye, bounds.minimum, bounds.maximum));
 }
@@ -584,11 +584,25 @@ const DrawLevel *object_level(const Scene::Instance &render_instance, std::size_
         scale = std::max(scale, axis_scale(render_instance.palette[draw.palette_offset + j]));
     return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum), scale);
 }
-// The visibility range that culling applies to @p render_instance: none for the default range or an orthographic view.
-const VisibilityRange *culling_range(const Scene::Instance &render_instance) const {
-    return render_instance.visibility_range != VisibilityRange{} && view_origin[3] != 0
-               ? &render_instance.visibility_range
-               : nullptr;
+// @p range with its begin, end and margins times the view distance scale (VulkanRenderer::set_view_distance_scale()),
+// multiplied in double and rounded to float. A finite distance that the product carries past the largest float is
+// clamped to it, so that no finite range becomes endless and an endless one stays endless; a scale that is a power of
+// two scales every distance exactly, which keeps two ranges' margins exactly as complementary as they were.
+VisibilityRange scaled_range(const VisibilityRange &range) const {
+    const double scale = options.view_distance_scale;
+    const auto scaled = [scale](float distance) {
+        return std::isinf(distance)
+                   ? distance
+                   : float(std::min(double(distance) * scale, double(std::numeric_limits<float>::max())));
+    };
+    return {scaled(range.begin), scaled(range.end), scaled(range.begin_margin), scaled(range.end_margin)};
+}
+// The visibility range that culling applies to @p render_instance, scaled as scaled_range() does: none for the default
+// range or an orthographic view.
+std::optional<VisibilityRange> culling_range(const Scene::Instance &render_instance) const {
+    if (render_instance.visibility_range == VisibilityRange{} || view_origin[3] == 0)
+        return std::nullopt;
+    return scaled_range(render_instance.visibility_range);
 }
 Vec3 eye() const { return {view_origin[0], view_origin[1], view_origin[2]}; }
 // Fills placement_runs with one run for each of @p render_instance's placement clusters that @p frustum, when given,
@@ -603,7 +617,7 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
         placement_runs.push_back({0, 1});
         return;
     }
-    const auto *range = culling_range(*render_instance.source);
+    const auto range = culling_range(*render_instance.source);
     const auto world_scale = axis_scale(render_instance.source->world);
     const auto unit_copy = min_caster_radius > 0 ? copy_radius(*render_instance.source) : 0;
     const auto clusters = render_instance.placements->source->clusters();
@@ -711,7 +725,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             // An object outside its visibility range draws in no pass, and one in a margin dissolves; placed copies are
             // culled and dissolve by cluster instead.
             bool dissolving = false;
-            if (const auto *range = use_frustum ? culling_range(render_instance) : nullptr;
+            if (const auto range = use_frustum ? culling_range(render_instance) : std::nullopt;
                 range && !render_instance.placements) {
                 const auto center = point(render_instance.world, range_center(*render_instance.asset));
                 if (!within_range(*range, eye(), center, center)) {
@@ -822,10 +836,10 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 for (const auto &cluster : render_instance.placements->clusters())
                     placed_cluster_bounds.push_back(cluster_bounds(cluster, render_instance.world));
                 if (main_view && use_frustum) {
-                    const auto *range = culling_range(render_instance);
+                    const auto range = culling_range(render_instance);
                     for (auto bounds = placed_cluster_bounds.begin() + std::ptrdiff_t(first_cluster);
                          bounds != placed_cluster_bounds.end(); ++bounds) {
-                        if (cull && !cluster_visible(*bounds, &resource_frustum, nullptr, eye()))
+                        if (cull && !cluster_visible(*bounds, &resource_frustum, std::nullopt, eye()))
                             ++culled_clusters;
                         else if (range && !cluster_visible(*bounds, nullptr, range, eye()))
                             ++range_culled;
@@ -864,8 +878,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             if (header) {
                 prepared.palette_offset = first_matrix + 2;
                 palettes.push_back(render_instance.world);
-                palettes.push_back(
-                    range_columns(render_instance.visibility_range, range_center(*render_instance.asset)));
+                palettes.push_back(range_columns(scaled_range(render_instance.visibility_range),
+                                                 range_center(*render_instance.asset)));
             }
             if (render_instance.placements) {
                 prepared.placements = gpu_placements(render_instance.placements);

@@ -16,7 +16,8 @@
 // Impostors: a tree of masked leaf cards around an opaque trunk, baked with bake_impostor() and drawn as one quad per
 // copy. From several directions at the distance where they hand over, the impostor matches the tree within a stated
 // parity, in the view and in the shadow it casts; across the handover the two keep complementary pixels, so none is
-// left uncovered; and 10,000 placed trees are measured as meshes and as impostors.
+// left uncovered, and at a view distance scale of 2 ranges half as far hand over with the same pixels; and 10,000
+// placed trees are measured as meshes and as impostors.
 namespace impostor_test {
 // A small deterministic generator, so that every run builds the same tree.
 class Random {
@@ -345,8 +346,22 @@ inline int run(int argc, char **argv) {
                          "The handover left " + std::to_string(holes) + " of " + std::to_string(covered) +
                              " pixels that both cover uncovered",
                          {"handover-mesh", "handover-impostor", "handover"});
-        captures.discard({"handover-mesh", "handover-impostor", "handover"});
     }
+    // At a view distance scale of 2, ranges half as far hand over at the same distances with the same pixels.
+    {
+        auto scene = std::make_shared<anima::Scene>();
+        scene->create("tree", tree).renderer().set_visibility_range({0, 35, 0, 5});
+        scene->create("impostor", impostor)
+            .renderer()
+            .set_visibility_range({30, std::numeric_limits<float>::infinity(), 5, 0});
+        renderer.set_scenes({scene});
+    }
+    renderer.set_view_distance_scale(2);
+    (void)draw("handover-scaled");
+    renderer.set_view_distance_scale(1);
+    captures.require_same("handover", "handover-scaled",
+                          "Twice the view distance did not hand over at twice the range");
+    captures.discard({"handover-mesh", "handover-impostor", "handover", "handover-scaled"});
 
     // 10,000 trees, 10 metres apart, each turned at random, drawn as meshes and as impostors from above one corner.
     std::vector<anima::Mat4> forest;
@@ -393,8 +408,8 @@ inline int run(int argc, char **argv) {
     require(!stats.validation_errors && !stats.validation_warnings, "Impostor validation failed");
     std::cout << "PASS impostors: a tree's impostor matches it within the stated parity from six directions, in "
                  "orthographic and placed views, in height fog and in its shadow, hands over without leaving a pixel "
-                 "uncovered, and draws 10,000 copies with under a hundredth of the indices; validation_warnings=0 "
-                 "validation_errors=0\n";
+                 "uncovered, at twice its range under twice the view distance, and draws 10,000 copies with under a "
+                 "hundredth of the indices; validation_warnings=0 validation_errors=0\n";
     return 0;
 }
 } // namespace impostor_test
