@@ -9,10 +9,6 @@
 namespace anima {
 namespace {
 using Json = presentation_data::Json;
-const Json *optional(const Json &object, const std::string &key) {
-    const auto value = object.find(key);
-    return value == object.end() ? nullptr : &*value;
-}
 std::string text(const Json &object, const std::string &key) { return object.at(key).get<std::string>(); }
 double number(const Json &value) {
     if (!value.is_number())
@@ -25,7 +21,7 @@ const Json::array_t &array(const Json &value, const char *message) {
     return value.get_ref<const Json::array_t &>();
 }
 // The one manifest version read_manifest accepts.
-constexpr int schema_version = 3;
+constexpr int manifest_version = 4;
 constexpr std::streamoff maximum_manifest_bytes = 1024 * 1024;
 constexpr int maximum_manifest_depth = 32;
 // A bind signature is 64 lowercase hexadecimal digits.
@@ -56,9 +52,8 @@ Manifest load_manifest(const std::filesystem::path &path) {
     } catch (const std::exception &error) {
         throw std::invalid_argument("Invalid manifest JSON: " + std::string(error.what()));
     }
-    detail::json_version(json, "schema_version", schema_version, "Unsupported model manifest version");
-    detail::json_fields(json, {"schema_version", "units", "asset_id", "model", "skeleton", "clips"},
-                        {"motion_contract"});
+    detail::json_version(json, "version", manifest_version, "Unsupported model manifest version");
+    detail::json_fields(json, {"version", "units", "asset_id", "model", "motion_contract", "skeleton", "clips"});
     if (text(json, "units") != "meters")
         throw std::invalid_argument("Manifest units must be meters");
     Manifest result;
@@ -66,8 +61,8 @@ Manifest load_manifest(const std::filesystem::path &path) {
     result.asset_id = text(json, "asset_id");
     result.model = text(json, "model");
     filename("model", result.model);
-    if (const auto *contract = optional(json, "motion_contract")) {
-        result.motion_contract = contract->get<std::string>();
+    if (const auto &contract = json.at("motion_contract"); !contract.is_null()) {
+        result.motion_contract = contract.get<std::string>();
         filename("motion_contract", result.motion_contract);
     }
     const auto &skeleton = json.at("skeleton");
@@ -84,25 +79,24 @@ Manifest load_manifest(const std::filesystem::path &path) {
         throw std::invalid_argument("Manifest needs a skeleton ID and hexadecimal bind signature");
     std::set<std::string> clips;
     for (const auto &item : array(json.at("clips"), "Manifest clips must be an array")) {
-        detail::json_fields(item, {"name", "loop"}, {"reference_speed", "events"});
+        detail::json_fields(item, {"name", "loop", "reference_speed", "events"});
         ClipMetadata clip;
         clip.name = text(item, "name");
         clip.loop = item.at("loop").get<bool>();
-        if (const auto *speed = optional(item, "reference_speed")) {
-            clip.reference_speed = number(*speed);
+        if (const auto &speed = item.at("reference_speed"); !speed.is_null()) {
+            clip.reference_speed = number(speed);
             if (!std::isfinite(*clip.reference_speed) || *clip.reference_speed <= 0)
                 throw std::invalid_argument("Clip reference speed must be finite and positive");
         }
         if (!clips.insert(clip.name).second)
             throw std::invalid_argument("Duplicate manifest clip: " + clip.name);
-        if (const auto *events = optional(item, "events"))
-            for (const auto &event : array(*events, "Manifest clip events must be an array")) {
-                detail::json_fields(event, {"time", "name"});
-                ClipEvent value{number(event.at("time")), text(event, "name")};
-                if (value.time < 0 || value.name.empty())
-                    throw std::invalid_argument("Invalid manifest clip event");
-                clip.events.push_back(value);
-            }
+        for (const auto &event : array(item.at("events"), "Manifest clip events must be an array")) {
+            detail::json_fields(event, {"time", "name"});
+            ClipEvent value{number(event.at("time")), text(event, "name")};
+            if (value.time < 0 || value.name.empty())
+                throw std::invalid_argument("Invalid manifest clip event");
+            clip.events.push_back(value);
+        }
         std::stable_sort(clip.events.begin(), clip.events.end(),
                          [](const auto &a, const auto &b) { return a.time < b.time; });
         result.clips.push_back(std::move(clip));

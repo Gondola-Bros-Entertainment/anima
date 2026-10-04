@@ -146,16 +146,18 @@ class ActionRuntime {
     /// Decodes @p document for @p motion, which it retains; the actions pose the model @p motion is
     /// bound to.
     ///
-    /// The document has `schema_version` 1 and 1 to 4096 `actions`. Each action has a unique
-    /// `id`, a nonempty list of unique `handling` profiles, `phases`, and optional `roles` (at most
-    /// 8, each role mapped to a nonempty list of unique handling profiles). Each phase has `id`,
-    /// `duration` and 1 to 8 `layers`, and optional `held`, `cues` (`id` and `at`), at most 8
-    /// `props` (`role`, `track`, `interval` and optional `required`) and `contacts` (chain name
-    /// to weight curve); phases and cues follow the ActionTimeline rules. Each layer has `clip`
-    /// and `interval`, and optional `mask`, `mode` (`"override"`, the default, or `"additive"`),
-    /// `weight` and `reference` (`clip` and `at`), which additive layers need and overrides must
-    /// not have. Intervals are two numbers in [0, 1]; weight curves are as in weight(). Masks must
-    /// exist in @p motion, and a layer that samples a layer clip must use that clip's mask.
+    /// The document has the integer `version` 2, checked before any other field ("Unsupported action
+    /// catalog version" otherwise), and 1 to 4096 `actions`. Each action has a unique `id`, a
+    /// nonempty list of unique `handling` profiles, `roles` (at most 8, each role mapped to a
+    /// nonempty list of unique handling profiles) and `phases`. Each phase has `id`, `duration`,
+    /// `held`, 1 to 8 `layers`, `cues` (`id` and `at`), at most 8 `props` (`role`, `track`,
+    /// `interval` and `required`) and `contacts` (chain name to weight curve); phases and cues
+    /// follow the ActionTimeline rules. Each layer has `clip`, `mask` (a mask name, or null for a
+    /// full-body layer), `interval`, `mode` (`"override"` or `"additive"`), `weight` and
+    /// `reference` (`clip` and `at`), which an additive layer needs and an override has as null.
+    /// Every field is required, with `[]` or `{}` for an empty list or map. Intervals are two
+    /// numbers in [0, 1]; weight curves are as in weight(). Masks must exist in @p motion, and a
+    /// layer that samples a layer clip must use that clip's mask.
     ///
     /// Clips and contact chains must also exist in @p motion. Throws also for a null @p motion.
     ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document);

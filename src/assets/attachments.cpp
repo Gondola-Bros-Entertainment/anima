@@ -5,12 +5,14 @@
 namespace anima {
 namespace {
 // The one attachment catalog version decode_attachment_catalog accepts.
-constexpr int catalog_version = 3;
+constexpr int catalog_version = 4;
+// The one socket document version decode_attachment_sockets accepts.
+constexpr int sockets_version = 1;
 AttachmentCatalog decode_catalog(std::string_view document, const std::filesystem::path &directory) {
     using namespace presentation_data;
     const auto json = presentation_data::parse(document);
-    anima::detail::json_version(json, "schema_version", catalog_version, "Unsupported attachment catalog version");
-    anima::detail::json_fields(json, {"schema_version", "units", "empty_handling", "handling", "visuals", "items"});
+    anima::detail::json_version(json, "version", catalog_version, "Unsupported attachment catalog version");
+    anima::detail::json_fields(json, {"version", "units", "empty_handling", "handling", "visuals", "items"});
     if (json.at("units") != "meters")
         throw std::invalid_argument("Unsupported attachment catalog units");
     for (const auto name : {"handling", "visuals", "items"})
@@ -20,61 +22,55 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
     result.directory = directory;
     result.empty_handling = text(json.at("empty_handling"));
     for (const auto &entry : json.at("handling")) {
-        anima::detail::json_fields(entry, {"id", "socket", "layer"}, {"layer_overrides", "support_contacts"});
+        anima::detail::json_fields(entry, {"id", "socket", "layer", "layer_overrides", "support_contacts"});
         AttachmentHandling motion;
         motion.id = text(entry.at("id"));
         motion.socket = entry.at("socket").get<std::string>();
         motion.layer = entry.at("layer").get<std::string>();
-        if (entry.contains("layer_overrides")) {
-            if (!entry.at("layer_overrides").is_object())
-                throw std::invalid_argument("Layer overrides must map base clips to layer clips");
-            for (const auto &[name, value] : entry.at("layer_overrides").items()) {
-                if (name.empty())
-                    throw std::invalid_argument("Empty layer override base clip");
-                motion.layer_overrides.emplace(name, text(value));
-            }
+        if (!entry.at("layer_overrides").is_object())
+            throw std::invalid_argument("Layer overrides must map base clips to layer clips");
+        for (const auto &[name, value] : entry.at("layer_overrides").items()) {
+            if (name.empty())
+                throw std::invalid_argument("Empty layer override base clip");
+            motion.layer_overrides.emplace(name, text(value));
         }
-        if (entry.contains("support_contacts")) {
-            const auto &contacts = entry.at("support_contacts");
-            if (!contacts.is_array() || contacts.empty() || contacts.size() > 4)
-                throw std::invalid_argument("Handling contacts require one to four explicit constraints");
-            std::set<std::string> chains;
-            for (const auto &value : contacts) {
-                anima::detail::json_fields(value, {"chain", "socket", "marker", "pole", "clips"}, {"actions"});
-                AttachmentContact contact;
-                contact.chain = text(value.at("chain"));
-                contact.socket = text(value.at("socket"));
-                contact.marker = text(value.at("marker"));
-                contact.pole = vec3(value.at("pole"), "Support contact pole requires three numbers");
-                if (contact.socket == motion.socket || !chains.insert(contact.chain).second)
-                    throw std::invalid_argument("Support contacts need distinct chains and a secondary socket");
-                const auto &active = value.at("clips");
-                if (!active.is_array())
-                    throw std::invalid_argument("Support contacts need explicit clip coverage");
-                for (const auto &clip : active) {
-                    const auto name = text(clip);
-                    if (!contact.clips.insert(name).second)
-                        throw std::invalid_argument("Unknown/duplicate support contact clip");
-                }
-                if (value.contains("actions")) {
-                    if (!value.at("actions").is_array())
-                        throw std::invalid_argument("Contact action coverage must be an array");
-                    for (const auto &id : value.at("actions"))
-                        if (!contact.actions.insert(text(id)).second)
-                            throw std::invalid_argument("Duplicate contact action");
-                }
-                if (contact.clips.empty() && contact.actions.empty())
-                    throw std::invalid_argument("Support contact has no active clips/actions");
-                motion.support_contacts.push_back(std::move(contact));
+        const auto &contacts = entry.at("support_contacts");
+        if (!contacts.is_array() || contacts.size() > 4)
+            throw std::invalid_argument("Handling contacts require an array of at most four constraints");
+        std::set<std::string> chains;
+        for (const auto &value : contacts) {
+            anima::detail::json_fields(value, {"chain", "socket", "marker", "pole", "clips", "actions"});
+            AttachmentContact contact;
+            contact.chain = text(value.at("chain"));
+            contact.socket = text(value.at("socket"));
+            contact.marker = text(value.at("marker"));
+            contact.pole = vec3(value.at("pole"), "Support contact pole requires three numbers");
+            if (contact.socket == motion.socket || !chains.insert(contact.chain).second)
+                throw std::invalid_argument("Support contacts need distinct chains and a secondary socket");
+            const auto &active = value.at("clips");
+            if (!active.is_array())
+                throw std::invalid_argument("Support contacts need explicit clip coverage");
+            for (const auto &clip : active) {
+                const auto name = text(clip);
+                if (!contact.clips.insert(name).second)
+                    throw std::invalid_argument("Unknown/duplicate support contact clip");
             }
+            if (!value.at("actions").is_array())
+                throw std::invalid_argument("Contact action coverage must be an array");
+            for (const auto &id : value.at("actions"))
+                if (!contact.actions.insert(text(id)).second)
+                    throw std::invalid_argument("Duplicate contact action");
+            if (contact.clips.empty() && contact.actions.empty())
+                throw std::invalid_argument("Support contact has no active clips/actions");
+            motion.support_contacts.push_back(std::move(contact));
         }
         insert(result.motions, std::move(motion));
     }
     if (!lookup(result.motions, result.empty_handling).socket.empty())
         throw std::invalid_argument("Empty handling must not declare an attachment socket");
     for (const auto &entry : json.at("visuals")) {
-        anima::detail::json_fields(entry, {"id", "model", "primary_grip", "markers"},
-                                   {"primary_node", "marker_nodes", "animation_tracks"});
+        anima::detail::json_fields(
+            entry, {"id", "model", "primary_grip", "markers", "primary_node", "marker_nodes", "animation_tracks"});
         AttachmentVisual visual;
         visual.id = text(entry.at("id"));
         visual.model = text(entry.at("model"));
@@ -89,23 +85,22 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
                 throw std::invalid_argument("Invalid additional grip marker name");
             visual.markers.emplace(name, matrix(value, true));
         }
-        if (entry.contains("primary_node"))
-            visual.primary_node = text(entry.at("primary_node"));
-        for (const auto name : {"marker_nodes", "animation_tracks"})
-            if (entry.contains(name)) {
-                if (!entry.at(name).is_object())
-                    throw std::invalid_argument("Prop bindings must be named references");
-                for (const auto &[key, value] : entry.at(name).items()) {
-                    if (key.empty())
-                        throw std::invalid_argument("Empty prop binding");
-                    if (std::string_view(name) == "marker_nodes") {
-                        if (!visual.markers.contains(key))
-                            throw std::invalid_argument("Animated marker needs a local frame");
-                        visual.marker_nodes.emplace(key, text(value));
-                    } else
-                        visual.animation_tracks.emplace(key, text(value));
-                }
+        if (const auto &node = entry.at("primary_node"); !node.is_null())
+            visual.primary_node = text(node);
+        for (const auto name : {"marker_nodes", "animation_tracks"}) {
+            if (!entry.at(name).is_object())
+                throw std::invalid_argument("Prop bindings must be named references");
+            for (const auto &[key, value] : entry.at(name).items()) {
+                if (key.empty())
+                    throw std::invalid_argument("Empty prop binding");
+                if (std::string_view(name) == "marker_nodes") {
+                    if (!visual.markers.contains(key))
+                        throw std::invalid_argument("Animated marker needs a local frame");
+                    visual.marker_nodes.emplace(key, text(value));
+                } else
+                    visual.animation_tracks.emplace(key, text(value));
             }
+        }
         insert(result.visuals, std::move(visual));
     }
     for (const auto &entry : json.at("items")) {
@@ -124,7 +119,8 @@ std::map<std::string, AttachmentSocket, std::less<>>
 decode_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
     using namespace presentation_data;
     const auto adapter = presentation_data::parse(document);
-    anima::detail::json_fields(adapter, {"skeleton", "bind_signature", "rest_joints", "sockets"});
+    anima::detail::json_version(adapter, "version", sockets_version, "Unsupported attachment socket document version");
+    anima::detail::json_fields(adapter, {"version", "skeleton", "bind_signature", "rest_joints", "sockets"});
     if (adapter.at("skeleton") != manifest.skeleton_id || adapter.at("bind_signature") != manifest.bind_signature)
         throw std::invalid_argument("Attachment sockets belong to a different body bind contract");
     const auto rest = anima::sample_pose(body);

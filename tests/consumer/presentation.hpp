@@ -232,16 +232,16 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
                "," + quoted(start + 2) + "],\"context_joints\":[" + quoted(0) + "]}";
     };
     result.contract =
-        "{\"version\":3,\"skeleton\":" + skeleton +
+        "{\"version\":4,\"skeleton\":" + skeleton +
         R"(,"resource":"motion.glb","evaluation":{"version":1,"id":"consumer.evaluation","parents":{)" + hierarchy +
         "},\"masks\":{\"port\":[" + quoted(1) + "],\"starboard\":[" + quoted(4) +
         "]},\"chains\":{\"starboard\":{\"joints\":[" + quoted(4) + "," + quoted(5) + "," + quoted(6) +
         "],\"minimum_angle\":0,\"maximum_angle\":3.13}}}," +
-        R"("clips":[{"name":"drift","loop":true,"reference_speed":0.2,"events":[]},{"name":"signal","loop":false,"events":[]}],"layers":{"layer.port":)" +
+        R"("clips":[{"name":"drift","loop":true,"reference_speed":0.2,"events":[]},{"name":"signal","loop":false,"reference_speed":null,"events":[]}],"layers":{"layer.port":)" +
         ownership("port", 1) + ",\"layer.starboard\":" + ownership("starboard", 4) + "}}";
     text_file(directory / "motion.json", result.contract);
     text_file(directory / "actor.asset.json",
-              R"({"schema_version":3,"units":"meters","asset_id":"consumer.actor","model":"actor.glb","skeleton":)" +
+              R"({"version":4,"units":"meters","asset_id":"consumer.actor","model":"actor.glb","skeleton":)" +
                   skeleton + R"(,"clips":[],"motion_contract":"motion.json"})");
     text_file(directory / "actor.profile.json",
               R"({"version":2,"id":"consumer.profile","manifest":"actor.asset.json","sockets":{"port":{"node":)" +
@@ -255,13 +255,15 @@ inline Fixture actor_fixture(const std::filesystem::path &directory, unsigned li
     starboard_frame[13] = world[6].y;
     starboard_frame[14] = world[6].z;
     const auto unit = matrix_json(identity());
-    result.sockets = "{\"skeleton\":\"consumer.rig\",\"bind_signature\":\"" + signature + "\",\"rest_joints\":{" +
-                     quoted(3) + ":" + matrix_json(port_frame) + "," + quoted(6) + ":" + matrix_json(starboard_frame) +
-                     "},\"sockets\":{\"port\":{\"node\":" + quoted(3) + ",\"local\":" + unit +
-                     "},\"starboard\":{\"node\":" + quoted(6) + ",\"local\":" + unit + "}}}";
+    result.sockets = "{\"version\":1,\"skeleton\":\"consumer.rig\",\"bind_signature\":\"" + signature +
+                     "\",\"rest_joints\":{" + quoted(3) + ":" + matrix_json(port_frame) + "," + quoted(6) + ":" +
+                     matrix_json(starboard_frame) + "},\"sockets\":{\"port\":{\"node\":" + quoted(3) +
+                     ",\"local\":" + unit + "},\"starboard\":{\"node\":" + quoted(6) + ",\"local\":" + unit + "}}}";
     result.catalog =
-        R"({"schema_version":3,"units":"meters","empty_handling":"free","handling":[
-        {"id":"free","socket":"","layer":""},{"id":"port","socket":"port","layer":"layer.port"},{"id":"starboard","socket":"starboard","layer":"layer.starboard"}],
+        R"({"version":4,"units":"meters","empty_handling":"free","handling":[
+        {"id":"free","socket":"","layer":"","layer_overrides":{},"support_contacts":[]},
+        {"id":"port","socket":"port","layer":"layer.port","layer_overrides":{},"support_contacts":[]},
+        {"id":"starboard","socket":"starboard","layer":"layer.starboard","layer_overrides":{},"support_contacts":[]}],
         "visuals":[{"id":"instrument","model":"instrument.glb","primary_grip":)" +
         unit + ",\"markers\":{\"tip\":" + unit + "},\"primary_node\":" + quoted(0) +
         ",\"marker_nodes\":{\"tip\":" + quoted(3) + R"(},"animation_tracks":{"pulse":"extend"}}],"items":[
@@ -448,8 +450,9 @@ inline void run() {
         // Unknown fields are rejected at every level, as in the other presentation documents.
         using Edit = std::tuple<std::string_view, std::string_view, std::string_view>;
         const std::array misspellings{
-            Edit{R"("reference_speed":0.2)", R"("reference_sped":0.2)", "Unknown JSON field: reference_sped"},
-            Edit{R"({"version":3,)", R"({"version":3,"extra":1,)", "Unknown JSON field: extra"}};
+            Edit{R"("reference_speed":0.2)", R"("reference_speed":0.2,"reference_sped":0.2)",
+                 "Unknown JSON field: reference_sped"},
+            Edit{R"({"version":4,)", R"({"version":4,"extra":1,)", "Unknown JSON field: extra"}};
         for (const auto &[from, to, message] : misspellings) {
             auto contract = fixture.contract;
             const auto at = contract.find(from);
@@ -504,11 +507,15 @@ inline void run() {
         for (unsigned i = 0; i < 16; ++i)
             check(std::abs(primary[i] - expected[i]) < 1e-5F, "Animated grip lost its primary socket");
         constexpr auto actions =
-            R"({"schema_version":1,"actions":[{"id":"signal","handling":["port"],"roles":{"probe":["port"],"beacon":["starboard"]},"phases":[
-            {"id":"prepare","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[0,0.5]}],"props":[{"role":"probe","track":"pulse","interval":[0,1]}]},
-            {"id":"sustain","duration":0.4,"held":true,"layers":[{"clip":"signal","mask":"port","interval":[0.5,0.5]}]},
-            {"id":"release","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[0.5,1]}],"cues":[{"id":"signal.emit","at":0}]},
-            {"id":"recover","duration":0.2,"layers":[{"clip":"signal","mask":"port","interval":[1,0]}]}]}]})";
+            R"({"version":2,"actions":[{"id":"signal","handling":["port"],"roles":{"probe":["port"],"beacon":["starboard"]},"phases":[
+            {"id":"prepare","duration":0.2,"held":false,"layers":[{"clip":"signal","mask":"port","interval":[0,0.5],"mode":"override","weight":[[0,1],[1,1]],"reference":null}],
+             "cues":[],"props":[{"role":"probe","track":"pulse","interval":[0,1],"required":true}],"contacts":{}},
+            {"id":"sustain","duration":0.4,"held":true,"layers":[{"clip":"signal","mask":"port","interval":[0.5,0.5],"mode":"override","weight":[[0,1],[1,1]],"reference":null}],
+             "cues":[],"props":[],"contacts":{}},
+            {"id":"release","duration":0.2,"held":false,"layers":[{"clip":"signal","mask":"port","interval":[0.5,1],"mode":"override","weight":[[0,1],[1,1]],"reference":null}],
+             "cues":[{"id":"signal.emit","at":0}],"props":[],"contacts":{}},
+            {"id":"recover","duration":0.2,"held":false,"layers":[{"clip":"signal","mask":"port","interval":[1,0],"mode":"override","weight":[[0,1],[1,1]],"reference":null}],
+             "cues":[],"props":[],"contacts":{}}]}]})";
         ActionRuntime runtime(motion, actions);
         runtime.validate_roles("signal", {{"probe", "port"}, {"beacon", "starboard"}});
         validate_attachment_action(runtime, library, attachments, "signal");
@@ -532,7 +539,7 @@ inline void run() {
         rejects<std::invalid_argument>([&] { validate_attachment_action(runtime, library, missing, "signal"); },
                                        "Missing or incompatible required action role: beacon");
         rejects<std::invalid_argument>(
-            [&] { ActionRuntime invalid(motion, R"({"schema_version":1,"schema_version":1,"actions":[]})"); },
+            [&] { ActionRuntime invalid(motion, R"({"version":2,"version":2,"actions":[]})"); },
             "Duplicate JSON document field");
         rejects<std::out_of_range>([&] { (void)runtime.definition("absent"); }, "Unknown action: absent");
         rejects<std::out_of_range>([&] { (void)motion->clip("absent"); }, "Missing animation: absent");
@@ -556,7 +563,7 @@ inline void run() {
         rejects<std::invalid_argument>(
             [&] {
                 ActionRuntime unknown(
-                    motion, with_first(actions, R"("props":[)", R"("contacts":{"absent":[[0,1],[1,1]]},"props":[)"));
+                    motion, with_first(actions, R"("contacts":{})", R"("contacts":{"absent":[[0,1],[1,1]]})"));
             },
             "Unknown motion chain: absent");
         MotionControls contact;
@@ -575,7 +582,8 @@ inline void run() {
     ActorPresentation pilot(workspace.directory / "2/actor.profile.json"),
         crawler(workspace.directory / "4/actor.profile.json");
     InteractionRuntime::Actors actors{{"pilot", pilot.actor}, {"crawler", crawler.actor}};
-    const std::string layers = R"({"layers":[{"clip":"drift","interval":[0,1]}]})";
+    const std::string layers =
+        R"({"layers":[{"clip":"drift","mask":null,"interval":[0,1],"mode":"override","weight":[[0,1],[1,1]],"reference":null}]})";
     const std::string phases = "{\"dock\":" + layers + ",\"link\":" + layers + ",\"undock\":" + layers + "}";
     const std::string roles = "{\"pilot\":" + phases + ",\"crawler\":" + phases + "}";
     const std::string weights = R"({"dock":[[0,0],[1,1]],"link":[[0,1],[1,1]],"undock":[[0,1],[1,0]]})";
@@ -583,10 +591,10 @@ inline void run() {
         R"({"child":"pilot","parent":"crawler","child_socket":"port","parent_socket":"port","weights":)" + weights +
         "}";
     const auto interaction_document = [&](const std::string &edges, const std::string &members) {
-        return R"({"version":1,"id":"dock","phases":[{"id":"dock","duration":0.2},{"id":"link","duration":0.4,"held":true},{"id":"undock","duration":0.2}],"roles":)" +
+        return R"({"version":2,"id":"dock","phases":[{"id":"dock","duration":0.2,"held":false,"cues":[]},{"id":"link","duration":0.4,"held":true,"cues":[]},{"id":"undock","duration":0.2,"held":false,"cues":[]}],"roles":)" +
                members + ",\"attachments\":[" + edges +
                R"(],"contacts":[{"child":"pilot","parent":"crawler","chain":"starboard","target_socket":"starboard","pole":[2,0,1],"weights":)" +
-               weights + "}]}";
+               weights + ",\"orientation\":false}]}";
     };
     InteractionRuntime interaction(actors, interaction_document(edge, roles));
     rejects<std::invalid_argument>(

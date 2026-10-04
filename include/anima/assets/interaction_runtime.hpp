@@ -48,15 +48,16 @@ class InteractionRuntime {
     using Actors = std::map<std::string, InteractionActor, std::less<>>;
     /// Decodes @p document for @p actors, keyed by role id.
     ///
-    /// The document has `version` 1, a nonempty `id`, `phases` (each with `id`, `duration` and
-    /// optional `held` and `cues`, following the ActionTimeline rules) and `roles`, which has one
-    /// entry per actor mapping every phase id to `{"layers": [...]}`, with layers as in an
+    /// The document has the integer `version` 2, checked before any other field ("Unsupported
+    /// coordinated interaction version" otherwise), a nonempty `id`, `phases` (each with `id`,
+    /// `duration`, `held` and `cues`, following the ActionTimeline rules) and `roles`, which has
+    /// one entry per actor mapping every phase id to `{"layers": [...]}`, with layers as in an
     /// ActionRuntime document. `attachments` lists `child`, `parent`, `child_socket`,
     /// `parent_socket` (socket names of those actors) and `weights`. `contacts` has at most
     /// `8 * actors.size()` entries, each with `child`, `parent`, `chain`, `target_socket` (a parent
-    /// socket), `pole` (three finite numbers in the child's model space), `weights` and optional
-    /// `orientation` (default false; true also matches the socket's rotation). Every `weights`
-    /// maps each phase id to a curve as in ActionRuntime::weight.
+    /// socket), `pole` (three finite numbers in the child's model space), `weights` and
+    /// `orientation` (true also matches the socket's rotation). Every `weights` maps each phase id
+    /// to a curve as in ActionRuntime::weight. Every field is required.
     ///
     /// There are 1 to 64 actors, each with a motion ("Interaction role has no motion" otherwise),
     /// and a role's model is its motion's MotionRuntime::model(). Every socket that the document

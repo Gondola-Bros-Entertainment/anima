@@ -57,17 +57,20 @@ inline std::shared_ptr<const anima::Asset> puppet() {
     return asset;
 }
 inline constexpr std::string_view puppet_machine = R"({
-  "version": 1,
+  "version": 2,
   "kind": "anima.animation-state-machine",
-  "parameters": [{"name": "pace", "type": "float"}, {"name": "hop", "type": "trigger"}],
+  "parameters": [{"name": "pace", "type": "float", "initial": 0}, {"name": "hop", "type": "trigger", "initial": false}],
   "states": [
-    {"name": "ground", "blend": {"parameter": "pace", "clips": [
-      {"clip": "rest", "threshold": 0}, {"clip": "sway", "threshold": 1}, {"clip": "dash", "threshold": 2}]}},
-    {"name": "air", "clip": "leap"}
+    {"name": "ground", "clip": null, "blend": {"parameter": "pace", "clips": [
+      {"clip": "rest", "threshold": 0}, {"clip": "sway", "threshold": 1}, {"clip": "dash", "threshold": 2}]},
+     "speed": 1, "speed_parameter": null},
+    {"name": "air", "clip": "leap", "blend": null, "speed": 1, "speed_parameter": null}
   ],
   "transitions": [
-    {"from": "ground", "to": "air", "conditions": [{"parameter": "hop", "mode": "is_true"}], "duration": 0.25},
-    {"from": "air", "to": "ground", "exit_time": 1, "duration": 0.25, "interruption": "destination"}
+    {"from": "ground", "to": "air", "conditions": [{"parameter": "hop", "mode": "is_true", "threshold": 0}],
+     "exit_time": null, "duration": 0.25, "offset": 0, "interruption": "none", "to_self": false},
+    {"from": "air", "to": "ground", "conditions": [], "exit_time": 1, "duration": 0.25, "offset": 0,
+     "interruption": "destination", "to_self": false}
   ]
 })";
 
@@ -138,7 +141,7 @@ inline void run() {
     rejects<std::invalid_argument>(
         [&] {
             (void)AnimationStateMachine::deserialize(asset, clips,
-                                                     R"({"version": 2, "kind": "anima.animation-state-machine"})");
+                                                     R"({"version": 1, "kind": "anima.animation-state-machine"})");
         },
         "Unsupported animation state machine document version");
     AnimationStateMachine::Definition unknown_clip = machine->definition();

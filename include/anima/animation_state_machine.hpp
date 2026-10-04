@@ -181,22 +181,21 @@ class AnimationStateMachine {
     /// state, parameter or clip, a parameter of the wrong type, and an enumerator outside its type.
     AnimationStateMachine(std::shared_ptr<const Asset> source, std::span<const ClipMetadata> clips,
                           Definition definition);
-    /// Decodes an `anima.animation-state-machine` version 1 document and constructs the machine from it
+    /// Decodes an `anima.animation-state-machine` version 2 document and constructs the machine from it
     /// as the constructor does.
     ///
     /// The document is UTF-8 JSON of at most 4 MiB, nested at most 16 levels deep, with exactly
     /// `version`, `kind`, `parameters`, `states` and `transitions`. Repeated fields are rejected
-    /// while parsing; then a `version` other than the integer 1, or another `kind`, before the
-    /// other fields; then missing and unknown fields at every level. Each parameter has `name` and
-    /// `type` (`"float"`, `"int"`, `"bool"` or `"trigger"`) and, except for a trigger, an optional
-    /// `initial`: a number, or a boolean for a bool, 0 or false by default. Each state has `name`,
-    /// exactly one of `clip` and `blend` (`parameter`, and `clips`, each with `clip` and
-    /// `threshold`), and optional `speed` (1 by default) and `speed_parameter`. Each transition has
-    /// `from` (a state name, or null for any state) and `to`, and optional `conditions` (each with
-    /// `parameter`, `mode`, named as the ConditionMode enumerators are, and an optional
-    /// `threshold`, 0 by default), `exit_time`, `duration` (0 by default), `offset` (0 by default),
-    /// `interruption` (named as the Interruption enumerators are, `"none"` by default) and
-    /// `to_self` (false by default).
+    /// while parsing; then a `version` other than the integer 2, or another `kind`, before the
+    /// other fields; then missing and unknown fields at every level, since every field is required.
+    /// Each parameter has `name`, `type` (`"float"`, `"int"`, `"bool"` or `"trigger"`) and
+    /// `initial`: a number for a float or integer, a boolean for a bool, and false for a trigger.
+    /// Each state has `name`, `clip` and `blend`, exactly one of which is null (a blend has
+    /// `parameter`, and `clips`, each with `clip` and `threshold`), `speed`, and `speed_parameter`,
+    /// a parameter name or null for none. Each transition has `from` (a state name, or null for any
+    /// state), `to`, `conditions` (each with `parameter`, `mode`, named as the ConditionMode
+    /// enumerators are, and `threshold`), `exit_time` (a number, or null for none), `duration`,
+    /// `offset`, `interruption` (named as the Interruption enumerators are) and `to_self`.
     ///
     /// Throws `std::invalid_argument` for invalid content, including malformed JSON and values of the
     /// wrong JSON type.

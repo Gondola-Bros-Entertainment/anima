@@ -324,7 +324,7 @@ TEST_CASE("A model without clips previews statically, and rejected playback leav
     const auto manifest_path = temp.directory / "bind.asset.json";
     {
         std::ofstream output(manifest_path);
-        output << R"({"schema_version":3,"units":"meters","asset_id":"test.bind","model":"bind.glb",
+        output << R"({"version":4,"units":"meters","asset_id":"test.bind","model":"bind.glb","motion_contract":null,
             "skeleton":{"id":"test.rig","joint_count":1,"bind_signature":")"
                << std::string(64, '0') << R"("},"clips":[]})";
         REQUIRE(bool(output));
