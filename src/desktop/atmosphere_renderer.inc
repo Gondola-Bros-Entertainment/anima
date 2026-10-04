@@ -159,7 +159,8 @@ void destroy_atmosphere() noexcept {
 }
 // Records the atmosphere's dispatches while it is enabled: the transmittance and multiple scattering tables when the
 // medium differs from the one they hold, then the sky view table, then a barrier that makes every write visible to
-// the frame's later shaders. The previous frame's reads finished at draw()'s wait for its fence.
+// the frame's later shaders. Every recording after the first begins with a barrier that waits for the fragment
+// shaders submitted before it, which include the sky's reads of the tables in earlier frames.
 void record_atmosphere() {
     const auto &atmosphere = environment.atmosphere;
     if (!atmosphere.enabled)
@@ -167,7 +168,14 @@ void record_atmosphere() {
     VkMemoryBarrier written{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     written.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     written.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    if (!atmosphere_ready) {
+    if (atmosphere_ready) {
+        // Earlier frames' sky shaders sampled the sky view and transmittance tables that these dispatches rewrite, and
+        // a write after a read needs only an execution dependency. The barrier that ends each recording orders the
+        // earlier dispatches' reads, and their writes made available, before the frame's later fragment shaders, which
+        // this barrier waits for, so those accesses precede the rewrite as well.
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 0, nullptr);
+    } else {
         std::array<VkImageMemoryBarrier, 3> general{};
         for (std::size_t i = 0; i < general.size(); ++i) {
             general[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
