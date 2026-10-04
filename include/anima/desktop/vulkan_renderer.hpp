@@ -66,6 +66,23 @@ enum class ShadowFilter {
     bilinear_2x2,
 };
 
+/// The format of the scene's linear color target, into which the sky, meshes and custom materials render before
+/// display conversion; see RendererOptions::scene_color_format and VulkanRenderer::scene_color_format.
+enum class SceneColorFormat {
+    /// `VK_FORMAT_R16G16B16A16_SFLOAT`: 8 bytes per pixel, half floats with a 10-bit mantissa in each of red, green,
+    /// blue and alpha, up to 65504.
+    rgba16f,
+    /// `VK_FORMAT_B10G11R11_UFLOAT_PACK32`: 4 bytes per pixel, which halves the bytes that rendering, display
+    /// conversion and the opaque color copy move through the target. It has no alpha: display conversion reads none,
+    /// and a custom material's sample of the opaque color copy returns 1 there. It holds only nonnegative values, with
+    /// a 6-bit mantissa in red and green and a 5-bit mantissa in blue, against the 10 bits of
+    /// SceneColorFormat::rgba16f, so smooth gradients such as the sky's and the fog's can show bands, blue first.
+    /// Vulkan converts each color written to it as it defines its unsigned floats: a negative value becomes 0, a finite
+    /// value above the largest that the channel holds, 65024 in red and green and 64512 in blue, becomes that value,
+    /// and any other rounds to the nearest representable value, or toward zero where the implementation chooses.
+    b10g11r11,
+};
+
 /// Construction options for VulkanRenderer.
 struct RendererOptions {
     /// Enables `VK_LAYER_KHRONOS_validation` through `VK_EXT_debug_utils`; construction throws
@@ -141,6 +158,10 @@ struct RendererOptions {
     /// Initial frames that an impostor's pixel reads; see VulkanRenderer::set_impostor_frames. Must be 1 or 3, or
     /// construction throws `std::invalid_argument` ("Impostor frames must be 1 or 3").
     std::uint32_t impostor_frames = 3;
+    /// Requested format of the scene's linear color target, which the constructor settles for the renderer's lifetime;
+    /// see VulkanRenderer::scene_color_format. A value that is not a SceneColorFormat enumerator makes construction
+    /// throw `std::invalid_argument` ("Unknown scene color format").
+    SceneColorFormat scene_color_format = SceneColorFormat::rgba16f;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -407,11 +428,11 @@ struct ResourceStats {
 
 /// Renders selected scenes into one borrowed SDL window.
 ///
-/// Each frame renders the sun's shadow maps, then into a linear `RGBA16F` target the opaque and masked meshes, the
-/// optional sky, which shades only the pixels that they leave at the far plane, and the blended meshes; it converts
-/// the target for display at the window's pixel size and composites UI last. That target and the view's depth buffer
-/// are the scene targets, whose size is the window's pixel size times the render scale (set_render_scale()). The
-/// window must outlive the renderer, which never destroys it.
+/// Each frame renders the sun's shadow maps, then into a linear color target, in the format that scene_color_format()
+/// reports, the opaque and masked meshes, the optional sky, which shades only the pixels that they leave at the far
+/// plane, and the blended meshes; it converts the target for display at the window's pixel size and composites UI last.
+/// That target and the view's depth buffer are the scene targets, whose size is the window's pixel size times the
+/// render scale (set_render_scale()). The window must outlive the renderer, which never destroys it.
 ///
 /// The sun's shadow maps are its cascades (ShadowCascades), which each frame fits to the current view as
 /// fit_shadow_cascades() does and extends toward the sun over the casters that each one's square reaches, as layers of
@@ -627,10 +648,12 @@ class VulkanRenderer {
     /// RendererOptions::render_scale that is not finite or lies outside min_render_scale to max_render_scale ("Render
     /// scale must be finite and from 0.25 to 2"), or without asset support is not 1 ("Render scale requires asset
     /// support"), for a RendererOptions::shadow_filter that is not a ShadowFilter enumerator ("Unknown shadow filter"),
-    /// for a RendererOptions::impostor_frames other than 1 or 3 ("Impostor frames must be 1 or 3"), and for a null
-    /// @p window; RendererUnavailableError when no driver or device can present to the window; what set_scenes() throws
-    /// for the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
-    /// other failures, including failed Vulkan calls. Completed stages are released before the exception propagates.
+    /// for a RendererOptions::impostor_frames other than 1 or 3 ("Impostor frames must be 1 or 3"), for a
+    /// RendererOptions::scene_color_format that is not a SceneColorFormat enumerator ("Unknown scene color format"),
+    /// and for a null @p window; RendererUnavailableError when no driver or device can present to the window; what
+    /// set_scenes() throws for the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and
+    /// `std::runtime_error` for other failures, including failed Vulkan calls. Completed stages are released before the
+    /// exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -771,6 +794,12 @@ class VulkanRenderer {
     /// The impostor frame count that RendererOptions::impostor_frames or the latest accepted set_impostor_frames()
     /// requested.
     [[nodiscard]] std::uint32_t impostor_frames() const noexcept;
+    /// The format of the scene's linear color target (SceneColorFormat), which the constructor settles once from
+    /// RendererOptions::scene_color_format. SceneColorFormat::b10g11r11 is used only where the device's optimal tiling
+    /// can attach, blend, sample with linear filtering, and copy to and from it, as the opaque color copy needs, and
+    /// otherwise falls back to SceneColorFormat::rgba16f. Without asset support the view renders into the swapchain
+    /// images, with no scene color target, and this reports SceneColorFormat::rgba16f.
+    [[nodiscard]] SceneColorFormat scene_color_format() const noexcept;
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and the detail region, enabled or not, with

@@ -133,9 +133,11 @@ inline double distance_to_plane(const anima::Mat4 &inverse, anima::Vec3 eye, Pix
 // Draws selections in one window and keeps each frame read back by name.
 class Harness {
   public:
-    explicit Harness(const std::filesystem::path &output)
-        : window_(gpu_check::window("Anima blending verification", 800, 600)), renderer_(window_.get(), options()),
-          images(output) {}
+    /// Opens the window and a renderer that requests @p format for its scene color target.
+    explicit Harness(const std::filesystem::path &output,
+                     anima::SceneColorFormat format = anima::SceneColorFormat::rgba16f)
+        : window_(gpu_check::window("Anima blending verification", 800, 600)),
+          renderer_(window_.get(), options(format)), images(output) {}
     /// Width over height of the window's pixels.
     [[nodiscard]] float aspect() const {
         int width = 0, height = 0;
@@ -143,6 +145,8 @@ class Harness {
                 "Blending window has no drawable size");
         return float(width) / float(height);
     }
+    /// The scene color format that the renderer settled on.
+    [[nodiscard]] anima::SceneColorFormat scene_color_format() const noexcept { return renderer_.scene_color_format(); }
     /// Draws @p scenes through @p view_projection in @p environment and reads the frame back as @p name.
     void render(const std::string &name, std::vector<std::shared_ptr<const anima::Scene>> scenes,
                 const anima::Mat4 &view_projection, const anima::Environment &environment) {
@@ -191,9 +195,10 @@ class Harness {
     }
 
   private:
-    static anima::RendererOptions options() {
+    static anima::RendererOptions options(anima::SceneColorFormat format) {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.scene_color_format = format;
         return settings;
     }
     gpu_check::Video video_;

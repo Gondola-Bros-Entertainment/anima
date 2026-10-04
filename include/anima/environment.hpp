@@ -221,8 +221,8 @@ struct EnvironmentSettings {
     /// radiance times #fog_sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 + g^2 -
     /// 2 * g * c)^1.5)`, with `g` the #fog_sun_anisotropy and `c` the cosine of the angle between the path, from the
     /// eye, and the direction toward the sun. It depends on the path's direction alone, not on its length, and each
-    /// of its channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor
-    /// the scene's own light reach the fog. Orthographic views are not fogged.
+    /// of its channels is capped at 65504, the largest half float, which the default scene target holds
+    /// (SceneColorFormat). Neither shadows nor the scene's own light reach the fog. Orthographic views are not fogged.
     float fog_density = 0;
     /// Height along +Y at which the fog's density is #fog_density; finite.
     float fog_height = 0;
