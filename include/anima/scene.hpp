@@ -250,7 +250,9 @@ class Scene {
     void set_transform(Id id, const Mat4 &world);
     /// Replaces the authored linear RGB factor of mesh material @p material for this object only.
     /// Each channel must be finite and in [0, 1]. Throws `std::out_of_range` for an index outside
-    /// the mesh's materials and `std::logic_error` when the object has no renderer.
+    /// the mesh's materials ("Material factor slot is outside the mesh's materials"),
+    /// `std::logic_error` when the object has no renderer, and `std::invalid_argument` for any
+    /// other factor ("Invalid render material factor").
     void set_material_factor(Id id, std::size_t material, Vec3 factor);
     /// Restores the mesh's authored factor for material @p material. Throws as
     /// set_material_factor() does.
@@ -266,7 +268,8 @@ class Scene {
     /// Per-primitive choices are kept. Throws `std::logic_error` when the object has no renderer.
     void set_visible(Id id, bool visible);
     /// Shows or hides one primitive of @p id's mesh. Throws `std::out_of_range` for an index
-    /// outside the mesh's primitives and `std::logic_error` when the object has no renderer.
+    /// outside the mesh's primitives ("Primitive is outside the mesh's primitives") and
+    /// `std::logic_error` when the object has no renderer.
     void set_primitive_visible(Id id, std::size_t primitive, bool visible);
     /// Sets whether @p id's renderer casts shadows (Instance::casts_shadows). Throws
     /// `std::logic_error` when the object has no renderer.
@@ -550,19 +553,36 @@ class MeshRenderer {
     /// every distance, the renderer and every primitive to visible, and shadow casting on. Throws
     /// `std::invalid_argument` for a null mesh.
     void set_mesh(std::shared_ptr<const Mesh> mesh);
+    /// Animation pose the renderer draws: the one set_pose() stored or a document or prefab supplied, or the mesh's
+    /// Mesh::rest_pose() while it has none, as after set_mesh() and with placements. Borrowed until the scene next
+    /// changes.
+    [[nodiscard]] const Pose &pose() const;
     /// Sets the animation pose, keeping the object's placement; see Scene::set_pose.
     void set_pose(const Pose &pose);
+    /// Whether the renderer is shown (Scene::Instance::visible), whatever the object's activation.
+    [[nodiscard]] bool visible() const;
     /// Shows or hides the renderer; see Scene::set_visible.
     void set_visible(bool visible);
+    /// Linear RGB factor of mesh material @p material: this object's override or the authored value. Throws
+    /// `std::out_of_range` as set_material_factor() does.
+    [[nodiscard]] Vec3 material_factor(std::size_t material) const;
     /// Overrides one material factor for this object; see Scene::set_material_factor.
     void set_material_factor(std::size_t material, Vec3 factor);
     /// Restores one authored material factor; see Scene::clear_material_factor.
     void clear_material_factor(std::size_t material);
+    /// Custom material that draws mesh material @p material's primitives, or null when they draw with the mesh's
+    /// own. Throws `std::out_of_range` as set_custom_material() does.
+    [[nodiscard]] std::shared_ptr<const CustomMaterial> custom_material(std::size_t material) const;
     /// Draws one mesh material's primitives with a custom material, or null for the mesh's own; see
     /// Scene::set_custom_material.
     void set_custom_material(std::size_t material, std::shared_ptr<const CustomMaterial> custom);
+    /// Whether primitive @p primitive is shown, apart from the renderer's own visibility. Throws
+    /// `std::out_of_range` as set_primitive_visible() does.
+    [[nodiscard]] bool primitive_visible(std::size_t primitive) const;
     /// Shows or hides one primitive; see Scene::set_primitive_visible.
     void set_primitive_visible(std::size_t primitive, bool visible);
+    /// Whether the renderer casts shadows; see Scene::set_casts_shadows.
+    [[nodiscard]] bool casts_shadows() const;
     /// Sets whether the renderer casts shadows; see Scene::set_casts_shadows.
     void set_casts_shadows(bool casts);
     /// Copies drawn in place of the one at the object, or null; see Scene::set_placements.

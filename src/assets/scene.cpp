@@ -28,6 +28,14 @@ void require(bool value, const char *message) {
     if (!value)
         throw std::invalid_argument(message);
 }
+// Throws std::out_of_range with @p message unless @p index is below @p size.
+void require_index(std::size_t index, std::size_t size, const char *message) {
+    if (index >= size)
+        throw std::out_of_range(message);
+}
+constexpr auto material_factor_slot = "Material factor slot is outside the mesh's materials";
+constexpr auto custom_material_slot = "Custom material slot is outside the mesh's materials";
+constexpr auto primitive_slot = "Primitive is outside the mesh's primitives";
 bool finite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 void affine(const Mat4 &m) {
     for (auto v : m)
@@ -877,20 +885,43 @@ void MeshRenderer::set_mesh(std::shared_ptr<const Mesh> mesh) {
     (void)object_.scene().instance(object_.id_);
     object_.scene().assign_mesh(object_.id_, std::move(mesh));
 }
+const Pose &MeshRenderer::pose() const {
+    const auto &scene = object_.scene();
+    const auto &value = scene.instance(object_.id_);
+    const auto &entry = scene.slot(object_.id_);
+    return entry.pose ? *entry.pose : value.asset->rest_pose();
+}
 void MeshRenderer::set_pose(const Pose &pose) { object_.scene().set_pose(object_.id_, pose, object_.world_matrix()); }
+bool MeshRenderer::visible() const { return object_.scene().instance(object_.id_).visible; }
 void MeshRenderer::set_visible(bool visible) { object_.scene().set_visible(object_.id_, visible); }
+Vec3 MeshRenderer::material_factor(std::size_t material) const {
+    const auto &factors = object_.scene().instance(object_.id_).factors;
+    require_index(material, factors.size(), material_factor_slot);
+    return factors[material];
+}
 void MeshRenderer::set_material_factor(std::size_t material, Vec3 factor) {
     object_.scene().set_material_factor(object_.id_, material, factor);
 }
 void MeshRenderer::clear_material_factor(std::size_t material) {
     object_.scene().clear_material_factor(object_.id_, material);
 }
+std::shared_ptr<const CustomMaterial> MeshRenderer::custom_material(std::size_t material) const {
+    const auto &custom = object_.scene().instance(object_.id_).custom_materials;
+    require_index(material, custom.size(), custom_material_slot);
+    return custom[material];
+}
 void MeshRenderer::set_custom_material(std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
     object_.scene().set_custom_material(object_.id_, material, std::move(custom));
+}
+bool MeshRenderer::primitive_visible(std::size_t primitive) const {
+    const auto &visible = object_.scene().instance(object_.id_).primitive_visible;
+    require_index(primitive, visible.size(), primitive_slot);
+    return visible[primitive];
 }
 void MeshRenderer::set_primitive_visible(std::size_t primitive, bool visible) {
     object_.scene().set_primitive_visible(object_.id_, primitive, visible);
 }
+bool MeshRenderer::casts_shadows() const { return object_.scene().instance(object_.id_).casts_shadows; }
 void MeshRenderer::set_casts_shadows(bool casts) { object_.scene().set_casts_shadows(object_.id_, casts); }
 VisibilityRange MeshRenderer::visibility_range() const {
     return object_.scene().instance(object_.id_).visibility_range;
@@ -910,17 +941,18 @@ void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
     require(finite(factor) && factor.x >= 0 && factor.x <= 1 && factor.y >= 0 && factor.y <= 1 && factor.z >= 0 &&
                 factor.z <= 1,
             "Invalid render material factor");
-    value.factors.at(material) = factor;
+    require_index(material, value.factors.size(), material_factor_slot);
+    value.factors[material] = factor;
 }
 void Scene::clear_material_factor(Id id, std::size_t material) {
     auto &value = get(id);
-    value.factors.at(material) = value.asset->materials_->material_data.at(material).factor;
+    require_index(material, value.factors.size(), material_factor_slot);
+    value.factors[material] = value.asset->materials_->material_data[material].factor;
 }
 void Scene::set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
     auto &value = get(id);
     auto &slots = value.custom_materials;
-    if (material >= slots.size())
-        throw std::out_of_range("Custom material slot is outside the mesh's materials");
+    require_index(material, slots.size(), custom_material_slot);
     require(!value.placements || !custom || custom->reads_placements(),
             "A custom material that draws placements must read them");
     slots[material] = std::move(custom);
@@ -930,7 +962,9 @@ void Scene::set_visible(Id id, bool visible) {
     component(id, typeid(MeshRenderer))->enabled = visible;
 }
 void Scene::set_primitive_visible(Id id, std::size_t primitive, bool visible) {
-    get(id).primitive_visible.at(primitive) = visible;
+    auto &shown = get(id).primitive_visible;
+    require_index(primitive, shown.size(), primitive_slot);
+    shown[primitive] = visible;
 }
 void Scene::set_casts_shadows(Id id, bool casts) { get(id).casts_shadows = casts; }
 void validate_visibility_range(const VisibilityRange &range) {
