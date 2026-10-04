@@ -1035,11 +1035,11 @@ TEST_CASE("An attachment catalog requires every field, with null, [] and {} decl
         CHECK_THROWS_WITH_AS(decode(without(catalog, name)), missing.c_str(), std::invalid_argument);
     }
     const auto decoded = decode(catalog);
-    const auto &free = decoded.motions.at("free");
+    const auto &free = decoded.handling.at("free");
     CHECK(free.layer_overrides.empty());
     CHECK(free.support_contacts.empty());
-    REQUIRE(decoded.motions.at("brace").support_contacts.size() == 1);
-    CHECK(decoded.motions.at("brace").support_contacts[0].actions.empty());
+    REQUIRE(decoded.handling.at("brace").support_contacts.size() == 1);
+    CHECK(decoded.handling.at("brace").support_contacts[0].actions.empty());
     const auto &prop = decoded.visuals.at("prop");
     CHECK(prop.primary_node.empty());
     CHECK(prop.marker_nodes.empty());
@@ -1101,7 +1101,7 @@ TEST_CASE("A catalog and a manifest name their models in UTF-8 on every platform
     CHECK(library.load("prop")->source->nodes.at(0).name == "prop");
     const auto manifest_path = fixture.directory.path / "prop.manifest.json";
     std::ofstream(manifest_path)
-        << R"({"schema_version":3,"units":"meters","asset_id":"prop","model":"mod\u00e8le.glb",)"
+        << R"({"version":4,"units":"meters","asset_id":"prop","model":"mod\u00e8le.glb","motion_contract":null,)"
            R"("skeleton":{"id":"test.rig","bind_signature":")" +
                rig_signature + R"(","joint_count":1},"clips":[]})";
     const auto manifest = read_manifest(manifest_path);
