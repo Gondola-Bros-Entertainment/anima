@@ -72,7 +72,9 @@ struct ShadowBias {
 /// beyond the sphere cannot shadow what it holds.
 ///
 /// Each cascade filters as DirectionalShadow describes, with #bias in its own texels, and casts from every shadow
-/// casting draw whose bounds reach into its square's column toward the sun, short of the far side of its sphere. A
+/// casting draw whose bounds reach into its square's column toward the sun, short of the far side of its sphere. The
+/// renderer's shadow caster threshold (VulkanRenderer::set_shadow_caster_threshold), 0 by default, removes from these
+/// the casters smaller than a share of the cascade's radius, and depth extends only over draws that keep a caster. A
 /// disabled set is validated like an enabled one; only the device limit that VulkanRenderer::set_environment places on
 /// #resolution is skipped while it is disabled.
 struct ShadowCascades {
@@ -583,7 +585,8 @@ struct ShadowCascade {
     float texel{};
     /// Column-major view-projection: the square to Vulkan clip X and Y, with Y down, and depth along the sun from 0
     /// at the side of the cascade's sphere facing the sun to 1 at its far side, both rounded outward to whole
-    /// texels. The renderer extends depth toward the sun to its farthest caster that the square covers.
+    /// texels. The renderer extends depth toward the sun to its farthest caster that the square covers, of those
+    /// that its shadow caster threshold keeps (VulkanRenderer::set_shadow_caster_threshold).
     Mat4 view_projection{};
 };
 namespace detail {
