@@ -568,8 +568,8 @@ struct ResourceStats {
 /// the standard material discards the share of a copy's pixels that a 4x4 ordered dither gives, keeping in a begin
 /// margin the pixels complementary to those an end margin keeps, so it fades without blending or sorting, and a copy
 /// casts shadows while more than half of it draws; its vertex shaders hide the copies outside the range in a cluster
-/// that is not culled. Custom materials fade and hide copies only through animaVisibility() and animaDissolved(), as
-/// custom_material.hpp describes.
+/// that is not culled. Custom materials fade and hide copies only through animaVisibility() and animaDissolved(),
+/// which apply the standard material's anima/visibility.glsl, as custom_material.hpp describes.
 ///
 /// A primitive with levels of detail (MeshPrimitive::levels) draws, for each object or placement cluster, the coarsest
 /// level whose error stays within set_lod_threshold() pixels of the scene targets, which set_render_scale() sizes; its

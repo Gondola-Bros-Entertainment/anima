@@ -21,7 +21,7 @@ layout(push_constant) uniform Draw {
     layout(offset = 96) uvec4 indices;
 }
 draw;
-#include "visibility.glsl"
+#include "../include/anima/visibility.glsl"
 // The point @p p placed by this copy's placement, whose rows dot it as a homogeneous point.
 vec3 placePoint(vec3 p) {
     vec4 h = vec4(p, 1.0);
@@ -44,12 +44,13 @@ void main() {
     if (placed)
         point = mat3(object) * placePoint(point) + object[3].xyz;
     gl_Position = draw.viewProjection * vec4(point, 1.0);
-    // A copy casts while more than half of it draws; a dithered shadow map would speckle.
+    // A copy casts whole while more than animaShadowCastShare of it draws; a dithered shadow map would speckle.
     if (ranged) {
         mat4 range = poses.matrices[draw.indices.z + ANIMA_POSE_HEADER_RANGE];
         vec3 center = placed ? placePoint(range[1].xyz) : range[1].xyz;
-        if (abs(visibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin)) <= 0.5)
-            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        if (abs(animaVisibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin)) <=
+            animaShadowCastShare)
+            gl_Position = animaCulledPosition;
     }
     texcoord = uv;
     vertexAlpha = alpha;

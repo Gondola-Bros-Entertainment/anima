@@ -10,7 +10,7 @@ layout(location = 6) flat in float orientation;
 layout(location = 7) flat in float visibility;
 #include "material.glsl"
 #include "shader_interface.h"
-#include "visibility.glsl"
+#include "../include/anima/visibility.glsl"
 layout(push_constant) uniform Surface {
     layout(offset = 64) vec4 viewOrigin;
     layout(offset = 80) vec4 factors; // metallic, perceptual roughness
@@ -84,7 +84,7 @@ void main() {
     // mip levels for the rest of its 2x2 quad. In its visibility range's margins an object dissolves, keeping the share
     // of its pixels that its visibility gives, and a masked material discards what lies below its cutoff.
     if (mayDiscard &&
-        (dissolved(visibility, gl_FragCoord.xy) || (material.detail.y >= 0.0 && alpha < material.detail.y)))
+        (animaDissolved(visibility, gl_FragCoord.xy) || (material.detail.y >= 0.0 && alpha < material.detail.y)))
         discard;
     vec3 albedo = clamp(base.rgb * baseColor, 0.0, 1.0);
     vec3 color = reflectedLight(n, worldPosition, surface.viewOrigin, albedo, surface.factors.x * mr.b,

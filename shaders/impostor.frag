@@ -22,7 +22,7 @@ layout(push_constant) uniform Surface {
 surface;
 #include "environment.glsl"
 #include "lighting.glsl"
-#include "visibility.glsl"
+#include "../include/anima/visibility.glsl"
 #include "impostor.glsl"
 #include "impostor_sample.glsl"
 layout(location = 0) out vec4 outColor;
@@ -37,7 +37,7 @@ void main() {
     ImpostorHit hit =
         impostorHit(surface.indices.y & ANIMA_IMPOSTOR_COUNT_MASK, surface.indices.y >> ANIMA_IMPOSTOR_LAYOUT_SHIFT,
                     surface.sphere, rayOrigin, rayDirection, frames, frameWeights);
-    if (dissolved(visibility, gl_FragCoord.xy) || hit.color.a < material.detail.y)
+    if (animaDissolved(visibility, gl_FragCoord.xy) || hit.color.a < material.detail.y)
         discard;
     vec3 normal, emission;
     vec4 maps;

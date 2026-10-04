@@ -22,7 +22,8 @@
 ///
 /// Shaders can read only the inputs below, which `anima/custom_material.glsl`, beside this header, declares for
 /// GLSL. Compile each stage for SPIR-V 1.0 to 1.3 (glslc `--target-env=vulkan1.1`) with an entry point named `main`.
-/// Every name refers to the GLSL declaration in that file.
+/// Every name refers to the GLSL declaration in that file or in the two it includes: `anima/fog.glsl` and
+/// `anima/visibility.glsl`, which the standard material's shaders include too.
 ///
 /// Vertex attributes, read only by vertex shaders, are the mesh's SourceVertex fields in mesh space: location 0
 /// `vec3` position, 1 `vec3` normal, 2 `vec3` color, 3 `vec2` uv, 4 `uvec4` joints, 5 `vec4` weights, 6 `vec4`
@@ -91,8 +92,9 @@
 /// its 2x2 quad, discards the fragments for which `animaDissolved()` returns true: every fragment of a copy whose value
 /// is 0, and in the margins those that the standard material's 4x4 ordered dither discards, the pixels complementary in
 /// a begin margin to those of an end margin. The depth-only variant's vertex shader moves a copy out of the clip
-/// volume, for example to (2, 2, 2, 1), while `abs(animaVisibility())` is at most 0.5. A material whose shaders do
-/// neither draws whole every copy that the renderer does not skip, including copies outside the range.
+/// volume, for example to `animaCulledPosition`, (2, 2, 2, 1), while `abs(animaVisibility())` is at most
+/// `animaShadowCastShare`, 0.5. A material whose shaders do neither draws whole every copy that the renderer does not
+/// skip, including copies outside the range.
 ///
 /// On a Mesh compiled with Mesh::compile_impostor(), a custom material draws the quad's own vertices, not an impostor
 /// facing the eye: their positions lie on a diagonal plane of the cube around the sphere of Mesh::impostor(), and
