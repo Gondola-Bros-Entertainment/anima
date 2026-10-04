@@ -3,8 +3,9 @@
 // documented integral: pixels toward the sun and away from it, near the horizon, high, near the zenith and on the
 // ground below the horizon, from an eye 1.7 m up under suns from noon to 6 degrees below the horizon, and from 2 km up
 // in a hazy atmosphere. Then the horizon reddening toward a low sun and the sky darkening through twilight; surfaces
-// lit by atmosphere_sunlight(); tables rebuilt when the medium changes and the first frame back when it returns; the
-// same frame when the eye and the ground move together; and the time and memory the tables take.
+// lit by atmosphere_sunlight(); tables rebuilt when the medium changes and the first frame back when it returns, and
+// left as they were when any other input changes; the same frame when the eye and the ground move together; and the
+// time and memory the tables take.
 #include "atmosphere_reference.hpp"
 #include "blending.hpp"
 #include "gpu_checks.hpp"
@@ -320,12 +321,19 @@ inline void check_sunlight(Rig &rig) {
     }
 }
 
+// What reads an input of the sky: the transmittance and multiple scattering tables, which a change to it must rebuild,
+// or only the sky view table and the sky, which are drawn every frame, so that a change to it need not.
+enum class Reader { tables, sky };
+
 // Each field that the transmittance and multiple scattering tables read rebuilds them when it changes: the frame drawn
 // right after the change equals the one drawn once the tables were built afresh for the same medium, by way of another
 // medium that differs in a second field. Tables left stale would draw the new medium's sky view over the old medium's
-// tables, which differs, since each change is large and the sun low, where the tables weigh most. Changing only what
-// the sky view table reads every frame changes the frame too. Moving the eye and the ground together leaves the frame
-// as it was, to within a level of rounding.
+// tables, which differs, since each change is large and the sun low, where the tables weigh most. The same comparison
+// shows that the tables read none of the sky's other inputs, which do not rebuild them: the ground's height, through
+// the eye's altitude above it, Mie scattering's asymmetry, the sun's angular radius, and its direction and radiance.
+// The changes cover every field of Atmosphere but `enabled`, which is true whenever the tables are built. Changing only
+// what the sky view table reads every frame changes the frame too. Moving the eye and the ground together leaves the
+// frame as it was, to within a level of rounding.
 inline void check_updates(Rig &rig) {
     const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 10, 25);
     auto environment = earth();
@@ -334,28 +342,42 @@ inline void check_updates(Rig &rig) {
     // Five times Earth's ozone, so that moving and narrowing its layer shows.
     environment.atmosphere.ozone_absorption = {3.25e-6F, 9.4e-6F, 4.25e-7F};
     struct Change {
-        const char *field;
-        void (*apply)(anima::Atmosphere &);
+        const char *input;
+        Reader reader;
+        void (*apply)(anima::Environment &);
     };
+    using anima::Environment;
     const Change changes[]{
-        {"planet_radius", [](anima::Atmosphere &a) { a.planet_radius = 3'000'000; }},
-        {"thickness", [](anima::Atmosphere &a) { a.thickness = 20'000; }},
-        {"rayleigh_scattering", [](anima::Atmosphere &a) { a.rayleigh_scattering = {1.2e-5F, 2.7e-5F, 6.6e-5F}; }},
-        {"rayleigh_scale_height", [](anima::Atmosphere &a) { a.rayleigh_scale_height = 16'000; }},
-        {"mie_scattering", [](anima::Atmosphere &a) { a.mie_scattering = {2e-5F, 2e-5F, 2e-5F}; }},
-        {"mie_absorption", [](anima::Atmosphere &a) { a.mie_absorption = {1e-5F, 1e-5F, 1e-5F}; }},
-        {"mie_scale_height", [](anima::Atmosphere &a) { a.mie_scale_height = 4'000; }},
-        {"ozone_absorption", [](anima::Atmosphere &a) { a.ozone_absorption = {0, 0, 0}; }},
-        {"ozone_altitude", [](anima::Atmosphere &a) { a.ozone_altitude = 8'000; }},
-        {"ozone_width", [](anima::Atmosphere &a) { a.ozone_width = 6'000; }},
-        {"ground_albedo", [](anima::Atmosphere &a) { a.ground_albedo = {1, 1, 1}; }},
+        {"atmosphere.planet_radius", Reader::tables, [](Environment &e) { e.atmosphere.planet_radius = 3'000'000; }},
+        {"atmosphere.thickness", Reader::tables, [](Environment &e) { e.atmosphere.thickness = 20'000; }},
+        {"atmosphere.rayleigh_scattering", Reader::tables,
+         [](Environment &e) { e.atmosphere.rayleigh_scattering = {1.2e-5F, 2.7e-5F, 6.6e-5F}; }},
+        {"atmosphere.rayleigh_scale_height", Reader::tables,
+         [](Environment &e) { e.atmosphere.rayleigh_scale_height = 16'000; }},
+        {"atmosphere.mie_scattering", Reader::tables,
+         [](Environment &e) { e.atmosphere.mie_scattering = {2e-5F, 2e-5F, 2e-5F}; }},
+        {"atmosphere.mie_absorption", Reader::tables,
+         [](Environment &e) { e.atmosphere.mie_absorption = {1e-5F, 1e-5F, 1e-5F}; }},
+        {"atmosphere.mie_scale_height", Reader::tables, [](Environment &e) { e.atmosphere.mie_scale_height = 4'000; }},
+        {"atmosphere.ozone_absorption", Reader::tables,
+         [](Environment &e) { e.atmosphere.ozone_absorption = {0, 0, 0}; }},
+        {"atmosphere.ozone_altitude", Reader::tables, [](Environment &e) { e.atmosphere.ozone_altitude = 8'000; }},
+        {"atmosphere.ozone_width", Reader::tables, [](Environment &e) { e.atmosphere.ozone_width = 6'000; }},
+        {"atmosphere.ground_albedo", Reader::tables, [](Environment &e) { e.atmosphere.ground_albedo = {1, 1, 1}; }},
+        // The eye, 1.7 m above the ground, then 2,001.7 m.
+        {"atmosphere.ground_height", Reader::sky, [](Environment &e) { e.atmosphere.ground_height = -2'000; }},
+        {"atmosphere.mie_anisotropy", Reader::sky, [](Environment &e) { e.atmosphere.mie_anisotropy = .3F; }},
+        {"atmosphere.sun_angular_radius", Reader::sky, [](Environment &e) { e.atmosphere.sun_angular_radius = .02F; }},
+        {"sun.direction", Reader::sky,
+         [](Environment &e) { e.sun.direction = vec(atmosphere_reference::direction(20, 0)); }},
+        {"sun.radiance", Reader::sky, [](Environment &e) { e.sun.radiance = {.6F, .5F, .4F}; }},
     };
     rig.draw("first", view_projection, environment);
     for (const auto &change : changes) {
         auto changed = environment;
-        change.apply(changed.atmosphere);
+        change.apply(changed);
         auto detour = changed;
-        if (std::string_view(change.field) == "thickness")
+        if (std::string_view(change.input) == "atmosphere.thickness")
             detour.atmosphere.planet_radius += 100'000;
         else
             detour.atmosphere.thickness += 5'000;
@@ -363,12 +385,17 @@ inline void check_updates(Rig &rig) {
         rig.draw("changed", view_projection, changed);
         rig.draw("", view_projection, detour);
         rig.draw("rebuilt", view_projection, changed);
-        rig.images.require_same("changed", "rebuilt",
-                                std::string("Changing the atmosphere's ") + change.field +
-                                    " did not rebuild its tables");
-        rig.images.require_changed("first", "rebuilt", .05,
-                                   std::string("Changing the atmosphere's ") + change.field +
-                                       " left the sky as it was");
+        if (change.reader == Reader::tables) {
+            rig.images.require_same("changed", "rebuilt",
+                                    std::string("Changing ") + change.input +
+                                        " did not rebuild the atmosphere's tables");
+            rig.images.require_changed("first", "rebuilt", .05,
+                                       std::string("Changing ") + change.input + " left the sky as it was");
+        } else {
+            rig.images.require_same("changed", "rebuilt",
+                                    std::string("The atmosphere's tables read ") + change.input +
+                                        ", which does not rebuild them");
+        }
     }
     auto broader = environment;
     broader.atmosphere.mie_anisotropy = .3F;
@@ -437,7 +464,8 @@ inline int run(int argc, char **argv) {
     require(!stats.validation_errors && !stats.validation_warnings, "Atmosphere validation failed");
     std::cout << "PASS atmosphere: the sky from the ground and from 2 km in haze matches an independent evaluation of "
                  "the documented integral, reddens toward a low sun and darkens through twilight, lit surfaces show "
-                 "atmosphere_sunlight(), the tables follow the medium and the eye's altitude, with clean validation\n";
+                 "atmosphere_sunlight(), the medium alone rebuilds its tables and the sky follows the eye's altitude, "
+                 "with clean validation\n";
     return 0;
 }
 } // namespace atmosphere_test

@@ -5,7 +5,6 @@
 #include <anima/assets/render_visibility.hpp>
 #include <anima/scene.hpp>
 #include <map>
-#include <tuple>
 #endif
 #ifdef ANIMA_UI
 #include "ui_draw.hpp"
@@ -22,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -29,6 +29,8 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -122,6 +124,20 @@ bool has_extension(const std::vector<VkExtensionProperties> &properties, const c
     return std::any_of(properties.begin(), properties.end(),
                        [name](const auto &p) { return std::strcmp(p.extensionName, name) == 0; });
 }
+// Converts to the type of any field, so that brace initialization of an aggregate from one of these per field compiles
+// and from one more does not. Declared only, for unevaluated operands.
+struct AnyField {
+    template <class T> operator T() const;
+};
+// Whether T can be brace-initialized from one AnyField for each of @p I.
+template <class T, std::size_t... I> constexpr bool initializable_from_any(std::index_sequence<I...>) {
+    return requires { T{(static_cast<void>(I), AnyField{})...}; };
+}
+// Whether the aggregate T has exactly @p count fields. A field of class type, such as a Vec3, counts once, and an array
+// field once per element.
+template <class T, std::size_t count>
+constexpr bool has_fields = initializable_from_any<T>(std::make_index_sequence<count>{}) &&
+                            !initializable_from_any<T>(std::make_index_sequence<count + 1>{});
 // Swapchain formats in order of preference, each in VK_COLOR_SPACE_SRGB_NONLINEAR_KHR.
 constexpr std::array preferred_surface_formats{VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
                                                VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
