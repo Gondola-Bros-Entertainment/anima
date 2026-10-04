@@ -150,7 +150,7 @@ struct Triangles {
 };
 // The draw and then each level of draw @p index of @p mesh.
 std::vector<Triangles> draw_and_levels(const Mesh &mesh, std::size_t index) {
-    const auto &draw = mesh.draws()[index];
+    const auto &draw = mesh.primitives()[index];
     std::vector<Triangles> result{{&mesh, draw.first_index, draw.index_count}};
     for (const auto &level : draw.levels)
         result.push_back({&mesh, level.first_index, level.index_count});
@@ -225,8 +225,8 @@ float distance_to_triangle(Vec3 p, Vec3 a, Vec3 b, Vec3 c) {
     return length(p - (a + ab * (vb * denominator) + ac * (vc * denominator)));
 }
 // The farthest that any vertex of draw @p index of @p mesh lies from the triangles of @p level.
-float deviation(const Mesh &mesh, std::size_t index, const DrawLevel &level) {
-    const auto &draw = mesh.draws()[index];
+float deviation(const Mesh &mesh, std::size_t index, const PrimitiveLevel &level) {
+    const auto &draw = mesh.primitives()[index];
     const auto at = [&](std::uint32_t i) { return mesh.vertices()[mesh.indices()[i]].position; };
     float farthest = 0;
     for (auto i = draw.first_index; i < draw.first_index + draw.index_count; ++i) {
@@ -241,8 +241,8 @@ float deviation(const Mesh &mesh, std::size_t index, const DrawLevel &level) {
 
 TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
     const auto mesh = Mesh::compile(sphere_asset(), {.lods = {.levels = 4}});
-    REQUIRE(mesh->draws().size() == 1);
-    const auto &draw = mesh->draws()[0];
+    REQUIRE(mesh->primitives().size() == 1);
+    const auto &draw = mesh->primitives()[0];
     REQUIRE(!draw.levels.empty());
     CHECK(draw.levels.size() <= 4);
     CHECK(closed({{mesh.get(), draw.first_index, draw.index_count}}));
@@ -279,7 +279,7 @@ TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
 
 TEST_CASE("Faceted draws simplify across their hard edges and keep their texture seams") {
     const auto mesh = Mesh::compile(faceted_sphere_asset(), {.lods = {.levels = 4}});
-    const auto &draw = mesh->draws()[0];
+    const auto &draw = mesh->primitives()[0];
     REQUIRE(draw.levels.size() >= 3);
     CHECK(draw.levels[0].index_count <= draw.index_count * 6 / 10);
     float previous_error = 0;
@@ -333,7 +333,7 @@ TEST_CASE("Faceted draws keep the splits in attributes that simplification does 
                                                 : float(vertex.joints[0]);
         };
         const auto mesh = Mesh::compile(asset, {.lods = {.levels = 4}});
-        const auto &draw = mesh->draws()[0];
+        const auto &draw = mesh->primitives()[0];
         REQUIRE(draw.levels.size() >= 3);
         // The protected splits are two meridians, so the hard edges elsewhere still simplify.
         CHECK(draw.levels[0].index_count <= draw.index_count * 6 / 10);
@@ -384,7 +384,7 @@ TEST_CASE("A level's error covers every step that produced it") {
     // beyond it with fused multiply-adds and 29% without. A deeper level, made by several steps, may understate its
     // distance no more than that; levels that kept only the largest step lay up to 64% beyond their error.
     const auto mesh = Mesh::compile(sphere_asset(), {.lods = {.levels = 6}});
-    const auto &levels = mesh->draws()[0].levels;
+    const auto &levels = mesh->primitives()[0].levels;
     REQUIRE(levels.size() >= 5);
     const auto one_step = deviation(*mesh, 0, levels[0]) / levels[0].error;
     for (std::size_t k = 1; k < levels.size(); ++k)
@@ -393,7 +393,7 @@ TEST_CASE("A level's error covers every step that produced it") {
 
 TEST_CASE("Draws record the palette matrices that may place their vertices") {
     const auto rigid = Mesh::compile(sphere_asset());
-    CHECK(rigid->draws()[0].palette_count == 1);
+    CHECK(rigid->primitives()[0].palette_count == 1);
     auto asset = sphere_asset();
     asset.nodes.resize(4);
     asset.skins.push_back({{1, 2, 3}, {identity(), identity(), identity()}});
@@ -403,9 +403,9 @@ TEST_CASE("Draws record the palette matrices that may place their vertices") {
     }
     asset.primitives[0].skin = 0;
     const auto skinned = Mesh::compile(asset);
-    CHECK(skinned->draws()[0].skinned);
-    CHECK(skinned->draws()[0].palette_offset == 4);
-    CHECK(skinned->draws()[0].palette_count == 3);
+    CHECK(skinned->primitives()[0].skinned);
+    CHECK(skinned->primitives()[0].palette_offset == 4);
+    CHECK(skinned->primitives()[0].palette_count == 3);
 }
 
 TEST_CASE("Draws that meet stay closed whichever levels each draws") {
@@ -416,21 +416,21 @@ TEST_CASE("Draws that meet stay closed whichever levels each draws") {
     asset.primitives.push_back(sphere_band(24, 48, 0, 12, 0));
     asset.primitives.push_back(sphere_band(24, 48, 12, 24, 1));
     const auto mesh = Mesh::compile(asset, {.lods = {.levels = 4}});
-    REQUIRE(mesh->draws().size() == 2);
-    REQUIRE(!mesh->draws()[0].levels.empty());
-    REQUIRE(!mesh->draws()[1].levels.empty());
+    REQUIRE(mesh->primitives().size() == 2);
+    REQUIRE(!mesh->primitives()[0].levels.empty());
+    REQUIRE(!mesh->primitives()[1].levels.empty());
     for (const auto &north : draw_and_levels(*mesh, 0))
         for (const auto &south : draw_and_levels(*mesh, 1))
             CHECK(closed({north, south}));
 }
 
 TEST_CASE("Draws without levels of detail") {
-    CHECK(Mesh::compile(sphere_asset(), {.lods = {.levels = 0}})->draws()[0].levels.empty());
-    CHECK(Mesh::compile(sphere_asset())->draws()[0].levels.empty());
+    CHECK(Mesh::compile(sphere_asset(), {.lods = {.levels = 0}})->primitives()[0].levels.empty());
+    CHECK(Mesh::compile(sphere_asset())->primitives()[0].levels.empty());
     // Masked draws keep only themselves: their cutout edges follow texture coordinates, which simplification does not
     // weigh.
-    CHECK(Mesh::compile(sphere_asset(AlphaMode::mask), {.lods = {.levels = 4}})->draws()[0].levels.empty());
-    CHECK_FALSE(Mesh::compile(sphere_asset(AlphaMode::blend), {.lods = {.levels = 4}})->draws()[0].levels.empty());
+    CHECK(Mesh::compile(sphere_asset(AlphaMode::mask), {.lods = {.levels = 4}})->primitives()[0].levels.empty());
+    CHECK_FALSE(Mesh::compile(sphere_asset(AlphaMode::blend), {.lods = {.levels = 4}})->primitives()[0].levels.empty());
     CHECK_THROWS_WITH_AS((void)Mesh::compile(sphere_asset(), {.lods = {.levels = 9}}),
                          "Mesh LOD levels must be from 0 to 8", std::invalid_argument);
     // A double pyramid of six triangles cannot lose 15% of its triangles without collapsing, so it keeps at most one.
@@ -438,7 +438,7 @@ TEST_CASE("Draws without levels of detail") {
     tiny.nodes.resize(1);
     tiny.materials.emplace_back();
     tiny.primitives.push_back(sphere(2, 3));
-    CHECK(Mesh::compile(tiny, {.lods = {.levels = 4}})->draws()[0].levels.size() <= 1);
+    CHECK(Mesh::compile(tiny, {.lods = {.levels = 4}})->primitives()[0].levels.size() <= 1);
 }
 
 TEST_CASE("Static compilation generates levels in every resulting mesh, which stay closed together") {
@@ -448,7 +448,7 @@ TEST_CASE("Static compilation generates levels in every resulting mesh, which st
     const auto pieces = Mesh::compile_static(sphere_asset(), options);
     REQUIRE(pieces.size() == 3);
     for (const auto &piece : pieces)
-        for (const auto &draw : piece->draws())
+        for (const auto &draw : piece->primitives())
             CHECK_FALSE(draw.levels.empty());
     for (const auto &first : draw_and_levels(*pieces[0], 0))
         for (const auto &second : draw_and_levels(*pieces[1], 0))
@@ -476,10 +476,10 @@ TEST_CASE("Static compilation without limits compiles with the options' retentio
 
 TEST_CASE("Loading a GLB file compiles it with the options given, as compiling its import does") {
     const TemporaryFile file(glb(sphere(24, 48)));
-    REQUIRE(Mesh::load(file.path)->draws().size() == 1);
-    CHECK(Mesh::load(file.path)->draws()[0].levels.empty());
+    REQUIRE(Mesh::load(file.path)->primitives().size() == 1);
+    CHECK(Mesh::load(file.path)->primitives()[0].levels.empty());
     const auto mesh = Mesh::load(file.path, {.texel_retention = TexelRetention::until_upload, .lods = {.levels = 2}});
-    const auto &levels = mesh->draws()[0].levels;
+    const auto &levels = mesh->primitives()[0].levels;
     CHECK_FALSE(levels.empty());
     CHECK(levels.size() <= 2);
     CHECK(mesh->texel_retention() == TexelRetention::until_upload);
@@ -491,7 +491,7 @@ TEST_CASE("Loading a GLB file compiles it with the options given, as compiling i
 
 TEST_CASE("Snapshots budget each draw's own triangles, not its levels") {
     const auto mesh = Mesh::compile(sphere_asset(), {.lods = {.levels = 4}});
-    const auto corners = mesh->draws()[0].index_count;
+    const auto corners = mesh->primitives()[0].index_count;
     REQUIRE(mesh->indices().size() > corners);
     Scene scene;
     (void)scene.create({}, mesh);

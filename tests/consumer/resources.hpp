@@ -171,7 +171,7 @@ inline int run(int argc, char **argv) {
     images.discard({"preloaded-reference"});
     {
         const std::array invalid{anima::Mesh::compile(*asset), std::shared_ptr<const anima::Mesh>{}};
-        rejects<std::invalid_argument>([&] { renderer.prepare_meshes(invalid); }, "Cannot prepare a null render asset");
+        rejects<std::invalid_argument>([&] { renderer.prepare_meshes(invalid); }, "Cannot prepare a null mesh");
         require(renderer.resource_stats().mesh_uploads == prepared_uploads,
                 "Invalid preparation partially uploaded its inputs");
     }
@@ -191,7 +191,7 @@ inline int run(int argc, char **argv) {
         const bool timeout = fatal == "upload-timeout";
         constexpr std::string_view timed_out = "Injected upload timeout failed (VkResult 2)";
         if (prepare_fatal) {
-            const std::array candidate_meshes{candidate->instance(candidate->instances().front()).asset};
+            const std::array candidate_meshes{candidate->instance(candidate->instances().front()).mesh};
             const anima::MeshPreparation candidate_preparation(candidate_meshes.front());
             rejects<anima::RendererFatalError>(
                 [&] { renderer.prepare_mesh(candidate_preparation, {anima::parse_renderer_failure_stage(fatal)}); },

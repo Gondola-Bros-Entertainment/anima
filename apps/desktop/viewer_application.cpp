@@ -54,7 +54,7 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
         }
         if (!options.asset.empty()) {
             const auto asset = anima::load_asset(options.asset);
-            anima::print_mesh_report(anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset)));
+            anima::print_mesh_report(anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset)), std::cout);
             auto scene = std::make_shared<anima::Scene>();
             (void)scene->create(options.asset.filename().string(), anima::Mesh::compile(*asset));
             options.renderer.scenes = {std::move(scene)};

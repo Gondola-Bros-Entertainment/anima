@@ -11,10 +11,10 @@
 #include <array>
 #include <fstream>
 #include <functional>
-#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
+#include <ostream>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -622,7 +622,7 @@ std::shared_ptr<const Asset> load_motion_asset(const std::filesystem::path &path
     return read_asset(read_glb(path, steps), true, steps);
 }
 
-void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scene, std::size_t offset,
+void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &snapshot, std::size_t offset,
                         const Mat4 &attachment) {
     require_pose_for(asset, pose);
     std::vector<std::vector<Mat4>> palettes;
@@ -635,7 +635,7 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
     for (const auto &primitive : asset.primitives) {
         const auto factor = primitive.material >= 0 ? asset.materials.at(primitive.material).factor : Vec3{1, 1, 1};
         const auto node_world = attachment * pose.world.at(primitive.node);
-        for (auto &draw : scene.primitives)
+        for (auto &draw : snapshot.primitives)
             if (draw.first_vertex == offset)
                 draw.node_world = node_world;
         bool reversed = false;
@@ -655,7 +655,7 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
             // The first corner's matrix decides the triangle's winding, as it does on the GPU.
             if (corner % 3 == 0)
                 reversed = detail::reverses_winding(transform);
-            auto &vertex = scene.vertices.at(offset++);
+            auto &vertex = snapshot.vertices.at(offset++);
             vertex.position = point(transform, source.position);
             vertex.normal = normal(transform, source.normal);
             vertex.color = {source.color.x * factor.x, source.color.y * factor.y, source.color.z * factor.z};
@@ -667,68 +667,68 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scen
                 require(std::isfinite(v), "Non-finite posed vertex/material");
             // A reversed triangle swaps its last two corners, keeping its source winding against its normals.
             if (reversed && corner % 3 == 2)
-                std::swap(scene.vertices.at(offset - 2), scene.vertices.at(offset - 1));
+                std::swap(snapshot.vertices.at(offset - 2), snapshot.vertices.at(offset - 1));
         }
     }
 }
 MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose) {
     require_pose_for(asset, pose);
-    MeshSnapshot scene;
-    scene.mesh_nodes = asset.mesh_nodes;
-    scene.skins = asset.skins.size();
-    scene.materials = asset.materials;
-    scene.textures = asset.textures;
-    scene.notices = asset.notices;
+    MeshSnapshot snapshot;
+    snapshot.mesh_nodes = asset.mesh_nodes;
+    snapshot.skins = asset.skins.size();
+    snapshot.materials = asset.materials;
+    snapshot.textures = asset.textures;
+    snapshot.notices = asset.notices;
     for (const auto &clip : asset.animations)
-        scene.clips.push_back(clip.name);
+        snapshot.clips.push_back(clip.name);
     const auto rest = sample_pose(asset);
     for (const auto &skin : asset.skins) {
-        scene.joints += skin.joints.size();
+        snapshot.joints += skin.joints.size();
         for (std::size_t j = 0; j < skin.joints.size(); ++j) {
             const auto bind = rest.world.at(skin.joints[j]) * skin.inverse_bind.at(j), unit = identity();
             for (unsigned k = 0; k < 16; ++k)
-                scene.bind_deviation = std::max(scene.bind_deviation, std::abs(bind[k] - unit[k]));
+                snapshot.bind_deviation = std::max(snapshot.bind_deviation, std::abs(bind[k] - unit[k]));
         }
     }
-    scene.default_is_bind_pose = scene.bind_deviation < mesh_limits::bind_pose_tolerance;
+    snapshot.default_is_bind_pose = snapshot.bind_deviation < mesh_limits::bind_pose_tolerance;
     for (const auto &p : asset.primitives) {
-        scene.primitives.push_back({asset.nodes.at(p.node).name, p.mesh_name,
-                                    p.material >= 0 ? asset.materials.at(p.material).name : "default",
-                                    pose.world.at(p.node), static_cast<std::uint32_t>(scene.vertices.size()),
-                                    static_cast<std::uint32_t>(p.vertices.size()), p.material, true});
-        scene.vertices.resize(scene.vertices.size() + p.vertices.size());
+        snapshot.primitives.push_back({asset.nodes.at(p.node).name, p.mesh_name,
+                                       p.material >= 0 ? asset.materials.at(p.material).name : "default",
+                                       pose.world.at(p.node), static_cast<std::uint32_t>(snapshot.vertices.size()),
+                                       static_cast<std::uint32_t>(p.vertices.size()), p.material, true});
+        snapshot.vertices.resize(snapshot.vertices.size() + p.vertices.size());
         if (p.skin >= 0)
-            scene.skinned_vertices += p.vertices.size();
+            snapshot.skinned_vertices += p.vertices.size();
     }
-    pose_mesh_snapshot(asset, pose, scene);
+    pose_mesh_snapshot(asset, pose, snapshot);
     const auto infinity = std::numeric_limits<float>::infinity();
-    scene.minimum = {infinity, infinity, infinity};
-    scene.maximum = {-infinity, -infinity, -infinity};
-    for (const auto &v : scene.vertices) {
-        scene.minimum = {std::min(scene.minimum.x, v.position.x), std::min(scene.minimum.y, v.position.y),
-                         std::min(scene.minimum.z, v.position.z)};
-        scene.maximum = {std::max(scene.maximum.x, v.position.x), std::max(scene.maximum.y, v.position.y),
-                         std::max(scene.maximum.z, v.position.z)};
+    snapshot.minimum = {infinity, infinity, infinity};
+    snapshot.maximum = {-infinity, -infinity, -infinity};
+    for (const auto &v : snapshot.vertices) {
+        snapshot.minimum = {std::min(snapshot.minimum.x, v.position.x), std::min(snapshot.minimum.y, v.position.y),
+                            std::min(snapshot.minimum.z, v.position.z)};
+        snapshot.maximum = {std::max(snapshot.maximum.x, v.position.x), std::max(snapshot.maximum.y, v.position.y),
+                            std::max(snapshot.maximum.z, v.position.z)};
     }
-    return scene;
+    return snapshot;
 }
-MeshSnapshot load_glb(const std::filesystem::path &path) {
+MeshSnapshot load_mesh_snapshot(const std::filesystem::path &path) {
     const auto asset = load_asset(path);
     return make_mesh_snapshot(*asset, sample_pose(*asset));
 }
-void print_mesh_report(const MeshSnapshot &scene) {
-    std::cout << "ASSET mesh_nodes=" << scene.mesh_nodes << " primitives=" << scene.primitives.size()
-              << " materials=" << scene.materials.size() << " triangles=" << scene.vertices.size() / 3
-              << " skins=" << scene.skins << " joints=" << scene.joints
-              << " skinned_vertices=" << scene.skinned_vertices << " bind_deviation=" << scene.bind_deviation
-              << " pose=" << (scene.default_is_bind_pose ? "bind" : "default") << '\n';
-    std::cout << "Bounds: [" << scene.minimum.x << ',' << scene.minimum.y << ',' << scene.minimum.z << "] to ["
-              << scene.maximum.x << ',' << scene.maximum.y << ',' << scene.maximum.z << "]\n";
-    for (const auto &p : scene.primitives)
-        std::cout << "  " << p.node_name << " / " << p.material_name << ": " << p.vertex_count / 3 << " triangles\n";
-    for (const auto &clip : scene.clips)
-        std::cout << "  Available clip: " << clip << '\n';
-    for (const auto &notice : scene.notices)
-        std::cout << "NOTICE: " << notice << '\n';
+void print_mesh_report(const MeshSnapshot &snapshot, std::ostream &out) {
+    out << "ASSET mesh_nodes=" << snapshot.mesh_nodes << " primitives=" << snapshot.primitives.size()
+        << " materials=" << snapshot.materials.size() << " triangles=" << snapshot.vertices.size() / 3
+        << " skins=" << snapshot.skins << " joints=" << snapshot.joints
+        << " skinned_vertices=" << snapshot.skinned_vertices << " bind_deviation=" << snapshot.bind_deviation
+        << " pose=" << (snapshot.default_is_bind_pose ? "bind" : "default") << '\n';
+    out << "Bounds: [" << snapshot.minimum.x << ',' << snapshot.minimum.y << ',' << snapshot.minimum.z << "] to ["
+        << snapshot.maximum.x << ',' << snapshot.maximum.y << ',' << snapshot.maximum.z << "]\n";
+    for (const auto &p : snapshot.primitives)
+        out << "  " << p.node_name << " / " << p.material_name << ": " << p.vertex_count / 3 << " triangles\n";
+    for (const auto &clip : snapshot.clips)
+        out << "  Available clip: " << clip << '\n';
+    for (const auto &notice : snapshot.notices)
+        out << "NOTICE: " << notice << '\n';
 }
 } // namespace anima

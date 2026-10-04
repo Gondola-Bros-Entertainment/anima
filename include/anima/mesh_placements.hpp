@@ -65,7 +65,8 @@ class MeshPlacements {
     [[nodiscard]] std::span<const Mat4> transforms() const noexcept { return transforms_; }
     /// Clusters in order, covering transforms() without gaps.
     [[nodiscard]] std::span<const Cluster> clusters() const noexcept { return clusters_; }
-    /// Bounds of each primitive's copies relative to the object, by Mesh::draws() index; invalid for an empty draw.
+    /// Bounds of each primitive's copies relative to the object, by Mesh::primitives() index; invalid for an empty
+    /// primitive.
     [[nodiscard]] std::span<const RenderBounds> primitive_bounds() const noexcept { return primitive_bounds_; }
     /// Union of primitive_bounds().
     [[nodiscard]] const RenderBounds &bounds() const noexcept { return bounds_; }

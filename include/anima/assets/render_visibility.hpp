@@ -1,5 +1,7 @@
 #pragma once
+#include <anima/mesh.hpp>
 #include <anima/scene.hpp>
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <span>
