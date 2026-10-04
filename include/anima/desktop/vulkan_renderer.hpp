@@ -222,9 +222,9 @@ struct FrameProfile {
     /// for the GPU.
     double prepare_ms{};
     /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
-    /// and placements, palette writes, sorting blended draws back to front, creating the opaque depth and color copies
-    /// that custom materials read (on the first frame that needs them after each swapchain creation), and writing the
-    /// frame's shadow cascades and environment.
+    /// and placements, palette writes, sorting the objects with opaque and masked draws front to back and the blended
+    /// draws back to front, creating the opaque depth and color copies that custom materials read (on the first frame
+    /// that needs them after each swapchain creation), and writing the frame's shadow cascades and environment.
     double upload_ms{};
     /// Swapchain image acquisition.
     double acquire_ms{};
@@ -487,6 +487,18 @@ struct ResourceStats {
 /// so that a GPU that removes hidden surfaces before shading them, as Apple GPUs do, can treat their fragments as
 /// opaque, except masked materials, objects and placement clusters that may lie in a margin of their visibility range,
 /// and single-sided draws that the rasterizer does not cull (ResourceStats::discarding_draw_calls).
+///
+/// The view draws the opaque and masked meshes of every selected scene in three groups: first the draw calls of meshes
+/// other than impostors through the pipelines that cannot discard, then those through the pipeline that may, the
+/// calls of placement clusters that need it included whatever pipeline the rest of their draw takes, then impostors,
+/// whose fragment shader may discard and writes depth. Each group draws its objects nearest first, by the distance from
+/// the eye to the nearest point of their world bounds (Scene::Instance::bounds) in a perspective view, or along the
+/// view direction in an orthographic one, and objects at equal distances in selection and instance order; within a
+/// group an object's draws keep their order (Mesh::draws()), and a draw's placement clusters theirs. A GPU that tests
+/// depth before shading then skips more of the surfaces that nearer ones hide, and one that removes hidden surfaces
+/// before shading, as Apple GPUs do, receives every fragment that cannot discard before any that may. These draws test
+/// depth with `GREATER` and write it, so they show the nearest surface whatever the order, except that of two surfaces
+/// at equal depth the one drawn first shows.
 ///
 /// Blended materials (AlphaMode::blend) draw in the same pass, after every opaque and masked draw of every
 /// selected scene. They test depth with `GREATER`, since the view's depth is reversed, and write none, so nearer opaque
