@@ -502,7 +502,8 @@ inline void run() {
         const auto binding =
             animated_attachment_binding(attachments.roles.at("probe").binding, visual, *resource->source, end_prop);
         const auto placement = attachment_placement(baseline, binding);
-        const auto primary = placement * end_prop.world[0] * visual.primary_grip;
+        // The primary node carries the model-space grip by its motion from its rest placement.
+        const auto primary = placement * end_prop.world[0] * inverse(rest_prop.world[0]) * visual.primary_grip;
         const auto expected = baseline.world[sockets.at("port").node] * sockets.at("port").local;
         for (unsigned i = 0; i < 16; ++i)
             check(std::abs(primary[i] - expected[i]) < 1e-5F, "Animated grip lost its primary socket");
