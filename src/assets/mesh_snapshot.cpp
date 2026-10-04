@@ -1,6 +1,6 @@
+#include "../detail/rotation_matrix.hpp"
 #include "../detail/staging.hpp"
 #include "mesh_limits.hpp"
-#include "rotation_matrix.hpp"
 #include "winding.hpp"
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/scene_validation.hpp>
@@ -49,7 +49,7 @@ void require_pose_for(const Asset &asset, const Pose &pose) {
 // glTF requires a node matrix to be TRS without shear. Its decomposition becomes the node's rest transform, so
 // consumers of local TRS, such as motion transfer, see the node's actual placement. A mirrored matrix gets a
 // negative X scale, and a matrix with a zero-scale axis keeps the identity rotation.
-Transform decompose(const Mat4 &m) {
+Transform node_transform(const Mat4 &m) {
     Transform result;
     result.translation = translation_of(m);
     const std::array axes{axis_x(m), axis_y(m), axis_z(m)};
@@ -269,7 +269,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         value.has_matrix = node.has_matrix;
         cgltf_node_transform_local(&node, value.rest_matrix.data());
         if (value.has_matrix)
-            value.rest = decompose(value.rest_matrix);
+            value.rest = node_transform(value.rest_matrix);
         asset->nodes.push_back(value);
     }
     for (std::size_t i = 0; i < data->skins_count; ++i) {

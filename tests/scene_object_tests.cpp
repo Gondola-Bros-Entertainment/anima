@@ -3,11 +3,13 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <set>
 #include <stdexcept>
 #include <unordered_set>
@@ -541,6 +543,117 @@ TEST_CASE("A renderer's pose keeps the object's world matrix unless the call als
     renderer.set_pose(pose);
     CHECK(object.world_matrix() == collapsed);
     CHECK(scene.instance(object.id()).palette[0] == collapsed * pose.world[0]);
+}
+
+namespace {
+// Checks that @p actual is @p expected within doctest's default tolerance, component by component.
+void check_near(Vec3 actual, Vec3 expected) {
+    CHECK(actual.x == doctest::Approx(expected.x));
+    CHECK(actual.y == doctest::Approx(expected.y));
+    CHECK(actual.z == doctest::Approx(expected.z));
+}
+// Checks that @p actual and @p expected are the same rotation; q and -q are.
+void check_rotation(const Quat &actual, const Quat &expected) {
+    float cosine = 0;
+    for (std::size_t i = 0; i < 4; ++i)
+        cosine += actual[i] * expected[i];
+    CHECK(std::abs(cosine) == doctest::Approx(1));
+}
+} // namespace
+
+TEST_CASE("Objects read and replace rotation and scale, report their facing and look at targets") {
+    constexpr float quarter_turn = std::numbers::pi_v<float> / 2;
+    Scene scene;
+    auto object = scene.create("Turned");
+    const auto yaw = axis_angle(world_up, .5F);
+    object.set_local_transform({{1, 2, 3}, yaw, {2, 3, 4}});
+    check_rotation(object.local_rotation(), yaw);
+    check_near(object.local_scale(), {2, 3, 4});
+    REQUIRE(object.local_transform());
+    check_rotation(object.local_transform()->rotation, yaw);
+
+    // Replacing the rotation keeps the translation exactly and the scale.
+    const auto pitch = axis_angle({1, 0, 0}, .25F);
+    object.set_rotation(pitch);
+    CHECK(object.position().x == 1);
+    CHECK(object.position().y == 2);
+    CHECK(object.position().z == 3);
+    check_near(object.local_scale(), {2, 3, 4});
+    check_rotation(object.rotation(), pitch);
+    object.transform().set_local_scale({1, 1, 1});
+    check_rotation(object.transform().local_rotation(), pitch);
+    check_near(object.transform().local_scale(), {1, 1, 1});
+
+    // Directions follow the world matrix: a quarter turn left faces -X.
+    object.set_rotation(axis_angle(world_up, quarter_turn));
+    check_near(object.forward(), {-1, 0, 0});
+    check_near(object.right(), {0, 0, -1});
+    check_near(object.up(), {0, 1, 0});
+
+    // A child's world rotation includes its parent's; setting it derives the local rotation.
+    auto child = scene.create("Child");
+    child.set_parent(object, ReparentMode::keep_local);
+    check_rotation(child.rotation(), object.rotation());
+    check_near(child.transform().forward(), {-1, 0, 0});
+    child.set_rotation(identity_rotation);
+    check_rotation(child.rotation(), identity_rotation);
+    check_rotation(child.local_rotation(), conjugate(object.rotation()));
+
+    // Looking straight down is parallel to world_up, which another up resolves; the rejected call changes nothing.
+    object.set_local_scale({2, 2, 2});
+    const auto before = object.world_matrix();
+    CHECK_THROWS_WITH_AS(object.look_at({1, -5, 3}), math_error_message(MathErrorCode::invalid_look), MathError);
+    CHECK(object.world_matrix() == before);
+    object.transform().look_at({1, -5, 3}, {0, 0, -1});
+    check_near(object.forward(), {0, -1, 0});
+    check_near(object.up(), {0, 0, -1});
+    check_near(object.local_scale(), {2, 2, 2});
+    CHECK(object.position().y == 2);
+    object.look_at({4, 2, 7});
+    check_near(object.forward(), {.6F, 0, .8F});
+}
+
+TEST_CASE("Rotation and scale setters keep a reflection, drop shear and need a rotation to keep") {
+    Scene scene;
+    auto object = scene.create("Mirrored");
+    auto mirrored = identity();
+    mirrored[0] = -1;
+    object.set_local_matrix(mirrored);
+    check_near(object.local_scale(), {-1, 1, 1});
+    check_rotation(object.local_rotation(), identity_rotation);
+    const auto turn = axis_angle({0, 0, 1}, .4F);
+    object.set_local_rotation(turn);
+    check_near(object.local_scale(), {-1, 1, 1});
+    check_rotation(object.local_rotation(), turn);
+
+    // Shear has no T * R * S form, but its nearest rotation does; a rotation setter rebuilds without the shear.
+    auto sheared = identity();
+    sheared[4] = .5F;
+    object.set_local_matrix(sheared);
+    CHECK_FALSE(object.transform().local_transform());
+    const auto nearest = object.local_rotation();
+    object.set_local_rotation(nearest);
+    REQUIRE(object.local_transform());
+    check_rotation(object.local_transform()->rotation, nearest);
+
+    // A collapsed object keeps its zero scale through a rotation, but has no rotation to read or keep.
+    const auto collapsed = math_error_message(MathErrorCode::collapsed_transform);
+    object.set_local_scale({0, 0, 0});
+    check_near(object.local_scale(), {0, 0, 0});
+    CHECK_FALSE(object.local_transform());
+    CHECK_THROWS_WITH_AS((void)object.local_rotation(), collapsed, MathError);
+    CHECK_THROWS_WITH_AS((void)object.rotation(), collapsed, MathError);
+    CHECK_THROWS_WITH_AS(object.set_local_scale({1, 1, 1}), collapsed, MathError);
+    object.set_local_rotation(turn);
+    check_near(object.local_scale(), {0, 0, 0});
+    // A collapsed axis has no direction, so it falls back to world_up as normalized() does.
+    check_near(object.forward(), world_up);
+
+    object.set_local_transform({});
+    CHECK_THROWS_WITH_AS(object.set_local_scale({std::numeric_limits<float>::infinity(), 1, 1}),
+                         "Non-finite instance transform", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(object.set_rotation({}), math_error_message(MathErrorCode::zero_quaternion), MathError);
+    CHECK(object.local_matrix() == identity());
 }
 
 TEST_CASE("The shared consumer scenario for objects, lifetime, terrain, mesh preparation and animation passes") {

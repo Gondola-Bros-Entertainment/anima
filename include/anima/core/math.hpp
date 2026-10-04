@@ -35,6 +35,8 @@ inline constexpr Vec3 view_forward{0, 0, -1};
 inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 namespace detail {
+/// A vector no longer than this has no direction: normalized() falls back to world_up for it.
+inline constexpr double minimum_direction_length = 1e-12;
 /// The length of @p v, squared and summed in double, where no finite `float` component overflows or underflows.
 inline double length_in_double(Vec3 v) { return std::sqrt(double(v.x) * v.x + double(v.y) * v.y + double(v.z) * v.z); }
 } // namespace detail
@@ -46,9 +48,8 @@ inline float length(Vec3 v) { return float(detail::length_in_double(v)); }
 /// and the division are computed in double, so any vector of finite `float` components longer than `1e-12`
 /// normalizes.
 inline Vec3 normalized(Vec3 v) {
-    constexpr double minimum_length = 1e-12;
     const double n = detail::length_in_double(v);
-    if (!(n > minimum_length) || !std::isfinite(n))
+    if (!(n > detail::minimum_direction_length) || !std::isfinite(n))
         return world_up;
     return {float(v.x / n), float(v.y / n), float(v.z / n)};
 }
@@ -188,15 +189,37 @@ inline std::array<float, 4> tangent(const Mat4 &m, const std::array<float, 4> &t
     const auto v = a * t[0] + b * t[1] + c * t[2];
     return {v.x, v.y, v.z, t[3] * (dot(a, cross(b, c)) < 0 ? -1.F : 1.F)};
 }
-/// View matrix for an eye at @p eye looking at @p target, with world_up as the up reference. View
-/// space has +X right, +Y up and the view direction along -Z. The direction must be nonzero and not
-/// parallel to world_up; such input is not rejected and gives a degenerate matrix.
-inline Mat4 look_at(Vec3 eye, Vec3 target) {
-    const auto forward = normalized(target - eye);
-    const auto right = normalized(cross(forward, {0, 1, 0}));
-    const auto up = cross(right, forward);
-    return {right.x, up.x, -forward.x, 0, right.y,          up.y,          -forward.y,        0,
-            right.z, up.z, -forward.z, 0, -dot(right, eye), -dot(up, eye), dot(forward, eye), 1};
+namespace detail {
+/// The unit right, up and forward axes, in that order, of a view along @p forward with @p up as its up reference:
+/// forward is @p forward normalized, right is `forward x up` normalized, and up is `right x forward`. Throws as
+/// look_at() states.
+inline std::array<Vec3, 3> look_axes(Vec3 forward, Vec3 up) {
+    // The sine of the angle between the directions must exceed this, so that their cross product has a direction.
+    constexpr float minimum_sine = 1e-6F;
+    const auto usable = [](Vec3 v) {
+        const double n = length_in_double(v);
+        return n > minimum_direction_length && std::isfinite(n);
+    };
+    if (!usable(forward) || !usable(up))
+        throw MathError(MathErrorCode::invalid_look);
+    const auto ahead = normalized(forward), side = cross(ahead, normalized(up));
+    if (!(length(side) > minimum_sine))
+        throw MathError(MathErrorCode::invalid_look);
+    const auto right = normalized(side);
+    return {right, cross(right, ahead), ahead};
+}
+} // namespace detail
+/// View matrix for an eye at @p eye looking at @p target, with @p up as the up reference. View space has +X right, +Y
+/// up and the view direction along -Z; its +Y is @p up made perpendicular to the view direction, so @p up need not be
+/// a unit vector. Its rotation is the inverse of the one that look_rotation() gives for `target - eye` and @p up.
+///
+/// Throws MathError with MathErrorCode::invalid_look when `target - eye` or @p up is not finite or is no longer than
+/// `1e-12`, or when the two are parallel: the sine of the angle between them is at most `1e-6`, as for a view straight
+/// up or down with the default world_up, which another @p up resolves.
+[[nodiscard]] inline Mat4 look_at(Vec3 eye, Vec3 target, Vec3 up = world_up) {
+    const auto [right, view_up, forward] = detail::look_axes(target - eye, up);
+    return {right.x, view_up.x, -forward.x, 0, right.y,          view_up.y,          -forward.y,        0,
+            right.z, view_up.z, -forward.z, 0, -dot(right, eye), -dot(view_up, eye), dot(forward, eye), 1};
 }
 /// Perspective projection with a full vertical field of view of @p vertical_fov_radians and a width of @p aspect
 /// times its height, for view space looking down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0
@@ -333,7 +356,9 @@ struct OrbitCamera {
     /// View-projection matrix: perspective() with a vertical field of view of `std::numbers::pi_v<float> / 4` radians
     /// (45 degrees) and near and far planes at 0.01 and 50 times #radius, applied to look_at() from position() toward
     /// #target. Throws MathError with MathErrorCode::invalid_frustum when perspective() rejects those arguments, as for
-    /// an @p aspect or #radius that is not finite and positive.
+    /// an @p aspect or #radius that is not finite and positive, or with MathErrorCode::invalid_look when look_at()
+    /// rejects position() and #target, as for a #distance of 0 or a #pitch of
+    /// `std::numbers::pi_v<float> / 2`.
     [[nodiscard]] Mat4 matrix(float aspect) const {
         return perspective(std::numbers::pi_v<float> / 4, aspect, radius * 0.01F, radius * 50) *
                look_at(position(), target);
