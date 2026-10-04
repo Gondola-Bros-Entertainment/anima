@@ -23,6 +23,12 @@ BodySettings box(Vec2 position, Vec2 extent, Motion motion = Motion::stationary)
     s.motion = motion;
     return s;
 }
+constexpr double frame = 1. / 60;           // One 60 Hz fixed step.
+constexpr float velocity_tolerance = 1e-4F; // Velocities computed from a mass and an inertia.
+bool near(float a, float b) { return std::abs(a - b) < velocity_tolerance; }
+bool near(Vec2 a, Vec2 b) { return near(a.x, b.x) && near(a.y, b.y); }
+// A box's rotational inertia about its center: m / 3 (h_x^2 + h_y^2).
+float box_inertia(float mass, Vec2 half) { return mass / 3 * (half.x * half.x + half.y * half.y); }
 } // namespace
 
 TEST_CASE("Bodies land, sleep, wake and expire with their world") {
@@ -468,6 +474,175 @@ TEST_CASE("A dynamic body's mass is BodySettings::mass for every shape and sets 
     }
     circle.remove();
     CHECK_THROWS_WITH_AS((void)circle.mass(), "Expired 2D physics body", std::out_of_range);
+}
+
+TEST_CASE("Impulses at points and angular impulses follow the body's inertia") {
+    constexpr float mass = 3;
+    const Vec2 half{1, .5F};
+    const float inertia = box_inertia(mass, half); // 1.25
+    World world({{0, 0}, 8});
+    auto s = box({5, 2}, half, Motion::dynamic);
+    s.mass = mass;
+    auto struck = world.create(s);
+    // At the corner (1, 0.5) from the center, an impulse of 2 along +Y has the moment 2.
+    struck.add_impulse_at({0, 2}, {5 + half.x, 2 + half.y});
+    CHECK_MESSAGE(near(struck.velocity(), {0, 2 / mass}), "An impulse at a point did not change the velocity by "
+                                                          "impulse / mass");
+    CHECK_MESSAGE(near(struck.angular_velocity(), 2 / inertia),
+                  "An impulse at a corner did not turn the body by its moment over the inertia");
+    s.pose.position = {-5, 2};
+    auto spun = world.create(s);
+    spun.add_angular_impulse(-inertia);
+    CHECK_MESSAGE(near(spun.angular_velocity(), -1), "An angular impulse did not change the angular velocity by "
+                                                     "impulse / inertia");
+    CHECK(spun.velocity().x == 0);
+    CHECK(spun.velocity().y == 0);
+    s.pose.position = {0, -5};
+    s.fixed_rotation = true;
+    auto fixed = world.create(s);
+    fixed.add_impulse_at({0, 2}, {half.x, -5 + half.y});
+    fixed.add_angular_impulse(inertia);
+    CHECK_MESSAGE(fixed.angular_velocity() == 0, "A fixed-rotation body turned");
+    CHECK(near(fixed.velocity(), {0, 2 / mass}));
+}
+
+TEST_CASE("Forces and torques act over the next step and are then cleared") {
+    constexpr float mass = 3;
+    const Vec2 half{1, .5F};
+    const float inertia = box_inertia(mass, half);
+    const auto seconds = static_cast<float>(frame);
+    World world; // Earth gravity, which a force of m g balances.
+    auto s = box({0, 10}, half, Motion::dynamic);
+    s.mass = mass;
+    auto held = world.create(s);
+    const float weight = held.mass() * 9.81F;
+    held.add_force({0, weight / 2});
+    held.add_force({0, weight / 2});
+    world.step(frame);
+    CHECK_MESSAGE((near(held.velocity(), {}) && near(held.pose().position, {0, 10})),
+                  "The sum of the forces did not hold the body against gravity");
+    world.step(frame);
+    CHECK_MESSAGE(near(held.velocity(), {0, -9.81F * seconds}), "A step kept a force from the step before");
+
+    World space({{0, 0}, 8});
+    s.pose.position = {};
+    auto pushed = space.create(s);
+    // At the corner (1, 0.5) from the center, a force of 6 along +Y has the moment 6.
+    pushed.add_force_at({0, 6}, half);
+    s.pose.position = {5, 0};
+    auto twisted = space.create(s);
+    twisted.add_torque(inertia / seconds);
+    s.pose.position = {-5, 0};
+    auto thrown = space.create(s);
+    thrown.add_force({6, 0});
+    s.pose.position = {0, 5};
+    s.fixed_rotation = true;
+    auto fixed = space.create(s);
+    fixed.add_force_at({0, 6}, {half.x, 5 + half.y});
+    fixed.add_torque(inertia / seconds);
+    space.step(frame);
+    const Vec2 pushed_velocity{0, 6 / mass * seconds};
+    const float pushed_spin = 6 / inertia * seconds;
+    const Vec2 thrown_velocity{6 / mass * seconds, 0};
+    CHECK_MESSAGE((near(pushed.velocity(), pushed_velocity) && near(pushed.angular_velocity(), pushed_spin)),
+                  "A force at a point did not act as the force and its moment for one step");
+    CHECK_MESSAGE((near(twisted.angular_velocity(), 1) && near(twisted.velocity(), {})),
+                  "A torque did not change the angular velocity by torque / inertia per second");
+    CHECK(near(thrown.velocity(), thrown_velocity));
+    CHECK_MESSAGE((fixed.angular_velocity() == 0 && near(fixed.velocity(), pushed_velocity)),
+                  "A fixed-rotation body turned under a torque");
+    space.step(frame);
+    CHECK_MESSAGE((near(pushed.velocity(), pushed_velocity) && near(pushed.angular_velocity(), pushed_spin) &&
+                   near(twisted.angular_velocity(), 1) && near(thrown.velocity(), thrown_velocity)),
+                  "A step kept a force or torque from the step before");
+    // The force acts over every substep of a long step.
+    constexpr double long_step = .1;
+    thrown.add_force({6, 0});
+    space.step(long_step);
+    CHECK_MESSAGE(near(thrown.velocity(), {6 / mass * (seconds + static_cast<float>(long_step)), 0}),
+                  "A force did not act over the whole of a long step");
+}
+
+TEST_CASE("Forces and torques wake a sleeping body") {
+    World world;
+    (void)world.create(box({0, -.5F}, {10, .5F}));
+    auto resting = world.create(box({0, .5F}, {.5F, .5F}, Motion::dynamic));
+    for (int i = 0; i < 120; ++i)
+        world.step(frame);
+    REQUIRE_FALSE_MESSAGE(resting.awake(), "A resting body did not sleep");
+    resting.add_torque(1);
+    CHECK_MESSAGE(resting.awake(), "A torque did not wake the body");
+    world.step(frame);
+    CHECK_MESSAGE(resting.angular_velocity() != 0, "A torque on a sleeping body did not act");
+}
+
+TEST_CASE("Disabling a body discards its forces and torques") {
+    World world({{0, 0}, 1});
+    auto body = world.create(box({}, {.5F, .5F}, Motion::dynamic));
+    body.add_force({100, 0});
+    body.add_force_at({0, 50}, {1, 0});
+    body.add_torque(20);
+    body.set_enabled(false);
+    body.set_enabled(true);
+    world.step(frame);
+    CHECK_MESSAGE((body.velocity().x == 0 && body.velocity().y == 0 && body.angular_velocity() == 0),
+                  "A force or torque added before the body was disabled acted after it was reenabled");
+    // Each disable discards exactly what was added since the step or the last disable.
+    body.add_force({3, 0});
+    body.add_torque(1);
+    body.set_enabled(false);
+    body.set_enabled(true);
+    body.add_force({6, 0});
+    body.add_torque(2);
+    body.set_enabled(false);
+    body.set_enabled(true);
+    world.step(frame);
+    CHECK_MESSAGE((body.velocity().x == 0 && body.velocity().y == 0 && body.angular_velocity() == 0),
+                  "A second disable did not discard the forces added since the first");
+    body.add_force({6, 0});
+    world.step(frame);
+    CHECK_MESSAGE(near(body.velocity(), {6 * static_cast<float>(frame), 0}),
+                  "A force added after disabling and reenabling did not act");
+}
+
+TEST_CASE("Forces, torques and impulses require an enabled dynamic body and valid values") {
+    constexpr auto impulses_only = "Only enabled dynamic 2D bodies accept impulses";
+    constexpr auto forces_only = "Only enabled dynamic 2D bodies accept forces and torques";
+    constexpr auto value_range = "2D physics value outside finite supported range";
+    constexpr auto expired = "Expired 2D physics body";
+    World world({{0, 0}, 4});
+    auto stationary = world.create(box({}, {.5F, .5F}));
+    auto kinematic = world.create(box({3, 0}, {.5F, .5F}, Motion::kinematic));
+    auto disabled = world.create(box({6, 0}, {.5F, .5F}, Motion::dynamic));
+    disabled.set_enabled(false);
+    for (auto *body : {&stationary, &kinematic, &disabled}) {
+        CHECK_THROWS_WITH_AS(body->add_impulse_at({0, 1}, {}), impulses_only, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(body->add_angular_impulse(1), impulses_only, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(body->add_force({0, 1}), forces_only, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(body->add_force_at({0, 1}, {}), forces_only, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(body->add_torque(1), forces_only, std::invalid_argument);
+    }
+    CHECK_FALSE_MESSAGE(disabled.enabled(), "A rejected call reenabled a body");
+    auto dynamic = world.create(box({9, 0}, {.5F, .5F}, Motion::dynamic));
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), 2e6F}) {
+        CAPTURE(bad);
+        CHECK_THROWS_WITH_AS(dynamic.add_impulse_at({bad, 0}, {}), value_range, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(dynamic.add_impulse_at({0, 1}, {0, bad}), value_range, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(dynamic.add_angular_impulse(bad), value_range, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(dynamic.add_force({bad, 0}), value_range, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(dynamic.add_force_at({0, bad}, {}), value_range, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(dynamic.add_force_at({0, 1}, {bad, 0}), value_range, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(dynamic.add_torque(bad), value_range, std::invalid_argument);
+    }
+    world.step(frame);
+    CHECK_MESSAGE((dynamic.velocity().x == 0 && dynamic.velocity().y == 0 && dynamic.angular_velocity() == 0),
+                  "A rejected call moved the body");
+    dynamic.remove();
+    CHECK_THROWS_WITH_AS(dynamic.add_impulse_at({0, 1}, {}), expired, std::out_of_range);
+    CHECK_THROWS_WITH_AS(dynamic.add_angular_impulse(1), expired, std::out_of_range);
+    CHECK_THROWS_WITH_AS(dynamic.add_force({0, 1}), expired, std::out_of_range);
+    CHECK_THROWS_WITH_AS(dynamic.add_force_at({0, 1}, {}), expired, std::out_of_range);
+    CHECK_THROWS_WITH_AS(dynamic.add_torque(1), expired, std::out_of_range);
 }
 
 TEST_CASE("Body handles hash and order consistently with their identity") {

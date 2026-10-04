@@ -17,6 +17,14 @@ inline void consume_physics() {
         world.step(1. / 60);
     if (std::abs(ball.pose().position.y - .5F) > .03F)
         throw std::runtime_error("External rigid body did not land");
+    // An impulse along +Z at the sphere's +X edge turns it about -Y.
+    ball.add_impulse_at({0, 0, 1}, ball.world_center_of_mass() + anima::Vec3{.5F, 0, 0});
+    if (ball.angular_velocity().y >= 0)
+        throw std::runtime_error("External impulse at a point did not turn the body");
+    ball.add_force({0, 2 * 9.81F * ball.mass(), 0});
+    world.step(1. / 60);
+    if (ball.velocity().y <= 0)
+        throw std::runtime_error("External force did not lift the body");
     ball.remove();
     floor.remove();
     anima::physics::Body assembly;

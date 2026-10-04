@@ -74,6 +74,8 @@ b2ShapeProxy proxy(const Collider &c, Pose p) {
 // Reserve a category for queries so simulation collision masks never suppress an
 // explicitly requested layer. No backend callbacks into application code.
 constexpr std::uint64_t query_category = std::uint64_t{1} << 16;
+constexpr auto accepts_impulses = "Only enabled dynamic 2D bodies accept impulses";
+constexpr auto accepts_forces = "Only enabled dynamic 2D bodies accept forces and torques";
 } // namespace
 namespace detail {
 struct WorldState : std::enable_shared_from_this<WorldState> {
@@ -85,11 +87,17 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
         bool sensor, fixed_rotation, enabled = true;
         Vec2 disabled_velocity{};
         float disabled_angular_velocity{};
+        // The force and torque pushed since the last step while `forces_step` equals WorldState::steps; see push().
+        Vec2 force{};
+        float torque{};
+        std::uint64_t forces_step{};
     };
     using Pair = std::pair<std::uint64_t, std::uint64_t>;
     b2WorldId world{};
     WorldSettings settings;
     std::uint64_t next = 1;
+    // Steps taken, counted once b2World_Step returns.
+    std::uint64_t steps{};
     std::map<std::uint64_t, Entry> entries;
     std::map<std::uint64_t, std::uint64_t> shapes;
     std::array<std::uint16_t, detail::collision_layer_count> masks;
@@ -125,6 +133,36 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
             } else
                 ++it;
         }
+    }
+    // The entry of an existing body that accepts forces and impulses, or `std::invalid_argument` with @p message.
+    Entry &accepting(std::uint64_t id, const char *message) {
+        auto &e = entries.at(id);
+        require(e.motion == Motion::dynamic && e.enabled, message);
+        return e;
+    }
+    // Box2D keeps a disabled body's accumulated force and torque and applies them once the body is enabled again,
+    // and has no call that clears them. Each entry therefore mirrors what this step's calls added, through the
+    // same float additions in the same order as Box2D's, and discard_forces() adds the negation, which leaves
+    // exactly zero. b2World_Step clears the force and torque of every awake body, and a body with any is awake: a
+    // push wakes it, and only a step puts a body to sleep.
+    void push(Entry &e, Vec2 force, float torque) {
+        if (e.forces_step != steps) {
+            e.force = {};
+            e.torque = 0;
+            e.forces_step = steps;
+        }
+        b2Body_ApplyForceToCenter(e.body, b(force), true);
+        b2Body_ApplyTorque(e.body, torque, true);
+        e.force = {e.force.x + force.x, e.force.y + force.y};
+        e.torque += torque;
+    }
+    void discard_forces(Entry &e) {
+        if (e.forces_step != steps)
+            return;
+        b2Body_ApplyForceToCenter(e.body, {-e.force.x, -e.force.y}, false);
+        b2Body_ApplyTorque(e.body, -e.torque, false);
+        e.force = {};
+        e.torque = 0;
     }
     void reconcile() {
         auto current = touching;
@@ -277,9 +315,36 @@ void Body::set_angular_velocity(float v) {
 void Body::add_impulse(Vec2 v) {
     vector(v);
     auto world = lock();
-    const auto &e = world->entries.at(id_);
-    require(e.motion == Motion::dynamic && e.enabled, "Only enabled dynamic 2D bodies accept impulses");
-    b2Body_ApplyLinearImpulseToCenter(e.body, b(v), true);
+    b2Body_ApplyLinearImpulseToCenter(world->accepting(id_, accepts_impulses).body, b(v), true);
+}
+void Body::add_impulse_at(Vec2 impulse, Vec2 world_point) {
+    vector(impulse);
+    vector(world_point);
+    auto world = lock();
+    b2Body_ApplyLinearImpulse(world->accepting(id_, accepts_impulses).body, b(impulse), b(world_point), true);
+}
+void Body::add_angular_impulse(float impulse) {
+    scalar(impulse);
+    auto world = lock();
+    b2Body_ApplyAngularImpulse(world->accepting(id_, accepts_impulses).body, impulse, true);
+}
+void Body::add_force(Vec2 force) {
+    vector(force);
+    auto world = lock();
+    world->push(world->accepting(id_, accepts_forces), force, 0);
+}
+void Body::add_force_at(Vec2 force, Vec2 world_point) {
+    vector(force);
+    vector(world_point);
+    auto world = lock();
+    auto &e = world->accepting(id_, accepts_forces);
+    const auto arm = b2Sub(b(world_point), b2Body_GetWorldCenterOfMass(e.body));
+    world->push(e, force, b2Cross(arm, b(force)));
+}
+void Body::add_torque(float torque) {
+    scalar(torque);
+    auto world = lock();
+    world->push(world->accepting(id_, accepts_forces), {}, torque);
 }
 void Body::move_kinematic(Pose p, double seconds) {
     const auto t = transform(p);
@@ -318,6 +383,8 @@ void Body::set_enabled(bool enabled) {
         }
     } else {
         world->forget(id_);
+        if (e.motion == Motion::dynamic)
+            world->discard_forces(e);
         e.disabled_velocity = a(b2Body_GetLinearVelocity(e.body));
         e.disabled_angular_velocity = b2Body_GetAngularVelocity(e.body);
         b2Body_Disable(e.body);
@@ -423,6 +490,7 @@ void World::set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide) {
 void World::step(double seconds) {
     duration(seconds);
     b2World_Step(state_->world, static_cast<float>(seconds), static_cast<int>(state_->settings.substeps));
+    ++state_->steps;
     state_->reconcile();
 }
 std::vector<ContactEvent> World::take_events() {

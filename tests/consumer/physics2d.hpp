@@ -25,6 +25,12 @@ inline void consume_physics2d() {
         world.step(1. / 60);
     if (std::abs(body.pose().position.y - 1) > .03F || body.awake())
         throw std::runtime_error("Independent 2D capsule did not land/sleep");
+    body.add_force({0, 2 * 9.81F * body.mass()});
+    if (!body.awake())
+        throw std::runtime_error("Independent 2D force did not wake the body");
+    world.step(1. / 60);
+    if (body.velocity().y <= 0)
+        throw std::runtime_error("Independent 2D force did not lift the body");
     p::QueryFilter filter;
     filter.ignore = body;
     const auto hit = world.raycast({0, 3}, {0, -6}, filter);
