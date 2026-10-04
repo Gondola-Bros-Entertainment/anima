@@ -3,6 +3,14 @@
 // metallic-roughness map the surface values. Sampling runs in two steps so that a pixel the dither or the coverage
 // discards pays only for the first: impostorHit() for every pixel, and impostorShade() for the pixels that stay.
 
+// True in the view's impostor pipelines compiled for RendererOptions::impostor_frames 1
+// (VulkanRenderer::set_impostor_frames), whose pixels then read the heaviest of their three frames alone. The shadow
+// pipeline leaves it false.
+layout(constant_id = 4) const bool singleImpostorFrame = false;
+// How many of a pixel's frames impostorHit() and impostorShade() read: the first 1, after impostorHit() moves the
+// heaviest first, or all 3.
+const int impostorFrameCount = singleImpostorFrame ? 1 : 3;
+
 // The atlas coordinates of the point @p offset from the sphere's center on the plane of @p frame, whose axes are
 // @p right and @p up, kept @p inset, a share of the frame, inside it.
 vec2 impostorAtlas(uvec2 frame, uint count, vec3 offset, vec3 right, vec3 up, float radius, float inset) {
@@ -10,10 +18,10 @@ vec2 impostorAtlas(uvec2 frame, uint count, vec3 offset, vec3 right, vec3 up, fl
     local = clamp(local, vec2(inset), vec2(1.0 - inset));
     return (vec2(frame) + local) / float(count);
 }
-// Where a pixel's ray meets the surfaces of its three frames, in the mesh's space.
+// Where a pixel's ray meets the surfaces of its impostorFrameCount frames, in the mesh's space.
 struct ImpostorHit {
     // Each frame's atlas coordinates, after the parallax step, and its share of the blend, 0 for a frame whose plane
-    // the ray runs along.
+    // the ray runs along and for the frames beyond impostorFrameCount, whose coordinates are left undefined.
     vec2 atlas[3];
     vec3 weights;
     // The mip level that every sample reads.
@@ -24,19 +32,28 @@ struct ImpostorHit {
     vec3 point;
 };
 // The frames @p frames of an atlas of @p count per side in @p arrangement around @p sphere's center and radius, met by
-// the ray from @p origin along @p direction, blended by @p weights. In each, the ray crosses the frame's plane, steps
-// once along itself to the height stored there, as parallax mapping steps, which keeps the frames' features aligned as
-// they blend, and reads the color where that leaves it; the surface point is the ray's at that height. The mip level is
-// chosen once, from the derivatives of the heaviest frame's crossing while every pixel of the quad still runs, and
-// every sample reads it explicitly, so that a later discard leaves no sample undefined.
+// the ray from @p origin along @p direction, blended by @p weights, or with singleImpostorFrame the heaviest of them
+// alone. In each, the ray crosses the frame's plane, steps once along itself to the height stored there, as parallax
+// mapping steps, which keeps the frames' features aligned as they blend, and reads the color where that leaves it; the
+// surface point is the ray's at that height. The mip level is chosen once, from the derivatives of the heaviest frame's
+// crossing while every pixel of the quad still runs, and every sample reads it explicitly, so that a later discard
+// leaves no sample undefined.
 ImpostorHit impostorHit(uint count, uint arrangement, vec4 sphere, vec3 origin, vec3 direction, uvec3 frames,
                         vec3 weights) {
     ImpostorHit hit;
+    int heaviest = weights.x >= weights.y && weights.x >= weights.z ? 0 : weights.y >= weights.z ? 1 : 2;
+    if (singleImpostorFrame) {
+        // The heaviest frame takes the first's place and the whole blend, and the other two none.
+        frames.x = frames[heaviest];
+        weights = vec3(1, 0, 0);
+        heaviest = 0;
+        hit.weights = vec3(0);
+    }
     float frameTexels = float(textureSize(baseColorTexture, 0).x) / float(count);
     vec3 crossings[3], directions[3], rights[3], ups[3];
     float steps[3];
     float total = 0.0;
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < impostorFrameCount; ++k) {
         impostorFrame(arrangement, count, impostorUnpack(frames[k]), directions[k], rights[k], ups[k]);
         float along = dot(direction, directions[k]);
         hit.weights[k] = abs(along) > 1e-6 ? weights[k] : 0.0;
@@ -47,7 +64,6 @@ ImpostorHit impostorHit(uint count, uint arrangement, vec4 sphere, vec3 origin, 
         total += hit.weights[k];
     }
     hit.weights /= max(total, 1e-6);
-    int heaviest = weights.x >= weights.y && weights.x >= weights.z ? 0 : weights.y >= weights.z ? 1 : 2;
     // The coarsest level keeps four texels across a frame, and frames that split evenly into its texels, so that no
     // texel of a level straddles two frames.
     float coarsest = max(min(log2(frameTexels) - 2.0, float(findLSB(uint(frameTexels)))), 0.0);
@@ -57,7 +73,7 @@ ImpostorHit impostorHit(uint count, uint arrangement, vec4 sphere, vec3 origin, 
     float inset = 0.5 * exp2(ceil(hit.lod)) / frameTexels;
     hit.color = vec4(0);
     hit.point = vec3(0);
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < impostorFrameCount; ++k) {
         uvec2 frame = impostorUnpack(frames[k]);
         vec2 crossing = impostorAtlas(frame, count, crossings[k] - sphere.xyz, rights[k], ups[k], sphere.w, inset);
         float height = (textureLod(normalTexture, crossing, hit.lod).a * 2.0 - 1.0) * sphere.w;
@@ -75,7 +91,7 @@ void impostorShade(ImpostorHit hit, bool emits, out vec3 normal, out vec4 surfac
     normal = vec3(0);
     surface = vec4(0);
     emission = vec3(0);
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < impostorFrameCount; ++k) {
         normal += (textureLod(normalTexture, hit.atlas[k], hit.lod).xyz * 2.0 - 1.0) * hit.weights[k];
         surface += textureLod(metallicRoughnessTexture, hit.atlas[k], hit.lod) * hit.weights[k];
         if (emits)

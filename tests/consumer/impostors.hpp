@@ -1,5 +1,6 @@
 #pragma once
 #include "gpu_checks.hpp"
+#include "rejection.hpp"
 #include "resources.hpp"
 #include <anima/impostor.hpp>
 #include <anima/mesh_placements.hpp>
@@ -9,16 +10,36 @@
 #include <limits>
 #include <numbers>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 // Impostors: a tree of masked leaf cards around an opaque trunk, baked with bake_impostor() and drawn as one quad per
 // copy. From several directions at the distance where they hand over, the impostor matches the tree within a stated
-// parity, in the view and in the shadow it casts; across the handover the two keep complementary pixels, so none is
-// left uncovered, and at a view distance scale of 2 ranges half as far hand over with the same pixels; and 10,000
-// placed trees are measured as meshes and as impostors.
+// parity, in the view and in the shadow it casts, and reading a single frame per pixel within a looser one; across the
+// handover the two keep complementary pixels, so none is left uncovered, and at a view distance scale of 2 ranges half
+// as far hand over with the same pixels; and 10,000 placed trees are measured as meshes and as impostors of three
+// frames and of one.
 namespace impostor_test {
+using rejection::rejects;
+constexpr std::string_view invalid_frames_message = "Impostor frames must be 1 or 3";
+/// Construction rejects an impostor frame count other than 1 or 3, after the shadow filter and before the window.
+inline void reject_invalid_impostor_frames() {
+    const auto construct = [](std::uint32_t frames, anima::ShadowFilter filter = anima::ShadowFilter::kernel_4x4) {
+        anima::RendererOptions options;
+        options.impostor_frames = frames;
+        options.shadow_filter = filter;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    for (const std::uint32_t frames : {0U, 2U, 4U})
+        rejects<std::invalid_argument>([&] { construct(frames); }, invalid_frames_message);
+    for (const std::uint32_t frames : {1U, 3U})
+        rejects<std::invalid_argument>([&] { construct(frames); }, "Renderer requires an SDL window");
+    rejects<std::invalid_argument>([&] { construct(2, static_cast<anima::ShadowFilter>(-1)); },
+                                   "Unknown shadow filter");
+}
 // A small deterministic generator, so that every run builds the same tree.
 class Random {
   public:
@@ -182,6 +203,9 @@ inline std::pair<std::size_t, std::size_t> uncovered(const gpu_check::Image &mes
 // which only one covers, the mean channel difference where both cover, and the share of the pixels that either's
 // shadow darkens which only one does.
 constexpr double silhouette_parity = .06, color_parity = 9, shadow_parity = .08;
+// The looser parity of an impostor that reads a single frame per pixel (VulkanRenderer::set_impostor_frames), which
+// shows the heaviest frame's view whole where three frames blend the views around the direction toward the eye.
+constexpr double single_frame_silhouette_parity = .1, single_frame_color_parity = 12;
 
 inline int run(int argc, char **argv) {
     using resource_test::require;
@@ -222,17 +246,20 @@ inline int run(int argc, char **argv) {
     };
     // Parity from the horizon round to above, at the distance where the tree is about 100 pixels tall, as tall as
     // the atlas's frames, in perspective and orthographic views and under a placement that turns the tree and scales
-    // it unevenly.
+    // it unevenly; with a single frame per pixel, the looser parity from the same directions.
     const auto compare_views = [&](const std::string &name, const std::shared_ptr<anima::Scene> &mesh,
                                    const std::shared_ptr<anima::Scene> &copy) {
+        const bool single = renderer.impostor_frames() == 1;
+        const double silhouette_limit = single ? single_frame_silhouette_parity : silhouette_parity,
+                     color_limit = single ? single_frame_color_parity : color_parity;
         renderer.set_scenes({mesh});
         (void)draw(name + "-mesh");
         renderer.set_scenes({copy});
         (void)draw(name + "-impostor");
         const auto result = compare(captures[name + "-mesh"], captures[name + "-impostor"]);
-        std::cout << "IMPOSTOR {\"view\":\"" << name << "\",\"silhouette\":" << result.silhouette
-                  << ",\"color\":" << result.color << "}\n";
-        captures.require(result.silhouette < silhouette_parity && result.color < color_parity,
+        std::cout << "IMPOSTOR {\"view\":\"" << name << "\",\"frames\":" << renderer.impostor_frames()
+                  << ",\"silhouette\":" << result.silhouette << ",\"color\":" << result.color << "}\n";
+        captures.require(result.silhouette < silhouette_limit && result.color < color_limit,
                          name + ": the impostor's silhouette differs from the tree's in " +
                              std::to_string(result.silhouette) + " of their pixels and its color by " +
                              std::to_string(result.color) + " levels",
@@ -246,13 +273,21 @@ inline int run(int argc, char **argv) {
             .set_placements(anima::MeshPlacements::create(mesh, std::span<const anima::Mat4>(&placement, 1)));
         return scene;
     };
-    for (const auto &[azimuth, elevation] : std::array<std::pair<float, float>, 6>{
-             {{0.F, 5.F}, {70.F, 10.F}, {145.F, 0.F}, {220.F, 20.F}, {290.F, 35.F}, {30.F, 70.F}}}) {
+    // Views the tree's center from 60 metres, @p azimuth degrees round from +X toward +Z and @p elevation degrees up.
+    const auto view_around = [&](float azimuth, float elevation) {
         const float a = azimuth * std::numbers::pi_v<float> / 180, e = elevation * std::numbers::pi_v<float> / 180;
         view(center + anima::Vec3{std::cos(a) * std::cos(e), std::sin(e), std::sin(a) * std::cos(e)} * 60, center);
-        compare_views("view-" + std::to_string(int(azimuth)) + "-" + std::to_string(int(elevation)), alone(tree),
-                      alone(impostor));
-    }
+    };
+    const auto compare_directions = [&](const std::string &prefix) {
+        for (const auto &[azimuth, elevation] : std::array<std::pair<float, float>, 6>{
+                 {{0.F, 5.F}, {70.F, 10.F}, {145.F, 0.F}, {220.F, 20.F}, {290.F, 35.F}, {30.F, 70.F}}}) {
+            view_around(azimuth, elevation);
+            compare_views(prefix + std::to_string(int(azimuth)) + "-" + std::to_string(int(elevation)), alone(tree),
+                          alone(impostor));
+        }
+    };
+    require(renderer.impostor_frames() == 3, "The renderer did not start with three impostor frames");
+    compare_directions("view-");
     renderer.set_view(anima::orthographic(1, 48, .1F, 300) * anima::look_at(center + anima::Vec3{-50, 12, 30}, center));
     compare_views("orthographic", alone(tree), alone(impostor));
     anima::Transform turned;
@@ -275,6 +310,30 @@ inline int run(int argc, char **argv) {
         view(center + anima::Vec3{60, 8, 0}, center);
         compare_views("height-fog", alone(tree), alone(impostor));
         renderer.set_environment({});
+    }
+    // A single frame per pixel: the view's impostor pipelines compile anew without a swapchain recreation, a rejected
+    // count keeps the request, the image changes where the direction toward the eye lies between frames, and the tree
+    // keeps the looser parity from each direction. Returning to three frames draws the first image again.
+    {
+        const auto swapchains = renderer.stats().swapchain_generations;
+        view_around(70.F, 10.F);
+        renderer.set_scenes({alone(impostor)});
+        (void)draw("frames-3");
+        renderer.set_impostor_frames(1);
+        rejects<std::invalid_argument>([&] { renderer.set_impostor_frames(2); }, invalid_frames_message);
+        require(renderer.impostor_frames() == 1, "A rejected impostor frame count replaced the request");
+        (void)draw("frames-1");
+        captures.require(!gpu_check::same(captures["frames-3"], captures["frames-1"]),
+                         "Reading a single impostor frame drew the image of three", {"frames-3", "frames-1"});
+        compare_directions("single-frame-view-");
+        view_around(70.F, 10.F);
+        renderer.set_scenes({alone(impostor)});
+        renderer.set_impostor_frames(3);
+        (void)draw("frames-3-restored");
+        captures.require_same("frames-3", "frames-3-restored", "Returning to three impostor frames");
+        require(renderer.stats().swapchain_generations == swapchains,
+                "Changing the impostor frames recreated the swapchain");
+        captures.discard({"frames-3", "frames-1", "frames-3-restored"});
     }
 
     // The shadow each casts on the ground from a low sun, seen from above where the tree itself is out of view: the
@@ -396,6 +455,10 @@ inline int run(int argc, char **argv) {
         return stats;
     };
     const auto meshes = measure("forest-meshes", tree);
+    renderer.set_impostor_frames(1);
+    (void)measure("forest-impostors-single-frame", impostor);
+    captures.require_foreground("forest-impostors-single-frame", "The single frame impostor forest did not render");
+    renderer.set_impostor_frames(3);
     const auto impostors = measure("forest-impostors", impostor);
     captures.require_foreground("forest-impostors", "The impostor forest did not render");
     // The tree draws its trunk and crown per copy; the impostor, one quad, and its cube of bounds keeps a few more
@@ -406,9 +469,10 @@ inline int run(int argc, char **argv) {
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Impostor validation failed");
     std::cout << "PASS impostors: a tree's impostor matches it within the stated parity from six directions, in "
-                 "orthographic and placed views, in height fog and in its shadow, hands over without leaving a pixel "
-                 "uncovered, at twice its range under twice the view distance, and draws 10,000 copies with under a "
-                 "hundredth of the indices; validation_warnings=0 validation_errors=0\n";
+                 "orthographic and placed views, in height fog and in its shadow, and from six directions within the "
+                 "looser parity reading a single frame, which changes without recreating the swapchain, hands over "
+                 "without leaving a pixel uncovered, at twice its range under twice the view distance, and draws "
+                 "10,000 copies with under a hundredth of the indices; validation_warnings=0 validation_errors=0\n";
     return 0;
 }
 } // namespace impostor_test
