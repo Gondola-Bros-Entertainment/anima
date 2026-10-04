@@ -478,6 +478,7 @@ struct VulkanRenderer::Impl {
         case RendererFailureStage::device:
         case RendererFailureStage::resources:
         case RendererFailureStage::swapchain:
+        case RendererFailureStage::frame_wait:
             break;
         case RendererFailureStage::texture:
         case RendererFailureStage::texture_upload:
@@ -1859,9 +1860,11 @@ struct VulkanRenderer::Impl {
         if (auto &latest = frames[latest_frame]; retired && latest.in_flight)
             latest.released.emplace_back(std::move(retired));
     }
-    // Waits for the frame that @p slot submitted last; a failure names @p operation.
+    // Waits for the frame that @p slot submitted last; a failure names @p operation. RendererFailureStage::frame_wait
+    // fails the wait for a submitted frame as a fence that does not signal within fence_timeout would.
     void wait_for_slot(FrameSlot &slot, const char *operation) {
-        check(vkWaitForFences(device, 1, &slot.fence, VK_TRUE, fence_timeout), operation);
+        const bool injected = slot.in_flight && options.fail_after == RendererFailureStage::frame_wait;
+        check(injected ? VK_TIMEOUT : vkWaitForFences(device, 1, &slot.fence, VK_TRUE, fence_timeout), operation);
         slot.in_flight = false;
     }
     // Resets the commands of @p slot, whose frame has finished, and destroys what was retired while that frame was the

@@ -64,8 +64,11 @@ struct RendererOptions {
     /// Failure injection for lifecycle tests. `instance`, `surface`, `device` and `resources` throw from
     /// construction, as do `texture` and `texture_upload` when the initial selection uploads a mesh;
     /// `swapchain` makes the first draw() that creates a swapchain throw RendererFatalError, as a real failure
-    /// there does; and `scene_targets` makes every draw() that creates scene targets while the render scale is above 1
-    /// throw SceneResourceError, as a failed allocation of them does (see VulkanRenderer::set_render_scale).
+    /// there does; `scene_targets` makes every draw() that creates scene targets while the render scale is above 1
+    /// throw SceneResourceError, as a failed allocation of them does (see VulkanRenderer::set_render_scale); and
+    /// `frame_wait` makes the wait for earlier frames in draw(), wait_for_frame() and set_scenes() time out once a
+    /// frame that it waits for has been submitted, so that the call throws RendererFatalError, as for a frame that does
+    /// not finish within 5 seconds; a capture's wait for its own frame is unaffected.
     /// Construction throws `std::invalid_argument` for any other stage, for `texture` and `texture_upload` when
     /// #scenes is empty or asset support is off, since no initial upload can fire them, and for `scene_targets` when
     /// asset support is off, since the render scale is then always 1.

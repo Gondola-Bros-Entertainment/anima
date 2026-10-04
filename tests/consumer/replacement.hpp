@@ -55,7 +55,8 @@ inline std::shared_ptr<anima::Scene> scene(const anima::Asset &asset) {
     return result;
 }
 // Construction rejects a failure stage that neither it nor draw() can fire, before it needs a window or GPU. The
-// texture stages fire only in an initial selection's upload, so they need RendererOptions::scenes.
+// texture stages fire only in an initial selection's upload, so they need RendererOptions::scenes; the frame wait
+// stage fires in draw(), wait_for_frame() and set_scenes().
 inline void reject_unfireable_injection() {
     constexpr std::string_view unknown_stage = "Unknown initialization failure stage";
     constexpr std::string_view no_window = "Renderer requires an SDL window";
@@ -80,6 +81,8 @@ inline void reject_unfireable_injection() {
     for (const auto stage : {texture, texture_upload})
         if (const auto error = construct(stage, true); error != no_window)
             throw std::runtime_error("A texture stage with an initial selection was rejected: " + error);
+    if (const auto error = construct(frame_wait, false); error != no_window)
+        throw std::runtime_error("The frame wait stage was rejected: " + error);
 }
 // Construction rejects a RendererOptions::lod_threshold that is not finite or is negative, after the failure stage and
 // the anisotropy and before it needs a window or GPU.
@@ -151,6 +154,82 @@ inline void reject_failed_swapchain(anima::RendererOptions options) {
     require(!stats.validation_errors && !stats.validation_warnings && !stats.swapchain_generations &&
                 !stats.presented_frames,
             "Failed swapchain cleanup failed");
+}
+// The calls that wait for earlier frames, whose wait RendererFailureStage::frame_wait fails.
+enum class FrameWaiter { wait_for_frame, draw, set_scenes };
+// A frame that does not finish within the fence timeout makes the renderer fatal, whichever call waits for it:
+// RendererFailureStage::frame_wait times out the wait for an earlier frame once that frame has been submitted. With
+// FrameWaiter::wait_for_frame the loop waits for the frame slot before each draw(), as an application does, so the
+// wait that fails is wait_for_frame()'s, once the slot that the next draw() records has submitted a frame: after
+// exactly RendererOptions::frames_in_flight submissions. With FrameWaiter::draw the loop calls only draw(), whose own
+// wait then fails. With FrameWaiter::set_scenes it selects no scenes before each draw(), which waits for every frame in
+// flight and so fails after the first submission. @p options supplies the presentation and frame settings.
+inline void reject_failed_frame_wait(anima::RendererOptions options, FrameWaiter waiter) {
+    const auto window = gpu_check::window("Anima frame wait failure consumer", 320, 240, SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    options.validation = true;
+    // A draw() that submits its frame times its recording and submission, which one that returns earlier leaves at 0,
+    // so the profile counts submissions.
+    options.profile = true;
+    options.fail_after = anima::RendererFailureStage::frame_wait;
+    anima::VulkanRenderer renderer(window.get(), options);
+    renderer.set_view(anima::identity());
+    const bool selecting = waiter == FrameWaiter::set_scenes;
+    // VK_TIMEOUT, under the name of the wait.
+    const std::string timeout =
+        std::string(selecting ? "Wait before resource scene selection" : "Wait for frame") + " failed (VkResult 2)";
+    const std::string_view failing_call = waiter == FrameWaiter::wait_for_frame ? "wait_for_frame()"
+                                          : selecting                           ? "set_scenes()"
+                                                                                : "draw()";
+    const std::uint32_t failing_submission = selecting ? 1 : options.frames_in_flight;
+    std::uint32_t submitted = 0;
+    // Makes @p call, named @p name, and returns whether it reported the injected timeout, which only failing_call may
+    // report, once failing_submission frames have been submitted.
+    const auto failed = [&](std::string_view name, const auto &call) {
+        try {
+            call();
+            return false;
+        } catch (const anima::RendererFatalError &error) {
+            require(typeid(error) == typeid(anima::RendererFatalError) && error.what() == timeout,
+                    "A failed frame wait was reported as another failure");
+            if (name != failing_call || submitted != failing_submission)
+                throw std::runtime_error(std::string(name) + " failed its frame wait after " +
+                                         std::to_string(submitted) + " submissions, not " + std::string(failing_call) +
+                                         " after " + std::to_string(failing_submission));
+            return true;
+        }
+    };
+    const auto started = std::chrono::steady_clock::now();
+    for (;;) {
+        require(std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+                "Frame wait failure watchdog expired");
+        SDL_Event event{};
+        while (SDL_PollEvent(&event)) {
+        }
+        // Unlike draw(), these calls wait whatever the window's state, so each must fail once its frame is submitted.
+        if (waiter != FrameWaiter::draw) {
+            const auto wait = [&] {
+                if (selecting)
+                    renderer.set_scenes({});
+                else
+                    renderer.wait_for_frame();
+            };
+            if (failed(failing_call, wait))
+                break;
+            require(submitted < failing_submission, "A wait for a submitted frame did not fail");
+        }
+        bool presented = false;
+        if (failed("draw()", [&] { presented = renderer.draw(); }))
+            break;
+        if (renderer.frame_profile().record_submit_ms > 0)
+            ++submitted;
+        if (!presented)
+            SDL_Delay(5);
+    }
+    rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); }, fatal_renderer);
+    rejects<anima::RendererFatalError>([&] { renderer.wait_for_frame(); }, fatal_renderer);
+    rejects<anima::RendererFatalError>([&] { renderer.set_scenes({}); }, fatal_renderer);
+    const auto stats = renderer.shutdown();
+    require(!stats.validation_errors && !stats.validation_warnings, "Failed frame wait cleanup failed");
 }
 // A capture that cannot be written consumes its request: the draw that submits the frame reports it once, the
 // frame counts if it was presented, and later draws present and count without writing again. @p options supplies the
@@ -233,6 +312,8 @@ inline int run(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     gpu_check::Video video;
     reject_failed_swapchain(options);
+    for (const auto waiter : {FrameWaiter::wait_for_frame, FrameWaiter::draw, FrameWaiter::set_scenes})
+        reject_failed_frame_wait(options, waiter);
     reject_unwritable_capture(output, options);
     const auto window = gpu_check::window("Anima scene replacement consumer", 640, 480,
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);

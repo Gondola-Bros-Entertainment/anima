@@ -187,6 +187,8 @@ inline int run(int argc, char **argv) {
     std::uint64_t ui_frames = 0; // Frames that this context's render() calls presented.
     const auto frame = [&] {
         for (;;) {
+            // As an application does before reading input, wait for the frame that render() waits for.
+            renderer.wait_for_frame();
             pump();
             ui.update();
             if (ui.render()) {
