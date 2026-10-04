@@ -509,6 +509,43 @@ TEST_CASE("A failed restore rolls back its objects and voices, and teardown rele
     CHECK(audio.voice_count() == 0u);
 }
 
+TEST_CASE("Clip keys must be well-formed UTF-8 without NUL when a source is captured") {
+    Audio audio(8000);
+    auto tone = clip();
+    std::string name;
+    std::string resolved;
+    ComponentCodecs codecs;
+    add_audio_component_codecs(
+        codecs, audio, [&](const auto &) { return name; },
+        [&](std::string_view key) {
+            resolved = key;
+            return tone;
+        });
+    Scene scene;
+    auto object = scene.create();
+    object.add_component<AudioSource>(audio, tone);
+    // A stray continuation byte, an overlong NUL, a surrogate, a code point past U+10FFFF, a truncated
+    // sequence, an embedded NUL and an oversized key.
+    const std::array<std::string, 7> invalids{"\xff",
+                                              "\xc0\x80",
+                                              "\xed\xa0\x80",
+                                              "\xf4\x90\x80\x80",
+                                              "\xe2\x82",
+                                              std::string("a\0b", 3),
+                                              std::string(4097, 'k')};
+    for (std::size_t i = 0; i < invalids.size(); ++i) {
+        CAPTURE(i);
+        name = invalids[i];
+        CHECK_THROWS_WITH_AS(Prefab::capture(object, codecs), "Invalid audio clip key", std::invalid_argument);
+    }
+    // Two-, three- and four-byte sequences at the edges of their ranges round-trip unchanged.
+    name = "\xc2\x80\xed\x9f\xbf\xee\x80\x80\xf4\x8f\xbf\xbf" + std::string(4084, 'k');
+    REQUIRE(name.size() == 4096u);
+    const auto document = Prefab::capture(object, codecs).serialize({});
+    (void)Prefab::deserialize(document, {}, codecs).instantiate(scene);
+    CHECK(resolved == name);
+}
+
 TEST_CASE("Components and codecs can outlive their Audio") {
     const auto tone = clip();
     ComponentCodecs orphan_codecs;

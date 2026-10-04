@@ -344,13 +344,14 @@ TEST_CASE("Panels restore through prefabs, follow enablement and activation, and
     auto source = Prefab::capture(root, codecs);
     auto copy = Prefab::deserialize(source.serialize({}), {}, codecs).instantiate(scene);
     {
-        // A lone continuation byte is never valid UTF-8, so the codec cannot encode this key.
-        auto unencodable = scene.create();
-        unencodable.add_component<UiPanel>(host, "\xff", controls, true);
-        CHECK_THROWS_WITH_AS(Prefab::capture(unencodable, codecs),
-                             "[json.exception.type_error.316] invalid UTF-8 byte at index 0: 0xFF",
-                             std::invalid_argument);
-        unencodable.destroy();
+        // A lone continuation byte is never valid UTF-8, and NUL is not a key byte: the panel rejects
+        // both before it loads the document, so no key reaches the codec that it cannot encode.
+        auto rejected = scene.create();
+        for (const auto &key : {std::string("\xff"), std::string("a\0b", 3)})
+            CHECK_THROWS_WITH_AS(rejected.add_component<UiPanel>(host, key, controls, true), "Invalid UI asset key",
+                                 std::invalid_argument);
+        CHECK_FALSE(rejected.has_component<UiPanel>());
+        rejected.destroy();
     }
     CHECK(&root.get_component<UiPanel>()->document().native() != &copy.get_component<UiPanel>()->document().native());
 

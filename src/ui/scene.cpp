@@ -1,15 +1,12 @@
 #include "../detail/json.hpp"
+#include "../detail/resource_key.hpp"
 #include "../detail/scene_driver.hpp"
 #include <anima/ui/scene.hpp>
 namespace anima {
 namespace {
-constexpr std::size_t maximum_asset_key_bytes = 4096;
 constexpr std::size_t maximum_payload_bytes = 8192;
 // The key rule of UiPanel, which restoring also applies before the resolver sees a stored key.
-void validate_asset_key(std::string_view key) {
-    if (key.empty() || key.size() > maximum_asset_key_bytes)
-        throw std::invalid_argument("Invalid UI asset key");
-}
+void validate_asset_key(std::string_view key) { detail::validate_resource_key(key, "Invalid UI asset key"); }
 } // namespace
 UiPanel::UiPanel(UiDocuments &host, std::string key, const std::filesystem::path &path, bool visible)
     : asset_key_(std::move(key)), visible_(visible) {
