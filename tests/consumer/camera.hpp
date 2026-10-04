@@ -24,13 +24,18 @@ inline void run() {
     const auto selected_eye = player.get_component<anima::CameraView>()->camera;
     if (selected_eye.id() != player.children()[0].id() || selected_eye.id() == eye.id())
         throw std::runtime_error("Independent camera prefab link remapping failed");
-    const auto origin = anima::view_origin(anima::view_matrix(scenes, 16.F / 9));
+    const auto origin = anima::view_origin(anima::view_projection(scenes, 16.F / 9));
     if (std::abs(origin[1] - 2) > 1e-5F || std::abs(origin[2] - 5) > 1e-5F)
         throw std::runtime_error("Independent camera did not follow its object");
+    const auto resolved = anima::resolve_camera(scenes, 16.F / 9);
+    const auto selected_lens = selected_eye.get_component<anima::Camera>()->projection(16.F / 9);
+    if (resolved.projection != selected_lens || resolved.view_projection != resolved.projection * resolved.view ||
+        std::abs(resolved.position.y - 2) > 1e-5F || std::abs(resolved.position.z - 5) > 1e-5F)
+        throw std::runtime_error("Independent camera did not resolve its view, projection and position");
     const auto document = anima::serialize_scene(level.get(), {}, codecs);
-    const auto before = anima::view_matrix(scenes, 1);
+    const auto before = anima::view_projection(scenes, 1);
     level = scenes.replace(level, document, {}, codecs);
-    if (selected_eye.valid() || before != anima::view_matrix(scenes, 1))
+    if (selected_eye.valid() || before != anima::view_projection(scenes, 1))
         throw std::runtime_error("Camera scene replacement retained handles or changed its view");
 
     anima::SceneSet linked;
@@ -39,9 +44,9 @@ inline void run() {
     lens.add_component<anima::Camera>();
     lens.set_position({0, 1, 4});
     views->create("remote view").add_component<anima::CameraView>()->camera = lens;
-    const auto remote = anima::view_matrix(linked, 1);
+    const auto remote = anima::view_projection(linked, 1);
     cameras = linked.replace(cameras, anima::serialize_scene(cameras.get(), {}, codecs), {}, codecs);
-    if (lens.valid() || remote != anima::view_matrix(linked, 1))
+    if (lens.valid() || remote != anima::view_projection(linked, 1))
         throw std::runtime_error("Camera replacement lost the view in another member");
     const auto cleared = linked.unload(cameras, codecs);
     if (cleared.size() != 1 || views->components<anima::CameraView>().front()->camera.valid())

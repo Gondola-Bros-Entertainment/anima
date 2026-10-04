@@ -87,13 +87,13 @@ struct Reentry {
     Scene *scene;
     unsigned *calls;
     void on_update(double) {
-        CHECK_THROWS_WITH_AS(view_matrix(*scene, 1), busy_scene, std::logic_error);
-        CHECK_THROWS_WITH_AS(view_matrix(*scenes, 1), "Scene set is updating", std::logic_error);
+        CHECK_THROWS_WITH_AS(view_projection(*scene, 1), busy_scene, std::logic_error);
+        CHECK_THROWS_WITH_AS(view_projection(*scenes, 1), "Scene set is updating", std::logic_error);
         ++*calls;
     }
 };
 struct Construction {
-    Construction(Scene &scene) { CHECK_THROWS_WITH_AS(view_matrix(scene, 1), busy_scene, std::logic_error); }
+    Construction(Scene &scene) { CHECK_THROWS_WITH_AS(view_projection(scene, 1), busy_scene, std::logic_error); }
 };
 // A rig whose view selects its child camera, with the camera codecs registered.
 struct Rig {
@@ -115,7 +115,7 @@ struct Rig {
 
 TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan clip space with reversed depth") {
     Viewed viewed(CameraProjection::perspective);
-    auto m = view_matrix(viewed.scene, 2);
+    auto m = view_projection(viewed.scene, 2);
     CHECK(project(m, {0, 0, -1}).z == Near{1, tolerance});
     CHECK(project(m, {0, 0, -11}).z == Near{0, tolerance});
     CHECK(project(m, {2, 1, -1}).x == Near{1, tolerance});
@@ -124,13 +124,65 @@ TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan cli
     CHECK(RenderFrustum(m).intersects({{-.1F, -.1F, -3}, {.1F, .1F, -2}, true}));
     CHECK_FALSE(RenderFrustum(m).intersects({{20, 0, -3}, {21, 1, -2}, true}));
     viewed.eye.get_component<Camera>()->configure(lens_settings(CameraProjection::orthographic));
-    m = view_matrix(viewed.scene, 2);
+    m = view_projection(viewed.scene, 2);
     CHECK(project(m, {4, 2, -1}).x == Near{1, tolerance});
     CHECK(project(m, {4, 2, -1}).y == Near{-1, tolerance});
     CHECK(project(m, {4, 2, -1}).z == Near{1, tolerance});
     CHECK(project(m, {4, 2, -11}).z == Near{0, tolerance});
     CHECK(view_origin(m)[2] == Near{1, tolerance}); // Toward the camera, which looks down -Z.
     CHECK(view_origin(m)[3] == Near{0, tolerance});
+}
+
+TEST_CASE("resolve_camera returns the camera's view, its projection, their product and the camera's position") {
+    Viewed viewed(CameraProjection::perspective);
+    const Vec3 eye{3, 4, 5}, forward{1, -1, -2}, up{0, 1, 0};
+    // The positive scale does not reach the view.
+    viewed.eye.set_world_transform({.translation = eye, .rotation = look_rotation(forward, up), .scale = {2, 3, 4}});
+    const auto resolved = resolve_camera(viewed.scene, 2);
+    CHECK(same(resolved.view, look_at(eye, eye + forward, up)));
+    const auto origin = point(resolved.view, eye);
+    CHECK(origin.x == Near{0, tolerance});
+    CHECK(origin.y == Near{0, tolerance});
+    CHECK(origin.z == Near{0, tolerance});
+    CHECK(resolved.projection == viewed.eye.get_component<Camera>()->projection(2));
+    CHECK(resolved.view_projection == resolved.projection * resolved.view);
+    CHECK(resolved.view_projection == view_projection(viewed.scene, 2));
+    CHECK(resolved.position.x == Near{eye.x, tolerance});
+    CHECK(resolved.position.y == Near{eye.y, tolerance});
+    CHECK(resolved.position.z == Near{eye.z, tolerance});
+    // An orthographic lens changes only the projection.
+    viewed.eye.get_component<Camera>()->configure(lens_settings(CameraProjection::orthographic));
+    const auto flat = resolve_camera(viewed.scene, 2);
+    CHECK(flat.view == resolved.view);
+    CHECK(flat.projection == orthographic(2, 4, 1, 11));
+    CHECK(flat.view_projection == flat.projection * flat.view);
+
+    // Across a set, the camera may be in another member than its view.
+    SceneSet set;
+    auto cameras = set.create("cameras"), views = set.create("views");
+    auto remote = camera(cameras.get());
+    remote.set_position({4, 0, 0});
+    (void)view(views.get(), remote);
+    const auto across = resolve_camera(set, 1);
+    CHECK(across.view_projection == view_projection(set, 1));
+    CHECK(across.view_projection == across.projection * across.view);
+    CHECK(across.position.x == 4);
+    CHECK_THROWS_WITH_AS(resolve_camera(views.get(), 1), dead_camera, std::invalid_argument);
+}
+
+TEST_CASE("Camera::projection() needs no scene and rejects an aspect that is not finite and positive") {
+    constexpr auto pi = std::numbers::pi_v<float>;
+    Camera lens(lens_settings(CameraProjection::perspective));
+    CHECK(lens.projection(2) == perspective(pi / 2, 2, 1, 11));
+    lens.configure(lens_settings(CameraProjection::orthographic));
+    CHECK(lens.projection(2) == orthographic(2, 4, 1, 11));
+    for (float aspect : {0.F, -1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        CAPTURE(aspect);
+        CHECK_THROWS_WITH_AS(lens.projection(aspect), "Camera aspect must be finite and positive",
+                             std::invalid_argument);
+    }
+    // Finite and positive, but the width 2 / (height * aspect) is too large for float; resolution rejects it.
+    CHECK(std::isinf(lens.projection(std::numeric_limits<float>::denorm_min())[0]));
 }
 
 TEST_CASE("perspective() maps a frustum to Vulkan clip space with reversed depth, as a perspective camera does") {
@@ -149,7 +201,7 @@ TEST_CASE("perspective() maps a frustum to Vulkan clip space with reversed depth
     CHECK(project(narrow, {4 * std::tan(pi / 6), 0, -4}).x == Near{1, tolerance});
     // A camera at the origin with the same lens resolves to exactly this projection times look_at().
     Viewed viewed(CameraProjection::perspective);
-    const auto camera_view = view_matrix(viewed.scene, 2);
+    const auto camera_view = view_projection(viewed.scene, 2);
     const auto composed = m * look_at({}, {0, 0, -1});
     CHECK(std::equal(camera_view.begin(), camera_view.end(), composed.begin()));
     // Each element is computed in double, where near times far, 1e39, does not overflow as it would in float.
@@ -200,7 +252,7 @@ TEST_CASE("orthographic() maps a box to Vulkan clip space with reversed depth, a
     CHECK(origin[3] == Near{0, tolerance});
     // A camera at the origin with the same lens resolves to exactly this projection.
     Viewed viewed(CameraProjection::orthographic);
-    const auto camera_view = view_matrix(viewed.scene, 2);
+    const auto camera_view = view_projection(viewed.scene, 2);
     CHECK(std::equal(camera_view.begin(), camera_view.end(), m.begin()));
     // The planes may lie at or behind the eye.
     const auto around = orthographic(1, 2, -5, 5);
@@ -233,12 +285,12 @@ TEST_CASE("The view follows the camera's world pose and ignores its positive sca
     viewed.eye.set_parent(parent, ReparentMode::keep_local);
     viewed.eye.set_local_position({1, 0, 0});
     // The parent's half turn about Y puts the eye at (8, 3, 4), looking along +Z.
-    const auto scaled = view_matrix(viewed.scene, 2);
+    const auto scaled = view_projection(viewed.scene, 2);
     CHECK(project(scaled, {8, 3, 5}).z == Near{1, tolerance});
     CHECK(project(scaled, {8, 3, 15}).z == Near{0, tolerance});
     viewed.eye.clear_parent();
     viewed.eye.set_world_transform({.translation = {8, 3, 4}, .rotation = {0, 1, 0, 0}});
-    CHECK(same(scaled, view_matrix(viewed.scene, 2)));
+    CHECK(same(scaled, view_projection(viewed.scene, 2)));
 }
 
 TEST_CASE("Sheared, collapsed and mirrored camera axes are rejected") {
@@ -246,22 +298,22 @@ TEST_CASE("Sheared, collapsed and mirrored camera axes are rejected") {
     auto sheared = identity();
     sheared[4] = .3F;
     viewed.eye.set_world_matrix(sheared);
-    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), skewed_axes, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(viewed.scene, 2), skewed_axes, std::invalid_argument);
     viewed.eye.set_world_transform({.scale = {0, 1, 1}});
-    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), "Camera world axes must be nonzero", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(viewed.scene, 2), "Camera world axes must be nonzero", std::invalid_argument);
     viewed.eye.set_world_transform({.scale = {-1, 1, 1}});
-    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), skewed_axes, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(viewed.scene, 2), skewed_axes, std::invalid_argument);
 }
 
 TEST_CASE("An aspect that is not finite and positive, or that overflows the projection, is rejected") {
     Viewed viewed(CameraProjection::orthographic);
     for (float aspect : {0.F, -1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         CAPTURE(aspect);
-        CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, aspect), "Camera aspect must be finite and positive",
+        CHECK_THROWS_WITH_AS(view_projection(viewed.scene, aspect), "Camera aspect must be finite and positive",
                              std::invalid_argument);
     }
     // Finite and positive, but the orthographic width 2 / (height * aspect) is not a finite float.
-    CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, std::numeric_limits<float>::denorm_min()),
+    CHECK_THROWS_WITH_AS(view_projection(viewed.scene, std::numeric_limits<float>::denorm_min()),
                          math_error_message(MathErrorCode::nonfinite_matrix), MathError);
 }
 
@@ -269,7 +321,7 @@ TEST_CASE("Invalid lens settings are rejected and keep the accepted view") {
     Viewed viewed(CameraProjection::orthographic);
     auto lens = viewed.eye.get_component<Camera>();
     const auto settings = lens->settings();
-    const auto accepted = view_matrix(viewed.scene, 2);
+    const auto accepted = view_projection(viewed.scene, 2);
     for (unsigned field = 0; field < 5; ++field) {
         CAPTURE(field);
         auto bad = settings;
@@ -287,7 +339,7 @@ TEST_CASE("Invalid lens settings are rejected and keep the accepted view") {
             error = "Unknown camera projection";
         }
         CHECK_THROWS_WITH_AS(lens->configure(bad), error, std::invalid_argument);
-        CHECK(same(accepted, view_matrix(viewed.scene, 2)));
+        CHECK(same(accepted, view_projection(viewed.scene, 2)));
     }
 }
 
@@ -296,47 +348,47 @@ TEST_CASE("View resolution requires one active view of a live camera with an act
     auto a = set.create("a"), b = set.create("b");
     auto eye = camera(a.get());
     auto selected = view(b.get(), eye);
-    const auto accepted = view_matrix(set, 1);
+    const auto accepted = view_projection(set, 1);
     set.set_active(b);
-    CHECK(same(accepted, view_matrix(set, 1)));
+    CHECK(same(accepted, view_projection(set, 1)));
     // The view's camera is foreign to b on its own.
-    CHECK_THROWS_WITH_AS(view_matrix(b.get(), 1), dead_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(b.get(), 1), dead_camera, std::invalid_argument);
     auto other = camera(b.get());
     other.set_position({4, 0, 0});
     selected->camera = other;
-    CHECK(view_origin(view_matrix(set, 1))[0] == Near{4, tolerance});
+    CHECK(view_origin(view_projection(set, 1))[0] == Near{4, tolerance});
     auto extra = view(a.get(), eye);
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), "Camera selection has multiple active views", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), "Camera selection has multiple active views", std::invalid_argument);
     extra.set_enabled(false);
-    CHECK_NOTHROW(view_matrix(set, 1));
+    CHECK_NOTHROW(view_projection(set, 1));
     selected.set_enabled(false);
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), no_view, std::invalid_argument);
     selected.set_enabled(true);
     auto group = b->create();
     other.set_parent(group);
     group.set_active(false);
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), inactive_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), inactive_camera, std::invalid_argument);
     group.set_active(true);
     other.get_component<Camera>().set_enabled(false);
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), inactive_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), inactive_camera, std::invalid_argument);
     other.remove_component<Camera>();
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), inactive_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), inactive_camera, std::invalid_argument);
     other.add_component<Camera>(); // Link deliberately selects the object's current attachment.
-    CHECK_NOTHROW(view_matrix(set, 1));
+    CHECK_NOTHROW(view_projection(set, 1));
     other.destroy();
     (void)camera(b.get());
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), dead_camera, std::invalid_argument);
     selected->camera = {};
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), dead_camera, std::invalid_argument);
     selected->camera = eye;
     // Without the camera codecs nothing repairs the link.
     CHECK(set.unload(a).empty());
     a = set.create("a");
     (void)camera(a.get());
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), dead_camera, std::invalid_argument);
     set.clear();
     CHECK_FALSE(selected.valid());
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), no_view, std::invalid_argument);
 }
 
 TEST_CASE("A view in one member follows its camera through a replacement and is cleared by an unload") {
@@ -347,32 +399,32 @@ TEST_CASE("A view in one member follows its camera through a replacement and is 
     auto eye = camera(cameras.get());
     eye.set_position({3, 0, 0});
     auto selected = view(views.get(), eye);
-    const auto accepted = view_matrix(set, 1);
+    const auto accepted = view_projection(set, 1);
     const auto eye_key = eye.key();
     const auto document = serialize_scene(cameras.get(), {}, codecs);
     cameras = set.replace(cameras, document, {}, codecs);
     CHECK_FALSE(eye.valid());
     CHECK(selected->camera.id() == cameras->find(eye_key).id());
-    CHECK(same(accepted, view_matrix(set, 1)));
+    CHECK(same(accepted, view_projection(set, 1)));
     // A replacement without the camera's key fails and keeps the link.
     Scene vacant;
     CHECK_THROWS_WITH_AS((void)set.replace(cameras, serialize_scene(vacant, {}), {}, codecs),
                          "Replacement lacks a linked object key", std::invalid_argument);
-    CHECK(same(accepted, view_matrix(set, 1)));
+    CHECK(same(accepted, view_projection(set, 1)));
     // The view's own member reloads from a set document; its link resolves by address.
     const auto saved = set.serialize({}, codecs);
     views = set.replace(views, saved, {}, codecs);
     CHECK_FALSE(selected.valid());
     selected = views->components<CameraView>().front();
     CHECK(selected->camera.id() == cameras->find(eye_key).id());
-    CHECK(same(accepted, view_matrix(set, 1)));
+    CHECK(same(accepted, view_projection(set, 1)));
     const auto cleared = set.unload(cameras, codecs);
     REQUIRE(cleared.size() == 1);
     CHECK(cleared[0].owner.id() == selected.object().id());
     CHECK(cleared[0].component == "anima.camera-view.v1");
     CHECK(cleared[0].target == SceneAddress{"cameras", eye_key});
     CHECK(selected->camera.id() == Scene::Id{});
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), dead_camera, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), dead_camera, std::invalid_argument);
 }
 
 TEST_CASE("Views do not resolve from component hooks or construction") {
@@ -385,9 +437,9 @@ TEST_CASE("Views do not resolve from component hooks or construction") {
     eye.add_component<Construction>(scene.get());
     set.update(0);
     CHECK(calls == 1);
-    CHECK_NOTHROW(view_matrix(set, 1));
+    CHECK_NOTHROW(view_projection(set, 1));
     selected.object().set_active(false);
-    CHECK_THROWS_WITH_AS(view_matrix(set, 1), no_view, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(view_projection(set, 1), no_view, std::invalid_argument);
 }
 
 TEST_CASE_FIXTURE(Rig, "Camera links remap per prefab instance, and lenses and activation persist") {
@@ -397,9 +449,9 @@ TEST_CASE_FIXTURE(Rig, "Camera links remap per prefab instance, and lenses and a
     CHECK(second.get_component<CameraView>()->camera.id() == second.children()[0].id());
     first.set_active(false);
     second.get_component<CameraView>().set_enabled(false);
-    const auto accepted = view_matrix(scene, 2);
+    const auto accepted = view_projection(scene, 2);
     const auto restored = load_scene(serialize_scene(scene, {}, codecs), {}, codecs);
-    CHECK(same(accepted, view_matrix(*restored, 2)));
+    CHECK(same(accepted, view_projection(*restored, 2)));
     CHECK_FALSE(restored->find(first.key()).active_self());
     CHECK_FALSE(restored->find(second.key()).get_component<CameraView>().enabled());
     const auto &restored_lens = restored->find(eye.key()).get_component<Camera>()->settings();
@@ -410,7 +462,7 @@ TEST_CASE_FIXTURE(Rig, "Camera links remap per prefab instance, and lenses and a
     CHECK(restored_lens.far_plane == 500);
     CHECK_THROWS_WITH_AS(add_camera_component_codecs(codecs), duplicate_codec, std::invalid_argument);
     // The failed registration left the codecs as they were.
-    CHECK(same(accepted, view_matrix(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs), 2)));
+    CHECK(same(accepted, view_projection(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs), 2)));
 }
 
 TEST_CASE_FIXTURE(Rig, "Capturing a link outside the prefab is rejected, and a null link stays null") {
@@ -423,7 +475,7 @@ TEST_CASE_FIXTURE(Rig, "Capturing a link outside the prefab is rejected, and a n
 }
 
 TEST_CASE_FIXTURE(Rig, "Invalid camera payloads are rejected without leaking staged objects") {
-    const auto accepted = view_matrix(scene, 2);
+    const auto accepted = view_projection(scene, 2);
     const auto prefab = Prefab::capture(root, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
     for (unsigned node : {0U, 1U}) {
@@ -455,7 +507,7 @@ TEST_CASE_FIXTURE(Rig, "Invalid camera payloads are rejected without leaking sta
             CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), payloads[index].error.c_str(),
                                  std::invalid_argument);
             CHECK(scene.size() == size);
-            CHECK(same(accepted, view_matrix(scene, 2)));
+            CHECK(same(accepted, view_projection(scene, 2)));
         }
         data = valid;
     }

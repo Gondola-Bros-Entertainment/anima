@@ -139,7 +139,7 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     settings.far_plane = camera.radius * 50;
     lens->configure(settings);
     const auto aspect = float(width) / float(height);
-    renderer.set_view(anima::view_matrix(scenes, aspect));
+    renderer.set_view(anima::view_projection(scenes, aspect));
     anima::ComponentCodecs codecs;
     anima::add_camera_component_codecs(codecs);
     const auto saved_camera = anima::serialize_scene(cameras.get(), {}, codecs);
@@ -202,18 +202,18 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     settings.projection = anima::CameraProjection::orthographic;
     settings.orthographic_height = camera.radius * 2.5F;
     lens->configure(settings);
-    renderer.set_view(anima::view_matrix(scenes, aspect));
+    renderer.set_view(anima::view_projection(scenes, aspect));
     capture("consumer-orthographic");
     eye.set_position(eye.position() + anima::Vec3{.5F, 0, 0});
-    renderer.set_view(anima::view_matrix(scenes, aspect));
+    renderer.set_view(anima::view_projection(scenes, aspect));
     capture("consumer-camera-moved");
     cameras = scenes.replace(cameras, saved_camera, {}, codecs);
     require(!eye.valid() && !selection && !lens, "Camera replacement retained runtime handles");
-    renderer.set_view(anima::view_matrix(scenes, aspect));
+    renderer.set_view(anima::view_projection(scenes, aspect));
     capture("consumer-camera-restored");
     selection = cameras->components<anima::CameraView>().front();
     selection->camera = eye; // Stale selection must fail before renderer publication.
-    rejection::rejects<std::invalid_argument>([&] { renderer.set_view(anima::view_matrix(scenes, aspect)); },
+    rejection::rejects<std::invalid_argument>([&] { renderer.set_view(anima::view_projection(scenes, aspect)); },
                                               "Selected camera must be a live object in the scene selection");
     capture("consumer-camera-rejected");
     selection->camera = cameras->components<anima::Camera>().front().object();

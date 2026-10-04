@@ -221,11 +221,12 @@ inline std::array<Vec3, 3> look_axes(Vec3 forward, Vec3 up) {
 }
 /// Perspective projection with a full vertical field of view of @p vertical_fov_radians and a width of @p aspect
 /// times its height, for view space looking down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0
-/// at @p far_plane. view_matrix() projects a perspective Camera with it, passing CameraSettings::vertical_fov_degrees
-/// converted to radians and rounded to `float`. Each element is computed in double and rounded once to `float`, so one
-/// too large for `float`, as from a tiny @p aspect or field of view, is infinite. Throws MathError with
-/// MathErrorCode::invalid_frustum unless every argument is finite, `0 < vertical_fov_radians < pi`, `aspect > 0` and
-/// `0 < near_plane < far_plane`; `std::numbers::pi_v<float>` exceeds pi.
+/// at @p far_plane. Camera::projection() projects a perspective Camera with it, passing
+/// CameraSettings::vertical_fov_degrees converted to radians and rounded to `float`. Each element is computed in double
+/// and rounded once to `float`, so one too large for `float`, as from a tiny @p aspect or field of view, is infinite.
+/// Throws MathError with MathErrorCode::invalid_frustum unless every argument is finite,
+/// `0 < vertical_fov_radians < pi`, `aspect > 0` and `0 < near_plane < far_plane`; `std::numbers::pi_v<float>` exceeds
+/// pi.
 [[nodiscard]] inline Mat4 perspective(float vertical_fov_radians, float aspect, float near_plane, float far_plane) {
     if (!(std::isfinite(vertical_fov_radians) && std::isfinite(aspect) && std::isfinite(near_plane) &&
           std::isfinite(far_plane) && vertical_fov_radians > 0 && vertical_fov_radians < std::numbers::pi &&
