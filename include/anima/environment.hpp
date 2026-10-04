@@ -237,8 +237,8 @@ inline void validate_atmosphere(const Atmosphere &a) {
 /// atmosphere_sunlight(), times #sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 +
 /// g^2 - 2 * g * c)^1.5)`, with `g` the #sun_anisotropy and `c` the cosine of the angle between the path, from the eye,
 /// and the direction toward the sun. It depends on the path's direction alone, not on its length, and each of its
-/// channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor the scene's
-/// own light reach the fog. Orthographic views are not fogged.
+/// channels is capped at 65504, the largest half float, which the default scene target holds (SceneColorFormat).
+/// Neither shadows nor the scene's own light reach the fog. Orthographic views are not fogged.
 struct HeightFog {
     /// Ambient light that the fog scatters toward the eye; finite and nonnegative.
     Vec3 color{.55F, .65F, .75F};
@@ -321,9 +321,10 @@ struct EnvironmentSettings {
     /// irradiance.
     Atmosphere atmosphere;
     /// Linear radiance behind the scene while #atmosphere is disabled, wherever no mesh draws; the sky replaces it
-    /// while the atmosphere is enabled. Finite, nonnegative and at most 65504 in each channel, the largest half float
-    /// that the scene target holds. In perspective views fog applies to it as to a surface HeightFog::sky_distance
-    /// along each view ray, as it does to the sky, and #exposure and #tone_mapping apply to it as to the scene.
+    /// while the atmosphere is enabled. Finite, nonnegative and at most 65504 in each channel, the largest half float,
+    /// which the default scene target holds (SceneColorFormat). In perspective views fog applies to it as to a surface
+    /// HeightFog::sky_distance along each view ray, as it does to the sky, and #exposure and #tone_mapping apply to it
+    /// as to the scene.
     Vec3 background{.018F, .027F, .041F};
     /// Height fog over the scene, the sky and #background.
     HeightFog fog;
@@ -375,7 +376,7 @@ inline void validate_environment_settings(const EnvironmentSettings &e) {
     require(color(e.ambient_ground), "Environment ambient_ground must be finite nonnegative linear RGB");
     require(color(e.ambient_specular), "Environment ambient_specular must be finite nonnegative linear RGB");
     validate_atmosphere(e.atmosphere);
-    // The largest half float, which the scene target clears to at most.
+    // The largest half float, which the default scene target (SceneColorFormat::rgba16f) clears to at most.
     constexpr float maximum_half_float = 65504;
     const auto &b = e.background;
     require(color(b) && b.x <= maximum_half_float && b.y <= maximum_half_float && b.z <= maximum_half_float,

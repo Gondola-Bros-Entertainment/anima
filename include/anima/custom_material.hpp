@@ -100,8 +100,11 @@
 ///
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear
-/// `RGBA16F` scene target, whose display conversion applies exposure and tone mapping; the shadow fragment shader
-/// writes no color. `gl_Position` is in Vulkan clip space, with Y down and depth 0 to 1: reversed in the view, where
+/// scene target, whose display conversion applies exposure and tone mapping; the shadow fragment shader writes no
+/// color. The target's format is VulkanRenderer::scene_color_format(): `RGBA16F` by default, or with
+/// SceneColorFormat::b10g11r11 `B10G11R11_UFLOAT`, which drops alpha, stores negative values as 0 and keeps a 6-bit
+/// mantissa in red and green and a 5-bit mantissa in blue. The opaque color copy (set 0, binding 2) has the same
+/// format. `gl_Position` is in Vulkan clip space, with Y down and depth 0 to 1: reversed in the view, where
 /// `viewProjection` puts 1 at the near plane and nearer surfaces pass the depth test, and forward in the shadow
 /// variant, with 0 on the side facing the light; `gl_FragDepth` follows the same direction. Built-in variables such as
 /// `gl_FragCoord`, `gl_FrontFacing` and `gl_FragDepth` are available, and in the view `gl_FragCoord` counts the scene

@@ -1,5 +1,24 @@
 // Linear scene target, its size for the render scale, and final display conversion. Included inside Impl.
-static constexpr VkFormat world_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+// The linear color target's format, which choose_world_color_format() settles at construction.
+VkFormat world_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+// Settles world_color_format from RendererOptions::scene_color_format: B10G11R11 where it is requested and the device's
+// optimal tiling offers every use that the target and its opaque color copy make of it, and otherwise RGBA16F.
+void choose_world_color_format() {
+    world_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (options.scene_color_format != SceneColorFormat::b10g11r11)
+        return;
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &properties);
+    // Meshes render and blend into the target and display conversion filters it. Opaque inputs copy it into an image of
+    // its format, which custom materials sample, and are required too, so that the smaller format never costs a device
+    // the opaque inputs that RGBA16F would give it.
+    constexpr VkFormatFeatureFlags needed =
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((properties.optimalTilingFeatures & needed) == needed)
+        world_color_format = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+}
 // The linear color target with the framebuffer that also attaches the depth target of its size, and the descriptor
 // that display conversion samples it through.
 struct WorldTarget {
