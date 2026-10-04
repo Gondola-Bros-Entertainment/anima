@@ -12,7 +12,14 @@ inline constexpr float maximum_audio_pitch = 8;
 inline constexpr float maximum_audio_distance = 1e9F;
 inline constexpr float audio_direction_epsilon = 1e-6F;
 inline constexpr int maximum_audio_priority = 255;
+inline constexpr unsigned minimum_audio_sample_rate = 8000, maximum_audio_sample_rate = 192000;
+// Clips are mono or interleaved stereo.
+inline constexpr unsigned maximum_clip_channels = 2;
 
+inline void audio_sample_rate(unsigned value) {
+    if (value < minimum_audio_sample_rate || value > maximum_audio_sample_rate)
+        throw std::invalid_argument("Audio sample rate must be between 8000 and 192000 Hz");
+}
 inline void audio_gain(float value) {
     if (!std::isfinite(value) || value < 0 || value > maximum_audio_gain)
         throw std::invalid_argument("Audio gain must be in [0, 16]");
