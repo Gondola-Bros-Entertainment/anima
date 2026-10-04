@@ -212,6 +212,13 @@ inline int run(int argc, char **argv) {
             "Simplified levels did not halve the indices drawn, or the shadow passes drew the full draws");
     require_levels_match("middle-full", "middle-levels");
     captures.require_foreground("middle-levels", "The field did not render");
+    // Clearing the selection after a frame that drew levels leaves none of its main-view counters behind.
+    renderer.set_scenes({});
+    const auto cleared = draw("middle-cleared", 1);
+    require(!cleared.draw_calls && !cleared.submitted_indices && !cleared.drawn_copies && !cleared.lod_draws &&
+                !cleared.culled_clusters && !cleared.range_culled,
+            "Clearing the selection kept the previous frame's main-view counters");
+    renderer.set_scenes({scene});
 
     // Far away, where each sphere covers about 6 pixels, the levels draw at least ten times fewer indices.
     view({28.5F, 45, 110}, {28.5F, 0, 28});

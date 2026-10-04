@@ -416,11 +416,13 @@ inline int run(int argc, char **argv) {
     }
     renderer.request_resize();
     capture("restored-window");
+    require(renderer.resource_stats().drawn_copies > 0, "The restored window drew no copies");
     replace({});
     capture("empty-final");
     const auto empty = renderer.resource_stats();
     require(!empty.instances && !empty.pose_uploaded_bytes && !empty.candidate_instances && !empty.culled_instances &&
                 !empty.candidate_draws && !empty.culled_draws && !empty.draw_calls && !empty.submitted_indices &&
+                !empty.drawn_copies && !empty.lod_draws && !empty.culled_clusters && !empty.range_culled &&
                 !empty.shadow_draw_calls && !empty.shadow_submitted_indices,
             "Clearing the scene retained mesh activity in resource statistics");
     // Also release a newly uploaded scene before any draw uses it.
