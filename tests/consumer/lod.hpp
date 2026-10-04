@@ -242,7 +242,8 @@ inline int run(int argc, char **argv) {
 
     // One sphere at a time at the middle distance. A skinned copy that its world matrix scales by 100 and its joint
     // by 0.01 is the rigid sphere's size and chooses the same level, since the joint matrices place a skinned draw.
-    // Shaded flat, the sphere simplifies across its hard edges within the same parity.
+    // Each casts the level that it draws: every shadow pass submits the indices of its one view draw call. Shaded flat,
+    // the sphere simplifies across its hard edges within the same parity.
     view({28.5F, 14, 62}, {28.5F, 0, 30});
     const auto at = [](float scale) {
         auto m = anima::identity();
@@ -255,15 +256,21 @@ inline int run(int argc, char **argv) {
         subject->create("subject", std::move(mesh)).set_world_matrix(world);
         renderer.set_scenes({subject});
     };
+    const auto casts_drawn_level = [](const anima::ResourceStats &stats) {
+        return stats.draw_calls == 1 && stats.shadow_draw_calls > 0 &&
+               stats.shadow_submitted_indices == stats.shadow_draw_calls * stats.submitted_indices;
+    };
     only(sphere, at(1));
     const auto rigid = draw("rigid-levels", 1);
     require(rigid.lod_draws > 0, "The rigid sphere did not choose a level");
+    require(casts_drawn_level(rigid), "The rigid sphere cast another level than it drew");
     only(anima::Mesh::compile(skinned_sphere_asset(), anima::TexelRetention::keep, {6}), at(100));
     (void)draw("skinned-full", 0);
     const auto skinned = draw("skinned-levels", 1);
     require(skinned.submitted_indices == rigid.submitted_indices &&
                 skinned.shadow_submitted_indices == rigid.shadow_submitted_indices,
             "The skinned sphere chose another level than the rigid one");
+    require(casts_drawn_level(skinned), "The skinned sphere cast another level than it drew");
     require_levels_match("skinned-full", "skinned-levels");
     only(anima::Mesh::compile(faceted_sphere_asset(), anima::TexelRetention::keep, {6}), at(1));
     const auto faceted_full = draw("faceted-full", 0);
