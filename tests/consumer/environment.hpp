@@ -1,10 +1,13 @@
 #pragma once
 #include "gpu_checks.hpp"
+#include "materials.hpp"
 #include "reference.hpp"
 #include "rejection.hpp"
 #include "resources.hpp"
+#include <algorithm>
 #include <anima/lighting.hpp>
 #include <anima/scene_set.hpp>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -340,6 +343,149 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture,
     images.require(distinct, "The upward and the ordinary square shade alike: " + report.str(), {"collapsed-shading"});
     images.require(matched, "A collapsed draw shades unlike its flattened surface: " + report.str(),
                    {"collapsed-shading"});
+}
+// The detail region's result replaces the cascades' inside its box and fades into theirs over the box's outer 4
+// percent on each axis (DirectionalShadow). A plate above the box, which only the cascades hold, shadows the ground
+// under it: the region keeps its interior lit, the cascades shadow the ground outside the box, and across the fade the
+// region's share of the result follows smoothstep(), from none at the box's face to all of it at the fade's inner
+// edge. Samples a quarter, half and three quarters of the way across tell it from a linear or a reversed fade. The
+// sun is overhead, so the box's sides across it lie along X and Z.
+template <class Capture>
+void check_detail_fade(anima::VulkanRenderer &renderer, Capture &&capture, const gpu_check::Captures &images) {
+    using anima::operator*;
+    constexpr double fade = .04;      // DirectionalShadow's share of the box on each axis.
+    constexpr float extent = 2;       // The region spans X from -2 m to 2 m, so its fade is 0.16 m wide.
+    constexpr float region_depth = 2; // The box spans Y from -1 m to 1 m, below the plate.
+    constexpr float plate_height = 1.5F;
+    constexpr anima::Quat unrotated{0, 0, 0, 1};
+    constexpr int window_radius = 1;     // Pixels around each sample; the fade spans 28 pixels.
+    constexpr double least_shadow = 90;  // Summed channel levels, at least, by which the plate's shadow darkens.
+    constexpr double largest_change = 6; // Summed channel levels between results that should match.
+    // Largest difference from smoothstep()'s share of the result for the cascades, in linear light. A linear fade
+    // differs from it by 0.094 a quarter and three quarters of the way across.
+    constexpr double share_tolerance = .04;
+    constexpr anima::Vec3 interior{1.6F, 0, 0}, outside{2.3F, 0, 0};
+    // 0.03, 0.02 and 0.01 of the box in from its face, where smoothstep() leaves the cascades 0.156, 0.5 and 0.844 of
+    // the result, a linear fade 0.25, 0.5 and 0.75, and a reversed one 0.844, 0.5 and 0.156.
+    constexpr std::array<anima::Vec3, 3> fading{{{1.88F, 0, 0}, {1.92F, 0, 0}, {1.96F, 0, 0}}};
+    constexpr std::array<double, 3> fading_edges{.03, .02, .01};
+    auto scene = std::make_shared<anima::Scene>();
+    (void)scene->create("ground", anima::Mesh::compile(*box_fixture({6, 0, 6}, true)));
+    // A plate 4 m across X and 6 m across Z, whose shadow covers every sample.
+    auto plate = scene->create("plate", anima::Mesh::compile(*box_fixture({2, .02F, 3})));
+    plate.set_world_transform({{2, plate_height, 0}, unrotated, {1, 1, 1}});
+    anima::Environment lighting;
+    lighting.sun.direction = {0, 1, 0};
+    lighting.sun.irradiance = {2, 2, 2};
+    lighting.fill.irradiance = {};
+    lighting.ambient_sky = lighting.ambient_ground = {.1F, .1F, .1F};
+    // One cascade over the 10 m in view, and the region around the origin.
+    lighting.shadow_cascades.enabled = true;
+    lighting.shadow_cascades.count = 1;
+    lighting.shadow_cascades.distance = 10;
+    lighting.detail_shadow.enabled = true;
+    lighting.detail_shadow.extent = extent;
+    lighting.detail_shadow.depth = region_depth;
+    lighting.detail_shadow.resolution = 1024;
+    const auto region = anima::detail_shadow_matrix(lighting);
+    // The distance of @p at from the box's nearest face in shares of the box, as the shaders measure it; negative
+    // outside the box.
+    const auto edge = [&](anima::Vec3 at) {
+        double nearest = 1;
+        for (unsigned row = 0; row < 3; ++row) {
+            const auto projected = double(region[row]) * at.x + double(region[4 + row]) * at.y +
+                                   double(region[8 + row]) * at.z + double(region[12 + row]);
+            const auto share = row < 2 ? projected * .5 + .5 : projected;
+            nearest = std::min({nearest, share, 1 - share});
+        }
+        return nearest;
+    };
+    bool placed = edge(interior) >= 2 * fade && edge(outside) < 0;
+    for (std::size_t i = 0; i < fading.size(); ++i)
+        placed = placed && std::abs(edge(fading[i]) - fading_edges[i]) < fade / 8;
+    resource_test::require(placed, "The fade's samples are not inside, at their shares across and outside it");
+    const auto view =
+        anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 50) * anima::look_at({2, 1, 4}, {2, 0, 0});
+    renderer.set_view(view);
+    renderer.set_environment(lighting);
+    renderer.set_scenes({scene});
+    capture("detail-fade");
+    lighting.detail_shadow.enabled = false;
+    renderer.set_environment(lighting);
+    capture("detail-fade-cascades");
+    lighting.detail_shadow.enabled = true;
+    renderer.set_environment(lighting);
+    plate.renderer().set_casts_shadows(false);
+    capture("detail-fade-unshadowed");
+    const auto level = [&](const std::string &name, anima::Vec3 at) {
+        const auto &image = images[name];
+        const auto mean = window_mean(image, project(view, at, image.width, image.height), window_radius);
+        return mean[0] + mean[1] + mean[2];
+    };
+    const auto loss = [&](const std::string &name, anima::Vec3 at) {
+        return level("detail-fade-unshadowed", at) - level(name, at);
+    };
+    // The summed linear channels of @p name at @p at, decoded from sRGB and interpolated between pixel centers, so
+    // that a sample in the fade reads its own position rather than the center of the pixel that holds it.
+    const auto linear_level = [&](const std::string &name, anima::Vec3 at) {
+        const auto &image = images[name];
+        const auto position = project(view, at, image.width, image.height);
+        const double x = position[0] - .5, y = position[1] - .5;
+        const double right = x - std::floor(x), down = y - std::floor(y);
+        const auto column = static_cast<std::size_t>(std::floor(x)), row = static_cast<std::size_t>(std::floor(y));
+        double sum = 0;
+        for (std::size_t dy = 0; dy < 2; ++dy)
+            for (std::size_t dx = 0; dx < 2; ++dx) {
+                const double weight = (dx == 1 ? right : 1 - right) * (dy == 1 ? down : 1 - down);
+                for (const auto channel : gpu_check::pixel(image, column + dx, row + dy))
+                    sum += weight * material_test::srgb_to_linear(channel);
+            }
+        return sum;
+    };
+    // The cascades' share of the result at @p at: the share of their shadow that remains, in linear light, where the
+    // sun's light scales with the visibility that the fade blends.
+    const auto cascades_share = [&](anima::Vec3 at) {
+        const auto lit = linear_level("detail-fade-unshadowed", at);
+        return (lit - linear_level("detail-fade", at)) / (lit - linear_level("detail-fade-cascades", at));
+    };
+    // The share that the shader's mix() leaves to the cascades: 1 less smoothstep(0, fade, edge).
+    const auto smoothstep_share = [&](anima::Vec3 at) {
+        const auto t = std::clamp(edge(at) / fade, 0.0, 1.0);
+        return 1 - t * t * (3 - 2 * t);
+    };
+    std::ostringstream report;
+    const auto report_loss = [&](anima::Vec3 at) {
+        report << " loses " << std::lround(loss("detail-fade", at)) << " with the region and "
+               << std::lround(loss("detail-fade-cascades", at)) << " without it";
+    };
+    report << "interior";
+    report_loss(interior);
+    for (std::size_t i = 0; i < fading.size(); ++i) {
+        report << "; " << fading_edges[i] << " in";
+        report_loss(fading[i]);
+        report << ", keeping " << cascades_share(fading[i]) << " of the cascades' shadow against smoothstep()'s "
+               << smoothstep_share(fading[i]);
+    }
+    report << "; outside";
+    report_loss(outside);
+    std::cout << "DETAIL FADE " << report.str() << '\n';
+    const std::vector<std::string> compared{"detail-fade", "detail-fade-cascades", "detail-fade-unshadowed"};
+    // Without the plate's shadow in the cascades, the region's result would match theirs everywhere.
+    bool shadowed =
+        loss("detail-fade-cascades", interior) > least_shadow && loss("detail-fade-cascades", outside) > least_shadow;
+    for (const auto &at : fading)
+        shadowed = shadowed && loss("detail-fade-cascades", at) > least_shadow;
+    images.require(shadowed, "The plate does not shadow the ground through the cascades: " + report.str(), compared);
+    images.require(std::abs(loss("detail-fade", interior)) <= largest_change,
+                   "The plate's shadow reaches the detail region's interior: " + report.str(), compared);
+    images.require(std::abs(level("detail-fade", outside) - level("detail-fade-cascades", outside)) <= largest_change,
+                   "The detail region changed the cascades outside its box: " + report.str(), compared);
+    for (std::size_t i = 0; i < fading.size(); ++i)
+        images.require(std::abs(cascades_share(fading[i]) - smoothstep_share(fading[i])) <= share_tolerance,
+                       "Across the detail region's fade, the ground keeps a share of the cascades' shadow unlike "
+                       "smoothstep()'s: " +
+                           report.str(),
+                       compared);
 }
 // The pixel of ground point (x, y, z) seen from @p eye looking at the origin, through a 45-degree vertical field of
 // view and a 4:3 aspect, the environment views' projection. Rounds half to even, as the removed Python check did.
@@ -824,11 +970,13 @@ inline int run(int argc, char **argv) {
     capture("sky-shadows-disabled");
     check_mirrored_shading(renderer, capture, images);
     check_collapsed_shading(renderer, capture, images);
+    check_detail_fade(renderer, capture, images);
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Environment GPU validation failed");
     check_images(images);
-    std::cout << "PASS environment: scene lights, masked shadows, planar and curved receivers, detail regions, "
-                 "reference parity, sky, mirrored and collapsed shading and rollback, with clean validation\n";
+    std::cout << "PASS environment: scene lights, masked shadows, planar and curved receivers, detail regions and "
+                 "their fade, reference parity, sky, mirrored and collapsed shading and rollback, with clean "
+                 "validation\n";
     return 0;
 }
 } // namespace environment_test
