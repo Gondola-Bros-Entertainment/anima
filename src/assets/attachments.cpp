@@ -117,8 +117,7 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
     }
     return result;
 }
-std::map<std::string, AttachmentSocket, std::less<>>
-decode_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
+AttachmentSockets decode_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
     using namespace presentation_data;
     const auto adapter = presentation_data::parse(document);
     anima::detail::json_version(adapter, "version", sockets_version, "Unsupported attachment socket document version");
@@ -134,7 +133,7 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
             if (std::abs(actual[i] - expected[i]) > anima::mesh_limits::rest_pose_tolerance)
                 throw std::invalid_argument("Body attachment rest frame changed: " + name);
     }
-    std::map<std::string, AttachmentSocket, std::less<>> result;
+    AttachmentSockets result;
     for (const auto &[name, value] : anima::detail::json_object(adapter, "sockets").items()) {
         anima::detail::json_fields(value, {"node", "local"});
         const auto bone = text(value.at("node"));
@@ -182,8 +181,8 @@ template <class Map> auto &role_entry(Map &follows, std::string_view role) {
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory) {
     return presentation_data::decode_step([&] { return decode_catalog(document, directory); });
 }
-std::map<std::string, AttachmentSocket, std::less<>>
-decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
+AttachmentSockets decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest,
+                                            const anima::Asset &body) {
     return presentation_data::decode_step([&] { return decode_sockets(document, manifest, body); });
 }
 struct AttachmentLibrary::State {
@@ -279,19 +278,17 @@ AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, 
     const auto primary = pose.world.at(node) * anima::inverse(rest_world(asset, node)) * visual.primary_grip;
     return {binding.node, binding.local * visual.primary_grip * anima::inverse(primary)};
 }
-anima::Mat4 attachment_marker(const AttachmentVisual &visual, const anima::Asset *asset, const anima::Pose *pose,
-                              std::string_view name) {
+anima::Mat4 attachment_marker(const AttachmentVisual &visual, std::string_view name, std::optional<PropPose> prop) {
     auto local = presentation_data::lookup(visual.markers, name);
     const auto found = visual.marker_nodes.find(name);
     if (found == visual.marker_nodes.end())
         return local;
-    if (!asset || !pose)
+    if (!prop)
         throw std::invalid_argument("Animated attachment marker requires the sampled prop pose");
-    return anima::operator*(pose->world.at(anima::find_node(*asset, found->second)), local);
+    return anima::operator*(prop->pose.world.at(anima::find_node(prop->asset, found->second)), local);
 }
 bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &library,
-                                 const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                                 std::string_view id) {
+                                 const AttachmentSockets &sockets, std::string_view id) {
     if (item_id == id)
         return false;
     // Check the old handle before adding anything, so that a failure leaves no untracked object in the scene.
@@ -322,8 +319,7 @@ bool AttachmentSet::matches(const std::map<std::string, std::string, std::less<>
     }
     return true;
 }
-AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library,
-                                     const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
+AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library, const AttachmentSockets &sockets,
                                      const std::map<std::string, std::string, std::less<>> &desired) {
     AttachmentSet result;
     for (const auto &[role, id] : desired) {
@@ -459,10 +455,7 @@ void AttachmentFollower::sync() {
 MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const anima::Pose &source,
                                            std::string_view clip, const AttachmentHandling &handling,
                                            const AttachmentVisual &visual, const AttachmentBinding &primary,
-                                           const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                                           const anima::Asset *prop_asset, const anima::Pose *prop_pose,
-                                           std::string_view action,
-                                           const std::map<std::string, float, std::less<>> *weights) {
+                                           const AttachmentSockets &sockets, const AttachmentContactOptions &options) {
     using namespace anima;
     // Resolve against the primary item frame once. A support chain must not
     // contain the primary node; asset loading verifies that ownership rule.
@@ -471,8 +464,9 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const a
     // the world-only pose the previous one returned, which cannot recover a joint below a collapsed one.
     MotionControls controls;
     for (const auto &rule : handling.support_contacts) {
-        if (!rule.clips.contains(clip) && !rule.actions.contains(action))
+        if (!rule.clips.contains(clip) && !rule.actions.contains(options.action))
             continue;
+        const auto *weights = options.weights;
         const auto found =
             weights ? weights->find(rule.chain) : std::map<std::string, float, std::less<>>::const_iterator{};
         const float weight = weights && found != weights->end() ? found->second : 1;
@@ -481,14 +475,13 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const a
         if (weight == 0)
             continue;
         const auto &socket = presentation_data::lookup(sockets, rule.socket);
-        const auto frame = item * attachment_marker(visual, prop_asset, prop_pose, rule.marker) * inverse(socket.local);
+        const auto frame = item * attachment_marker(visual, rule.marker, options.prop) * inverse(socket.local);
         controls.contacts.push_back({rule.chain, point(frame, {}), rule.pole, weight, affine_rotation(frame)});
     }
     return runtime.evaluate(source, controls);
 }
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
-                                   const AttachmentSet &attachments,
-                                   const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
+                                   const AttachmentSet &attachments, const AttachmentSockets &sockets,
                                    PrimarySocketSharing primary_sharing) {
     for (const auto &[clip, metadata] : runtime.clips()) {
         (void)metadata;

@@ -3,6 +3,7 @@
 #include <anima/assets/motion_runtime.hpp>
 #include <anima/scene.hpp>
 #include <map>
+#include <optional>
 #include <set>
 
 /// @file
@@ -98,13 +99,16 @@ struct AttachmentCatalog {
     /// Items by id.
     std::map<std::string, AttachmentDefinition, std::less<>> items;
 };
-/// A body socket: a frame relative to a model node.
+/// A body socket: a frame relative to a model node. Pass it to bind_attachment to place a prop's
+/// grip on it.
 struct AttachmentSocket {
     /// Body model node.
     std::size_t node{};
     /// Frame relative to #node.
     anima::Mat4 local = anima::identity();
 };
+/// Body sockets by name.
+using AttachmentSockets = std::map<std::string, AttachmentSocket, std::less<>>;
 
 /// Decodes a catalog document (`version` 4, `units` `"meters"`) whose models resolve against
 /// @p directory.
@@ -131,8 +135,8 @@ struct AttachmentSocket {
 /// names to `node`, one of the rest joints, and `local`, an affine frame relative to it. Frames are
 /// 16 column-major numbers. Another version throws "Unsupported attachment socket document
 /// version".
-[[nodiscard]] std::map<std::string, AttachmentSocket, std::less<>>
-decode_attachment_sockets(std::string_view document, const Manifest &manifest, const Asset &body);
+[[nodiscard]] AttachmentSockets decode_attachment_sockets(std::string_view document, const Manifest &manifest,
+                                                          const Asset &body);
 /// A loaded prop model.
 struct AttachmentAsset {
     /// Imported model. When its library compiles #render with TexelRetention::until_upload, a copy whose
@@ -184,9 +188,15 @@ class AttachmentLibrary {
     struct State;
     std::shared_ptr<State> state_;
 };
-/// A socket combined with a visual's grip: where the prop's model origin goes, relative to the
-/// body node.
-using AttachmentBinding = AttachmentSocket;
+/// A socket combined with a visual's grip: where the prop's model origin goes, relative to a body
+/// node. bind_attachment and animated_attachment_binding make one from a socket; it is a type of
+/// its own so that an AttachmentSocket, whose frame is where the grip goes, is not taken for one.
+struct AttachmentBinding {
+    /// Body model node.
+    std::size_t node{};
+    /// Prop model-to-node matrix.
+    anima::Mat4 local = anima::identity();
+};
 /// Binding that puts @p visual's primary grip on @p socket. Throws anima::MathError when the grip
 /// cannot be inverted.
 [[nodiscard]] AttachmentBinding bind_attachment(const AttachmentSocket &socket, const AttachmentVisual &visual);
@@ -222,11 +232,22 @@ enum class TrackRequirement {
 [[nodiscard]] AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding,
                                                             const AttachmentVisual &visual, const Asset &asset,
                                                             const Pose &pose);
+/// A prop model with a pose of it, such as sample_attachment_pose returns. It refers to both, so
+/// they must outlive it.
+struct PropPose {
+    /// Prop model, such as AttachmentAsset::source.
+    const Asset &asset;
+    /// Pose of #asset.
+    const Pose &pose;
+};
 /// Marker @p name in prop model space. A marker listed in AttachmentVisual::marker_nodes follows
-/// its node in @p pose, so it needs @p asset and @p pose. Throws `std::out_of_range` for an unknown
-/// marker and `std::invalid_argument` for a missing pose.
-[[nodiscard]] Mat4 attachment_marker(const AttachmentVisual &visual, const Asset *asset, const Pose *pose,
-                                     std::string_view name);
+/// its node in the pose of @p prop, so it needs @p prop. Throws `std::out_of_range` for an unknown
+/// marker, or a marker node that the asset of @p prop lacks or its pose has no world matrix for;
+/// `std::invalid_argument` when several nodes have that name; and `std::invalid_argument`
+/// ("Animated attachment marker requires the sampled prop pose") for an animated marker without
+/// @p prop.
+[[nodiscard]] Mat4 attachment_marker(const AttachmentVisual &visual, std::string_view name,
+                                     std::optional<PropPose> prop = {});
 /// One attached item in a scene.
 struct AttachmentInstance {
     /// Scene instance, once added.
@@ -246,8 +267,7 @@ struct AttachmentInstance {
     /// instance belongs to a scene other than @p scene, `std::out_of_range` for an unknown item or
     /// socket, and as AttachmentLibrary::load and Scene::add do; on failure the old item stays
     /// attached and @p scene is unchanged.
-    bool replace(Scene &scene, const AttachmentLibrary &library,
-                 const std::map<std::string, AttachmentSocket, std::less<>> &sockets, std::string_view id);
+    bool replace(Scene &scene, const AttachmentLibrary &library, const AttachmentSockets &sockets, std::string_view id);
 };
 /// Items attached for named roles.
 struct AttachmentSet {
@@ -258,8 +278,7 @@ struct AttachmentSet {
     /// Loads the items of @p desired, a map from role to item id, and binds them to @p sockets,
     /// without touching any scene. There is no fixed limit on the number of roles. Throws for an
     /// empty role or item id, or an unknown item or socket, and as AttachmentLibrary::load does.
-    [[nodiscard]] static AttachmentSet prepare(const AttachmentLibrary &library,
-                                               const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
+    [[nodiscard]] static AttachmentSet prepare(const AttachmentLibrary &library, const AttachmentSockets &sockets,
                                                const std::map<std::string, std::string, std::less<>> &desired);
     /// Adds every prepared item to @p scene as a root instance with an identity transform; place
     /// them with attachment_placement. On failure the instances already added are removed. Throws
@@ -343,22 +362,33 @@ class AttachmentFollower {
     AttachmentSet attachments_;
     std::map<std::string, Follow, std::less<>> follows_;
 };
-/// Solves the support contacts of @p handling that are active for base clip @p clip or action
-/// @p action, in order, with one MotionRuntime::evaluate of @p source.
+/// Optional inputs of apply_attachment_contacts. It refers to what its members name, so build it in
+/// the call, for example `{.action = "reach", .prop = PropPose{*asset.source, pose}}`.
+struct AttachmentContactOptions {
+    /// Action whose contacts are active alongside the base clip's, or empty for none.
+    std::string_view action{};
+    /// Prop model and pose that animated markers follow (see attachment_marker), or none.
+    std::optional<PropPose> prop{};
+    /// Contact weights by chain name, each in [0, 1], or null for all 1; a chain the map does not
+    /// name has weight 1.
+    const std::map<std::string, float, std::less<>> *weights = nullptr;
+};
+/// Solves the support contacts of @p handling that are active for base clip @p clip or the action
+/// of @p options, in order, with one MotionRuntime::evaluate of @p source.
 ///
 /// Each contact moves its chain so that its body socket frame meets its prop marker, with the prop
 /// placed through @p primary in @p source, and is solved on the result of the contacts before it.
-/// Weights come from @p weights by chain name (default 1, each in [0, 1]); a zero weight skips the
-/// contact. Animated markers need @p prop_asset and @p prop_pose. With no active contact, returns
-/// @p source unchanged. Throws `std::invalid_argument` for an invalid weight or a collapsed contact
+/// A zero weight skips the contact. Animated markers need the prop of @p options. With no active
+/// contact, returns @p source unchanged. Throws `std::invalid_argument` ("Invalid item contact
+/// weight") for a weight that is not finite or lies outside [0, 1], and for a collapsed contact
 /// frame (see affine_rotation), `std::out_of_range` for an unknown socket, and as
 /// MotionRuntime::evaluate and attachment_marker do.
-[[nodiscard]] MotionEvaluation apply_attachment_contacts(
-    const MotionRuntime &runtime, const Pose &source, std::string_view clip, const AttachmentHandling &handling,
-    const AttachmentVisual &visual, const AttachmentBinding &primary,
-    const std::map<std::string, AttachmentSocket, std::less<>> &sockets, const Asset *prop_asset = nullptr,
-    const Pose *prop_pose = nullptr, std::string_view action = {},
-    const std::map<std::string, float, std::less<>> *weights = nullptr);
+[[nodiscard]] MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const Pose &source,
+                                                         std::string_view clip, const AttachmentHandling &handling,
+                                                         const AttachmentVisual &visual,
+                                                         const AttachmentBinding &primary,
+                                                         const AttachmentSockets &sockets,
+                                                         const AttachmentContactOptions &options = {});
 /// Whether validate_attachment_ownership lets two roles hold their props on one primary socket node.
 enum class PrimarySocketSharing {
     /// Each role's primary socket node is its own; a shared one throws `std::invalid_argument`.
@@ -376,8 +406,7 @@ enum class PrimarySocketSharing {
 /// must end at its declared socket's node, overlap no other contact chain and move no role's
 /// primary socket. Throws `std::out_of_range` for an unknown chain or socket.
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
-                                   const AttachmentSet &attachments,
-                                   const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
+                                   const AttachmentSet &attachments, const AttachmentSockets &sockets,
                                    PrimarySocketSharing primary_sharing = PrimarySocketSharing::exclusive);
 /// Checks that @p attachments can perform @p action: the handling profiles of the attached items
 /// must meet the action's required roles (see ActionRuntime::validate_roles), and every required

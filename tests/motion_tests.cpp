@@ -248,7 +248,7 @@ struct MotionFixture {
         "clips":[{"name":"base","loop":true,"reference_speed":null,"events":[]}],
         "layers":{"layer.limb":{"mask":"limb","owned_joints":["end","middle","upper"],"context_joints":["root"]},
                   "layer.side":{"mask":"side","owned_joints":["side","tip"],"context_joints":["root"]}}})";
-    std::map<std::string, AttachmentSocket, std::less<>> sockets{{"grip", {3, identity()}}};
+    AttachmentSockets sockets{{"grip", {3, identity()}}};
     MotionFixture() {
         write_motion(directory.path / "motion.glb");
         write_prop(directory.path / "prop.glb", false);
@@ -295,6 +295,11 @@ void check_hidden_side(const Pose &pose) {
         CHECK(length(axis_z(pose.world[node])) < pose_tolerance);
     }
 }
+// Whether attachment_placement accepts a @p Frame. A socket is where the grip goes, not the prop's origin, so a
+// socket must go through bind_attachment first.
+template <typename Frame>
+concept PlacesProp = requires(const Pose &pose, const Frame &frame) { attachment_placement(pose, frame); };
+static_assert(PlacesProp<AttachmentBinding> && !PlacesProp<AttachmentSocket>);
 } // namespace
 
 TEST_CASE("A motion contract binds to a model that carries clips of its own, and ignores them") {
@@ -835,7 +840,7 @@ TEST_CASE("Attachment and interaction sockets outside the evaluation rig pass un
         replaced(catalog, R"("chain":"limb","socket":"grip")", R"("chain":"other","socket":"other.grip")");
     const auto ownership = [&](const std::string &document, std::size_t hold) {
         const AttachmentLibrary library(decode_attachment_catalog(document, fixture.directory.path));
-        const std::map<std::string, AttachmentSocket, std::less<>> sockets{
+        const AttachmentSockets sockets{
             {"grip", {end, identity()}}, {"other.grip", {other_end, identity()}}, {"hold", {hold, identity()}}};
         validate_attachment_ownership(*motion, library, AttachmentSet::prepare(library, sockets, {{"tool", "brace"}}),
                                       sockets);
@@ -1328,8 +1333,10 @@ TEST_CASE("Attachment tracks and markers report invalid requests") {
     AttachmentVisual following;
     following.markers.emplace("tip", identity());
     following.marker_nodes.emplace("tip", "prop");
-    CHECK_THROWS_WITH_AS(attachment_marker(following, nullptr, nullptr, "tip"),
+    CHECK_THROWS_WITH_AS(attachment_marker(following, "tip"),
                          "Animated attachment marker requires the sampled prop pose", std::invalid_argument);
+    const auto rest = sample_attachment_pose(*prop, visual);
+    CHECK(attachment_marker(following, "tip", PropPose{*prop->source, rest}) == rest.world.at(0));
     CHECK_THROWS_WITH_AS(
         decode_attachment_catalog(replaced(attachment_catalog(), R"("handling":"grip")", R"("handling":"free")"),
                                   fixture.directory.path),
@@ -1356,9 +1363,9 @@ TEST_CASE("Support contacts solve together on a pose that hides a joint by scali
     AttachmentVisual visual;
     visual.markers = {{"limb.hold", marker(limb_target)}, {"other.hold", marker(other_target)}};
     AttachmentHandling handling{.id = "brace", .socket = "hold"};
-    handling.support_contacts = {{"limb", "grip", "limb.hold", {0, 0, 2}, {"base"}, {}},
-                                 {"other", "other.grip", "other.hold", {0, 0, 2}, {"base"}, {}}};
-    const std::map<std::string, AttachmentSocket, std::less<>> sockets{
+    handling.support_contacts = {{"limb", "grip", "limb.hold", {0, 0, 2}, {"base"}, {"reach"}},
+                                 {"other", "other.grip", "other.hold", {0, 0, 2}, {"base"}, {"reach"}}};
+    const AttachmentSockets sockets{
         {"hold", {root, identity()}}, {"grip", {end, identity()}}, {"other.grip", {other_end, identity()}}};
     const auto primary = bind_attachment(sockets.at("hold"), visual);
     const auto solved = apply_attachment_contacts(runtime, source, "base", handling, visual, primary, sockets);
@@ -1380,6 +1387,16 @@ TEST_CASE("Support contacts solve together on a pose that hides a joint by scali
             CHECK(solved.pose.world[node][i] == Near{source.world[node][i], pose_tolerance});
         }
     // Held at the hidden side joint, the item collapses with it, so a contact frame has no rotation to reach for.
+    // Options name the action and weights by field; a zero weight skips its contact.
+    const std::map<std::string, float, std::less<>> without_other{{"other", 0.F}};
+    const auto weighted = apply_attachment_contacts(runtime, source, "idle", handling, visual, primary, sockets,
+                                                    {.action = "reach", .weights = &without_other});
+    REQUIRE(weighted.contacts.size() == 1);
+    CHECK(weighted.contacts[0].chain == "limb");
+    const std::map<std::string, float, std::less<>> excessive{{"limb", 2.F}};
+    CHECK_THROWS_WITH_AS(
+        apply_attachment_contacts(runtime, source, "base", handling, visual, primary, sockets, {.weights = &excessive}),
+        "Invalid item contact weight", std::invalid_argument);
     const auto hidden = bind_attachment({side, identity()}, visual);
     CHECK_THROWS_WITH_AS(apply_attachment_contacts(runtime, source, "base", handling, visual, hidden, sockets),
                          "Affine transform is collapsed", std::invalid_argument);
