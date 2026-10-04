@@ -36,8 +36,9 @@ struct MotionLayer {
     /// Scale of the mask weights, in [0, 1].
     float weight = 1;
     anima::LayerMode mode = anima::LayerMode::override_pose;
-    /// Clip whose pose an additive layer is relative to; empty for an override.
-    std::string reference_clip;
+    /// Clip whose pose an additive layer is relative to; required for an additive layer and empty
+    /// for an override.
+    std::string reference_clip{};
     /// Seconds into #reference_clip.
     double reference_time{};
 };
@@ -126,9 +127,13 @@ class MotionRuntime {
     /// Model node of the end joint of chain @p chain. Throws `std::out_of_range` for an unknown
     /// chain.
     std::size_t contact_end_node(std::string_view chain) const;
-    /// Whether model node @p node is at or below the start joint of chain @p chain, so that solving
-    /// the chain moves it. Throws `std::out_of_range` for an unknown chain or node and
-    /// `std::invalid_argument` when the node is not an evaluation joint.
+    /// Whether solving chain @p chain can move model node @p node: whether the nearest evaluation
+    /// joint at or above the node in the model's hierarchy is at or below the chain's start joint in
+    /// the evaluation rig, whose hierarchy may differ. A node that is not an evaluation joint, such
+    /// as a socket's helper node, follows its model parent (see EvaluationRig::render_pose), so a
+    /// node with no evaluation joint at or above it never moves. The model's nodes and hierarchy are
+    /// those the asset had at construction. Throws `std::out_of_range` for an unknown chain or a
+    /// node index past the model.
     bool contact_affects_node(std::string_view chain, std::size_t node) const;
     /// Whether one chain's start joint is at or below the other's. Throws `std::out_of_range` for an
     /// unknown chain.
@@ -168,10 +173,10 @@ class MotionRuntime {
     /// controls, a world-only @p source, such as an earlier result, fails where the evaluation
     /// parent of a joint, or the asset parent of a node that is not an evaluation joint, is
     /// collapsed, since only local transforms recover what lies below it (see EvaluationRig::encode
-    /// and EvaluationRig::render_pose). Throws for an invalid weight, a layer clip on another mask
-    /// or an override with a reference clip, as EvaluationRig::encode and EvaluationRig::render_pose
-    /// do for @p source and solve_contact for each contact, and `std::out_of_range` for an unknown
-    /// clip, mask, chain or joint.
+    /// and EvaluationRig::render_pose). Throws for an invalid weight, a layer clip on another mask,
+    /// an override with a reference clip or an additive layer without one, as EvaluationRig::encode
+    /// and EvaluationRig::render_pose do for @p source and solve_contact for each contact, and
+    /// `std::out_of_range` for an unknown clip, mask (an empty name included), chain or joint.
     MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 
   private:

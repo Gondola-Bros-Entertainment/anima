@@ -2,10 +2,15 @@
 #include "presentation_data.hpp"
 #include <anima/assets/motion_runtime.hpp>
 namespace anima {
+namespace {
+// Nearest evaluation joint of a model node that has none at or above it.
+constexpr int no_joint = -1;
+} // namespace
 struct MotionRuntime::Impl {
   public:
     Impl(std::shared_ptr<const anima::Asset> asset, const anima::Manifest &manifest, const nlohmann::json &contract)
-        : asset_(std::move(asset)), rig_(*asset_, bind(*asset_, manifest, contract)) {
+        : asset_(std::move(asset)), rig_(*asset_, bind(*asset_, manifest, contract)),
+          nearest_joint_(nearest_joints(*asset_, rig_)) {
         load_resource(manifest, contract);
         const auto &definition = contract.at("evaluation");
         for (const auto &[name, roots] : definition.at("masks").items()) {
@@ -60,7 +65,11 @@ struct MotionRuntime::Impl {
     }
     std::size_t contact_end_node(std::string_view chain) const { return rig_.asset_node(chain_named(chain).end); }
     bool contact_affects_node(std::string_view chain, std::size_t node) const {
-        return rig_.descendant(rig_.joint(asset_->nodes.at(node).name), chain_named(chain).start);
+        const auto start = chain_named(chain).start;
+        if (node >= nearest_joint_.size())
+            throw std::out_of_range("Unknown model node");
+        const auto joint = nearest_joint_[node];
+        return joint != no_joint && rig_.descendant(static_cast<std::size_t>(joint), start);
     }
     bool contacts_overlap(std::string_view first, std::string_view second) const {
         const auto &a = chain_named(first);
@@ -140,6 +149,11 @@ struct MotionRuntime::Impl {
             return {source, {}}; // Preserve the exact default path.
         auto evaluated = rig_.encode(source);
         for (const auto &layer : controls.layers) {
+            const bool additive = layer.mode == anima::LayerMode::additive;
+            if (additive && layer.reference_clip.empty())
+                throw std::invalid_argument("Additive motion layer needs a reference clip");
+            if (!additive && !layer.reference_clip.empty())
+                throw std::invalid_argument("Override layer cannot have an additive reference");
             if (is_layer(layer.clip) && layer.mask != layer_mask(layer.clip))
                 throw std::invalid_argument("Layer control exceeds the resource's declared ownership");
             auto weights = mask_named(layer.mask);
@@ -147,10 +161,8 @@ struct MotionRuntime::Impl {
                 weight *= layer.weight;
             const auto contribution = rig_.encode(sample(layer.clip, layer.time));
             std::optional<anima::EvaluationPose> reference;
-            if (layer.mode == anima::LayerMode::additive) {
+            if (additive)
                 reference = rig_.encode(sample(layer.reference_clip, layer.reference_time));
-            } else if (!layer.reference_clip.empty())
-                throw std::invalid_argument("Override layer cannot have an additive reference");
             evaluated = rig_.layer(evaluated, contribution, weights, layer.mode, reference ? &*reference : nullptr);
         }
         for (const auto &offset : controls.offsets) {
@@ -174,6 +186,29 @@ struct MotionRuntime::Impl {
     }
 
   private:
+    // Nearest evaluation joint at or above each node of @p asset in its hierarchy, or no_joint. A node that is not an
+    // evaluation joint follows its asset parent (see EvaluationRig::render_pose), so it moves with that joint. @p rig
+    // has checked that the hierarchy is acyclic, with every parent in range.
+    static std::vector<int> nearest_joints(const anima::Asset &asset, const anima::EvaluationRig &rig) {
+        constexpr int unresolved = -2;
+        std::vector<int> result(asset.nodes.size(), unresolved);
+        for (std::size_t i = 0; i < rig.size(); ++i)
+            result[rig.asset_node(i)] = static_cast<int>(i);
+        // Each walk up the hierarchy stops at the first resolved node and resolves the nodes it passed, so the walks
+        // visit every node once in all.
+        std::vector<std::size_t> path;
+        for (std::size_t node = 0; node < result.size(); ++node) {
+            auto n = static_cast<int>(node);
+            for (; n >= 0 && result[static_cast<std::size_t>(n)] == unresolved;
+                 n = asset.nodes[static_cast<std::size_t>(n)].parent)
+                path.push_back(static_cast<std::size_t>(n));
+            const auto joint = n < 0 ? no_joint : result[static_cast<std::size_t>(n)];
+            for (const auto passed : path)
+                result[passed] = joint;
+            path.clear();
+        }
+        return result;
+    }
     static std::vector<anima::EvaluationJoint> bind(const anima::Asset &asset, const anima::Manifest &manifest,
                                                     const nlohmann::json &data) {
         // Every object is checked for unknown fields, as the other presentation readers do.
@@ -291,6 +326,8 @@ struct MotionRuntime::Impl {
     std::map<std::string, anima::ClipMetadata, std::less<>> metadata_;
     std::map<std::string, std::string, std::less<>> layers_;
     anima::EvaluationRig rig_;
+    // Nearest evaluation joint at or above each asset node; see nearest_joints.
+    std::vector<int> nearest_joint_;
     std::map<std::string, std::vector<float>, std::less<>> masks_;
     std::map<std::string, anima::TwoBoneContact, std::less<>> chains_;
 };

@@ -91,6 +91,28 @@ Asset limb_model() {
     return result;
 }
 
+// Appends a node named @p name to @p model, at @p offset from node @p parent, or from the model's origin for -1.
+void add_node(Asset &model, const char *name, int parent, Vec3 offset) {
+    AssetNode node;
+    node.name = name;
+    node.parent = parent;
+    node.rest.translation = offset;
+    model.nodes.push_back(node);
+}
+// Nodes that helper_model adds to the limb model, outside the skin and the contract: a socket node below the limb's end
+// joint, a node below that, and a marker at the root of the model.
+constexpr std::size_t helper_socket = rig_joints, helper_socket_tip = rig_joints + 1, helper_marker = rig_joints + 2;
+// Offset of each socket node from its parent.
+const Vec3 helper_offset{0, -.1F, 0};
+Asset helper_model() {
+    constexpr int limb_end = 3;
+    auto result = limb_model();
+    add_node(result, "end.socket", limb_end, helper_offset);
+    add_node(result, "end.socket.tip", static_cast<int>(helper_socket), helper_offset);
+    add_node(result, "marker", -1, {1, 0, 0});
+    return result;
+}
+
 // The limb model's nodes, with a base clip that moves the root 1 unit along +Z over a second, and a layer
 // clip for each mask that turns its root joint a quarter turn about +Z.
 void write_motion(const std::filesystem::path &file) {
@@ -323,6 +345,167 @@ TEST_CASE("An evaluated layer clip keeps the mask its contract declares") {
     controls.layers.push_back(layer);
     CHECK_THROWS_WITH_AS(runtime.evaluate(runtime.sample("base", 0), controls),
                          "Layer control exceeds the resource's declared ownership", std::invalid_argument);
+}
+
+TEST_CASE("An evaluated additive layer adds its change from the reference clip it names, and an override has none") {
+    constexpr std::size_t upper = 1;
+    // The layer clip turns the upper joint a quarter turn about +Z over a second: an eighth turn halfway through, and a
+    // sixteenth a quarter of the way.
+    constexpr float eighth_turn_cosine = .70710678F, eighth_turn_sine = .70710678F;
+    constexpr float sixteenth_turn_cosine = .92387953F, sixteenth_turn_sine = .38268343F;
+    const MotionFixture fixture;
+    const auto runtime = fixture.runtime();
+    const auto base = runtime.sample("base", 0);
+    MotionLayer layer;
+    layer.clip = "layer.limb";
+    layer.mask = "limb";
+    layer.time = .5;
+    layer.mode = LayerMode::additive;
+    MotionControls controls;
+    controls.layers.push_back(layer);
+    CHECK_THROWS_WITH_AS(runtime.evaluate(base, controls), "Additive motion layer needs a reference clip",
+                         std::invalid_argument);
+    // The base clip leaves the upper joint at rest, so relative to it the layer clip adds its whole eighth turn.
+    controls.layers.front().reference_clip = "base";
+    controls.layers.front().reference_time = .5;
+    const auto from_base = runtime.evaluate(base, controls).pose;
+    CHECK(from_base.world[upper][0] == Near{eighth_turn_cosine, pose_tolerance});
+    CHECK(from_base.world[upper][1] == Near{eighth_turn_sine, pose_tolerance});
+    // Relative to its own sixteenth turn, the layer clip adds the other sixteenth.
+    controls.layers.front().reference_clip = "layer.limb";
+    controls.layers.front().reference_time = .25;
+    const auto from_layer = runtime.evaluate(base, controls).pose;
+    CHECK(from_layer.world[upper][0] == Near{sixteenth_turn_cosine, pose_tolerance});
+    CHECK(from_layer.world[upper][1] == Near{sixteenth_turn_sine, pose_tolerance});
+    controls.layers.front().mode = LayerMode::override_pose;
+    CHECK_THROWS_WITH_AS(runtime.evaluate(base, controls), "Override layer cannot have an additive reference",
+                         std::invalid_argument);
+    // A mask has a nonempty name, so an empty one is unknown.
+    controls.layers.front() = {.clip = "base", .mask = ""};
+    CHECK_THROWS_WITH_AS(runtime.evaluate(base, controls), "Unknown motion mask: ", std::out_of_range);
+}
+
+TEST_CASE("A contact chain answers for every model node below its start joint, evaluation joint or not") {
+    constexpr std::size_t root = 0, end = 3;
+    // Distance the socket node must travel; the limb's end joint travels about .47 to reach the target.
+    constexpr float minimum_travel = .1F;
+    const Vec3 target{.3F, .5F, .2F};
+    const MotionFixture fixture;
+    const auto model = helper_model();
+    const MotionRuntime runtime(std::make_shared<const Asset>(model), fixture.manifest, fixture.contract);
+    CHECK(runtime.contact_affects_node("limb", end));
+    CHECK(runtime.contact_affects_node("limb", helper_socket));
+    CHECK(runtime.contact_affects_node("limb", helper_socket_tip));
+    CHECK_FALSE(runtime.contact_affects_node("other", helper_socket));
+    CHECK_FALSE(runtime.contact_affects_node("limb", root));
+    CHECK_FALSE(runtime.contact_affects_node("limb", helper_marker));
+    CHECK_THROWS_WITH_AS(runtime.contact_affects_node("limb", model.nodes.size()), "Unknown model node",
+                         std::out_of_range);
+    CHECK_THROWS_WITH_AS(runtime.contact_affects_node("absent", helper_socket), "Unknown motion chain: absent",
+                         std::out_of_range);
+    // Solving the chain carries the socket node with the end joint and leaves the marker where it was.
+    const auto base = runtime.sample("base", 0);
+    MotionControls controls;
+    controls.contacts.push_back({"limb", target, {0, 0, 2}, 1, {}});
+    const auto solved = runtime.evaluate(base, controls).pose;
+    CHECK(length(point(solved.world[helper_socket], {}) - point(solved.world[end], helper_offset)) < pose_tolerance);
+    CHECK(length(point(solved.world[helper_socket], {}) - point(base.world[helper_socket], {})) > minimum_travel);
+    for (std::size_t i = 0; i < base.world[helper_marker].size(); ++i) {
+        CAPTURE(i);
+        CHECK(solved.world[helper_marker][i] == Near{base.world[helper_marker][i], pose_tolerance});
+    }
+}
+
+TEST_CASE("A contact chain answers from the hierarchy the model had when the runtime was constructed") {
+    constexpr int end = 3;
+    const Vec3 target{.3F, .5F, .2F};
+    const MotionFixture fixture;
+    const auto model = std::make_shared<Asset>(helper_model());
+    const MotionRuntime runtime(model, fixture.manifest, fixture.contract);
+    // Moving the marker below the limb's end afterward changes neither the answer nor what solving the limb does to it.
+    model->nodes[helper_marker].parent = end;
+    CHECK_FALSE(runtime.contact_affects_node("limb", helper_marker));
+    const auto base = runtime.sample("base", 0);
+    MotionControls controls;
+    controls.contacts.push_back({"limb", target, {0, 0, 2}, 1, {}});
+    const auto solved = runtime.evaluate(base, controls).pose;
+    for (std::size_t i = 0; i < base.world[helper_marker].size(); ++i) {
+        CAPTURE(i);
+        CHECK(solved.world[helper_marker][i] == Near{base.world[helper_marker][i], pose_tolerance});
+    }
+}
+
+TEST_CASE("A contact chain answers by the evaluation rig where its hierarchy differs from the model's") {
+    constexpr std::size_t tip = 5, tip_socket = rig_joints;
+    // Distance the socket node must travel; it travels about .84 with the tip.
+    constexpr float minimum_travel = .1F;
+    const Vec3 tip_offset{.1F, 0, 0}, target{.3F, .5F, .2F};
+    const MotionFixture fixture;
+    // The rig hangs the tip from the limb's middle joint while the model keeps it below the side joint, as a flattened
+    // export may, so the limb's layer owns the tip and the side's does not.
+    auto contract = replaced(fixture.contract, R"("tip":"side")", R"("tip":"middle")");
+    contract = replaced(contract, R"("owned_joints":["end","middle","upper"])",
+                        R"("owned_joints":["end","middle","tip","upper"])");
+    contract = replaced(contract, R"("owned_joints":["side","tip"])", R"("owned_joints":["side"])");
+    auto model = limb_model();
+    add_node(model, "tip.socket", static_cast<int>(tip), tip_offset);
+    const MotionRuntime runtime(std::make_shared<const Asset>(model), fixture.manifest, contract);
+    CHECK(runtime.contact_affects_node("limb", tip));
+    CHECK(runtime.contact_affects_node("limb", tip_socket));
+    CHECK_FALSE(runtime.contact_affects_node("other", tip_socket));
+    // Solving the limb carries the tip, and the socket node with it, though neither lies below the limb in the model.
+    const auto base = runtime.sample("base", 0);
+    MotionControls controls;
+    controls.contacts.push_back({"limb", target, {0, 0, 2}, 1, {}});
+    const auto solved = runtime.evaluate(base, controls).pose;
+    CHECK(length(point(solved.world[tip_socket], {}) - point(solved.world[tip], tip_offset)) < pose_tolerance);
+    CHECK(length(point(solved.world[tip_socket], {}) - point(base.world[tip_socket], {})) > minimum_travel);
+}
+
+TEST_CASE("Attachment and interaction sockets outside the evaluation rig pass unless a contact moves them") {
+    constexpr std::size_t end = 3, other_end = 8;
+    const MotionFixture fixture;
+    const auto body = std::make_shared<const Asset>(helper_model());
+    const auto motion = std::make_shared<const MotionRuntime>(body, fixture.manifest, fixture.contract);
+    // The brace is held at a hold socket while a support contact puts the limb's end on the grip socket.
+    const auto catalog =
+        replaced(replaced(attachment_catalog(), R"({"id":"brace","socket":"grip","layer":"layer.limb"})",
+                          R"({"id":"brace","socket":"hold","layer":"","support_contacts":[
+                              {"chain":"limb","socket":"grip","marker":"support","pole":[0,0,2],"clips":["base"]}]})"),
+                 R"("markers":{})", std::string(R"("markers":{"support":)") + identity_frame + "}");
+    const auto other_contact =
+        replaced(catalog, R"("chain":"limb","socket":"grip")", R"("chain":"other","socket":"other.grip")");
+    const auto ownership = [&](const std::string &document, std::size_t hold) {
+        const AttachmentLibrary library(decode_attachment_catalog(document, fixture.directory.path));
+        const std::map<std::string, AttachmentSocket, std::less<>> sockets{
+            {"grip", {end, identity()}}, {"other.grip", {other_end, identity()}}, {"hold", {hold, identity()}}};
+        validate_attachment_ownership(*motion, library, AttachmentSet::prepare(library, sockets, {{"tool", "brace"}}),
+                                      sockets);
+    };
+    CHECK_THROWS_WITH_AS(ownership(catalog, helper_socket), "Attachment contact moves a primary socket",
+                         std::invalid_argument);
+    CHECK_NOTHROW(ownership(other_contact, helper_socket));
+    CHECK_NOTHROW(ownership(catalog, helper_marker));
+    // The child is placed by its anchor socket on the parent's while a contact moves its limb toward the parent's end.
+    constexpr auto meeting = R"({"version":1,"id":"meet","phases":[{"id":"hold","duration":1}],
+        "roles":{"child":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}},
+                 "parent":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}}},
+        "attachments":[{"child":"child","parent":"parent","child_socket":"anchor","parent_socket":"anchor",
+                        "weights":{"hold":[[0,1],[1,1]]}}],
+        "contacts":[{"child":"child","parent":"parent","chain":"limb","target_socket":"target","pole":[0,0,2],
+                     "weights":{"hold":[[0,1],[1,1]]}}]})";
+    const auto parent_motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    const auto interaction = [&](const std::string &document, std::size_t anchor) {
+        const InteractionRuntime::Actors actors{
+            {"child", {body, motion, {{"anchor", {anchor, identity()}}}}},
+            {"parent", {fixture.body, parent_motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
+        (void)InteractionRuntime(actors, document);
+    };
+    CHECK_THROWS_WITH_AS(interaction(meeting, helper_socket),
+                         "Contact must target the placement owner without moving its child anchor",
+                         std::invalid_argument);
+    CHECK_NOTHROW(interaction(replaced(meeting, R"("chain":"limb")", R"("chain":"other")"), helper_socket));
+    CHECK_NOTHROW(interaction(meeting, helper_marker));
 }
 
 TEST_CASE("Actions check the roles they require, and the caller chooses the handling profile") {
