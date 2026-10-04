@@ -210,7 +210,7 @@ class Harness {
 constexpr anima::Vec3 origin{0, 0, 0};
 inline anima::Mat4 perspective_view(float aspect) {
     using anima::operator*;
-    return anima::perspective(aspect, .1F, 50) * anima::look_at(origin, {0, 0, -1});
+    return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 50) * anima::look_at(origin, {0, 0, -1});
 }
 // An orthographic camera at the origin looking down -Z, 4 units high, with reversed Vulkan depth from 1 at 0.1 to 0
 // at 50.
@@ -411,7 +411,8 @@ inline void check_shadows(Harness &harness) {
     const auto aspect = harness.aspect();
     const auto view = [&] {
         using anima::operator*;
-        return anima::perspective(aspect, .1F, 50) * anima::look_at({0, 6, 6}, {0, 0, 0});
+        return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 50) *
+               anima::look_at({0, 6, 6}, {0, 0, 0});
     }();
     anima::Environment lighting;
     lighting.sun.direction = {-.5F, 1, 0};

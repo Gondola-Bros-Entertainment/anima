@@ -6,6 +6,7 @@
 #include "resources.hpp"
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <vector>
@@ -24,7 +25,8 @@ using gpu_check::Image;
 constexpr anima::Vec3 eye{0, 3, 0}, target{0, 0, -10}, sun{1, .6F, 0};
 inline anima::Mat4 view(anima::Vec3 offset = {}) {
     using anima::operator*;
-    return anima::perspective(4.F / 3, .1F, 300) * anima::look_at(eye + offset, target + offset);
+    return anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .1F, 300) *
+           anima::look_at(eye + offset, target + offset);
 }
 // Four cascades to 100 m of 512 texels, coarse enough that the window resolves each edge's transition.
 inline anima::Environment lighting(std::uint32_t count = 4, std::uint32_t resolution = 512) {
@@ -304,7 +306,8 @@ inline int run(int argc, char **argv) {
     renderer.set_scenes({field});
     {
         using anima::operator*;
-        renderer.set_view(anima::perspective(16.F / 9, .1F, 400) * anima::look_at({-4, 2, -4}, {150, 0, 150}));
+        renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 16.F / 9, .1F, 400) *
+                          anima::look_at({-4, 2, -4}, {150, 0, 150}));
     }
     for (std::uint32_t count = 1; count <= 4; ++count) {
         auto environment = lighting(count, 2048);

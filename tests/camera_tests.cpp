@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <iterator>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -129,6 +131,53 @@ TEST_CASE("Perspective and orthographic lenses map the view volume to Vulkan cli
     CHECK(project(m, {4, 2, -11}).z == Near{0, tolerance});
     CHECK(view_origin(m)[2] == Near{1, tolerance}); // Toward the camera, which looks down -Z.
     CHECK(view_origin(m)[3] == Near{0, tolerance});
+}
+
+TEST_CASE("perspective() maps a frustum to Vulkan clip space with reversed depth, as a perspective camera does") {
+    // A 90 degree vertical field twice as wide as it is high, from 1 to 11 units ahead.
+    constexpr auto pi = std::numbers::pi_v<float>;
+    const auto m = perspective(pi / 2, 2, 1, 11);
+    CHECK(project(m, {2, 1, -1}).x == Near{1, tolerance});
+    CHECK(project(m, {2, 1, -1}).y == Near{-1, tolerance}); // Framebuffer Y points down.
+    CHECK(project(m, {-22, -11, -11}).x == Near{-1, tolerance});
+    CHECK(project(m, {-22, -11, -11}).y == Near{1, tolerance});
+    CHECK(project(m, {0, 0, -1}).z == Near{1, tolerance});
+    CHECK(project(m, {0, 0, -11}).z == Near{0, tolerance});
+    // A 60 degree field reaches the top edge at tan(30 degrees) of the distance ahead.
+    const auto narrow = perspective(pi / 3, 1, 1, 11);
+    CHECK(project(narrow, {0, 4 * std::tan(pi / 6), -4}).y == Near{-1, tolerance});
+    CHECK(project(narrow, {4 * std::tan(pi / 6), 0, -4}).x == Near{1, tolerance});
+    // A camera at the origin with the same lens resolves to exactly this projection times look_at().
+    Viewed viewed(CameraProjection::perspective);
+    const auto camera_view = view_matrix(viewed.scene, 2);
+    const auto composed = m * look_at({}, {0, 0, -1});
+    CHECK(std::equal(camera_view.begin(), camera_view.end(), composed.begin()));
+    // Each element is computed in double, where near times far, 1e39, does not overflow as it would in float.
+    const auto deep = perspective(pi / 4, 1, 1000, 1e36F);
+    CHECK(std::all_of(deep.begin(), deep.end(), [](float element) { return std::isfinite(element); }));
+    CHECK(project(deep, {0, 0, -1000}).z == Near{1, tolerance});
+    CHECK(project(deep, {0, 0, -1e36F}).z == Near{0, tolerance});
+
+    const auto invalid = math_error_message(MathErrorCode::invalid_frustum);
+    CHECK(std::string_view(invalid) == "Invalid perspective frustum");
+    CHECK(math_error_name(MathErrorCode::invalid_frustum) == "invalid_frustum");
+    constexpr float infinity = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
+    // Field of view, aspect and the near and far planes; pi_v<float> rounds above pi.
+    for (const auto &bad :
+         {std::array{0.F, 2.F, 1.F, 11.F}, std::array{-1.F, 2.F, 1.F, 11.F}, std::array{pi, 2.F, 1.F, 11.F},
+          std::array{infinity, 2.F, 1.F, 11.F}, std::array{nan, 2.F, 1.F, 11.F}, std::array{1.F, 0.F, 1.F, 11.F},
+          std::array{1.F, -1.F, 1.F, 11.F}, std::array{1.F, infinity, 1.F, 11.F}, std::array{1.F, nan, 1.F, 11.F},
+          std::array{1.F, 2.F, 0.F, 11.F}, std::array{1.F, 2.F, -1.F, 11.F}, std::array{1.F, 2.F, 11.F, 11.F},
+          std::array{1.F, 2.F, 11.F, 1.F}, std::array{1.F, 2.F, nan, 11.F}, std::array{1.F, 2.F, 1.F, infinity},
+          std::array{1.F, 2.F, 1.F, nan}}) {
+        CAPTURE(bad[0]);
+        CAPTURE(bad[1]);
+        CAPTURE(bad[2]);
+        CAPTURE(bad[3]);
+        CHECK_THROWS_WITH_AS(perspective(bad[0], bad[1], bad[2], bad[3]), invalid, MathError);
+    }
+    // The largest float below pi is accepted.
+    CHECK(std::isfinite(perspective(std::nextafter(pi, 0.F), 2, 1, 11)[5]));
 }
 
 TEST_CASE("orthographic() maps a box to Vulkan clip space with reversed depth, as an orthographic camera does") {

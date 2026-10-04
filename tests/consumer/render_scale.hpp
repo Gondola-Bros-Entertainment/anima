@@ -232,7 +232,8 @@ inline void check_levels(anima::VulkanRenderer &renderer, gpu_check::Captures &c
     scene->create("field", sphere).renderer().set_placements(anima::MeshPlacements::create(sphere, field));
     renderer.set_scenes({scene});
     using anima::operator*;
-    renderer.set_view(anima::perspective(aspect, .1F, 300) * anima::look_at({28.5F, 14, 62}, {28.5F, 0, 30}));
+    renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 300) *
+                      anima::look_at({28.5F, 14, 62}, {28.5F, 0, 30}));
     const auto levels = [&](float scale, float threshold) {
         renderer.set_render_scale(scale);
         renderer.set_lod_threshold(threshold);

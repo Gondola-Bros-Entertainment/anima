@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <random>
 #include <stdexcept>
 
@@ -30,7 +31,7 @@ bool reference(const anima::Mat4 &view, const anima::RenderBounds &bounds) {
     }
     return std::none_of(std::begin(outside), std::end(outside), [](bool value) { return value; });
 }
-anima::Mat4 projection() { return anima::perspective(1.5F, .5F, 20); }
+anima::Mat4 projection() { return anima::perspective(std::numbers::pi_v<float> / 4, 1.5F, .5F, 20); }
 // projection() with its far plane at infinity.
 anima::Mat4 infinite_far() {
     auto infinite = projection();

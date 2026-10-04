@@ -38,7 +38,7 @@ Environment cascaded() {
 }
 // A 16:9 perspective view from 3 cm to 480 m, looking down and across from above the origin.
 Mat4 wide_view(Vec3 eye = {4, 3, 9}, Vec3 target = {0, 1, 0}, float far_plane = 480) {
-    return perspective(16.F / 9, .03F, far_plane) * look_at(eye, target);
+    return perspective(std::numbers::pi_v<float> / 4, 16.F / 9, .03F, far_plane) * look_at(eye, target);
 }
 // The axes along which the sun's shadow projections lie: right and up across the sun, and forward away from it. Right
 // is perpendicular to the sun and to the world's Y axis, or to its X axis where the Y of the sun's unit direction lies
@@ -120,7 +120,7 @@ Mat4 mirror() {
 } // namespace
 
 TEST_CASE("A view projection times its inverse is the identity, and a singular matrix is rejected") {
-    const auto vp = perspective(1.3F, .03F, 80) * look_at({4, 5, 7}, {1, 0, 2});
+    const auto vp = perspective(std::numbers::pi_v<float> / 4, 1.3F, .03F, 80) * look_at({4, 5, 7}, {1, 0, 2});
     const auto product = vp * inverse(vp);
     for (std::size_t i = 0; i < product.size(); ++i) {
         CAPTURE(i);
@@ -326,8 +326,11 @@ TEST_CASE("Turning and moving the view keeps each cascade's size and moves it by
 TEST_CASE("A view with no depth to shade gets no cascades, and an invalid view is rejected") {
     auto env = cascaded();
     env.shadow_cascades.distance = 2;
-    CHECK(fit_shadow_cascades(env, perspective(1, 3, 50) * look_at({0, 0, 5}, {})).empty());
-    CHECK_FALSE(fit_shadow_cascades(env, perspective(1, 1, 50) * look_at({0, 0, 5}, {})).empty());
+    const auto view = [](float near_plane) {
+        return perspective(std::numbers::pi_v<float> / 4, 1, near_plane, 50) * look_at({0, 0, 5}, {});
+    };
+    CHECK(fit_shadow_cascades(env, view(3)).empty());
+    CHECK_FALSE(fit_shadow_cascades(env, view(1)).empty());
     CHECK_THROWS_WITH_AS(fit_shadow_cascades(env, Mat4{}), math_error_message(MathErrorCode::singular_matrix),
                          MathError);
     auto nonfinite = wide_view();

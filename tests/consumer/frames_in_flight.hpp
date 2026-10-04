@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -79,7 +80,8 @@ class Sequence {
         const float orbit = orbit_rate * t;
         const anima::Vec3 eye{target.x + 4 * std::sin(orbit), 1.5F, target.z + 4 * std::cos(orbit)};
         using anima::operator*;
-        renderer.set_view(anima::perspective(aspect, .1F, 100) * anima::look_at(eye, target));
+        renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 100) *
+                          anima::look_at(eye, target));
         anima::Environment environment;
         environment.sun.direction = {std::cos(sun_rate * t), .7F, std::sin(sun_rate * t)};
         environment.sun.radiance = {3, 3, 3};

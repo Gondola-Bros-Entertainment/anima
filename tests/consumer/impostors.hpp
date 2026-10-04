@@ -217,7 +217,8 @@ inline int run(int argc, char **argv) {
         return renderer.resource_stats();
     };
     const auto view = [&](anima::Vec3 eye, anima::Vec3 target, float far = 300) {
-        renderer.set_view(anima::operator*(anima::perspective(1, .1F, far), anima::look_at(eye, target)));
+        renderer.set_view(anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, far),
+                                           anima::look_at(eye, target)));
     };
     // Parity from the horizon round to above, at the distance where the tree is about 100 pixels tall, as tall as
     // the atlas's frames, in perspective and orthographic views and under a placement that turns the tree and scales

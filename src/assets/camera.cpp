@@ -34,17 +34,10 @@ Mat4 camera_matrix(GameObject object, const CameraSettings &s, float aspect) {
     const Vec3 eye = translation_of(world);
     const auto &x = axes[0], &y = axes[1], &z = axes[2];
     const Mat4 view{x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1};
-    const double near = s.near_plane, far = s.far_plane;
-    Mat4 projection{};
-    if (s.projection == CameraProjection::perspective) {
-        const double f = 1 / std::tan(double(s.vertical_fov_degrees) * std::numbers::pi / 360);
-        projection[0] = float(f / aspect);
-        projection[5] = float(-f);
-        projection[10] = float(near / (far - near));
-        projection[11] = -1;
-        projection[14] = float(near * far / (far - near));
-    } else
-        projection = orthographic(aspect, s.orthographic_height, s.near_plane, s.far_plane);
+    const auto projection = s.projection == CameraProjection::perspective
+                                ? perspective(float(double(s.vertical_fov_degrees) * std::numbers::pi / 180), aspect,
+                                              s.near_plane, s.far_plane)
+                                : orthographic(aspect, s.orthographic_height, s.near_plane, s.far_plane);
     const auto result = projection * view;
     // Match the renderer's finite/invertible matrix and view-origin contract.
     (void)inverse(result);

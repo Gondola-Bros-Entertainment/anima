@@ -2,6 +2,7 @@
 #include "gpu_checks.hpp"
 #include "resources.hpp"
 #include <anima/mesh_placements.hpp>
+#include <numbers>
 
 // Draws a field of copies through one object's placements and the same copies as separate objects, over a ground
 // that receives their sun shadows, and requires identical frames. Every placement is an integer translation, a
@@ -136,7 +137,8 @@ inline int run(int argc, char **argv) {
         return renderer.resource_stats();
     };
     const auto view = [&](anima::Vec3 eye, anima::Vec3 target) {
-        renderer.set_view(anima::operator*(anima::perspective(1, .1F, 300), anima::look_at(eye, target)));
+        renderer.set_view(anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, 300),
+                                           anima::look_at(eye, target)));
     };
     // Draws the separate and the placed copies under the current view and requires the same frame.
     const auto compare = [&](const std::string &name) {
