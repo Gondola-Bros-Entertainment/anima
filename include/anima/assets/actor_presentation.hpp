@@ -25,9 +25,10 @@ struct ActorPresentation {
 
     /// Loads the version 2 profile at @p profile and everything it names.
     ///
-    /// The profile has a nonempty `id`; `manifest`, a relative path without `..` resolved beside
-    /// the profile, unless @p manifest_override replaces it; and `sockets`, mapping each nonempty name to `node`, which
-    /// must name exactly one model node, and `frame`. A frame is a rigid, right-handed model-space bind frame of 16
+    /// The profile has a nonempty `id`; `manifest`, a relative UTF-8 path without a root, colon,
+    /// backslash or `..` component, resolved beside the profile unless @p manifest_override
+    /// replaces it; and `sockets`, mapping each nonempty name to `node`, which must name exactly one
+    /// model node, and `frame`. A frame is a rigid, right-handed model-space bind frame of 16
     /// column-major numbers, or null for the node's bind position with the model's axes. The manifest's model is
     /// validated with validate_manifest and its motion loaded with MotionRuntime::load.
     ///
