@@ -174,7 +174,8 @@ struct RenderStats {
 /// record_submit_ms can run on the GPU during present_ms and after draw() returns.
 struct FrameProfile {
     /// From draw() entry through the wait for the fence of the frame submitted RendererOptions::frames_in_flight
-    /// submissions earlier, including swapchain recreation.
+    /// submissions earlier, including swapchain recreation. After VulkanRenderer::wait_for_frame() that frame has
+    /// finished, so the wait returns at once.
     double fence_wait_ms{};
     /// Frame preparation after that wait: destroying what earlier calls released once no frame in flight can use it,
     /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in
@@ -471,8 +472,8 @@ struct ResourceStats {
 /// standard output.
 ///
 /// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_environment(), set_time(),
-/// set_scenes(), prepare_meshes(), prepare_mesh() and draw() throw `std::logic_error`; after a RendererFatalError
-/// they throw RendererFatalError.
+/// set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw `std::logic_error`; after a
+/// RendererFatalError they throw RendererFatalError.
 class VulkanRenderer {
   public:
     /// Creates the Vulkan instance, surface and device for @p window, then selects RendererOptions::scenes.
@@ -609,6 +610,18 @@ class VulkanRenderer {
     /// sample a mip chain use it, custom material textures included; changing it requires a new renderer, since
     /// every material's descriptors hold its samplers.
     [[nodiscard]] float max_anisotropy() const noexcept;
+    /// Waits for the frame that the next draw() or UiContext::render() waits for before preparing its own: the one
+    /// submitted RendererOptions::frames_in_flight submissions before the frame that the call will submit.
+    ///
+    /// Call it at the top of each frame, before reading input and updating the scenes and the view. draw()'s wait
+    /// then returns at once, so it no longer falls between reading the input and drawing it, and
+    /// FrameProfile::fence_wait_ms times only the window checks and any swapchain recreation. It does not wait for the
+    /// display: a driver that paces presentation by blocking image acquisition, submission or presentation still
+    /// blocks inside draw(). It waits whatever the window's state, and returns at once before the first submitted frame
+    /// and when no frame has been submitted since the previous wait. Throws `std::logic_error` after shutdown(),
+    /// RendererFatalError after a fatal failure, and RendererFatalError, after which the renderer accepts only
+    /// shutdown, for device loss or a frame that does not finish within 5 seconds.
+    void wait_for_frame();
     /// Prepares, records, submits and presents one frame; does not advance simulation or animation.
     ///
     /// Returns false while the window is hidden, minimized or zero-sized, when no image is acquired within
@@ -616,13 +629,14 @@ class VulkanRenderer {
     /// loop and call again. Returns true when the frame was presented.
     ///
     /// Each call waits for the frame submitted RendererOptions::frames_in_flight submissions before the one that it
-    /// submits, releases unowned cache entries, culls, uploads meshes that became visible or cast shadows
-    /// (prepare_meshes() can upload them earlier) and writes every prepared instance's palette. The palettes of one
-    /// frame must fit the device's storage-buffer range. Throws SceneResourceError when that preparation fails
-    /// recoverably; RendererFatalError for device or surface loss, a fence timeout, any other Vulkan failure, or any
-    /// failure to build a new swapchain once the previous one is released; and `std::runtime_error` for other failures,
-    /// such as a surface that offers no usable format, which leaves the current swapchain in place, or a capture
-    /// request that fails, which only that call reports (see request_capture()).
+    /// submits, a wait that returns at once when wait_for_frame() has already made it, releases unowned cache entries,
+    /// culls, uploads meshes that became visible or cast shadows (prepare_meshes() can upload them earlier) and writes
+    /// every prepared instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
+    /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface loss, a
+    /// fence timeout, any other Vulkan failure, or any failure to build a new swapchain once the previous one is
+    /// released; and `std::runtime_error` for other failures, such as a surface that offers no usable format, which
+    /// leaves the current swapchain in place, or a capture request that fails, which only that call reports (see
+    /// request_capture()).
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;

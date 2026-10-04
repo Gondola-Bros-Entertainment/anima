@@ -1620,6 +1620,13 @@ struct VulkanRenderer::Impl {
             recycle_slot(slot);
         }
     }
+    // Waits for the frame that the next draw() waits for: the one that the slot it records next submitted last. The
+    // slot's fence stays signaled until draw() resets it just before its submission, so draw()'s own wait on it then
+    // returns at once.
+    void wait_for_frame() {
+        running();
+        wait_for_slot(frame(), "Wait for frame");
+    }
     bool draw(const detail::UiFrame *ui_frame = nullptr) {
         running();
         using Clock = std::chrono::steady_clock;
@@ -2263,6 +2270,14 @@ ResourceStats VulkanRenderer::resource_stats() const noexcept {
 #else
     return {};
 #endif
+}
+void VulkanRenderer::wait_for_frame() {
+    try {
+        impl_->wait_for_frame();
+    } catch (const VulkanFailure &error) {
+        impl_->fatal = true;
+        throw RendererFatalError(error.what());
+    }
 }
 bool VulkanRenderer::draw() {
     try {

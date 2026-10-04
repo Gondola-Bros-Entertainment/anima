@@ -14,7 +14,8 @@
 // duration, releasing cached meshes counts in prepare_ms, the GPU fields time the frame submitted
 // RendererOptions::frames_in_flight submissions earlier, and where the renderer measures it, the GPU's idle time
 // between two frames is absent from the first timed frame, which follows no timed frame, lies within the calls around
-// the two frames and, with one frame in flight, spans the CPU work that separated them.
+// the two frames and, with one frame in flight, spans the CPU work that separated them. After
+// VulkanRenderer::wait_for_frame(), which an application calls before reading input, draw() waits for no frame.
 namespace profile_test {
 inline void require(bool condition, const std::string &message) {
     if (!condition)
@@ -32,6 +33,9 @@ constexpr int steady_frames = 60, release_trials = 3;
 // later as the longest atmosphere time of the calls around it, at least this many times any other.
 constexpr int lag_trials = 3;
 constexpr double least_lag_contrast = 2;
+// Most that the median fence_wait_ms of a draw() after wait_for_frame() may reach: the call then only checks the
+// window before a wait that returns at once.
+constexpr double waited_fence_limit_ms = .1;
 
 inline double median(std::vector<double> values) {
     require(!values.empty(), "No frame was measured");
@@ -137,6 +141,8 @@ class Check {
 // What one renderer's checks measured.
 struct Summary {
     double steady_untimed{}, release_untimed{}, release_prepare{}, steady_prepare{};
+    // Median fence_wait_ms of the steady calls, and of the calls that followed wait_for_frame().
+    double steady_fence{}, waited_fence{};
     std::vector<double> idle, release_idle;
     // Median contrast of the rebuilt frame's atmosphere time over the longest other one, where measured.
     std::optional<double> lag_contrast;
@@ -207,19 +213,38 @@ inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     require(SDL_GetWindowSizeInPixels(window, &width, &height) && width > 0 && height > 0,
             "Drawable dimensions unavailable");
     renderer.set_view(camera.matrix(float(width) / float(height)));
+    // Every slot's fence starts signaled, so a wait before the first frame has nothing to wait for and cannot time out.
+    renderer.wait_for_frame();
     Check check(renderer, frames);
     Summary summary;
 
-    std::vector<double> untimed, prepare;
+    std::vector<double> untimed, prepare, fence;
     for (int frame = 0; frame < steady_frames; ++frame) {
         const auto &call = check.present();
         untimed.push_back(call.wall_ms() - call.cpu_ms());
         prepare.push_back(call.profile.prepare_ms);
+        fence.push_back(call.profile.fence_wait_ms);
     }
     summary.steady_untimed = median(untimed);
     summary.steady_prepare = median(prepare);
+    summary.steady_fence = median(fence);
     require(summary.steady_untimed <= untimed_limit_ms,
             "The CPU fields leave " + std::to_string(summary.steady_untimed) + " ms of a typical draw() untimed");
+
+    // Waiting for the frame slot first, as an application does before reading input, leaves draw() no frame to wait
+    // for, so its fence wait returns at once.
+    std::vector<double> waited;
+    while (waited.size() < std::size_t(steady_frames)) {
+        renderer.wait_for_frame();
+        if (const auto &call = check.draw(); call.presented)
+            waited.push_back(call.profile.fence_wait_ms);
+        else
+            SDL_Delay(5);
+    }
+    summary.waited_fence = median(waited);
+    require(summary.waited_fence <= waited_fence_limit_ms,
+            "After wait_for_frame(), draw() still waited a median " + std::to_string(summary.waited_fence) +
+                " ms for its frame, against " + std::to_string(summary.steady_fence) + " ms without it");
 
     // Releasing cached meshes is frame preparation: the first draw() after they lose their last owner releases them
     // before culling. It destroys them too unless a frame that may draw them is still in flight, as one can be with two
@@ -290,7 +315,9 @@ inline int run(int argc, char **) {
         report << "; with " << frames << " in flight, the CPU fields leave a median " << summary.steady_untimed
                << " ms of draw() untimed, and " << summary.release_untimed << " ms of a draw() that released "
                << released_meshes << " meshes, whose prepare_ms of " << summary.release_prepare
-               << " ms or more exceeds the median " << summary.steady_prepare << " ms, ";
+               << " ms or more exceeds the median " << summary.steady_prepare << " ms, a median fence_wait_ms of "
+               << summary.waited_fence << " ms after wait_for_frame() and " << summary.steady_fence
+               << " ms without it, ";
         if (summary.lag_contrast)
             report << "the call " << frames << " after an atmosphere rebuild reports it, at a median "
                    << *summary.lag_contrast << " times any other call's atmosphere time, ";
