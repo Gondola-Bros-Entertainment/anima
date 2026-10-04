@@ -64,6 +64,12 @@ Collider tetrahedron() {
     c.vertices = {{0, 0, 0}, {2, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     return c;
 }
+// A box's principal moments of inertia about its center: m / 3 (h_y^2 + h_z^2) about X, and so on.
+Vec3 box_inertia(float mass, Vec3 half) {
+    return Vec3{half.y * half.y + half.z * half.z, half.x * half.x + half.z * half.z,
+                half.x * half.x + half.y * half.y} *
+           (mass / 3);
+}
 // Every entry point that compiles a collider must reject it the same way without creating a body.
 template <class Expected> void rejects_collider(World &world, const Collider &collider, const char *message) {
     BodySettings settings;
@@ -894,6 +900,129 @@ TEST_CASE("A dynamic body reports its mass, which sets its response to impulses"
                            std::invalid_argument);
     body.remove();
     REQUIRE_THROWS_WITH_AS((void)body.mass(), expired_body, std::out_of_range);
+}
+
+TEST_CASE("Impulses at points and angular impulses follow the body's inertia") {
+    constexpr float mass = 3;
+    const Vec3 half{1, .5F, .25F};
+    const auto inertia = box_inertia(mass, half); // (0.3125, 1.0625, 1.25)
+    World world(weightless(3));
+    auto settings = box({5, 2, -3}, half, Motion::dynamic);
+    settings.mass = mass;
+    auto struck = world.create(settings);
+    // At the corner (1, 0.5, 0.25) from the center, an impulse of 2 along +Z has the moment (1, -2, 0).
+    struck.add_impulse_at({0, 0, 2}, struck.world_center_of_mass() + half);
+    REQUIRE_MESSAGE(near(struck.velocity(), {0, 0, 2 / mass}), "An impulse at a point did not change the velocity by "
+                                                               "impulse / mass");
+    REQUIRE_MESSAGE(near(struck.angular_velocity(), {1 / inertia.x, -2 / inertia.y, 0}),
+                    "An impulse at a corner did not turn the body by its moment over the inertia");
+    // A quarter turn about Z exchanges the X and Y moments in world space.
+    settings.pose = {{-5, 2, -3}, quarter_turn_z};
+    auto spun = world.create(settings);
+    spun.add_angular_impulse({inertia.y, inertia.x, inertia.z});
+    REQUIRE_MESSAGE(near(spun.angular_velocity(), {1, 1, 1}),
+                    "An angular impulse did not use the body's world-space inertia");
+    REQUIRE(identical(spun.velocity(), {}));
+}
+
+TEST_CASE("Forces and torques act over the next step and are then cleared") {
+    constexpr float mass = 3;
+    const Vec3 half{1, .5F, .25F};
+    const auto inertia = box_inertia(mass, half);
+    const auto seconds = static_cast<float>(tick);
+    World world; // Earth gravity, which a force of m g balances.
+    auto settings = box({0, 10, 0}, half, Motion::dynamic);
+    settings.mass = mass;
+    auto held = world.create(settings);
+    const auto weight = held.mass() * 9.81F;
+    held.add_force({0, weight / 2, 0});
+    held.add_force({0, weight / 2, 0});
+    world.step(tick);
+    REQUIRE_MESSAGE((near(held.velocity(), {}) && near(held.pose().position, {0, 10, 0})),
+                    "The sum of the forces did not hold the body against gravity");
+    world.step(tick);
+    REQUIRE_MESSAGE(near(held.velocity(), {0, -9.81F * seconds, 0}), "A step kept a force from the step before");
+
+    World space(weightless(3));
+    settings.pose.position = {};
+    auto pushed = space.create(settings);
+    // At the corner (1, 0.5, 0.25) from the center, a force of 6 along +Z has the moment (3, -6, 0).
+    pushed.add_force_at({0, 0, 6}, pushed.world_center_of_mass() + half);
+    settings.pose.position = {5, 0, 0};
+    auto twisted = space.create(settings);
+    twisted.add_torque(inertia * (1 / seconds));
+    settings.pose.position = {-5, 0, 0};
+    auto thrown = space.create(settings);
+    thrown.add_force({6, 0, 0});
+    space.step(tick);
+    const Vec3 pushed_velocity{0, 0, 6 / mass * seconds};
+    const Vec3 pushed_spin{3 / inertia.x * seconds, -6 / inertia.y * seconds, 0};
+    const Vec3 thrown_velocity{6 / mass * seconds, 0, 0};
+    REQUIRE_MESSAGE((near(pushed.velocity(), pushed_velocity) && near(pushed.angular_velocity(), pushed_spin)),
+                    "A force at a point did not act as the force and its moment for one step");
+    REQUIRE_MESSAGE((near(twisted.angular_velocity(), {1, 1, 1}) && identical(twisted.velocity(), {})),
+                    "A torque did not change the angular velocity by torque / inertia per second");
+    REQUIRE(near(thrown.velocity(), thrown_velocity));
+    space.step(tick);
+    REQUIRE_MESSAGE((near(pushed.velocity(), pushed_velocity) && near(pushed.angular_velocity(), pushed_spin) &&
+                     near(twisted.angular_velocity(), {1, 1, 1}) && near(thrown.velocity(), thrown_velocity)),
+                    "A step kept a force or torque from the step before");
+    // A step longer than 1/60 s takes several collision steps, and the force acts over all of them.
+    thrown.add_force({6, 0, 0});
+    space.step(long_step);
+    REQUIRE_MESSAGE(near(thrown.velocity(), {6 / mass * (seconds + static_cast<float>(long_step)), 0, 0}),
+                    "A force did not act over the whole of a long step");
+}
+
+TEST_CASE("Disabling a body discards its forces and torques") {
+    World world(weightless(1));
+    auto body = world.create(box({}, {.5F, .5F, .5F}, Motion::dynamic));
+    body.add_force({100, 0, 0});
+    body.add_force_at({0, 50, 0}, {1, 0, 0});
+    body.add_torque({0, 0, 20});
+    body.set_enabled(false);
+    body.set_enabled(true);
+    world.step(tick);
+    REQUIRE_MESSAGE((identical(body.velocity(), {}) && identical(body.angular_velocity(), {})),
+                    "A force or torque added before the body was disabled acted after it was reenabled");
+}
+
+TEST_CASE("Forces, torques and impulses require an enabled dynamic body and valid vectors") {
+    constexpr auto impulses_only = "Only enabled dynamic bodies accept impulses";
+    constexpr auto forces_only = "Only enabled dynamic bodies accept forces and torques";
+    World world(weightless(4));
+    auto stationary = world.create(box({}, {.5F, .5F, .5F}));
+    auto kinematic = world.create(box({3, 0, 0}, {.5F, .5F, .5F}, Motion::kinematic));
+    auto disabled = world.create(box({6, 0, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+    disabled.set_enabled(false);
+    for (auto *body : {&stationary, &kinematic, &disabled}) {
+        REQUIRE_THROWS_WITH_AS(body->add_impulse_at({0, 1, 0}, {}), impulses_only, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(body->add_angular_impulse({0, 1, 0}), impulses_only, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(body->add_force({0, 1, 0}), forces_only, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(body->add_force_at({0, 1, 0}, {}), forces_only, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(body->add_torque({0, 1, 0}), forces_only, std::invalid_argument);
+    }
+    REQUIRE_FALSE_MESSAGE(disabled.enabled(), "A rejected call reenabled a body");
+    auto dynamic = world.create(box({9, 0, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+    for (const Vec3 bad : {Vec3{std::numeric_limits<float>::quiet_NaN(), 0, 0}, Vec3{0, beyond_vector_range, 0}}) {
+        CAPTURE(bad.x);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_impulse_at(bad, {}), vector_range, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_impulse_at({0, 1, 0}, bad), vector_range, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_angular_impulse(bad), vector_range, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_force(bad), vector_range, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_force_at(bad, {}), vector_range, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_force_at({0, 1, 0}, bad), vector_range, std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(dynamic.add_torque(bad), vector_range, std::invalid_argument);
+    }
+    world.step(tick);
+    REQUIRE_MESSAGE((identical(dynamic.velocity(), {}) && identical(dynamic.angular_velocity(), {})),
+                    "A rejected call moved the body");
+    dynamic.remove();
+    REQUIRE_THROWS_WITH_AS(dynamic.add_impulse_at({0, 1, 0}, {}), expired_body, std::out_of_range);
+    REQUIRE_THROWS_WITH_AS(dynamic.add_angular_impulse({0, 1, 0}), expired_body, std::out_of_range);
+    REQUIRE_THROWS_WITH_AS(dynamic.add_force({0, 1, 0}), expired_body, std::out_of_range);
+    REQUIRE_THROWS_WITH_AS(dynamic.add_force_at({0, 1, 0}, {}), expired_body, std::out_of_range);
+    REQUIRE_THROWS_WITH_AS(dynamic.add_torque({0, 1, 0}), expired_body, std::out_of_range);
 }
 
 TEST_CASE("Body handles hash and order consistently with their identity") {

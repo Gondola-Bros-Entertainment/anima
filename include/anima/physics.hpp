@@ -22,10 +22,11 @@
 /// rotation that cannot be normalized, unless a member states otherwise.
 ///
 /// Dynamic bodies are capped at a speed of 500 units per second and an angular speed of 15 pi
-/// radians per second: World::create, the velocity setters, Body::add_impulse and steps clamp a
-/// longer velocity to its cap, keeping its direction. Kinematic bodies are capped at 2,000,000
-/// of each instead, beyond the length of any vector that passes validation, and neither
-/// Body::move_kinematic nor a step clamps theirs.
+/// radians per second: World::create, the velocity setters, Body::add_impulse,
+/// Body::add_impulse_at, Body::add_angular_impulse and steps clamp a longer velocity to its cap,
+/// keeping its direction. Kinematic bodies are capped at 2,000,000 of each instead, beyond the
+/// length of any vector that passes validation, and neither Body::move_kinematic nor a step
+/// clamps theirs.
 ///
 /// Use all worlds and their bodies from one application thread. Anima owns Jolt's process
 /// registration, so other Jolt users cannot share the process. There are no joints, character
@@ -43,7 +44,7 @@ enum class Motion {
     stationary, ///< Never moves. Mesh colliders require this mode.
     kinematic,  ///< Moved only by its velocity, Body::move_kinematic or Body::teleport; ignores forces and contacts.
                 ///< Contacts stationary and kinematic bodies only when either body is a sensor.
-    dynamic     ///< Simulated under gravity, contacts and impulses.
+    dynamic     ///< Simulated under gravity, contacts, forces and impulses.
 };
 /// Collider geometry kind; selects which Collider fields describe the geometry.
 enum class Shape {
@@ -170,12 +171,38 @@ class Body {
     void set_angular_velocity(Vec3 velocity);
     /// Applies an impulse at the center of mass. Throws unless the body is dynamic and enabled.
     void add_impulse(Vec3 impulse);
+    /// Applies @p impulse, in newton seconds with meters and kilograms, at @p world_point, a
+    /// world-space position. The velocity changes by @p impulse / mass(), and the angular velocity
+    /// by the inverse of the body's world-space inertia applied to the cross product
+    /// (@p world_point - world_center_of_mass()) x @p impulse, each clamped to its cap. Throws
+    /// `std::invalid_argument` unless the body is dynamic and enabled.
+    void add_impulse_at(Vec3 impulse, Vec3 world_point);
+    /// Applies a world-space angular impulse, in newton meter seconds with meters and kilograms:
+    /// the angular velocity changes by the inverse of the body's world-space inertia applied to
+    /// @p impulse, clamped to its cap. Throws `std::invalid_argument` unless the body is dynamic
+    /// and enabled.
+    void add_angular_impulse(Vec3 impulse);
+    /// Adds a world-space force through the center of mass, in newtons with meters and kilograms.
+    /// Forces and torques add up until the next World::step, which applies their sums over its
+    /// whole duration and then clears them; set_enabled(false) clears them too. Throws
+    /// `std::invalid_argument` unless the body is dynamic and enabled.
+    void add_force(Vec3 force);
+    /// Adds @p force, as add_force() does, and the torque given by the cross product
+    /// (@p world_point - world_center_of_mass()) x @p force, as add_torque() does, taking the
+    /// center of mass at the time of the call. Throws `std::invalid_argument` unless the body is
+    /// dynamic and enabled.
+    void add_force_at(Vec3 force, Vec3 world_point);
+    /// Adds a world-space torque, in newton meters with meters and kilograms, which the next
+    /// World::step applies as add_force() describes. Throws `std::invalid_argument` unless the
+    /// body is dynamic and enabled.
+    void add_torque(Vec3 torque);
     /// Moves a kinematic body so its authored origin reaches @p target after @p seconds, in
     /// [0.000001, 0.1]. Throws for other motion types.
     void move_kinematic(Pose target, double seconds);
     /// Disabled bodies keep their pose and their velocities, clamped to the body's cap, and
     /// accept writes to them, but leave collisions and queries, end their contacts and reject
-    /// impulses. Reenabling resumes from that state and reports contacts that still touch as new
+    /// forces, torques and impulses. Disabling discards the forces and torques added since the
+    /// last step. Reenabling resumes from that state and reports contacts that still touch as new
     /// begin events.
     void set_enabled(bool enabled);
     [[nodiscard]] bool enabled() const;
