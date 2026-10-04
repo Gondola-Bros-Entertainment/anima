@@ -69,9 +69,9 @@ template <class T> class AssetRef {
     /// An empty reference.
     AssetRef() = default;
     /// Whether the reference has an identity.
-    explicit operator bool() const { return bool(state_); }
+    [[nodiscard]] explicit operator bool() const noexcept { return bool(state_); }
     /// The currently accepted resource. Throws `std::out_of_range` for an empty reference.
-    std::shared_ptr<const T> get() const {
+    [[nodiscard]] std::shared_ptr<const T> get() const {
         if (!state_)
             throw std::out_of_range("Empty asset reference");
         return state_->value;
@@ -79,7 +79,7 @@ template <class T> class AssetRef {
     /// Revision of the accepted resource: 1 after the first import, plus one for each refresh that
     /// publishes it, even when the new resource equals the old. Throws `std::out_of_range` for an
     /// empty reference.
-    std::uint64_t revision() const {
+    [[nodiscard]] std::uint64_t revision() const {
         if (!state_)
             throw std::out_of_range("Empty asset reference");
         return state_->revision;
@@ -149,7 +149,7 @@ class AssetImports {
     }
     /// The reference registered under @p key. Throws `std::out_of_range` for an unknown key or a
     /// resource type other than exactly `T`.
-    template <class T> AssetRef<T> get(std::string_view key) const {
+    template <class T> [[nodiscard]] AssetRef<T> get(std::string_view key) const {
         const auto found = entries_.find(key);
         if (found == entries_.end() || found->second->type() != typeid(T))
             throw std::out_of_range("Unknown asset key or resource type");
@@ -174,7 +174,7 @@ class AssetImports {
     /// Normalized project-relative paths that the accepted import of @p key read successfully, in
     /// the order of each path's first successful read. Throws `std::out_of_range` for an unknown
     /// key.
-    std::vector<std::filesystem::path> dependencies(std::string_view key) const;
+    [[nodiscard]] std::vector<std::filesystem::path> dependencies(std::string_view key) const;
 
   private:
     struct EntryBase {

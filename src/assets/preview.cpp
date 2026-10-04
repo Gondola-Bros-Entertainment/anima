@@ -174,11 +174,11 @@ AssetPreview::AssetPreview(const std::filesystem::path &manifest, TexelRetention
     else
         select(manifest_.clips.front().name);
 }
-void AssetPreview::select(const std::string &clip, bool play) {
+void AssetPreview::select(std::string_view clip, bool play) {
     const auto found = std::find_if(manifest_.clips.begin(), manifest_.clips.end(),
                                     [&](const auto &value) { return value.name == clip; });
     if (found == manifest_.clips.end())
-        throw std::out_of_range("Clip has no manifest playback policy: " + clip);
+        throw std::out_of_range("Clip has no manifest playback policy: " + std::string(clip));
     animator_->select(*found, play);
     bind_ = false;
 }
