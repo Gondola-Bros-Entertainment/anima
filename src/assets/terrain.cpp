@@ -113,6 +113,6 @@ std::shared_ptr<const Mesh> Terrain::compile(TerrainGrid field, TerrainAppearanc
             for (const auto &[dx, dz] :
                  std::array<std::pair<unsigned, unsigned>, 6>{{{0, 0}, {1, 1}, {1, 0}, {0, 0}, {0, 1}, {1, 1}}})
                 indices.push_back(static_cast<std::uint32_t>((z + dz) * field.columns + x + dx));
-    return Mesh::compile_indexed(asset, std::span(&indices, 1), appearance.texel_retention, {});
+    return Mesh::compile_indexed(asset, std::span(&indices, 1), {.texel_retention = appearance.texel_retention});
 }
 } // namespace anima

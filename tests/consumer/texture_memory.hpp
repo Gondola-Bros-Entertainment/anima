@@ -221,7 +221,8 @@ inline int run(int argc, char **argv) {
         kept_image = kept_source;
         released_image = released_source;
         kept = anima::Mesh::compile(*textured_quad(kept_source));
-        released = anima::Mesh::compile(*textured_quad(released_source), anima::TexelRetention::until_upload);
+        released = anima::Mesh::compile(*textured_quad(released_source),
+                                        {.texel_retention = anima::TexelRetention::until_upload});
     }
     const auto kept_before = held_bytes({&kept_image}), released_before = held_bytes({&released_image});
     require(kept_before == texel_bytes && released_before == texel_bytes,
@@ -252,13 +253,15 @@ inline int run(int argc, char **argv) {
         harness.images.require_foreground("kept", "The textured quad is not visible");
         harness.images.require_same("kept", "released", "Releasing texels changed the drawn texture");
         // A preparation reads the texels while the mesh still holds them, and its upload lets them go too.
-        const auto late = anima::Mesh::compile(*textured_quad(ramp()), anima::TexelRetention::until_upload);
+        const auto late =
+            anima::Mesh::compile(*textured_quad(ramp()), {.texel_retention = anima::TexelRetention::until_upload});
         const std::weak_ptr<const anima::Image> late_image = late->texel_images().at(0);
         const anima::MeshPreparation prepared(late);
         harness.renderer().prepare_mesh(prepared);
         require(late_image.expired(), "A prepared upload must also let the texels go");
         // A failed upload keeps the texels, so the retry that the failure allows can read them.
-        const auto retried = anima::Mesh::compile(*textured_quad(ramp()), anima::TexelRetention::until_upload);
+        const auto retried =
+            anima::Mesh::compile(*textured_quad(ramp()), {.texel_retention = anima::TexelRetention::until_upload});
         const std::weak_ptr<const anima::Image> retried_image = retried->texel_images().at(0);
         rejects<anima::InjectedRendererFailure>(
             [&] { harness.renderer().prepare_meshes(std::span(&retried, 1), {late_failure}); }, late_failure_message);
@@ -285,7 +288,8 @@ inline int run(int argc, char **argv) {
     rejects<anima::SceneResourceError>([&] { (void)second.renderer().draw(); }, released_message);
     // Texels that the application still holds stay readable, so another renderer can upload them again.
     const auto application_image = ramp();
-    const auto shared = anima::Mesh::compile(*textured_quad(application_image), anima::TexelRetention::until_upload);
+    const auto shared = anima::Mesh::compile(*textured_quad(application_image),
+                                             {.texel_retention = anima::TexelRetention::until_upload});
     second.select({scene_of(shared)});
     require(application_image.use_count() == 1, "The mesh must not hold an image that the application keeps");
     second.render("shared");

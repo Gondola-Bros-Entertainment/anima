@@ -328,7 +328,7 @@ TEST_CASE("A mesh compiled until upload describes a BC7 image by its format and 
     {
         const auto image = pattern();
         source = image;
-        mesh = Mesh::compile(textured_triangle(image), TexelRetention::until_upload);
+        mesh = Mesh::compile(textured_triangle(image), {.texel_retention = TexelRetention::until_upload});
     }
     const auto &description = *mesh->materials()->textures.at(0).image;
     CHECK(description.format == ImageFormat::bc7);
