@@ -109,8 +109,8 @@ struct MotionRuntime::Impl {
             return base;
         const auto phase = std::clamp(time / clip(motion).duration, 0., 1.);
         const auto layered = sample(layer, phase * clip(layer).duration);
-        return rig_.render_pose(base,
-                                rig_.layer(rig_.encode(base), rig_.encode(layered), mask_named(layer_mask(layer))));
+        return rig_.render_pose(
+            base, rig_.override_layer(rig_.encode(base), rig_.encode(layered), mask_named(layer_mask(layer))));
     }
     void validate_layers(std::span<const std::string_view> layers) const {
         std::vector<float> occupied(rig_.size());
@@ -135,8 +135,8 @@ struct MotionRuntime::Impl {
         const auto phase = std::clamp(time / clip(motion).duration, 0., 1.);
         for (const auto layer : layers)
             if (!layer.empty())
-                evaluated = rig_.layer(evaluated, rig_.encode(sample(layer, phase * clip(layer).duration)),
-                                       mask_named(layer_mask(layer)));
+                evaluated = rig_.override_layer(evaluated, rig_.encode(sample(layer, phase * clip(layer).duration)),
+                                                mask_named(layer_mask(layer)));
         return rig_.render_pose(base, evaluated);
     }
     anima::Pose blend(const anima::Pose &from, const anima::Pose &to, float weight) const {
@@ -145,7 +145,7 @@ struct MotionRuntime::Impl {
         if (weight == 1)
             return to;
         return rig_.render_pose(
-            to, rig_.layer(rig_.encode(from), rig_.encode(to), std::vector<float>(rig_.size(), weight)));
+            to, rig_.override_layer(rig_.encode(from), rig_.encode(to), std::vector<float>(rig_.size(), weight)));
     }
     MotionEvaluation evaluate(const anima::Pose &source, const MotionControls &controls) const {
         if (controls.empty())
@@ -167,10 +167,10 @@ struct MotionRuntime::Impl {
                 weight *= layer.weight;
             auto sampled = sample(layer.clip, layer.time);
             const auto contribution = rig_.encode(sampled);
-            std::optional<anima::EvaluationPose> reference;
-            if (additive)
-                reference = rig_.encode(sample(layer.reference_clip, layer.reference_time));
-            evaluated = rig_.layer(evaluated, contribution, weights, layer.mode, reference ? &*reference : nullptr);
+            evaluated =
+                additive ? rig_.additive_layer(evaluated, contribution,
+                                               rig_.encode(sample(layer.reference_clip, layer.reference_time)), weights)
+                         : rig_.override_layer(evaluated, contribution, weights);
             if (layer.mask.empty() && !additive && layer.weight > 0)
                 full_body = std::move(sampled);
         }
