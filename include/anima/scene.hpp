@@ -610,6 +610,13 @@ class MeshRenderer {
     /// another mesh") or a custom material of the renderer does not read them (CustomMaterial::reads_placements():
     /// "A custom material that draws placements must read them").
     void set_placements(std::shared_ptr<const MeshPlacements> placements);
+    /// Draws one copy of the renderer's current mesh at each of @p transforms, as
+    /// `set_placements(MeshPlacements::create(mesh(), transforms))` does: the set is created on the calling thread, in
+    /// time proportional to the placements as MeshPlacements::create() states, and @p transforms must not change
+    /// during the call. Throws what mesh(), MeshPlacements::create() and set_placements() throw, checked in that order,
+    /// so a renderer with a pose rejects valid transforms only after creating their set. A failure leaves the
+    /// renderer's placements unchanged.
+    void set_placement_transforms(std::span<const Mat4> transforms);
     /// Distances at which the renderer draws; see set_visibility_range().
     [[nodiscard]] VisibilityRange visibility_range() const;
     /// Draws the renderer only at the distances @p range allows, as VisibilityRange describes. Throws what
