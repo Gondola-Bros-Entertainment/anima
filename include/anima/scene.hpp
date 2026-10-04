@@ -312,6 +312,7 @@ class Scene {
     friend class MeshRenderer;
     friend class FittedSet;
     friend class Prefab;
+    friend struct AttachmentInstance;
     friend struct AttachmentSet;
     friend struct detail::ScenePersistence;
     friend class SceneSet;

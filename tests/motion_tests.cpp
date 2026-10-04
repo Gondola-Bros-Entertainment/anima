@@ -312,6 +312,69 @@ TEST_CASE("An attachment library compiles its models with the texel retention it
     CHECK(released.load("prop")->source == loaded->source); // Loads still share the model while it lives.
 }
 
+TEST_CASE("An animated grip stays in prop model space, where its node carries it from the node's rest placement") {
+    // A prop whose primary node rests away from the origin, turned and moved below a turned and moved root.
+    Asset prop;
+    add_node(prop, "base", -1, {.3F, -.2F, .1F});
+    prop.nodes[0].rest.rotation = {0, .38268343F, 0, .92387953F}; // An eighth turn about +Y.
+    add_node(prop, "handle", 0, {0, .5F, .2F});
+    prop.nodes[1].rest.rotation = {.25881905F, 0, 0, .96592583F}; // A twelfth turn about +X.
+    AttachmentVisual visual;
+    visual.primary_node = "handle";
+    Transform grip;
+    grip.translation = {.05F, .1F, 0};
+    grip.rotation = {0, 0, .70710678F, .70710678F}; // A quarter turn about +Z.
+    visual.primary_grip = matrix(grip);
+    Transform frame;
+    frame.translation = {0, -.1F, .05F};
+    const AttachmentSocket socket{3, matrix(frame)};
+    const auto bound = bind_attachment(socket, visual);
+    // At the prop's rest pose, the grip is where bind_attachment put it.
+    const auto rest = sample_pose(prop);
+    const auto at_rest = animated_attachment_binding(bound, visual, prop, rest);
+    CHECK(at_rest.node == bound.node);
+    for (std::size_t i = 0; i < at_rest.local.size(); ++i)
+        CHECK(at_rest.local[i] == Near{bound.local[i], 1e-6});
+    // Moving the node from its rest placement moves the grip with it, and the moved grip meets the socket.
+    auto local = rest.local;
+    local[1].translation = {.1F, .4F, .3F};
+    local[1].rotation = {0, 0, .38268343F, .92387953F};
+    const auto moved = pose_from_local(prop, local);
+    const auto body = sample_pose(limb_model());
+    const auto placement = attachment_placement(body, animated_attachment_binding(bound, visual, prop, moved));
+    const auto held = placement * moved.world[1] * inverse(rest.world[1]) * visual.primary_grip;
+    const auto expected = body.world[socket.node] * socket.local;
+    for (std::size_t i = 0; i < held.size(); ++i)
+        CHECK(held[i] == Near{expected[i], 1e-6});
+}
+
+TEST_CASE("Replacing an attachment counts a removed instance as gone, and checks the scene before adding") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    Scene scene;
+    AttachmentInstance held;
+    REQUIRE(held.replace(scene, library, fixture.sockets, "prop"));
+    scene.remove(*held.instance);
+    CHECK(held.replace(scene, library, fixture.sockets, "brace"));
+    CHECK(held.item_id == "brace");
+    CHECK(scene.size() == 1);
+    CHECK(scene.contains(*held.instance));
+    // An instance of another scene is rejected before the new item is loaded or added.
+    Scene other;
+    CHECK_THROWS_WITH_AS(held.replace(other, library, fixture.sockets, "prop"),
+                         "Attachment instance belongs to another scene", std::invalid_argument);
+    CHECK(other.size() == 0);
+    CHECK(held.item_id == "brace");
+    CHECK(scene.contains(*held.instance));
+    // An instance removed with its parent is gone too, so emptying the role changes nothing else.
+    auto parent = scene.create("Parent");
+    scene.object(*held.instance).set_parent(parent, ReparentMode::keep_local);
+    parent.destroy();
+    CHECK(held.replace(scene, library, fixture.sockets, ""));
+    CHECK_FALSE(held.instance);
+    CHECK(scene.size() == 0);
+}
+
 TEST_CASE("Layer clips compose over a base clip on disjoint masks, and overlapping masks are rejected") {
     const MotionFixture fixture;
     const auto runtime = fixture.runtime();

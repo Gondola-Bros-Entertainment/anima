@@ -146,6 +146,22 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
     }
     return result;
 }
+// Model-space rest matrix of node @p index, the product of its own and its ancestors' rest matrices, without
+// sampling the other nodes. Throws std::runtime_error, as sample_pose does, for an invalid or cyclic hierarchy.
+anima::Mat4 rest_world(const anima::Asset &asset, std::size_t index) {
+    auto result = anima::identity();
+    for (std::size_t visited = 0;; ++visited) {
+        if (visited == asset.nodes.size())
+            throw std::runtime_error("Cycle in asset node hierarchy");
+        const auto &node = asset.nodes[index];
+        result = anima::operator*(node.has_matrix ? node.rest_matrix : anima::matrix(node.rest), result);
+        if (node.parent < 0)
+            return result;
+        index = static_cast<std::size_t>(node.parent);
+        if (index >= asset.nodes.size())
+            throw std::runtime_error("Invalid node parent");
+    }
+}
 } // namespace
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory) {
     return presentation_data::decode_step([&] { return decode_catalog(document, directory); });
@@ -243,7 +259,10 @@ AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, 
     if (visual.primary_node.empty())
         return binding;
     using anima::operator*;
-    const auto primary = pose.world.at(anima::unique_node(asset, visual.primary_node)) * visual.primary_grip;
+    // The grip is in prop model space, so the node carries it by the node's motion from its rest placement, and at
+    // the rest pose the grip stays where bind_attachment put it.
+    const auto node = anima::unique_node(asset, visual.primary_node);
+    const auto primary = pose.world.at(node) * anima::inverse(rest_world(asset, node)) * visual.primary_grip;
     return {binding.node, binding.local * visual.primary_grip * anima::inverse(primary)};
 }
 anima::Mat4 attachment_marker(const AttachmentVisual &visual, const anima::Asset *asset, const anima::Pose *pose,
@@ -261,6 +280,9 @@ bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &l
                                  std::string_view id) {
     if (item_id == id)
         return false;
+    // Check the old handle before adding anything, so that a failure leaves no untracked object in the scene.
+    if (instance && instance->owner != scene.owner_)
+        throw std::invalid_argument("Attachment instance belongs to another scene");
     AttachmentInstance next;
     next.item_id = id;
     if (!id.empty()) {
@@ -270,7 +292,8 @@ bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &l
         next.asset = library.load(item.visual);
         next.instance = scene.add(next.asset->render);
     }
-    if (instance)
+    // An old instance that no longer exists, removed directly or with its parent, is already gone.
+    if (instance && scene.contains(*instance))
         scene.remove(*instance);
     *this = std::move(next);
     return true;
