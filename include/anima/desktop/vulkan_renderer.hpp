@@ -79,14 +79,15 @@ struct RendererOptions {
     /// Draws a built-in triangle while no scene is selected, even without asset support. A selected scene
     /// with no instances shows only the background.
     bool diagnostic_triangle = false;
-    /// Enables FrameProfile timings, with six GPU timestamp queries when the graphics queue supports
-    /// them, calibrated timestamps where the device also offers them (see VulkanRenderer::measures_gpu_idle), and
-    /// `VK_GOOGLE_display_timing` where the device offers it (see VulkanRenderer::measures_present_interval). With
-    /// that extension every present carries an id for its display time, and each draw() that prepares a frame reads
-    /// the display times that arrived since the previous read with `vkGetPastPresentationTimingGOOGLE`, in
-    /// FrameProfile::prepare_ms; an out-of-date result of that read makes the next draw() recreate the swapchain, and
-    /// any other failure, such as surface loss, throws RendererFatalError as draw() describes. When false there is no
-    /// query pool, no clock is read and no display time is read.
+    /// Enables FrameProfile timings, with six GPU timestamp queries for each frame in flight
+    /// (RendererOptions::frames_in_flight) when the graphics queue supports them, calibrated timestamps where the
+    /// device also offers them (see VulkanRenderer::measures_gpu_idle), and `VK_GOOGLE_display_timing` where the device
+    /// offers it (see VulkanRenderer::measures_present_interval). With that extension every present carries an id for
+    /// its display time, and each draw() that prepares a frame reads the display times that arrived since the previous
+    /// read with `vkGetPastPresentationTimingGOOGLE`, in FrameProfile::prepare_ms; an out-of-date result of that read
+    /// makes the next draw() recreate the swapchain, and any other failure, such as surface loss, throws
+    /// RendererFatalError as draw() describes. When false there is no query pool, no clock is read and no display time
+    /// is read.
     bool profile = false;
     /// Initial main-view culling state; see VulkanRenderer::set_frustum_culling.
     bool frustum_culling = true;
@@ -210,11 +211,11 @@ struct RenderStats {
 /// captures then waits for its frame and reads the image back, which no field times; a draw() that returns early
 /// sets only the fields it reached. When fence_wait_ms ends, the GPU has finished the frame submitted
 /// RendererOptions::frames_in_flight submissions before the one that the draw() submits, and every frame before that.
-/// With one frame in flight that is the previous frame, so no later CPU field overlaps GPU frame work; with two, the
-/// previous frame can still run on the GPU during every later field. Where VulkanRenderer::wait_for_frame() waits for
-/// presents, the wait for the present of the frame submitted one submission before the finished one has ended too, as
-/// it describes. The frame submitted at the end of record_submit_ms can run on the GPU during present_ms and after
-/// draw() returns.
+/// With one frame in flight that is the previous frame, so no later CPU field overlaps an earlier frame's GPU work;
+/// with two, the previous frame can still run on the GPU during every later field. Where
+/// VulkanRenderer::wait_for_frame() waits for presents, the wait for the present of the frame submitted one submission
+/// before the finished one has ended too, as it describes. The frame submitted at the end of record_submit_ms can run
+/// on the GPU during present_ms and after draw() returns.
 struct FrameProfile {
     /// From draw() entry through the wait for the fence of the frame submitted RendererOptions::frames_in_flight
     /// submissions earlier and, where VulkanRenderer::wait_for_frame() waits for presents, for the present of the frame
@@ -251,7 +252,8 @@ struct FrameProfile {
     /// so with two frames in flight they leave out the time that the GPU spent finishing the frame before it. False
     /// means unsupported or not yet available, not zero cost.
     bool gpu_available{};
-    /// The whole command buffer.
+    /// The frame's commands, from its first timestamp to its last: the sum of gpu_atmosphere_ms, gpu_shadow_ms,
+    /// gpu_scene_ms, gpu_resolve_ms and gpu_transfer_ms.
     double gpu_ms{};
     /// The atmosphere's compute dispatches, which write its tables while it is enabled. The first frame drawn with it
     /// enabled, and each frame whose Atmosphere differs from the one the tables were last built for in a field other
@@ -262,9 +264,15 @@ struct FrameProfile {
     double gpu_atmosphere_ms{};
     /// Every shadow pass: each shadow cascade and the detail region.
     double gpu_shadow_ms{};
-    /// Sky and meshes into the scene target, with the copy of opaque inputs on frames that make one.
+    /// Sky and meshes into the scene target, with the copy of opaque inputs on frames that make one. Without asset
+    /// support the frame draws into its swapchain image here instead, UI included (see gpu_resolve_ms).
     double gpu_scene_ms{};
-    /// Display conversion and UI.
+    /// With asset support, display conversion and UI, the frame's first commands that write its swapchain image. Image
+    /// acquisition can return before the presentation engine has released the image, and these commands wait until it
+    /// has, while the scene's commands before them do not. Where the image is released only after the scene has been
+    /// drawn, this field, and gpu_ms with it, therefore include that wait. Without asset support the frame records no
+    /// commands here: it is one batch, which draws into the image and waits for it, so the wait falls in gpu_scene_ms,
+    /// or before the frame's first timestamp, outside gpu_ms, where the device holds that timestamp back too.
     double gpu_resolve_ms{};
     /// Capture copy and the transition for presentation.
     double gpu_transfer_ms{};
@@ -272,8 +280,10 @@ struct FrameProfile {
     /// timestamp: how long the graphics queue went without frame work between them. With one frame in flight the timed
     /// frame was submitted after the earlier one had finished, so this spans at least the prepare_ms, upload_ms and
     /// acquire_ms of the draw() that submitted it, and uploads that run in that gap count toward it. With two, the
-    /// timed frame can be queued before the earlier one finishes; its first timestamp still follows the earlier frame's
-    /// work, but Vulkan does not order it after that frame's last timestamp, and where it is the lower the field is 0.
+    /// queue can hold the timed frame before the earlier one finishes, and the field is then near 0. Either way the
+    /// first timestamp happens-after every command submitted before it, the earlier frame's last timestamp included,
+    /// and calibrated timestamps keep it from being lower (see `vkCmdWriteTimestamp`); a first timestamp below that
+    /// last one, which only a driver that breaks this rule writes, reads as 0.
     /// Set with the GPU fields where VulkanRenderer::measures_gpu_idle() is true and the frame submitted before the
     /// timed one was timed too, unless the device's timestamp counter may have wrapped in between: the field stays
     /// empty when, on the host's steady clock, the timed frame's fence wait in this draw() ended at least a quarter of
@@ -411,7 +421,7 @@ struct ResourceStats {
 ///
 /// Use the renderer from the application's SDL video thread, with no concurrent calls. Scenes and settings
 /// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. Up to
-/// RendererOptions::frames_in_flight frames are in flight. Each has its own command buffer, palettes, environment and
+/// RendererOptions::frames_in_flight frames are in flight. Each has its own command buffers, palettes, environment and
 /// custom material frame blocks, UI vertices and descriptor sets, which draw() rewrites only once the frame that used
 /// them last has finished. Frames share the shadow maps, the atmosphere's tables, the scene targets and the opaque
 /// input copies, which their commands order on the GPU, and cached resources, UI images and replaced shadow maps are
@@ -571,12 +581,14 @@ struct ResourceStats {
 /// render scale change recreates only the scene targets, without that wait. Where the device supports
 /// `VK_KHR_present_id` and `VK_KHR_present_wait` (waits_for_presents()), presents in the FIFO modes carry ids, which
 /// wait_for_frame() and draw() wait for. Display output is sRGB-encoded once: by an sRGB swapchain format when the
-/// surface offers one, otherwise in the display shader for 8-bit UNORM formats. Presentation semaphores belong to
-/// swapchain images. Where the instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are
-/// waited before swapchain resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a
-/// device wait-idle is used, which unextended Vulkan does not guarantee to cover presentation. Portability enumeration
-/// and `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard
-/// output.
+/// surface offers one, otherwise in the display shader for 8-bit UNORM formats. With asset support each frame is one
+/// submission of two batches, and only the second, display conversion, UI and capture, waits for the acquired image, so
+/// the GPU can draw the scene while the presentation engine still holds that image; without it, the frame draws into
+/// the image and waits for it from its first color write. Presentation semaphores belong to swapchain images. Where the
+/// instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain
+/// resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a device wait-idle is used,
+/// which unextended Vulkan does not guarantee to cover presentation. Portability enumeration and
+/// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard output.
 ///
 /// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(), set_present_mode(),
 /// set_render_scale(), set_environment(), set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame()
