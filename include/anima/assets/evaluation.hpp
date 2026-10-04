@@ -28,7 +28,9 @@ struct EvaluationJoint {
 struct EvaluationPose {
     std::vector<Mat4> local;
 };
-/// How EvaluationRig::layer combines a contribution with its base.
+/// How a motion layer combines its contribution with its base. MotionRuntime::evaluate applies an
+/// override with EvaluationRig::override_layer and an additive layer with
+/// EvaluationRig::additive_layer.
 enum class LayerMode {
     override_pose, ///< Blends from the base toward the contribution.
     additive       ///< Applies the contribution's change from a reference pose on top of the base.
@@ -84,16 +86,24 @@ class EvaluationRig {
     [[nodiscard]] EvaluationPose from_world(std::span<const Mat4> world) const;
     /// Per-joint weights: @p weight, in [0, 1], for joint @p root and its descendants, 0 elsewhere.
     [[nodiscard]] std::vector<float> subtree_mask(std::size_t root, float weight = 1) const;
-    /// Combines @p contribution into @p base, joint by joint, by @p weights, each in [0, 1]; a
-    /// weight of 0 keeps the base joint.
+    /// Blends @p base toward @p contribution, joint by joint, with blend_affine by @p weights, each
+    /// in [0, 1]; a weight of 0 keeps the base joint exactly.
     ///
-    /// An override blends each local matrix with blend_affine. An additive layer computes
-    /// `base * blend_affine(identity(), inverse(reference) * contribution, weight)` and needs
-    /// @p reference, which an override must not have, and whose joints the inverse needs to be
-    /// uncollapsed. Every pose and @p weights need one entry per joint.
-    [[nodiscard]] EvaluationPose layer(const EvaluationPose &base, const EvaluationPose &contribution,
-                                       std::span<const float> weights, LayerMode mode = LayerMode::override_pose,
-                                       const EvaluationPose *reference = nullptr) const;
+    /// Throws `std::invalid_argument` "Layer pose/mask count mismatch" unless both poses and
+    /// @p weights have one entry per joint, and "Layer/contact weight must be in [0,1]" for a
+    /// weight outside that range or nonfinite, and as blend_affine does for a joint it blends.
+    [[nodiscard]] EvaluationPose override_layer(const EvaluationPose &base, const EvaluationPose &contribution,
+                                                std::span<const float> weights) const;
+    /// Applies the change of @p contribution from @p reference on top of @p base, joint by joint:
+    /// `base * blend_affine(identity(), inverse(reference) * contribution, weight)` by @p weights,
+    /// each in [0, 1]; a weight of 0 keeps the base joint exactly.
+    ///
+    /// Throws `std::invalid_argument` "Layer pose/mask count mismatch" unless the three poses and
+    /// @p weights have one entry per joint, and "Layer/contact weight must be in [0,1]" for a
+    /// weight outside that range or nonfinite, and as inverse() and blend_affine do for a joint
+    /// with a nonzero weight, so such a reference joint must be invertible.
+    [[nodiscard]] EvaluationPose additive_layer(const EvaluationPose &base, const EvaluationPose &contribution,
+                                                const EvaluationPose &reference, std::span<const float> weights) const;
     /// World-only Pose of the asset for MeshRenderer::set_pose: mapped nodes take their
     /// @p evaluated matrices, and unmapped nodes keep their @p source transform relative to their
     /// parent, taken from the local transform of @p source when that parent is collapsed.

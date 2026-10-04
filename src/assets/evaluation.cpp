@@ -279,25 +279,29 @@ std::vector<float> EvaluationRig::subtree_mask(std::size_t root, float weight) c
             result[i] = weight;
     return result;
 }
-EvaluationPose EvaluationRig::layer(const EvaluationPose &base, const EvaluationPose &contribution,
-                                    std::span<const float> weights, LayerMode mode,
-                                    const EvaluationPose *reference) const {
+EvaluationPose EvaluationRig::override_layer(const EvaluationPose &base, const EvaluationPose &contribution,
+                                             std::span<const float> weights) const {
     require(base.local.size() == size() && contribution.local.size() == size() && weights.size() == size(),
             "Layer pose/mask count mismatch");
-    require((mode == LayerMode::additive && reference && reference->local.size() == size()) ||
-                (mode == LayerMode::override_pose && !reference),
-            "Layer reference does not match its mode");
     auto result = base;
     for (std::size_t i = 0; i < size(); ++i) {
         weight_valid(weights[i]);
-        if (weights[i] == 0)
-            continue;
-        if (mode == LayerMode::override_pose)
+        if (weights[i] != 0)
             result.local[i] = blend_affine(base.local[i], contribution.local[i], weights[i]);
-        else
-            result.local[i] =
-                base.local[i] *
-                blend_affine(identity(), inverse(reference->local[i]) * contribution.local[i], weights[i]);
+    }
+    return result;
+}
+EvaluationPose EvaluationRig::additive_layer(const EvaluationPose &base, const EvaluationPose &contribution,
+                                             const EvaluationPose &reference, std::span<const float> weights) const {
+    require(base.local.size() == size() && contribution.local.size() == size() && reference.local.size() == size() &&
+                weights.size() == size(),
+            "Layer pose/mask count mismatch");
+    auto result = base;
+    for (std::size_t i = 0; i < size(); ++i) {
+        weight_valid(weights[i]);
+        if (weights[i] != 0)
+            result.local[i] = base.local[i] *
+                              blend_affine(identity(), inverse(reference.local[i]) * contribution.local[i], weights[i]);
     }
     return result;
 }

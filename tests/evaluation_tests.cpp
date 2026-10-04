@@ -274,14 +274,20 @@ TEST_CASE("An additive layer applies its declared reference within its mask") {
     auto action = encoded;
     action.local[4] = action.local[4] * translated({0, .2F, 0});
     const auto mask = rig.subtree_mask(4, .5F);
-    const auto result = rig.layer(offset, action, mask, LayerMode::additive, &encoded);
+    const auto result = rig.additive_layer(offset, action, encoded, mask);
     CHECK(difference(result.local[4], offset.local[4] * translated({0, .1F, 0})) < tolerance);
     CHECK(difference(result.local[1], offset.local[1]) < tolerance);
-    const auto override = rig.layer(offset, encoded, rig.subtree_mask(2));
+    const auto override = rig.override_layer(offset, encoded, rig.subtree_mask(2));
     CHECK(difference(override.local[1], offset.local[1]) < tolerance);
     CHECK(difference(override.local[4], encoded.local[4]) < tolerance);
-    CHECK_THROWS_WITH_AS(rig.layer(encoded, action, mask, LayerMode::additive),
-                         "Layer reference does not match its mode", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(rig.additive_layer(encoded, action, EvaluationPose{}, mask), "Layer pose/mask count mismatch",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(rig.override_layer(encoded, action, std::vector<float>(rig.size() - 1)),
+                         "Layer pose/mask count mismatch", std::invalid_argument);
+    auto heavy = mask;
+    heavy[4] = 1.5F;
+    CHECK_THROWS_WITH_AS(rig.additive_layer(encoded, action, encoded, heavy), "Layer/contact weight must be in [0,1]",
+                         std::invalid_argument);
 }
 
 TEST_CASE("Invalid rigs and mask roots are rejected") {
