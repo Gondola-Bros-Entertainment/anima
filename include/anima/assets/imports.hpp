@@ -35,7 +35,9 @@ class ImportSource {
     /// Throws `std::invalid_argument` for an empty or absolute path or one that resolves outside
     /// the project root, including through symbolic links; `std::length_error` for a file above
     /// the registry's byte limit; and `std::runtime_error` when the file cannot be read or changes
-    /// while being read.
+    /// while being read. A read that throws records nothing: an importer that catches the failure,
+    /// for example for an optional file, is not reimported when that file appears or changes
+    /// later, only when an input it read changes.
     std::span<const std::byte> read(const std::filesystem::path &path);
 
   private:
@@ -169,8 +171,9 @@ class AssetImports {
     /// unknown key. Held references keep their final version, and a later add() under the same key
     /// creates a new identity. Throws `std::logic_error` when called from an importer.
     bool erase(std::string_view key);
-    /// Normalized project-relative paths that the accepted import of @p key read, in first-read
-    /// order. Throws `std::out_of_range` for an unknown key.
+    /// Normalized project-relative paths that the accepted import of @p key read successfully, in
+    /// the order of each path's first successful read. Throws `std::out_of_range` for an unknown
+    /// key.
     std::vector<std::filesystem::path> dependencies(std::string_view key) const;
 
   private:
