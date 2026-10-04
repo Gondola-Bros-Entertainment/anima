@@ -231,7 +231,8 @@ struct QueryFilter {
     std::uint16_t layers = 0xffff;
     /// Whether sensor bodies can be hit.
     bool sensors = false;
-    /// A body of the queried world to skip; an invalid handle skips nothing.
+    /// A body of the queried world to skip; an invalid handle skips nothing, and the query
+    /// throws `std::invalid_argument` ("Foreign query body") for another world's body.
     Body ignore;
 };
 /// One query result.
@@ -244,8 +245,14 @@ struct Hit {
     /// World-space normal pointing from the hit surface toward the query: back along a ray or
     /// sweep, including on mesh undersides.
     Vec3 normal{};
-    /// Overlap depth for World::overlap results.
+    /// Overlap depth, in meters, for World::overlap results and for a sweep that starts
+    /// overlapping #body; zero otherwise.
     float penetration{};
+    /// The query started inside or touching #body, so #fraction is zero: a ray whose origin lies
+    /// inside a collider other than a mesh, or on any surface, a sweep whose shape starts
+    /// overlapping, and every World::overlap result. When several bodies qualify, which one is
+    /// reported is unspecified.
+    bool initial_overlap{};
 };
 enum class ContactPhase { begin, end };
 /// Where a solid contact began and how fast its bodies met, as the backend found the contact,
@@ -307,12 +314,14 @@ class World {
     void step(double seconds);
     /// Drains contact events recorded by step(), Body::remove() and Body::set_enabled().
     [[nodiscard]] std::vector<ContactEvent> take_events();
-    /// Casts a ray along the complete @p displacement, which must be nonzero. Meshes are hit
-    /// from both sides.
+    /// Casts a ray along the complete @p displacement, which must be nonzero. Returns the closest
+    /// hit, or a Hit::initial_overlap result when @p origin is inside a body. Meshes are hit from
+    /// both sides and enclose nothing, so a ray from inside a closed mesh hits it where it leaves.
     [[nodiscard]] std::optional<Hit> raycast(Vec3 origin, Vec3 displacement, QueryFilter filter = {}) const;
     /// Translates @p shape along @p displacement, which must be nonzero, without rotating it.
-    /// @p start is the shape's authored origin. The shape cannot be a mesh; meshes are hit from
-    /// both sides. Use overlap() for zero-displacement clearance checks.
+    /// @p start is the shape's authored origin. Returns the closest hit, or a Hit::initial_overlap
+    /// result when the shape starts overlapping a body. The shape cannot be a mesh; meshes are hit
+    /// from both sides. Use overlap() for zero-displacement clearance checks.
     [[nodiscard]] std::optional<Hit> sweep(const Collider &shape, Pose start, Vec3 displacement,
                                            QueryFilter filter = {}) const;
     /// Returns every body contact of @p shape at @p pose, with penetration depths; a body can
