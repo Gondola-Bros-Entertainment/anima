@@ -10,5 +10,5 @@ void main() {
     vec3 ray = normalize((environment.viewRays * vec4(screen, 0.0, 1.0)).xyz);
     vec3 color = environmentFog(environment.background.rgb, environment.viewOrigin.xyz + ray * environment.fogShape.z,
                                 environment.viewOrigin);
-    outColor = vec4(clamp(color, vec3(0), vec3(65504)), 1.0);
+    outColor = vec4(clamp(color, vec3(0), vec3(animaMaximumHalfFloat)), 1.0);
 }

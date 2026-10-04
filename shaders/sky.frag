@@ -26,9 +26,9 @@ void main() {
     // through the atmosphere along the ray.
     float radius = environment.atmosphereShape.w, halfSine = sin(0.5 * radius);
     if (dot(ray, sun) >= cos(radius))
-        color += environment.atmosphereSun.rgb / (4.0 * atmospherePi * halfSine * halfSine) *
+        color += environment.atmosphereSun.rgb / (4.0 * PI * halfSine * halfSine) *
                  transmittanceToTop(transmittanceTable, altitude, ray.y);
     if (environment.fogShape.z > 0.0)
         color = environmentFog(color, environment.viewOrigin.xyz + ray * environment.fogShape.z, environment.viewOrigin);
-    outColor = vec4(clamp(color, vec3(0), vec3(65504)), 1.0);
+    outColor = vec4(clamp(color, vec3(0), vec3(animaMaximumHalfFloat)), 1.0);
 }

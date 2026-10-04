@@ -1,8 +1,7 @@
 // The standard material's lighting, which mesh.frag and impostor.frag share. Include it after environment.glsl.
-const float PI = 3.14159265359;
+#include "constants.glsl"
 const float minimumRoughness = 0.045;
 const float dielectricReflectance = 0.04;
-const float maximumHalfFloat = 65504.0;
 vec3 unit(vec3 v) { return v * inversesqrt(max(dot(v, v), 1e-12)); }
 // glTF isotropic GGX, height-correlated Smith visibility and Schlick Fresnel.
 vec3 light(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float metallic, float alpha) {
@@ -40,5 +39,5 @@ vec3 reflectedLight(vec3 n, vec3 position, vec4 viewOrigin, vec3 albedo, float m
 // @p color seen through the fog between @p viewOrigin and @p position in a perspective view, clamped to the half floats
 // of the scene target.
 vec3 fogged(vec3 color, vec3 position, vec4 viewOrigin) {
-    return clamp(environmentFog(color, position, viewOrigin), vec3(0), vec3(maximumHalfFloat));
+    return clamp(environmentFog(color, position, viewOrigin), vec3(0), vec3(animaMaximumHalfFloat));
 }

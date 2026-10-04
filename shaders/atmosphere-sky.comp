@@ -10,6 +10,7 @@
 layout(local_size_x = ANIMA_ATMOSPHERE_GROUP_EDGE, local_size_y = ANIMA_ATMOSPHERE_GROUP_EDGE) in;
 #include "environment_data.glsl"
 #include "atmosphere.glsl"
+#include "../include/anima/fog.glsl"
 layout(set = ANIMA_SET_ATMOSPHERE, binding = ANIMA_ATMOSPHERE_WRITE_SKY_VIEW,
        rgba16f) uniform writeonly image2D skyViewTable;
 layout(set = ANIMA_SET_ATMOSPHERE, binding = ANIMA_ATMOSPHERE_READ_TRANSMITTANCE) uniform sampler2D transmittanceTable;
@@ -23,12 +24,12 @@ void main() {
     vec2 uv = (vec2(texel) + 0.5) / vec2(skyViewSize);
     float altitude = environment.atmosphereGround.w;
     // Invert skyViewCoordinates().
-    float azimuth = atmospherePi * pow(unitFromTexture(uv.x, skyViewSize.x), 2.0);
+    float azimuth = PI * pow(unitFromTexture(uv.x, skyViewSize.x), 2.0);
     float v = unitFromTexture(uv.y, skyViewSize.y), dip = horizonDip(altitude), elevation;
     if (v >= 0.5)
-        elevation = -dip + pow(2.0 * v - 1.0, 2.0) * (0.5 * atmospherePi + dip);
+        elevation = -dip + pow(2.0 * v - 1.0, 2.0) * (0.5 * PI + dip);
     else
-        elevation = -dip - pow(1.0 - 2.0 * v, 2.0) * (0.5 * atmospherePi - dip);
+        elevation = -dip - pow(1.0 - 2.0 * v, 2.0) * (0.5 * PI - dip);
     // In a frame whose horizontal axis x points toward the sun's azimuth.
     float sunMu = environment.sunDirection.y;
     vec3 sun = vec3(sqrt(max(1.0 - sunMu * sunMu, 0.0)), sunMu, 0.0);
@@ -41,8 +42,8 @@ void main() {
     vec3 throughput = vec3(1.0), light = vec3(0.0);
     for (int i = 0; i < steps; ++i) {
         // Steps that grow with the square of their index, finer near the eye.
-        float near = span * pow(float(i) / float(steps), 2.0), far = span * pow(float(i + 1) / float(steps), 2.0);
-        float t = 0.5 * (near + far), dt = far - near;
+        float t, dt;
+        squaredStep(i, steps, span, t, dt);
         float height = altitudeAlong(altitude, mu, t);
         vec3 extinction = extinctionAt(height);
         vec3 rayleigh = rayleighScatteringAt(height), mie = mieScatteringAt(height);
@@ -51,15 +52,15 @@ void main() {
                           transmittanceToTop(transmittanceTable, height, sunMuThere) +
                       (rayleigh + mie) * multipleScattering(multipleScatteringTable, height, sunMuThere);
         vec3 step = exp(-extinction * dt);
-        vec3 weight = mix((1.0 - step) / max(extinction, vec3(1e-20)), vec3(dt), lessThan(extinction, vec3(1e-20)));
+        vec3 weight = stepIntegral(extinction, step, dt);
         light += throughput * source * weight;
         throughput *= step;
     }
     if (ground) {
         float sunMuGround = zenithCosineAlong(altitude, mu, span, sunMu, along);
-        light += throughput * environment.atmosphereGround.rgb / atmospherePi *
+        light += throughput * environment.atmosphereGround.rgb / PI *
                  transmittanceToTop(transmittanceTable, 0.0, sunMuGround) * max(sunMuGround, 0.0);
     }
     // Kept within half precision, whose overflow to infinity would turn filtering's zero weights into NaN.
-    imageStore(skyViewTable, texel, vec4(min(light, vec3(65504.0)), 1.0));
+    imageStore(skyViewTable, texel, vec4(min(light, vec3(animaMaximumHalfFloat)), 1.0));
 }
