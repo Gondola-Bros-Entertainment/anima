@@ -199,7 +199,8 @@ void update_environment() {
         return float(std::min(texels * bias + plus, double(std::numeric_limits<float>::max())));
     };
     // resolve.frag compares the tone mapping, sent as its enumerator's value, with these values.
-    static_assert(static_cast<int>(ToneMapping::none) == 0 && static_cast<int>(ToneMapping::reinhard) == 1);
+    static_assert(static_cast<int>(ToneMapping::none) == 0 && static_cast<int>(ToneMapping::reinhard) == 1 &&
+                  static_cast<int>(ToneMapping::agx) == 2 && static_cast<int>(ToneMapping::pbr_neutral) == 3);
     const auto &region = e.detail_shadow;
     const double region_texels = 2.0 * region.extent / region.resolution / region.depth;
     EnvironmentUniform data{vec(normalized(e.sun.direction)),

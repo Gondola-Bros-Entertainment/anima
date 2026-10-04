@@ -186,7 +186,7 @@ TEST_CASE("Each invalid environment setting is rejected with a message that name
         {[](Environment &e) { e.fog.falloff = -1; }, "Fog falloff must be finite and nonnegative"},
         {[](Environment &e) { e.exposure = 0; }, "Environment exposure must be finite and positive"},
         {[](Environment &e) { e.exposure = infinite; }, "Environment exposure must be finite and positive"},
-        {[](Environment &e) { e.tone_mapping = static_cast<ToneMapping>(2); }, "Unknown tone mapping"},
+        {[](Environment &e) { e.tone_mapping = static_cast<ToneMapping>(4); }, "Unknown tone mapping"},
         {[](Environment &e) { e.shadow_cascades.count = 0; }, count},
         {[](Environment &e) { e.shadow_cascades.count = ShadowCascades::max_count + 1; }, count},
         {[](Environment &e) { e.shadow_cascades.distance = 0; }, distance},
@@ -239,6 +239,10 @@ TEST_CASE("Each invalid environment setting is rejected with a message that name
     edge.detail_shadow.resolution = 1;
     CHECK_NOTHROW(validate_environment(edge));
     CHECK(fit_shadow_cascades(edge, wide_view()).size() == ShadowCascades::max_count);
+    for (const auto mapping : {ToneMapping::none, ToneMapping::agx, ToneMapping::pbr_neutral}) {
+        edge.tone_mapping = mapping;
+        CHECK_NOTHROW(validate_environment(edge));
+    }
 }
 
 TEST_CASE("Each invalid height fog setting is rejected with a message that names it") {

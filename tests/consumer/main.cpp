@@ -63,6 +63,7 @@
 #include "replacement.hpp"
 #include "resources.hpp"
 #include "texture_memory.hpp"
+#include "tone_mapping.hpp"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <algorithm>
@@ -356,10 +357,13 @@ int main(int argc, char **argv) {
         cascades_test::reject_unknown_shadow_filter();
         impostor_test::reject_invalid_impostor_frames();
         fog_test::reject_unknown_scene_color_format();
+        tone_mapping_test::check_reference();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--fog")
             return fog_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--tone-mapping")
+            return tone_mapping_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--atmosphere")
             return atmosphere_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--foliage")
