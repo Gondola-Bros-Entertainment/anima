@@ -438,6 +438,14 @@ inline int run(int argc, char **argv) {
     rejects<std::logic_error>([&] { renderer.wait_for_frame(); }, shut_down);
     rejects<std::logic_error>([&] { renderer.request_capture(output / "after-shutdown.ppm"); }, shut_down);
     rejects<std::logic_error>([&] { renderer.request_capture(); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_lod_threshold(1); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_frustum_culling(false); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_view(anima::identity()); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_time(0); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_environment({}); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_present_mode(anima::PresentMode::fifo); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.set_render_scale(1); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.prepare_meshes({}); }, shut_down);
     require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");
     const unsigned imported = asset.empty() ? 0 : 1;
     constexpr unsigned expected_rollbacks = 7, expected_mutation_rejections = 3, expected_generations = 32,

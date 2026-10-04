@@ -55,8 +55,9 @@ enum class PresentMode {
 /// Construction options for VulkanRenderer.
 struct RendererOptions {
     /// Enables `VK_LAYER_KHRONOS_validation` through `VK_EXT_debug_utils`; construction throws
-    /// `std::runtime_error` when either is missing. Warnings and errors are printed to standard error and
-    /// counted in RenderStats.
+    /// `std::runtime_error` ("RendererOptions::validation requires VK_LAYER_KHRONOS_validation and
+    /// VK_EXT_debug_utils") when either is missing. Warnings and errors are printed to standard error and counted in
+    /// RenderStats.
     bool validation = false;
     /// Initial capture path, handled as VulkanRenderer::request_capture(std::filesystem::path) does; empty
     /// requests none.
@@ -578,9 +579,9 @@ struct ResourceStats {
 /// and `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard
 /// output.
 ///
-/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(), set_present_mode(),
-/// set_render_scale(), set_environment(), set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame()
-/// and draw() throw `std::logic_error`; after a RendererFatalError they throw RendererFatalError.
+/// After shutdown(), every public non-const member except request_resize(), take_capture() and shutdown() throws
+/// `std::logic_error` ("Renderer is shut down"); after a RendererFatalError they throw RendererFatalError. Without
+/// asset support, set_scenes(), prepare_meshes() and prepare_mesh() throw their `std::logic_error` in either state.
 class VulkanRenderer {
   public:
     /// Smallest render scale that set_render_scale() and RendererOptions::render_scale accept.

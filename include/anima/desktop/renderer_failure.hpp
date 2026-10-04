@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -40,6 +41,8 @@ enum class RendererFailureStage {
 inline constexpr auto renderer_failure_names = std::to_array<std::string_view>(
     {"", "instance", "surface", "device", "resources", "swapchain", "vertex", "index", "texture", "texture-upload",
      "descriptors", "palette", "ready", "upload-timeout", "device-lost", "scene-targets"});
+static_assert(renderer_failure_names.size() == static_cast<std::size_t>(RendererFailureStage::scene_targets) + 1,
+              "Spell every RendererFailureStage");
 /// Spelling of @p stage. Throws `std::out_of_range` for a value outside the enumeration.
 constexpr std::string_view renderer_failure_name(RendererFailureStage stage) {
     return renderer_failure_names.at(static_cast<std::size_t>(stage));
@@ -63,10 +66,10 @@ class InjectedRendererFailure : public std::runtime_error {
                              std::string(renderer_failure_name(stage))),
           stage_(stage), initial_(initial) {}
     /// The stage that fired.
-    RendererFailureStage stage() const noexcept { return stage_; }
+    [[nodiscard]] RendererFailureStage stage() const noexcept { return stage_; }
     /// True when the failure was requested through RendererOptions::fail_after, false when through
     /// SceneReplacementOptions or ResourcePreparationOptions.
-    bool initialization() const noexcept { return initial_; }
+    [[nodiscard]] bool initialization() const noexcept { return initial_; }
 
   private:
     RendererFailureStage stage_;
