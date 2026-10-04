@@ -17,7 +17,8 @@ struct ActorPresentation {
     std::string id;
     /// The profile's manifest.
     anima::Manifest manifest;
-    /// Model, motion and sockets, ready for InteractionRuntime.
+    /// Motion, which holds the model (MotionRuntime::model()), and sockets, ready for
+    /// InteractionRuntime.
     InteractionActor actor;
     /// Mesh compiled from the model.
     std::shared_ptr<const anima::Mesh> render;

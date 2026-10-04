@@ -273,11 +273,11 @@ inline void run() {
     for (unsigned limbs : {2U, 4U}) {
         const auto fixture = actor_fixture(workspace.directory / std::to_string(limbs), limbs);
         ActorPresentation actor(fixture.directory / "actor.profile.json");
-        check(actor.manifest.joint_count == 1 + 3 * limbs && actor.actor.asset->animations.empty(),
+        check(actor.manifest.joint_count == 1 + 3 * limbs && actor.actor.motion->model()->animations.empty(),
               "Independent anatomy/body binding failed");
         auto motion = actor.actor.motion;
         const auto baseline = motion->sample("drift", .5);
-        const auto rest = actor.actor.asset->nodes[matrix_node].rest.translation;
+        const auto rest = actor.actor.motion->model()->nodes[matrix_node].rest.translation;
         const auto transferred = baseline.local[matrix_node].translation;
         check(std::abs(transferred.x - rest.x) < 1e-5F && std::abs(transferred.y - rest.y) < 1e-5F &&
                   std::abs(transferred.z - rest.z) < 1e-5F,
@@ -290,7 +290,7 @@ inline void run() {
         };
         const auto fits = std::string(R"({"version":2,"items":[)") + fit_item("shell", "actor.glb") + "," +
                           fit_item("shell.alt", "actor.glb") + "," + fit_item("shell.broken", "missing.glb") + "]}";
-        FittedLibrary fitted(actor.actor.asset, actor.manifest, "consumer.profile", fits);
+        FittedLibrary fitted(actor.actor.motion->model(), actor.manifest, "consumer.profile", fits);
         auto shell = fitted.load("shell");
         check(shell == fitted.load("shell") && shell == fitted.load("shell.alt") &&
                   fitted.resident_assets().size() == 1,
@@ -300,18 +300,18 @@ inline void run() {
             check(fit_pose.world.at(fit) == baseline.world.at(owner), "Fitted mesh lost its owner pose");
         auto animated_fit = std::make_shared<Asset>(*shell->source);
         animated_fit->animations.emplace_back();
-        rejects<std::invalid_argument>([&] { FittedAsset invalid(*actor.actor.asset, animated_fit); },
+        rejects<std::invalid_argument>([&] { FittedAsset invalid(*actor.actor.motion->model(), animated_fit); },
                                        "Fitted models follow the body pose and cannot own motion");
         auto wrong_fit = std::make_shared<Asset>(*shell->source);
         wrong_fit->skins.front().inverse_bind.front()[12] += .1F;
         // The skin's first joint is the root, whose inverse bind has no translation, so the error is exactly .1.
-        rejects<std::runtime_error>([&] { FittedAsset invalid(*actor.actor.asset, wrong_fit); },
+        rejects<std::runtime_error>([&] { FittedAsset invalid(*actor.actor.motion->model(), wrong_fit); },
                                     "Fitted inverse-bind mismatch at " + fixture.names.front() +
                                         " (max error 0.100000); export the fitted model for this body");
         auto wrong_manifest = actor.manifest;
         wrong_manifest.bind_signature = std::string(64, 'b');
         rejects<std::invalid_argument>(
-            [&] { FittedLibrary invalid(actor.actor.asset, wrong_manifest, "consumer.profile", fits); },
+            [&] { FittedLibrary invalid(actor.actor.motion->model(), wrong_manifest, "consumer.profile", fits); },
             "Fitted model belongs to a different body bind");
         {
             // An application-defined frame driver and native late follower compose
@@ -408,12 +408,12 @@ inline void run() {
             check(reused.valid() && !last_fit.valid() && second_object.valid(),
                   "Fitted cleanup destroyed a reused owner slot or another set");
 
-            auto wrong_body = std::make_shared<Asset>(*actor.actor.asset);
+            auto wrong_body = std::make_shared<Asset>(*actor.actor.motion->model());
             wrong_body->nodes.front().name += ".other";
             auto foreign = scene.create("Incompatible owner", Mesh::compile(*wrong_body));
             rejects<std::invalid_argument>([&] { FittedSet invalid(foreign, fitted); },
                                            "Fitted library does not match the body mesh");
-            second.renderer().set_mesh(Mesh::compile(*actor.actor.asset));
+            second.renderer().set_mesh(Mesh::compile(*actor.actor.motion->model()));
             rejects<std::invalid_argument>([&] { independent.sync(); }, "Fitted set requires its original body mesh");
             rejects<std::out_of_range>([&] { FittedSet invalid(GameObject{}, fitted); }, "Expired GameObject handle");
         }
@@ -440,8 +440,9 @@ inline void run() {
             "Motion layers have overlapping joint ownership");
         auto wrong = actor.manifest;
         wrong.bind_signature = std::string(64, 'b');
-        rejects<std::invalid_argument>([&] { MotionRuntime invalid(actor.actor.asset, wrong, fixture.contract); },
-                                       "Motion rig/skin contract mismatch");
+        rejects<std::invalid_argument>(
+            [&] { MotionRuntime invalid(actor.actor.motion->model(), wrong, fixture.contract); },
+            "Motion rig/skin contract mismatch");
         rejects<std::invalid_argument>([&] { MotionRuntime invalid({}, actor.manifest, fixture.contract); },
                                        "Motion runtime requires an asset");
         // Unknown fields are rejected at every level, as in the other presentation documents.
@@ -454,11 +455,11 @@ inline void run() {
             const auto at = contract.find(from);
             check(at != std::string::npos, "Motion contract fixture changed");
             contract.replace(at, from.size(), to);
-            rejects<std::invalid_argument>([&] { MotionRuntime invalid(actor.actor.asset, actor.manifest, contract); },
-                                           message);
+            rejects<std::invalid_argument>(
+                [&] { MotionRuntime invalid(actor.actor.motion->model(), actor.manifest, contract); }, message);
         }
         AttachmentLibrary library(decode_attachment_catalog(fixture.catalog, fixture.directory));
-        const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.asset);
+        const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.motion->model());
         auto attachments = AttachmentSet::prepare(library, sockets, {{"probe", "probe"}, {"beacon", "beacon"}});
         validate_attachment_ownership(*motion, library, attachments, sockets);
         Scene scene;

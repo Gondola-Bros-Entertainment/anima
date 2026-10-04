@@ -14,11 +14,9 @@
 namespace anima {
 /// One participant's resources.
 struct InteractionActor {
-    /// Model asset; not null.
-    std::shared_ptr<const anima::Asset> asset;
-    /// Motion bound to #asset; not null.
+    /// Motion bound to the participant's model, MotionRuntime::model(); not null.
     std::shared_ptr<const MotionRuntime> motion;
-    /// Named sockets that documents refer to.
+    /// Named sockets on nodes of the motion's model that documents refer to.
     std::map<std::string, anima::InteractionSocket, std::less<>> sockets;
 };
 /// Result of InteractionRuntime::sample.
@@ -60,7 +58,10 @@ class InteractionRuntime {
     /// `orientation` (default false; true also matches the socket's rotation). Every `weights`
     /// maps each phase id to a curve as in ActionRuntime::weight.
     ///
-    /// There are 1 to 64 actors. A contact needs an attachment from its child to its parent, a
+    /// There are 1 to 64 actors, each with a motion ("Interaction role has no motion" otherwise),
+    /// and a role's model is its motion's MotionRuntime::model(). Every socket that the document
+    /// names, as an attachment socket or a contact target, passes validate_interaction_socket
+    /// against its actor's model. A contact needs an attachment from its child to its parent, a
     /// chain used once per child, and a chain that does not move the child's attachment socket.
     InteractionRuntime(Actors actors, std::string_view document);
     const ActionTimeline &timeline() const;
