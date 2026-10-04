@@ -12,6 +12,8 @@ namespace anima {
 struct ClipEvent {
     /// Seconds from the clip start, in [0, Animation::duration].
     double time{};
+    /// Application-defined label that advance() reports back; Playback accepts any text, and read_manifest requires
+    /// it nonempty.
     std::string name;
 };
 /// Playback policy for one clip.
@@ -50,6 +52,8 @@ class Playback {
     void restart();
     /// Pauses when playing, otherwise resumes.
     void toggle();
+    /// Stops advance() from moving the time, which stays where it is, until resume(), restart(), toggle() or a select()
+    /// that plays.
     void pause() noexcept { playing_ = false; }
     /// Plays again, restarting a finished clip. Does nothing before select().
     void resume();
@@ -70,6 +74,7 @@ class Playback {
     [[nodiscard]] std::vector<ClipEvent> advance(double elapsed);
     /// Clip time in seconds; 0 before select().
     [[nodiscard]] double time() const noexcept;
+    /// Whether advance() moves the time: false before select(), while paused and once a non-looping clip finishes.
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     /// Whether a non-looping clip reached its end.
     [[nodiscard]] bool finished() const noexcept { return finished_; }
@@ -108,6 +113,8 @@ class Animator {
     /// Publishes the rest pose and pauses; update() then does nothing until a clip is selected,
     /// resumed, restarted or sought.
     void bind_pose();
+    /// Pauses the clip and keeps the published pose; update() then returns nothing and publishes nothing until
+    /// resume(), restart(), play() or a select() that plays.
     void pause();
     /// Resumes playback, restarting a finished clip, and publishes the pose.
     void resume();
@@ -137,6 +144,8 @@ class Animator {
     /// Read them in on_late_update or after Scene::update returns: during on_update this animator
     /// may not have run yet, since Scene::update leaves the order within a phase unspecified.
     [[nodiscard]] std::span<const ClipEvent> events() const noexcept { return events_; }
+    /// The clip clock: the selected clip, its time and whether it plays. The reference lives as long as the Animator
+    /// and follows every later control and update().
     [[nodiscard]] const Playback &playback() const noexcept { return playback_; }
     /// The last successfully published pose.
     [[nodiscard]] const Pose &pose() const noexcept { return pose_; }

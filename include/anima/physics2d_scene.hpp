@@ -28,6 +28,8 @@ class RigidBody {
     /// `std::invalid_argument` for a dynamic child object, a transform that is not planar and rigid
     /// or has an out-of-range XY position, or invalid settings (see World::create).
     RigidBody(ComponentOwner owner, World &world, BodySettings settings = {});
+    /// Removes the body, as Body::remove does, which ends its contacts; nothing remains to remove once its world is
+    /// destroyed.
     ~RigidBody();
     RigidBody(const RigidBody &) = delete;
     RigidBody &operator=(const RigidBody &) = delete;

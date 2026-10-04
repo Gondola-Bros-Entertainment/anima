@@ -30,6 +30,7 @@ class UiPanel {
     /// The owned document. Showing or hiding it directly lasts until the next
     /// synchronize_ui_panels.
     [[nodiscard]] UiDocument &document() { return document_; }
+    /// The owned document, as the other overload gives it.
     [[nodiscard]] const UiDocument &document() const { return document_; }
     /// Application-defined key that the codec stores in place of the document path.
     [[nodiscard]] const std::string &asset_key() const { return asset_key_; }

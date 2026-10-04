@@ -4,6 +4,10 @@
 #include <cstddef>
 #include <optional>
 
+/// @file
+/// Rotations as quaternions, and the translation, rotation and scale of a Transform. Part of the `anima::core`
+/// target.
+
 namespace anima {
 /// Rotation quaternion in XYZW order, the glTF convention: #x, #y and #z are the vector part and #w the scalar part.
 ///
@@ -11,7 +15,14 @@ namespace anima {
 /// zeros, which is not a rotation and which unit_quaternion() rejects; identity_rotation is the rotation that changes
 /// nothing.
 struct Quat {
-    float x{}, y{}, z{}, w{};
+    /// X of the vector part; a rotation by angle `a` about the unit axis `n` has the vector part `n * sin(a / 2)`.
+    float x{};
+    /// Y of the vector part.
+    float y{};
+    /// Z of the vector part.
+    float z{};
+    /// Scalar part; a rotation by angle `a` has `cos(a / 2)`.
+    float w{};
     /// Component @p i in XYZW order: 0 is #x, 1 #y, 2 #z and 3 #w; an index above 3 also gives #w.
     constexpr float &operator[](std::size_t i) noexcept {
         switch (i) {
@@ -87,8 +98,12 @@ inline constexpr Quat identity_rotation{0, 0, 0, 1};
 [[nodiscard]] Quat look_rotation(Vec3 forward, Vec3 up = world_up);
 /// Translation, rotation and scale of an object relative to its parent.
 struct Transform {
+    /// Offset of the object's origin in its parent's space, applied after #rotation and #scale.
     Vec3 translation{};
+    /// Rotation applied after #scale. matrix() normalizes it as unit_quaternion() does, so it need not have unit
+    /// length, but it throws MathError for one that cannot be normalized, such as `Quat{}`.
     Quat rotation = identity_rotation;
+    /// Factor along each of the object's local axes, applied first; a negative factor mirrors that axis.
     Vec3 scale{1, 1, 1};
     /// Compares the components with `float` `==`, so `-0` equals `0` and a NaN component equals nothing; a
     /// quaternion and its negation, the same rotation, differ.

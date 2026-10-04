@@ -32,6 +32,7 @@ class StagingSteps;
 /// state and never reports a stop.
 class StopToken {
   public:
+    /// Token without a state, which never reports a stop.
     StopToken() noexcept = default;
     /// Whether a stop was requested of the source this token came from. A true result synchronizes with
     /// that request (acquire and release).
@@ -73,6 +74,7 @@ class StopSource {
 /// MeshResolver calls, and the steps it already added to a StagingProgress.
 class StagingCancelled : public std::exception {
   public:
+    /// `"Staging was cancelled"`, a string with static storage duration.
     [[nodiscard]] const char *what() const noexcept override;
 };
 
@@ -88,6 +90,7 @@ class StagingCancelled : public std::exception {
 /// call and must outlive it.
 class StagingProgress {
   public:
+    /// Counters at zero.
     StagingProgress() = default;
     StagingProgress(const StagingProgress &) = delete;
     StagingProgress &operator=(const StagingProgress &) = delete;

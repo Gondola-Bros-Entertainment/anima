@@ -67,6 +67,7 @@ struct VisibilityRange {
     float begin_margin = 0;
     /// Width over which it dissolves out before #end; 0 makes it vanish at once, and an endless range has none.
     float end_margin = 0;
+    /// Compares every field with `float` `==`, so `-0` equals `0` and a NaN equals nothing.
     bool operator==(const VisibilityRange &) const = default;
 };
 /// Throws `std::invalid_argument` unless VisibilityRange::begin and the margins of @p range are finite and
@@ -81,7 +82,9 @@ void validate_visibility_range(const VisibilityRange &range);
 /// increasing order and never reuses one, even after deletion or a failed creation. Scene documents
 /// store keys; runtime Scene::Id values are never persisted.
 struct ObjectKey {
+    /// The key's number; 0 is null.
     std::uint64_t value{};
+    /// Orders keys by #value, which within one scene is the order in which they were allocated.
     auto operator<=>(const ObjectKey &) const = default;
     /// Canonical decimal text, `"0"` for null.
     [[nodiscard]] std::string string() const;
@@ -137,9 +140,17 @@ class Scene {
     /// that slot's generation. Removing the object invalidates the Id for good, even when the slot
     /// is reused. A default Id is never valid.
     struct Id {
-        std::uint64_t owner{}, generation{};
+        /// Number of the scene that created the object, unique within the process and never 0, so the default 0
+        /// matches no scene.
+        std::uint64_t owner{};
+        /// Number of times #slot was released before this object took it, which tells a stale Id from a current one.
+        std::uint64_t generation{};
+        /// Index of the object's storage slot within its scene.
         std::size_t slot{};
+        /// Whether #owner, #generation and #slot are all equal: both name the same object, live or not, or both are
+        /// default.
         bool operator==(const Id &) const = default;
+        /// Orders by #owner, then #generation, then #slot, for sorted containers.
         auto operator<=>(const Id &) const = default;
     };
     /// Render state of one object's MeshRenderer. A renderer draws a primitive only when #visible,
@@ -180,6 +191,8 @@ class Scene {
         /// Distances at which the object, or each of its copies, draws; see MeshRenderer::set_visibility_range().
         VisibilityRange visibility_range;
     };
+    /// Empty scene, whose owner number (Id::owner) no other scene of the process shares and whose first ObjectKey is
+    /// 1.
     Scene();
     /// Invalidates every handle to the scene, then sends `on_disable()` to each component that
     /// received `on_enable()` and destroys the components. Objects cannot be created meanwhile.
@@ -425,7 +438,14 @@ class GameObject {
     /// The reference is borrowed: do not keep it past the scene's destruction or, for a member of a
     /// SceneSet, past SceneSet::replace or SceneSet::unload of that member, as SceneRef::get states.
     [[nodiscard]] Scene &scene() const;
+    /// The name given at creation or by set_name(), which may be empty and need not be unique.
+    ///
+    /// Throws `std::out_of_range` with "Expired GameObject handle" for an invalid or stale handle.
     [[nodiscard]] std::string name() const;
+    /// Renames the object to @p name, which may be any text, including empty, and need not be unique; its key and
+    /// every handle stay the same.
+    ///
+    /// Throws `std::out_of_range` with "Expired GameObject handle" for an invalid or stale handle.
     void set_name(std::string name);
     /// Authored activation flag, independent of ancestors.
     [[nodiscard]] bool active_self() const;
@@ -738,6 +758,7 @@ class ObjectTransform {
 namespace std {
 /// Hash of a Scene::Id that combines its owner number, generation and slot, so equal Ids hash equal.
 template <> struct hash<anima::Scene::Id> {
+    /// Combines the hashes of @p id's owner number, generation and slot.
     std::size_t operator()(const anima::Scene::Id &id) const noexcept {
         auto seed = std::hash<std::uint64_t>{}(id.owner);
         const auto combine = [&seed](std::size_t value) {
@@ -750,6 +771,7 @@ template <> struct hash<anima::Scene::Id> {
 };
 /// Hash of a GameObject: the hash of its GameObject::id(), consistent with its `operator==`.
 template <> struct hash<anima::GameObject> {
+    /// The hash of `object.id()`, available even when the handle is invalid.
     std::size_t operator()(const anima::GameObject &object) const noexcept {
         return std::hash<anima::Scene::Id>{}(object.id());
     }

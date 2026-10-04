@@ -89,6 +89,7 @@ constexpr std::string_view math_error_name(MathErrorCode code) noexcept {
 /// `std::invalid_argument` that carries a MathErrorCode; `what()` returns math_error_message().
 class MathError : public std::invalid_argument {
   public:
+    /// Error for @p code, whose `what()` is `math_error_message(code)`.
     explicit MathError(MathErrorCode code) : std::invalid_argument(math_error_message(code)), code_(code) {}
     /// Reason for the failure.
     MathErrorCode code() const noexcept { return code_; }

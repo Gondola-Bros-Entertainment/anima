@@ -22,6 +22,8 @@ namespace anima::detail {
 struct InputStaging;
 } // namespace anima::detail
 
+/// Device-independent input actions, their scene integration and the SDL event converter; see input.hpp,
+/// input_scene.hpp and input_sdl.hpp.
 namespace anima::input {
 /// Device selector matching every device of a control's class; valid in bindings, never in events.
 inline constexpr std::uint32_t any_device = UINT32_MAX;
@@ -48,6 +50,7 @@ enum class ControlKind {
 };
 /// One physical control, or in a binding, a selector for one.
 struct Control {
+    /// Device class and kind of control, which set the range of #code.
     ControlKind kind = ControlKind::key;
     /// Code within the ControlKind range.
     std::uint16_t code{};
@@ -58,6 +61,7 @@ struct Control {
     /// In an event, the identity of the source device, or none when the converter reports none. In a
     /// binding, the identity the selected device must report, or none to accept any device.
     DeviceIdentity identity{};
+    /// Compares #kind, then #code, #device and #identity, so equal controls have equal fields.
     auto operator<=>(const Control &) const = default;
 };
 /// Action channel a binding drives.
@@ -101,6 +105,7 @@ enum class Channel {
 /// arrives: with the wheel bound alone and with Ctrl, an increment that arrives while Ctrl is held
 /// counts only toward Ctrl + wheel.
 struct Binding {
+    /// The control that the binding reads, on the devices that its Control::device and Control::identity select.
     Control control;
     /// Channel::y requires ActionType::vector2.
     Channel channel = Channel::x;
@@ -139,6 +144,7 @@ enum class ActionType {
 struct Action {
     /// Unique within the map: 1 to 128 printable ASCII characters, without spaces.
     std::string name;
+    /// How the action combines its bindings, which also sets the channels they may drive.
     ActionType type = ActionType::button;
     /// Up to 32 bindings; an empty list leaves the action inactive. Those of an axis or vector2
     /// action are all held or all delta bindings.
@@ -162,6 +168,7 @@ struct Value {
 /// in: the next begin_frame() makes it inactive and latches #released in the new frame, so a
 /// wheel-driven button presses in one frame and releases in the next.
 struct State {
+    /// The action's combined value, as its ActionType combines the bindings.
     Value value;
     /// Whether the combined value reaches Action::threshold.
     bool active{};
@@ -180,6 +187,7 @@ enum class EventType {
 };
 /// One input event, applied by Context::process.
 struct Event {
+    /// What the event reports, which sets how #source and #value are read.
     EventType type = EventType::control;
     /// The control that changed, with its device's identity when the converter knows one, or for a
     /// disconnect the device class (from the kind) and device, ignoring the code and identity. Needs
@@ -210,10 +218,14 @@ class Context {
     /// Creates an enabled, focused context with every action inactive. Throws
     /// `std::invalid_argument` when validate(const Map &) rejects @p map.
     explicit Context(Map map = {});
-    Context(const Context &) = default;
+    /// Copies the bindings, recorded controls, sums, states and flags of @p other.
+    Context(const Context &other) = default;
+    /// Replaces this context with a copy of @p other; a failed allocation leaves it unchanged.
     Context &operator=(const Context &other);
-    Context(Context &&) noexcept = default;
-    Context &operator=(Context &&) noexcept = default;
+    /// Takes the bindings and state of @p other, which may then only be destroyed or assigned to.
+    Context(Context &&other) noexcept = default;
+    /// Takes the bindings and state of @p other, which may then only be destroyed or assigned to.
+    Context &operator=(Context &&other) noexcept = default;
     /// The actions and their current bindings.
     [[nodiscard]] std::span<const Action> actions() const { return map_; }
     /// A copy of @p action's state. Throws `std::out_of_range` for an unknown name.
@@ -243,7 +255,9 @@ class Context {
     /// it restores nothing. Contexts start focused, so set the owning window's focus before feeding
     /// input.
     void set_focused(bool focused);
+    /// Whether set_enabled() last enabled the context; true for a new context.
     [[nodiscard]] bool enabled() const { return enabled_; }
+    /// Whether set_focused() or a focus event last gave the context focus; true for a new context.
     [[nodiscard]] bool focused() const { return focused_; }
     /// Forgets every recorded control and every delta binding's sum, zeroes every value and clears
     /// State::pressed; each active action becomes inactive and latches State::released and

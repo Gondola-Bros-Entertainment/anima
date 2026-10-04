@@ -17,8 +17,11 @@ class PrefabVariant {
     struct Override {
         /// Nonzero authored key of the base object, never the key of an instantiated object.
         ObjectKey key;
+        /// Replaces the base object's name (Prefab::Node::name); any text, including empty.
         std::optional<std::string> name;
+        /// Replaces the base object's matrix relative to its parent (Prefab::Node::local); finite and affine.
         std::optional<Mat4> local;
+        /// Replaces the base object's authored activation (Prefab::Node::active).
         std::optional<bool> active;
         /// Absent inherits the whole base renderer, including later changes to the base; present
         /// replaces every renderer field together, and a null RendererState::mesh removes the renderer.
@@ -39,6 +42,7 @@ class PrefabVariant {
     PrefabVariant(std::string base_key, std::vector<Override> overrides);
     /// Resource key of the base prefab.
     [[nodiscard]] std::string_view base_key() const { return base_key_; }
+    /// The overrides as given to the constructor, in order.
     [[nodiscard]] std::span<const Override> overrides() const { return overrides_; }
     /// Resolves the base once through @p resolver, applies the overrides to a copy of its nodes and
     /// returns a Prefab that keeps @p codecs; the base's own codecs are not inherited.

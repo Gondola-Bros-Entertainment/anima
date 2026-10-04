@@ -222,6 +222,7 @@ struct Texture {
     /// Textures that share an image may sample and encode it differently. Validation rejects a null
     /// image as it rejects a zero dimension.
     std::shared_ptr<const Image> image;
+    /// Filtering, wrapping and mip use when the image is sampled.
     Sampler sampler;
     /// The importer sets TextureEncoding::srgb for base-color and emissive maps and
     /// TextureEncoding::linear for the others.
@@ -280,6 +281,7 @@ struct TextureMipOptions {
     /// blends them with at every level; transparent texels that hold black stay black. Alpha is averaged as stored,
     /// and the base level is kept. #alpha_coverage_cutoff weights color this way too.
     bool alpha_weighted_color = false;
+    /// Compares both fields, the cutoffs with `float` `==`.
     bool operator==(const TextureMipOptions &) const = default;
 };
 /// texture_mips(const Texture &) with @p options. Throws `std::invalid_argument` also for a cutoff
@@ -300,6 +302,8 @@ enum class AlphaMode {
 };
 /// Metallic-roughness material with glTF semantics. validate_material states the accepted values.
 struct Material {
+    /// Name that reports such as SnapshotPrimitive::material_name show, any text: the importer gives the file's name,
+    /// `(unnamed)` when the file has none, and `glTF default` to the material it adds for primitives without one.
     std::string name;
     /// Linear base-color RGB factor, each channel in [0, 1].
     Vec3 factor{1, 1, 1};
@@ -330,6 +334,7 @@ struct Material {
     /// Alpha-test threshold for AlphaMode::mask, which the other modes ignore; finite and at least 0 in every
     /// mode.
     float alpha_cutoff = .5F;
+    /// How the material uses its alpha; a value outside AlphaMode is rejected.
     AlphaMode alpha_mode = AlphaMode::opaque;
     /// Whether a face also renders when its back is toward the viewer; when false, that side is not
     /// drawn. Shadows are cast from both sides either way. Programmatic materials render both
@@ -340,7 +345,11 @@ struct Material {
     bool unlit = false;
 };
 /// Node property that an AnimationChannel drives.
-enum class ChannelPath { translation, rotation, scale };
+enum class ChannelPath {
+    translation, ///< Transform::translation, from the first three components of each value.
+    rotation,    ///< Transform::rotation, from each value as an XYZW quaternion, which sampling normalizes.
+    scale        ///< Transform::scale, from the first three components of each value.
+};
 /// Keyframe interpolation. The importer rejects glTF `CUBICSPLINE`.
 enum class Interpolation {
     linear, ///< Linear for translation and scale; shortest-arc spherical for rotation.
@@ -350,7 +359,9 @@ enum class Interpolation {
 struct AnimationChannel {
     /// Target node index; the node must not have AssetNode::has_matrix set.
     std::size_t node{};
+    /// Property of the node that the values set.
     ChannelPath path{};
+    /// How sample_pose finds the value between two keys.
     Interpolation interpolation{};
     /// Key times in seconds, nonnegative and strictly increasing. The importer checks this;
     /// sample_pose assumes it.
@@ -360,15 +371,19 @@ struct AnimationChannel {
 };
 /// A named clip.
 struct Animation {
+    /// Clip name from the file, or `(unnamed)` when it gives none. Names need not be unique; see find_animation.
     std::string name;
     /// Latest key time over all channels, in seconds; zero for a clip whose keys all sit at time 0.
     double duration{};
+    /// The clip's channels; the importer gives at most one per node and ChannelPath and drops those without a target
+    /// node.
     std::vector<AnimationChannel> channels;
 };
 /// An imported GLB: nodes, skins, geometry, materials, textures and clips.
 struct Asset {
     /// Every node in the file, including nodes outside the selected scene.
     std::vector<AssetNode> nodes;
+    /// One per glTF skin, in file order; SourcePrimitive::skin indexes them.
     std::vector<AssetSkin> skins;
     /// Primitives reachable from the selected scene, in depth-first node order.
     std::vector<SourcePrimitive> primitives;
@@ -378,6 +393,7 @@ struct Asset {
     /// each entry has one encoding. Textures made from one glTF image, copies included, share one
     /// Image.
     std::vector<Texture> textures;
+    /// One per glTF animation, in file order.
     std::vector<Animation> animations;
     /// Number of mesh-bearing nodes in the selected scene.
     std::size_t mesh_nodes{};

@@ -21,6 +21,8 @@ struct SceneGeometryBudget {
 /// allocating.
 class SceneCapacityError : public std::length_error {
   public:
+    /// Error for @p requested bytes of geometry over a budget of @p budget bytes. `what()` is "MeshSnapshot geometry
+    /// needs R bytes; budget is B bytes", with @p requested as R and @p budget as B in decimal.
     SceneCapacityError(std::size_t requested, std::size_t budget);
     /// Bytes the geometry needs.
     const std::size_t requested_bytes;

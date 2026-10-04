@@ -17,6 +17,7 @@ enum class CameraProjection {
 /// Lens of a Camera. Every field must be finite and valid even when the projection does not use it,
 /// so switching projection keeps the authored values.
 struct CameraSettings {
+    /// Which lens field the projection uses; a value outside CameraProjection is rejected.
     CameraProjection projection = CameraProjection::perspective;
     /// Full vertical field of view, in [1, 179] degrees.
     float vertical_fov_degrees = 45;
@@ -39,6 +40,8 @@ class Camera {
   public:
     /// Throws `std::invalid_argument` for invalid @p settings.
     explicit Camera(CameraSettings settings = {});
+    /// The settings from construction or the last configure(), all valid. The reference lives as long as the camera
+    /// and reads the new settings after configure().
     [[nodiscard]] const CameraSettings &settings() const { return settings_; }
     /// Replaces the settings after validating all of them, including the unused lens field. Throws
     /// `std::invalid_argument` for invalid @p settings, keeping the previous ones.

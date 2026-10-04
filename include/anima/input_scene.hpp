@@ -22,8 +22,11 @@ class ActionInput {
   public:
     /// Throws `std::invalid_argument` when validate(const Map &) rejects @p map.
     explicit ActionInput(Map map = {}) : context_(std::move(map)) {}
-    Context &context() { return context_; }
-    const Context &context() const { return context_; }
+    /// The owned context, which lives as long as the component. begin_frame() and dispatch() set its enablement from
+    /// the component's activity.
+    [[nodiscard]] Context &context() { return context_; }
+    /// The owned context, which lives as long as the component.
+    [[nodiscard]] const Context &context() const { return context_; }
 
   private:
     Context context_;

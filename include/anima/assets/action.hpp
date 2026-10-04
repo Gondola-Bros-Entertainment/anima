@@ -57,6 +57,7 @@ struct ActionTime {
 struct TimedActionCue {
     /// Index of the cue's phase.
     std::size_t phase{};
+    /// The cue's ActionCue::id, unique within its phase.
     std::string id;
     /// Seconds from the start of the timeline.
     double time{};

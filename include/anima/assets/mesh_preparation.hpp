@@ -23,8 +23,11 @@ class MeshPreparation {
     /// mesh") or an invalid material or texture, and `std::logic_error` as Mesh::texel_images() does once the texels of
     /// a Mesh compiled with TexelRetention::until_upload are gone.
     explicit MeshPreparation(std::shared_ptr<const Mesh> mesh);
-    MeshPreparation(MeshPreparation &&) noexcept = default;
-    MeshPreparation &operator=(MeshPreparation &&) noexcept = default;
+    /// Takes the mesh, plan and images of @p other, which may then only be destroyed or assigned to.
+    MeshPreparation(MeshPreparation &&other) noexcept = default;
+    /// Takes the mesh, plan and images of @p other, which may then only be destroyed or assigned to, and releases this
+    /// preparation's own.
+    MeshPreparation &operator=(MeshPreparation &&other) noexcept = default;
     MeshPreparation(const MeshPreparation &) = delete;
     MeshPreparation &operator=(const MeshPreparation &) = delete;
     /// The Mesh the data belongs to.

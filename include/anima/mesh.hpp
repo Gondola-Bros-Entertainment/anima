@@ -105,9 +105,11 @@ struct MeshPrimitive {
     /// Index into MeshDescription::materials of Mesh::description(), which Scene material factor overrides also use,
     /// or no_index for a default Material.
     int material = no_index;
-    /// Source node index; #node_name and #mesh_name name the source node and mesh.
+    /// Source node index, which instances the primitive's mesh.
     std::uint32_t node{};
+    /// Name of the source node #node, as AssetNode::name gives it.
     std::string node_name;
+    /// Name of the source mesh that the node instances, as SourcePrimitive::mesh_name gives it.
     std::string mesh_name;
     /// Simplified levels of detail, each coarser than the one before (MeshLodOptions); empty draws only this one.
     std::vector<PrimitiveLevel> levels{};

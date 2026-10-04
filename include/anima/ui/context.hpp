@@ -209,6 +209,7 @@ class UiContext {
     /// does. The context does not latch those failures: each render() tries again, so they recur
     /// only while their cause remains, such as a document that uses the oversized texture.
     [[nodiscard]] bool render();
+    /// Counters since construction, which keep their values after shutdown().
     [[nodiscard]] UiStats stats() const;
     /// Shuts down the document host, then RmlUi: every document, checked handle and borrowed
     /// RmlUi reference becomes invalid, and the mouse capture and text input that the context

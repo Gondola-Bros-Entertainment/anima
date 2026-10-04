@@ -37,6 +37,7 @@ class PrefabComposition {
     /// first naming an earlier part and a nonzero object, and affine placements. Throws
     /// `std::invalid_argument` otherwise.
     explicit PrefabComposition(std::vector<Part> parts);
+    /// The parts as given to the constructor, in order, so the first is the root part.
     [[nodiscard]] std::span<const Part> parts() const { return parts_; }
     /// Instantiates every part into @p scene and returns the first part's root, a new scene root
     /// whose local matrix is @p placement times that part's placement and prefab root matrix. Later

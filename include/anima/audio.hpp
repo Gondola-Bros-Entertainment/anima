@@ -72,6 +72,7 @@ struct AudioAttenuation {
     float maximum_distance = 100;
     /// How the gain falls between the two distances.
     AudioRolloff rolloff = AudioRolloff::linear;
+    /// Compares every field, the distances with `float` `==`.
     bool operator==(const AudioAttenuation &) const = default;
 };
 
@@ -169,9 +170,12 @@ class AudioClip {
 /// nothing.
 class AudioBus {
   public:
+    /// Empty handle, which stands for the master output.
     AudioBus() = default;
-    AudioBus(const AudioBus &) = default;
-    AudioBus(AudioBus &&) noexcept = default;
+    /// Shares the bus of @p other, or is empty when @p other is.
+    AudioBus(const AudioBus &other) = default;
+    /// Takes the bus of @p other, which becomes empty.
+    AudioBus(AudioBus &&other) noexcept = default;
     /// Makes this handle share @p other's bus, or empty when @p other is.
     AudioBus &operator=(AudioBus other) noexcept {
         // `other` takes the previous bus and engine, and releases the bus first, in the order of the members.
@@ -179,6 +183,8 @@ class AudioBus {
         state_.swap(other.state_);
         return *this;
     }
+    /// Releases this handle's share of the bus, which lives on while other handles, voices, one-shots or child buses
+    /// retain it.
     ~AudioBus() = default;
     /// Sets the bus gain, in [0, 16], reached as #audio_smoothing_seconds describes. Throws
     /// `std::invalid_argument` with "Audio gain must be in [0, 16]" otherwise.
@@ -209,9 +215,12 @@ class AudioBus {
 /// the voice. The voice retains its clip, bus chain and engine, so it never refers to a destroyed Audio.
 class Sound {
   public:
+    /// Empty Sound, with no voice; Audio::sound() creates one that has a voice.
     Sound() = default;
-    Sound(Sound &&) noexcept = default;
-    Sound &operator=(Sound &&) noexcept = default;
+    /// Takes the voice of @p other, which becomes empty.
+    Sound(Sound &&other) noexcept = default;
+    /// Stops and releases this Sound's voice, if any, then takes the voice of @p other, which becomes empty.
+    Sound &operator=(Sound &&other) noexcept = default;
     Sound(const Sound &) = delete;
     Sound &operator=(const Sound &) = delete;
     /// Starts or resumes playback at the cursor and returns whether the voice plays. A voice at the end of its
@@ -356,8 +365,11 @@ class Audio {
     [[nodiscard]] static Audio open_device(AudioBackend backend = AudioBackend::platform, unsigned maximum_voices = 64);
     Audio(const Audio &) = delete;
     Audio &operator=(const Audio &) = delete;
-    Audio(Audio &&) noexcept = default;
-    Audio &operator=(Audio &&) noexcept = default;
+    /// Takes the engine of @p other, which is then moved-from.
+    Audio(Audio &&other) noexcept = default;
+    /// Releases this object's share of its engine, which closes once nothing else retains it, as the class comment
+    /// describes, then takes the engine of @p other, which is then moved-from.
+    Audio &operator=(Audio &&other) noexcept = default;
     /// Creates a bus under @p parent, or under the master output when @p parent is empty. The parent must belong
     /// to this engine and never changes; bus chains are at most 16 deep.
     [[nodiscard]] AudioBus bus(const AudioBus &parent = {});

@@ -21,6 +21,7 @@ struct FittedJoint {
     std::size_t fitted_node{};
     /// Body joint node of the same name, whose world matrix the fitted node copies.
     std::size_t body_node{};
+    /// Whether both node indices are equal.
     bool operator==(const FittedJoint &) const = default;
 };
 /// Pairs each joint node of @p fitted's skin with the @p body joint node of the same name, in
@@ -58,6 +59,7 @@ struct FittedAsset {
 };
 /// One catalog item that fits the library's body.
 struct FittedDefinition {
+    /// Unique, nonempty item id.
     std::string id;
     /// Relative `.glb` path, decoded from the catalog's UTF-8, without a root, colon, backslash or
     /// `..` component; resolved against the body manifest's directory.
@@ -141,6 +143,7 @@ class FittedSet {
     struct Instance {
         /// Item id.
         std::string item;
+        /// Loaded model of the item, as FittedLibrary::load returned it.
         std::shared_ptr<const FittedAsset> asset;
         /// Child object of the body that renders the item.
         GameObject object;

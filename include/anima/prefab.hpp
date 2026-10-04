@@ -102,6 +102,7 @@ class Prefab {
   public:
     /// One authored object.
     struct Node {
+        /// Name that the object receives (GameObject::name()), any text, including empty.
         std::string name;
         /// Index of an earlier node; empty only for the root, which is node 0.
         std::optional<std::size_t> parent;
@@ -215,8 +216,10 @@ class Prefab {
 /// it, so no object is ever empty.
 class StagedScene {
   public:
-    StagedScene(const StagedScene &) = default;
-    StagedScene &operator=(const StagedScene &) = default;
+    /// Shares the data of @p other, which neither object changes.
+    StagedScene(const StagedScene &other) = default;
+    /// Shares the data of @p other in place of this object's own.
+    StagedScene &operator=(const StagedScene &other) = default;
     /// Bytes of decoded data held, excluding container overhead and the meshes and custom materials, which
     /// are shared: for each object, `sizeof(Prefab::Node)`, which includes its RendererState, the bytes of its
     /// name, `sizeof(Mat4)` per pose matrix, `sizeof(Vec3)` per material factor,

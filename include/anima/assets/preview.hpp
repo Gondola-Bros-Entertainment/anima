@@ -20,8 +20,11 @@ class AssetPreview {
                           const StagingOptions &options = {});
     AssetPreview(const AssetPreview &) = delete;
     AssetPreview &operator=(const AssetPreview &) = delete;
-    AssetPreview(AssetPreview &&) noexcept = default;
-    AssetPreview &operator=(AssetPreview &&) noexcept = default;
+    /// Takes the scene, its animator and the manifest of @p other, which may then only be destroyed or assigned to.
+    AssetPreview(AssetPreview &&other) noexcept = default;
+    /// Takes the scene, its animator and the manifest of @p other, which may then only be destroyed or assigned to,
+    /// and releases this preview's own scene.
+    AssetPreview &operator=(AssetPreview &&other) noexcept = default;
     /// Selects the manifest clip named @p clip with its manifest metadata at its start, playing or
     /// paused as @p start says. Throws `std::out_of_range` for a clip the manifest does not
     /// declare.
@@ -41,11 +44,13 @@ class AssetPreview {
     [[nodiscard]] std::shared_ptr<const Scene> render_scene() const noexcept { return scene_; }
     /// The last published pose.
     [[nodiscard]] const Pose &pose() const noexcept { return animator_->pose(); }
+    /// The animator's clip clock, as Animator::playback() gives it.
     [[nodiscard]] const Playback &playback() const noexcept { return animator_->playback(); }
     /// Whether the bind pose is shown.
     [[nodiscard]] bool is_bind() const noexcept { return bind_; }
     /// One-line human-readable state: the clip and time, or the bind pose, and whether it plays.
     [[nodiscard]] std::string status() const;
+    /// The manifest read at construction.
     [[nodiscard]] const Manifest &manifest() const noexcept { return manifest_; }
 
   private:
