@@ -108,7 +108,7 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
         require(s.max_bodies > 0 && s.max_bodies <= detail::maximum_world_bodies && s.substeps >= 1 &&
                     s.substeps <= detail::maximum_substeps,
                 "Invalid 2D world capacity/substeps");
-        masks.fill(detail::all_layers);
+        masks.fill(detail::all_collision_layers);
         auto def = b2DefaultWorldDef();
         def.gravity = b(s.gravity);
         def.enableSleep = s.sleeping;
@@ -504,6 +504,11 @@ void World::set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide) {
     };
     set(state_->masks[a], b);
     set(state_->masks[b], a);
+}
+bool World::layers_collide(std::uint8_t a, std::uint8_t b) const {
+    require(a < detail::collision_layer_count && b < detail::collision_layer_count,
+            "2D physics layer must be in [0,15]");
+    return (state_->masks[a] & (1u << b)) != 0;
 }
 void World::step(double seconds) {
     duration(seconds);

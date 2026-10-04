@@ -238,7 +238,7 @@ JPH::RefConst<JPH::Shape> shape(const Collider &c, bool query = false, bool chil
 }
 struct Layers final : JPH::BroadPhaseLayerInterface, JPH::ObjectVsBroadPhaseLayerFilter, JPH::ObjectLayerPairFilter {
     std::array<std::uint16_t, detail::collision_layer_count> masks;
-    Layers() { masks.fill(detail::all_layers); }
+    Layers() { masks.fill(detail::all_collision_layers); }
     JPH::uint GetNumBroadPhaseLayers() const override { return 2; }
     JPH::BroadPhaseLayer GetBroadPhaseLayer(JPH::ObjectLayer layer) const override {
         return JPH::BroadPhaseLayer(static_cast<JPH::BroadPhaseLayer::Type>(layer / detail::collision_layer_count));
@@ -677,6 +677,10 @@ void World::set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide) {
     };
     set(state_->layers.masks[a], b);
     set(state_->layers.masks[b], a);
+}
+bool World::layers_collide(std::uint8_t a, std::uint8_t b) const {
+    require(a < detail::collision_layer_count && b < detail::collision_layer_count, "Physics layer must be in [0,15]");
+    return (state_->layers.masks[a] & (1u << b)) != 0;
 }
 void World::step(double seconds) {
     duration(seconds);

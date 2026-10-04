@@ -194,6 +194,31 @@ TEST_CASE("Collider factories build bodies of their shapes and leave other field
     CHECK(world.size() == 3u);
 }
 
+TEST_CASE("Collision layer masks build from layers and the 2D layer matrix reads back") {
+    static_assert(anima::collision_layer_count == 16u);
+    static_assert(anima::all_collision_layers == 0xffff);
+    static_assert(anima::collision_layer_mask({2, 5}) == 0x24);
+    CHECK_THROWS_WITH_AS((void)anima::collision_layer_mask({16}), "Collision layer must be in [0,15]",
+                         std::invalid_argument);
+    CHECK(QueryFilter{}.layers == anima::all_collision_layers);
+    World world;
+    CHECK(world.layers_collide(1, 2));
+    world.set_layer_collision(1, 2, false);
+    CHECK_FALSE(world.layers_collide(2, 1));
+    CHECK_FALSE(world.layers_collide(1, 2));
+    CHECK(world.layers_collide(1, 1));
+    CHECK(world.layers_collide(2, 3));
+    world.set_layer_collision(2, 1, true);
+    CHECK(world.layers_collide(1, 2));
+    world.set_layer_collision(4, 4, false);
+    [[maybe_unused]] const auto body = world.create(box({}, {1, 1}));
+    CHECK_FALSE_MESSAGE(world.layers_collide(4, 4), "The matrix is not readable once bodies exist");
+    CHECK_THROWS_WITH_AS((void)world.layers_collide(16, 0), "2D physics layer must be in [0,15]",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)world.layers_collide(0, 16), "2D physics layer must be in [0,15]",
+                         std::invalid_argument);
+}
+
 TEST_CASE("Sensors honor layers, report each transition once and kinematic bodies reach their targets") {
     World world({{0, 0}, 8});
     world.set_layer_collision(0, 1, false);

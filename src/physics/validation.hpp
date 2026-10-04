@@ -4,7 +4,7 @@
 
 namespace anima::physics::detail {
 // Shared runtime/codec budgets. These are input limits, not precision guarantees.
-using anima::detail::all_layers;
+using anima::detail::all_collision_layers;
 using anima::detail::collision_layer_count;
 using anima::detail::maximum_body_mass;
 using anima::detail::maximum_damping;
