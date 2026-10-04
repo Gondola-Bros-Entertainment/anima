@@ -138,8 +138,8 @@ struct MeshCompileOptions {
 /// VulkanRenderer caches GPU geometry and textures per Mesh object. To change geometry, textures or material constants,
 /// compile a new Mesh. Nothing changes a Mesh but assignment, which the `std::shared_ptr<const Mesh>` that compiling
 /// returns does not allow, and the hold of a Mesh compiled with TexelRetention::until_upload on its textures' texels,
-/// which is synchronized, so a Mesh may be read from several threads. Only load(), compile(), compile_static() and
-/// compile_impostor() create a Mesh, apart from copying one.
+/// which is synchronized, so a Mesh may be read from several threads. Only load(), compile(), compile_static(),
+/// compile_impostor() and Terrain::compile() create a Mesh, apart from copying one.
 class Mesh {
   public:
     /// A distinct Mesh with @p other's content, which VulkanRenderer caches and uploads separately. With
@@ -275,8 +275,16 @@ class Mesh {
   private:
     friend class Scene;
     friend class MeshPlacements;
-    // An empty Mesh, whose null materials_ Scene and texel_images() would dereference; only compile() starts from one.
+    friend class Terrain;
+    // An empty Mesh, whose null materials_ Scene and texel_images() would dereference; only compile_indexed() starts
+    // from one.
     Mesh() = default;
+    // compile(source, texel_retention, lods), except that nonempty indices hold one triangle list per source primitive,
+    // indexing that primitive's vertices, which are copied as they are instead of welded. Every vertex must be
+    // referenced, since the bounds cover them all. Terrain compiles its samples, distinct by construction, this way.
+    static std::shared_ptr<const Mesh> compile_indexed(const Asset &source,
+                                                       std::span<const std::vector<std::uint32_t>> indices,
+                                                       TexelRetention texel_retention, MeshLodOptions lods);
     struct BoundPart {
         std::uint32_t palette;
         RenderBounds bound;
