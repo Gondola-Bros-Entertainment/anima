@@ -32,14 +32,16 @@ enum class RendererFailureStage {
     ready,          ///< Preparation, after every upload and before a new selection is published.
     upload_timeout, ///< Preparation: a simulated texture upload timeout, which throws RendererFatalError.
     device_lost,    ///< Preparation: simulated device loss at texture upload retirement; throws RendererFatalError.
-    scene_targets   ///< draw(), after creating the depth target of scene targets for a render scale above 1; throws
+    scene_targets,  ///< draw(), after creating the depth target of scene targets for a render scale above 1; throws
                     ///< SceneResourceError.
+    frame_wait      ///< The wait for earlier frames in draw(), VulkanRenderer::wait_for_frame and set_scenes: a
+                    ///< simulated timeout once it finds a submitted frame; throws RendererFatalError.
 };
 /// Spellings of the RendererFailureStage values, indexed by enumerator: `none` is empty and underscores
 /// become hyphens.
 inline constexpr auto renderer_failure_names = std::to_array<std::string_view>(
     {"", "instance", "surface", "device", "resources", "swapchain", "vertex", "index", "texture", "texture-upload",
-     "descriptors", "palette", "ready", "upload-timeout", "device-lost", "scene-targets"});
+     "descriptors", "palette", "ready", "upload-timeout", "device-lost", "scene-targets", "frame-wait"});
 /// Spelling of @p stage. Throws `std::out_of_range` for a value outside the enumeration.
 constexpr std::string_view renderer_failure_name(RendererFailureStage stage) {
     return renderer_failure_names.at(static_cast<std::size_t>(stage));

@@ -2,9 +2,11 @@
 #include "gpu_checks.hpp"
 #include "resources.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -31,9 +33,13 @@ constexpr double clock_tolerance = .1;
 constexpr std::size_t released_meshes = 256;
 constexpr int steady_frames = 60, release_trials = 3;
 // Each lag trial rebuilds every atmosphere table in one frame, which the GPU fields must report frames_in_flight calls
-// later as the longest atmosphere time of the calls around it, at least this many times any other.
+// later as the longest atmosphere time of the calls around it, at least this many times any other, while each of the
+// others redraws only the sky view table.
 constexpr int lag_trials = 3;
 constexpr double least_lag_contrast = 2;
+// Heights of the sun's direction, before normalization, between which every lag trial call moves the sun, so that each
+// frame redraws at least the sky view table (FrameProfile::gpu_atmosphere_ms).
+constexpr std::array<float, 2> lag_sun_heights{.8F, .9F};
 // Most that the median fence_wait_ms of a draw() after wait_for_frame() may reach: the call then only checks the
 // window before a wait that returns at once.
 constexpr double waited_fence_limit_ms = .1;
@@ -171,11 +177,16 @@ struct Summary {
 // Rebuilds every atmosphere table in one frame and requires the call frames_in_flight calls later to report it, as the
 // longest atmosphere time of the calls around it by at least least_lag_contrast. Each trial draws as many calls as
 // it needs while each presents its frame, so that every call reads the frame of the call frames_in_flight before.
+// Every call moves the sun, so that the frames around the rebuild redraw the sky view table.
 inline std::optional<double> check_lag(anima::VulkanRenderer &renderer, Check &check, std::uint32_t frames) {
     anima::Environment environment;
     environment.atmosphere.enabled = true;
-    renderer.set_environment(environment);
-    // Calls before each rebuild, so that the earliest checked call reads a frame that only updates the sky view table,
+    std::size_t moves = 0;
+    const auto move_sun = [&] {
+        environment.sun.direction.y = lag_sun_heights[moves++ % lag_sun_heights.size()];
+        renderer.set_environment(environment);
+    };
+    // Calls before each rebuild, so that the earliest checked call reads a frame that only redraws the sky view table,
     // and not the first frame with the atmosphere, which builds every table.
     const auto before = int(frames) + 1;
     const auto after = int(frames) + 2;
@@ -184,15 +195,18 @@ inline std::optional<double> check_lag(anima::VulkanRenderer &renderer, Check &c
         constexpr int most_trials = 3 * lag_trials;
         require(trial < most_trials, "Too many lag trials had a draw() that presented nothing");
         bool timed = false;
-        for (int call = 0; call < before; ++call)
+        for (int call = 0; call < before; ++call) {
+            move_sun();
             timed = check.present().profile.gpu_available;
+        }
         if (!timed)
             return std::nullopt; // The device writes no timestamps.
+        // The next move_sun() sets the medium that rebuilds the tables.
         environment.atmosphere.rayleigh_scale_height = trial % 2 ? 8'000.F : 8'001.F;
-        renderer.set_environment(environment);
         std::vector<double> atmosphere_ms;
         bool presented = true;
         for (int call = 0; call < after && presented; ++call) {
+            move_sun();
             const auto &next = check.draw();
             presented = next.presented;
             require(!presented || next.profile.gpu_available, "A call after timed calls has no GPU fields");
@@ -211,7 +225,8 @@ inline std::optional<double> check_lag(anima::VulkanRenderer &renderer, Check &c
                     " after the rebuild reported " + std::to_string(rebuilt) +
                     " ms of atmosphere work, not the longest by a factor of " + std::to_string(least_lag_contrast) +
                     " among the calls around it:" + times);
-        contrasts.push_back(rebuilt / longest_other);
+        // A device whose timestamps are coarser than a dispatch can write equal ones around it.
+        contrasts.push_back(longest_other > 0 ? rebuilt / longest_other : std::numeric_limits<double>::infinity());
     }
     return median(contrasts);
 }
@@ -341,10 +356,18 @@ inline int run(int argc, char **) {
                << " ms or more exceeds the median " << summary.steady_prepare << " ms, a median fence_wait_ms of "
                << summary.waited_fence << " ms after wait_for_frame() and " << summary.steady_fence
                << " ms without it, ";
-        if (summary.lag_contrast)
-            report << "the call " << frames << " after an atmosphere rebuild reports it, at a median "
-                   << *summary.lag_contrast << " times any other call's atmosphere time, ";
-        else
+        // The bound on the waited calls tells a wait_for_frame() that waits from one that does not only where draw()'s
+        // own wait exceeds it.
+        if (summary.steady_fence <= waited_fence_limit_ms)
+            report << "which cannot show that wait_for_frame() waits, since draw() alone waits within the "
+                   << waited_fence_limit_ms << " ms bound, ";
+        if (summary.lag_contrast) {
+            report << "the call " << frames << " after an atmosphere rebuild reports it, ";
+            if (std::isinf(*summary.lag_contrast))
+                report << "with no atmosphere time on the other calls of most trials, ";
+            else
+                report << "at a median " << *summary.lag_contrast << " times any other call's atmosphere time, ";
+        } else
             report << "no GPU timestamps, ";
         if (!summary.idle.empty()) {
             report << "GPU idle time in " << summary.idle.size() << " frames, median " << median(summary.idle) << " ms";

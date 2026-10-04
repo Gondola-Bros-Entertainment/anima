@@ -106,7 +106,9 @@ drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic sce
 through the public API. `consumer_desktop` runs one mode per check, such as
 `--cascades` or `--fog`, each defined by its header in `tests/consumer`.
 Each check opens a window, requires Khronos validation, compares its frames in memory,
-and fails on a pixel mismatch or any validation message. The checks run one at a time:
+and fails on a pixel mismatch or any validation message. CTest also turns on
+synchronization validation, set to track the shaders' accesses through descriptors.
+The checks run one at a time:
 
 ```sh
 ctest --preset full -L gpu
@@ -117,7 +119,7 @@ directory under `gpu-checks` in the build tree; a passing check writes no image.
 Without a display or a Vulkan device, each check exits with 77, which CTest reports
 as skipped; set `ANIMA_REQUIRE_GPU=1` to make that a failure. With several Vulkan
 drivers installed, choose one with `VK_DRIVER_FILES`. `ctest -L gpu -N -V` shows
-each check's command, which also runs on its own.
+each check's command and environment, with which it also runs on its own.
 
 CI runs the label on Linux with Mesa's lavapipe, a software Vulkan driver, under a
 virtual X display. That checks rendering logic and validation on every pull request,

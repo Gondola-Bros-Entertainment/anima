@@ -65,12 +65,16 @@ if(ANIMA_BUILD_TESTS)
     # GPU checks open a window and create a Vulkan device, so CTest runs them one at a time. Each exits with 77,
     # which CTest reports as skipped, when no display or Vulkan device is available, unless ANIMA_REQUIRE_GPU is
     # set to a value other than 0. A failed comparison writes the images it compared into the check's directory
-    # under gpu-checks, and a validation message or a nonzero validation count fails the check.
+    # under gpu-checks, and a validation message or a nonzero validation count fails the check. Validation includes
+    # synchronization validation, which also tracks what shaders read and write through descriptors, such as a
+    # frame's sampling of an image that the next frame in flight writes. Layers from 1.3.290 on track those accesses
+    # only with syncval_shader_accesses_heuristic, which is off by default; 1.3.275 to 1.3.283 always track them.
     set(anima_gpu_checks "${CMAKE_CURRENT_BINARY_DIR}/gpu-checks")
     function(anima_add_gpu_check name)
         add_test(NAME gpu_${name} COMMAND ${ARGN})
         set_tests_properties(gpu_${name} PROPERTIES
-            LABELS gpu SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu TIMEOUT 900 ENVIRONMENT VK_LAYER_VALIDATE_SYNC=1
+            LABELS gpu SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu TIMEOUT 900
+            ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1;VK_LAYER_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1"
             FAIL_REGULAR_EXPRESSION "\\[Vulkan validation\\];validation_(warnings|errors)=[1-9]")
     endfunction()
 endif()
