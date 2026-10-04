@@ -286,6 +286,88 @@ TEST_CASE("An invalid snapshot moves no body") {
     CHECK_MESSAGE(a.pose().position.x == 0, "Invalid snapshot partially moved an earlier body");
 }
 
+TEST_CASE("A dynamic body follows edits to its object and keeps its velocity") {
+    constexpr double tick = 1. / 60;
+    constexpr float tolerance = 1e-5F;
+    p::World world({{0, 0, 0}, 4});
+    Scene scene;
+    auto ball = scene.create();
+    p::BodySettings settings;
+    settings.collider.shape = p::Shape::sphere;
+    settings.motion = p::Motion::dynamic;
+    settings.velocity = {1, 0, 0};
+    auto body = ball.add_component<p::RigidBody>(world, settings)->body();
+    p::step(scene, world, tick);
+    // A respawn written to the object teleports the body before the step.
+    ball.set_position({0, 5, 0});
+    p::step(scene, world, tick);
+    CHECK(std::abs(body.pose().position.x - 1.F / 60) < tolerance);
+    CHECK(body.pose().position.y == 5);
+    CHECK(std::abs(body.velocity().x - 1) < tolerance);
+    CHECK(ball.position().y == 5);
+    // A teleport through body() holds while the object is left alone.
+    body.teleport({{-3, 0, 0}, {0, 0, 0, 1}});
+    p::step(scene, world, tick);
+    CHECK(std::abs(ball.position().x - (-3 + 1.F / 60)) < tolerance);
+    CHECK(ball.position().y == 0);
+}
+
+TEST_CASE("Stationary and kinematic bodies follow their objects over writes through body()") {
+    p::World world({{0, 0, 0}, 4});
+    Scene scene;
+    auto wall = scene.create(), platform = scene.create();
+    wall.set_position({0, 0, -10});
+    platform.set_position({4, 0, 0});
+    auto stationary = wall.add_component<p::RigidBody>(world)->body();
+    p::BodySettings settings;
+    settings.motion = p::Motion::kinematic;
+    auto kinematic = platform.add_component<p::RigidBody>(world, settings)->body();
+    stationary.teleport({{1, 2, 3}, {0, 0, 0, 1}});
+    kinematic.set_velocity({5, 0, 0});
+    p::step(scene, world, 1. / 60);
+    const auto wall_pose = stationary.pose().position;
+    CHECK_MESSAGE((wall_pose.x == 0 && wall_pose.y == 0 && wall_pose.z == -10),
+                  "The step kept a teleport of a stationary body");
+    const auto platform_velocity = kinematic.velocity();
+    CHECK_MESSAGE((platform_velocity.x == 0 && platform_velocity.y == 0 && platform_velocity.z == 0),
+                  "The step kept a velocity written to a kinematic body");
+    CHECK(kinematic.pose().position.x == 4);
+}
+
+TEST_CASE("Only an active rigid body's object must meet the transform rules") {
+    constexpr double tick = 1. / 60;
+    p::World world({{0, 0, 0}, 4});
+    Scene scene;
+    auto hand = scene.create("hand");
+    hand.set_transform({{0, 1, 0}, {0, 0, 0, 1}, {2, 2, 2}});
+    p::BodySettings settings;
+    settings.collider.shape = p::Shape::sphere;
+    settings.motion = p::Motion::dynamic;
+    auto item = scene.create("item");
+    auto held = item.add_component<p::RigidBody>(world, settings);
+    // A disabled dynamic item may be carried under a scaled hand.
+    held.set_enabled(false);
+    item.set_parent(hand, ReparentMode::keep_local);
+    CHECK_NOTHROW(p::step(scene, world, tick));
+    held.set_enabled(true);
+    CHECK_THROWS_WITH_AS(p::step(scene, world, tick), "Dynamic rigid bodies must be scene roots",
+                         std::invalid_argument);
+    // Released as a root, its body moves to where the object was let go.
+    item.clear_parent();
+    item.set_transform({{3, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}});
+    p::step(scene, world, tick);
+    CHECK(held->body().enabled());
+    CHECK(held->body().pose().position.x == 3);
+    auto fixture = scene.create("fixture");
+    auto mount = fixture.add_component<p::RigidBody>(world);
+    mount.set_enabled(false);
+    fixture.set_parent(hand, ReparentMode::keep_local);
+    CHECK_NOTHROW(p::step(scene, world, tick));
+    mount.set_enabled(true);
+    CHECK_THROWS_WITH_AS(p::step(scene, world, tick), "Physics transforms require unit scale and no shear/reflection",
+                         std::invalid_argument);
+}
+
 TEST_CASE("Bodies and codecs expire with their world") {
     ComponentCodecs expired;
     Scene survivor;
