@@ -145,6 +145,7 @@ inline void reject_failed_swapchain(anima::RendererOptions options) {
         },
         "Injected initialization failure after swapchain");
     rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); }, fatal_renderer);
+    rejects<anima::RendererFatalError>([&] { renderer.wait_for_frame(); }, fatal_renderer);
     rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); }, fatal_renderer);
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings && !stats.swapchain_generations &&
@@ -293,6 +294,7 @@ inline int run(int argc, char **argv) {
             fatal == "upload-timeout" ? "Injected upload timeout failed (VkResult 2)"
                                       : "Device lost while retiring resource upload");
         rejects<anima::RendererFatalError>([&] { (void)renderer.draw(); }, fatal_renderer);
+        rejects<anima::RendererFatalError>([&] { renderer.wait_for_frame(); }, fatal_renderer);
         rejects<anima::RendererFatalError>([&] { renderer.set_scenes({}); }, fatal_renderer);
         rejects<anima::RendererFatalError>([&] { renderer.set_view(anima::identity()); }, fatal_renderer);
         rejects<anima::RendererFatalError>([&] { renderer.request_capture(output / "after-fatal.ppm"); },
@@ -431,6 +433,7 @@ inline int run(int argc, char **argv) {
     constexpr std::string_view shut_down = "Renderer is shut down";
     rejects<std::logic_error>([&] { renderer.set_scenes({}); }, shut_down);
     rejects<std::logic_error>([&] { (void)renderer.draw(); }, shut_down);
+    rejects<std::logic_error>([&] { renderer.wait_for_frame(); }, shut_down);
     rejects<std::logic_error>([&] { renderer.request_capture(output / "after-shutdown.ppm"); }, shut_down);
     rejects<std::logic_error>([&] { renderer.request_capture(); }, shut_down);
     require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");

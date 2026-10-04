@@ -145,6 +145,8 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     bool requested = false;
     while (frames < 30) {
         require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Consumer GPU watchdog expired");
+        // An application waits for the frame slot before reading input, so that draw() does not wait after it.
+        renderer.wait_for_frame();
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)

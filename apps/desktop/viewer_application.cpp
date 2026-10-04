@@ -89,6 +89,9 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
         unsigned pixel_events = 0, minimize_events = 0, restore_events = 0, camera_updates = 0, preview_events = 0;
         bool quit = false, timed_out = false;
         while (!quit && (!options.frames || frames < options.frames)) {
+            // Waiting for the frame slot before reading events keeps that wait out of the time between the input
+            // that a frame shows and its submission.
+            renderer.wait_for_frame();
             const auto now = Clock::now();
             if (options.frames && now - started > std::chrono::seconds(options.timeout_seconds)) {
                 timed_out = true;
