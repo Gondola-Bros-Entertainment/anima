@@ -32,8 +32,8 @@ vec3 reflectedLight(vec3 n, vec3 position, vec4 viewOrigin, vec3 albedo, float m
     // The shadow filter runs only where the sun lights the surface, since it only scales that light.
     vec3 sun = light(n, v, environment.sunDirection.xyz, albedo, f0, metallic, roughness * roughness);
     if (any(greaterThan(sun, vec3(0))))
-        color += sunVisibility(position, n, receiver) * environment.sunRadiance.rgb * sun;
-    color += environment.fillRadiance.rgb *
+        color += sunVisibility(position, n, receiver) * environment.sunIrradiance.rgb * sun;
+    color += environment.fillIrradiance.rgb *
              light(n, v, environment.fillDirection.xyz, albedo, f0, metallic, roughness * roughness);
     return color;
 }

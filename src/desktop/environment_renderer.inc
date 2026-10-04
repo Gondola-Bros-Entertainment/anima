@@ -3,10 +3,10 @@
 Environment environment;
 // The sun at the ground, atmosphere_sunlight() of the environment, which set_environment() keeps with it and
 // integrates again only when an input of it changes (ground_sunlight()).
-Vec3 sunlight = Environment{}.sun.radiance;
+Vec3 sunlight = Environment{}.sun.irradiance;
 // As shaders/environment.glsl lays it out, in std140.
 struct EnvironmentUniform {
-    std::array<float, 4> sun_direction, sun_radiance, fill_direction, fill_radiance;
+    std::array<float, 4> sun_direction, sun_irradiance, fill_direction, fill_irradiance;
     std::array<float, 4> ambient_sky, ambient_ground, ambient_specular;
     // The atmosphere's Rayleigh and Mie scattering with their scale heights, and its Mie absorption with the Mie
     // phase function's asymmetry.
@@ -140,8 +140,8 @@ static std::array<float, 4> fog_shape(const Environment &e) {
 // The sunlight that the fog scatters, before its phase function: fog_sun_scattering times @p ground_sun, the sun at
 // the ground, formed in double and capped at the largest float, so that no finite inputs make it infinite.
 static std::array<float, 4> fog_sunlight(const Environment &e, Vec3 ground_sun) {
-    const auto times = [](float share, float radiance) {
-        return float(std::min(double(share) * radiance, double(std::numeric_limits<float>::max())));
+    const auto times = [](float share, float irradiance) {
+        return float(std::min(double(share) * irradiance, double(std::numeric_limits<float>::max())));
     };
     const auto &share = e.fog_sun_scattering;
     return {times(share.x, ground_sun.x), times(share.y, ground_sun.y), times(share.z, ground_sun.z), 0};
@@ -168,7 +168,7 @@ void update_environment() {
     EnvironmentUniform data{vec(normalized(e.sun.direction)),
                             vec(sunlight),
                             vec(normalized(e.fill.direction)),
-                            vec(e.fill.radiance),
+                            vec(e.fill.irradiance),
                             vec(e.ambient_sky),
                             vec(e.ambient_ground),
                             vec(e.ambient_specular),
@@ -193,7 +193,7 @@ void update_environment() {
                             vec(a.ozone_absorption, a.ozone_altitude),
                             {a.planet_radius, a.thickness, a.ozone_width, a.sun_angular_radius},
                             vec(a.ground_albedo, float(sky_altitude())),
-                            vec(e.sun.radiance, a.enabled ? 1.F : 0.F)};
+                            vec(e.sun.irradiance, a.enabled ? 1.F : 0.F)};
     const auto &settings = e.shadow_cascades;
     // A 16-bit map stores depth in steps of 1/65535, which the bias must also cover.
     const double step = shadow_format == VK_FORMAT_D16_UNORM ? 1. / 65535 : 0;

@@ -17,9 +17,9 @@ layout(set = 0, binding = 0, std140) uniform AnimaFrame {
     // The eye with w 1, or in an orthographic view the unit direction toward the camera with w 0.
     vec4 viewOrigin;
     vec4 sunDirection;
-    vec4 sunRadiance;
+    vec4 sunIrradiance;
     vec4 fillDirection;
-    vec4 fillRadiance;
+    vec4 fillIrradiance;
     vec4 ambientSky;
     vec4 ambientGround;
     vec4 ambientSpecular;
@@ -30,7 +30,7 @@ layout(set = 0, binding = 0, std140) uniform AnimaFrame {
     float time;
     // The fog's height, falloff, sky distance and phase asymmetry.
     vec4 fogShape;
-    // The sunlight that the fog scatters, before its phase function: fog_sun_scattering times sunRadiance.
+    // The sunlight that the fog scatters, before its phase function: fog_sun_scattering times sunIrradiance.
     vec4 fogSun;
 }
 animaFrame;

@@ -107,7 +107,7 @@ class Sequence {
         anima::Environment environment;
         environment.sun.direction = {std::cos(sun_rate * moved), sun_height + sun_rise * moved,
                                      std::sin(sun_rate * moved)};
-        environment.sun.radiance = {3, 3, 3};
+        environment.sun.irradiance = {3, 3, 3};
         environment.shadow_cascades.enabled = true;
         environment.shadow_cascades.count = 2;
         environment.shadow_cascades.resolution = frame < shadow_frame ? 512 : 1024;

@@ -192,8 +192,8 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, 
     }
     anima::Environment lighting;
     lighting.sun.direction = {0, .342F, .94F}; // 20 degrees above the horizon, behind the camera.
-    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = {.25F, .3F, .4F};
     lighting.ambient_ground = {.04F, .03F, .02F};
     // One cascade over the 10 m in view, with texels of about 7 mm.
@@ -307,8 +307,8 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture,
     upward.set_transform({{0, 0, 1}, unrotated, {1, 1, 1}});
     anima::Environment lighting;
     lighting.sun.direction = {0, .342F, .94F}; // 20 degrees above the horizon, behind the camera.
-    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = {.25F, .3F, .4F};
     lighting.ambient_ground = {.04F, .03F, .02F};
     lighting.shadow_cascades.enabled = false;
@@ -372,8 +372,8 @@ inline anima::Mat4 curved_view() {
 inline anima::Environment curved_environment(bool shadowed) {
     anima::Environment lighting;
     lighting.sun.direction = {-4, 0, 1};
-    lighting.sun.radiance = {3, 3, 3};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {3, 3, 3};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = lighting.ambient_ground = lighting.ambient_specular = {};
     lighting.shadow_cascades.enabled = shadowed;
     lighting.shadow_cascades.count = 1;
@@ -541,8 +541,8 @@ inline int run(int argc, char **argv) {
     renderer.set_scenes({scene});
     anima::Environment environment;
     environment.sun.direction = {0, 1, 0};
-    environment.sun.radiance = {3, 2.7F, 2.3F};
-    environment.fill.radiance = {0, 0, 0};
+    environment.sun.irradiance = {3, 2.7F, 2.3F};
+    environment.fill.irradiance = {0, 0, 0};
     environment.ambient_sky = {.16F, .18F, .3F};
     environment.ambient_ground = {.08F, .06F, .09F};
     environment.atmosphere.enabled = true;
@@ -591,9 +591,9 @@ inline int run(int argc, char **argv) {
     auto authored = lighting.create("lighting");
     auto sun = authored->create("sun");
     sun.set_world_matrix({1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1});
-    sun.add_component<anima::DirectionalLightComponent>(environment.sun.radiance);
+    sun.add_component<anima::DirectionalLightComponent>(environment.sun.irradiance);
     auto fill = authored->create("fill");
-    fill.add_component<anima::DirectionalLightComponent>(environment.fill.radiance);
+    fill.add_component<anima::DirectionalLightComponent>(environment.fill.irradiance);
     auto settings_object = authored->create("environment");
     auto settings = settings_object.add_component<anima::SceneEnvironment>(
         static_cast<const anima::EnvironmentSettings &>(environment));
@@ -608,7 +608,7 @@ inline int run(int argc, char **argv) {
     sun.set_world_matrix(anima::inverse(anima::look_at({4, 6, 1}, {0, 0, 0})));
     renderer.set_environment(anima::lighting_environment(lighting));
     capture("scene-light-rotated");
-    sun.get_component<anima::DirectionalLightComponent>()->set_radiance({.2F, 1, 3});
+    sun.get_component<anima::DirectionalLightComponent>()->set_irradiance({.2F, 1, 3});
     renderer.set_environment(anima::lighting_environment(lighting));
     capture("scene-light-tinted");
     auto changed_settings = settings->settings();

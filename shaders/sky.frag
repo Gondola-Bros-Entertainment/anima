@@ -1,7 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 // The sky behind the scene, while the atmosphere is enabled: the sky view table in the direction of the view ray,
-// times the sun's radiance above the atmosphere, with the sun's disc, fogged as a surface fog_sky_distance along the
+// times the sun's irradiance above the atmosphere, with the sun's disc, fogged as a surface fog_sky_distance along the
 // ray would be.
 layout(location = 0) in vec2 screen;
 layout(location = 0) out vec4 outColor;
@@ -21,8 +21,8 @@ void main() {
     float azimuth = lengths > 1e-12 ? acos(clamp(dot(ray.xz, sun.xz) / lengths, -1.0, 1.0)) : 0.0;
     vec3 color = textureLod(skyViewTable, skyViewCoordinates(elevation, azimuth, altitude), 0.0).rgb *
                  environment.atmosphereSun.rgb;
-    // The sun's radiance spread over its disc's solid angle, 2 pi (1 - cos r) = 4 pi sin^2(r / 2), through the
-    // atmosphere along the ray.
+    // The disc's radiance, the sun's irradiance spread over its solid angle, 2 pi (1 - cos r) = 4 pi sin^2(r / 2),
+    // through the atmosphere along the ray.
     float radius = environment.atmosphereShape.w, halfSine = sin(0.5 * radius);
     if (dot(ray, sun) >= cos(radius))
         color += environment.atmosphereSun.rgb / (4.0 * atmospherePi * halfSine * halfSine) *

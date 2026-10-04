@@ -25,7 +25,7 @@ template <class Scenes> DirectionalLight resolve_light(const Scenes &scenes, Gam
     auto light = object.get_component<DirectionalLightComponent>();
     if (!light || !light.active())
         throw std::invalid_argument("Selected light must have an active DirectionalLightComponent");
-    return {light_direction(object), light->radiance()};
+    return {light_direction(object), light->irradiance()};
 }
 template <class Scenes> Environment resolve(Scenes &scenes) {
     detail::SceneDriver::check(scenes);
@@ -194,12 +194,12 @@ GameObject link(const Json &j, const ObjectReferences &references) {
     return references.resolve(ObjectKey::parse(j.get<std::string>()));
 }
 } // namespace
-DirectionalLightComponent::DirectionalLightComponent(Vec3 radiance) { set_radiance(radiance); }
-void DirectionalLightComponent::set_radiance(Vec3 radiance) {
-    if (!std::isfinite(radiance.x) || !std::isfinite(radiance.y) || !std::isfinite(radiance.z) || radiance.x < 0 ||
-        radiance.y < 0 || radiance.z < 0)
-        throw std::invalid_argument("Directional light radiance must be finite nonnegative linear RGB");
-    radiance_ = radiance;
+DirectionalLightComponent::DirectionalLightComponent(Vec3 irradiance) { set_irradiance(irradiance); }
+void DirectionalLightComponent::set_irradiance(Vec3 irradiance) {
+    if (!std::isfinite(irradiance.x) || !std::isfinite(irradiance.y) || !std::isfinite(irradiance.z) ||
+        irradiance.x < 0 || irradiance.y < 0 || irradiance.z < 0)
+        throw std::invalid_argument("Directional light irradiance must be finite nonnegative linear RGB");
+    irradiance_ = irradiance;
 }
 SceneEnvironment::SceneEnvironment(EnvironmentSettings settings) { configure(settings); }
 void SceneEnvironment::configure(EnvironmentSettings settings) {
@@ -211,14 +211,14 @@ Environment lighting_environment(SceneSet &scenes) { return resolve(scenes); }
 void add_lighting_component_codecs(ComponentCodecs &codecs) {
     auto pending = codecs;
     pending.add<DirectionalLightComponent>(
-        "anima.directional-light.v1",
+        "anima.directional-light.v2",
         [](const DirectionalLightComponent &light, const ObjectReferences &) {
-            return Json{{"radiance", vector_json(light.radiance())}}.dump();
+            return Json{{"irradiance", vector_json(light.irradiance())}}.dump();
         },
         [](GameObject object, std::string_view data, const ObjectReferences &) {
             const auto j = detail::parse_json(data, maximum_component_bytes);
-            detail::json_fields(j, {"radiance"});
-            object.add_component<DirectionalLightComponent>(vector(j.at("radiance")));
+            detail::json_fields(j, {"irradiance"});
+            object.add_component<DirectionalLightComponent>(vector(j.at("irradiance")));
         });
     pending.add<SceneEnvironment>(
         "anima.scene-environment.v3",
