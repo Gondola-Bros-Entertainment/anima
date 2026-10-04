@@ -7,6 +7,8 @@ namespace {
 constexpr int no_joint = -1;
 // The one motion contract version MotionRuntime accepts.
 constexpr int motion_contract_version = 4;
+// The one evaluation definition version a motion contract may embed.
+constexpr int motion_evaluation_version = 1;
 } // namespace
 struct MotionRuntime::Impl {
   public:
@@ -226,7 +228,7 @@ struct MotionRuntime::Impl {
         const auto &skeleton = data.at("skeleton");
         const auto &definition = data.at("evaluation");
         detail::json_fields(skeleton, {"id", "bind_signature", "joint_count"});
-        detail::json_version(definition, "version", 1, "Unsupported motion evaluation version");
+        detail::json_version(definition, "version", motion_evaluation_version, "Unsupported motion evaluation version");
         detail::json_fields(definition, {"version", "id", "parents", "masks", "chains"});
         if (definition.at("id").get<std::string>().empty() || skeleton.at("id") != manifest.skeleton_id ||
             skeleton.at("bind_signature") != manifest.bind_signature ||

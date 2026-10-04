@@ -5,6 +5,7 @@
 
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace anima;
@@ -128,6 +129,18 @@ TEST_CASE("Invalid timelines and times are rejected") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(ActionTimeline({{"a", 1, false, {{"late", .8}, {"early", .2}}}}),
                          "Invalid, unordered or excessive action cues", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionTimeline({{"a", ActionTimeline::maximum_phase_seconds * 2, false, {}}}), invalid_phase,
+                         std::invalid_argument);
+    CHECK(ActionTimeline({{"a", ActionTimeline::maximum_phase_seconds, false, {}}}).duration() ==
+          ActionTimeline::maximum_phase_seconds);
+    // A timeline has 1 to ActionTimeline::maximum_phases phases.
+    std::vector<ActionPhase> phases;
+    for (std::size_t i = 0; i < ActionTimeline::maximum_phases; ++i)
+        phases.push_back({"phase" + std::to_string(i), 1, false, {}});
+    CHECK(ActionTimeline(phases).phases().size() == ActionTimeline::maximum_phases);
+    phases.push_back({"extra", 1, false, {}});
+    CHECK_THROWS_WITH_AS(ActionTimeline(phases), "Action needs 1..64 phases", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionTimeline({}), "Action needs 1..64 phases", std::invalid_argument);
     // A cue's position in its phase is ActionCue::at; ActionTime::phase and TimedActionCue::phase are indices.
     const ActionTimeline cued({{"swing", 2, false, {{"hit", .25}}}});
     CHECK(cued.phases()[0].cues[0].at == .25);

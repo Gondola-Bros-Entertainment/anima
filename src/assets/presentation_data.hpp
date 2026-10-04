@@ -7,6 +7,8 @@
 #include <set>
 namespace anima::presentation_data {
 inline constexpr std::size_t maximum_document_bytes = 4 * 1024 * 1024;
+// Nesting levels a presentation document may use.
+inline constexpr int maximum_document_depth = 64;
 // The bottom row of an affine presentation transform is (0, 0, 0, 1) within this.
 inline constexpr float affine_tolerance = 1e-6F;
 // A rigid frame's axes are unit length and orthogonal within this, and its handedness triple product is
@@ -23,7 +25,7 @@ inline std::string text(const Json &value) {
         throw std::invalid_argument("Empty presentation identity/reference");
     return result;
 }
-inline Json parse(std::string_view source, int maximum_depth = 64) {
+inline Json parse(std::string_view source, int maximum_depth = maximum_document_depth) {
     return detail::parse_json(source, maximum_document_bytes, maximum_depth);
 }
 inline Json read(const std::filesystem::path &path) {
