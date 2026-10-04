@@ -265,6 +265,63 @@ TEST_CASE("Instances and snapshots keep the order renderers were added through r
     expect({0, 8, 11, 4, 12});
 }
 
+TEST_CASE("A renderer reads back its visibility, shadows, material factors, primitives and pose") {
+    const auto asset = scene_objects_test::source();
+    const auto mesh = Mesh::compile(*asset);
+    Scene scene;
+    auto object = scene.create("Body", mesh);
+    auto renderer = object.renderer();
+    CHECK(renderer.visible());
+    CHECK(renderer.casts_shadows());
+    CHECK(renderer.material_factor(0) == Vec3{1, 1, 1});
+    CHECK_FALSE(renderer.custom_material(0));
+    CHECK(renderer.primitive_visible(0));
+    CHECK(&renderer.pose() == &mesh->rest_pose()); // An unposed renderer reads its mesh's rest pose.
+
+    renderer.set_visible(false);
+    renderer.set_casts_shadows(false);
+    renderer.set_material_factor(0, {.2F, .3F, .4F});
+    renderer.set_primitive_visible(0, false);
+    const auto moved = sample_pose(*asset, &asset->animations[0], .5);
+    REQUIRE(moved != mesh->rest_pose());
+    renderer.set_pose(moved);
+    CHECK_FALSE(renderer.visible());
+    CHECK_FALSE(renderer.casts_shadows());
+    CHECK(renderer.material_factor(0) == Vec3{.2F, .3F, .4F});
+    CHECK_FALSE(renderer.primitive_visible(0));
+    CHECK(renderer.pose() == moved);
+    renderer.clear_material_factor(0);
+    CHECK(renderer.material_factor(0) == Vec3{1, 1, 1});
+
+    // A bad index throws the same std::out_of_range from a getter and its setters.
+    constexpr auto material_slot = "Material factor slot is outside the mesh's materials";
+    constexpr auto custom_slot = "Custom material slot is outside the mesh's materials";
+    constexpr auto primitive_slot = "Primitive is outside the mesh's primitives";
+    CHECK_THROWS_WITH_AS((void)renderer.material_factor(1), material_slot, std::out_of_range);
+    CHECK_THROWS_WITH_AS(renderer.set_material_factor(1, {}), material_slot, std::out_of_range);
+    CHECK_THROWS_WITH_AS(renderer.clear_material_factor(1), material_slot, std::out_of_range);
+    CHECK_THROWS_WITH_AS((void)renderer.custom_material(1), custom_slot, std::out_of_range);
+    CHECK_THROWS_WITH_AS(renderer.set_custom_material(1, nullptr), custom_slot, std::out_of_range);
+    CHECK_THROWS_WITH_AS((void)renderer.primitive_visible(1), primitive_slot, std::out_of_range);
+    CHECK_THROWS_WITH_AS(renderer.set_primitive_visible(1, true), primitive_slot, std::out_of_range);
+
+    // Replacing the mesh resets what each getter reads.
+    renderer.set_mesh(mesh);
+    CHECK(renderer.visible());
+    CHECK(renderer.casts_shadows());
+    CHECK(renderer.primitive_visible(0));
+    CHECK(&renderer.pose() == &mesh->rest_pose());
+
+    object.remove_mesh();
+    constexpr auto no_renderer = "GameObject has no MeshRenderer";
+    CHECK_THROWS_WITH_AS((void)renderer.visible(), no_renderer, std::logic_error);
+    CHECK_THROWS_WITH_AS((void)renderer.casts_shadows(), no_renderer, std::logic_error);
+    CHECK_THROWS_WITH_AS((void)renderer.material_factor(0), no_renderer, std::logic_error);
+    CHECK_THROWS_WITH_AS((void)renderer.custom_material(0), no_renderer, std::logic_error);
+    CHECK_THROWS_WITH_AS((void)renderer.primitive_visible(0), no_renderer, std::logic_error);
+    CHECK_THROWS_WITH_AS((void)renderer.pose(), no_renderer, std::logic_error);
+}
+
 TEST_CASE("The shared consumer scenario for objects, lifetime, terrain, mesh preparation and animation passes") {
     // It reports a failed check by throwing std::runtime_error, which fails this test case.
     scene_objects_test::run();
