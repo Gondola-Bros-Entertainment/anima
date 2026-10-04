@@ -434,6 +434,12 @@ class GameObject {
     [[nodiscard]] Scene::Id id() const noexcept { return id_; }
     /// Persistent identity within the scene.
     [[nodiscard]] ObjectKey key() const;
+    /// Scene that owns this object, so that a component can create objects or query the scene.
+    ///
+    /// Throws `std::out_of_range` with "Expired GameObject handle" for an invalid or stale handle.
+    /// The reference is borrowed: do not keep it past the scene's destruction or, for a member of a
+    /// SceneSet, past SceneSet::replace or SceneSet::unload of that member, as SceneRef::get states.
+    [[nodiscard]] Scene &scene() const;
     [[nodiscard]] std::string name() const;
     void set_name(std::string name);
     /// Authored activation flag, independent of ancestors.
@@ -532,14 +538,8 @@ class GameObject {
   private:
     friend class Scene;
     friend class MeshRenderer;
-    friend class FittedSet;
-    friend class Prefab;
-    friend class PrefabComposition;
-    friend struct AttachmentSet;
-    friend class AttachmentFollower;
     friend struct detail::ScenePersistence;
     GameObject(std::weak_ptr<detail::SceneLifetime> lifetime, Scene::Id id) : lifetime_(std::move(lifetime)), id_(id) {}
-    Scene &scene() const;
     std::weak_ptr<detail::SceneLifetime> lifetime_;
     Scene::Id id_{};
 };

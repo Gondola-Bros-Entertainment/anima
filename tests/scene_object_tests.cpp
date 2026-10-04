@@ -41,7 +41,36 @@ struct CreateOnDisable {
         }
     }
 };
+struct Spawner {
+    explicit Spawner(GameObject object) : owner(object) {}
+    GameObject owner;
+    std::vector<GameObject> spawned;
+    void on_update(double) { spawned.push_back(owner.scene().create("Spawned")); }
+};
 } // namespace
+
+TEST_CASE("A component reaches its scene through its object, and a stale handle has no scene") {
+    Scene scene;
+    auto object = scene.create("Spawner");
+    CHECK(&object.scene() == &scene);
+    auto spawner = object.add_component<Spawner>();
+    scene.update(0);
+    REQUIRE(spawner->spawned.size() == 1);
+    const auto spawned = spawner->spawned.front();
+    CHECK(spawned.valid());
+    CHECK(&spawned.scene() == &scene);
+    CHECK(spawned.name() == "Spawned");
+    CHECK_FALSE(spawned.parent().has_value());
+    CHECK(scene.size() == 2);
+
+    object.destroy();
+    CHECK_THROWS_WITH_AS((void)object.scene(), "Expired GameObject handle", std::out_of_range);
+    CHECK_THROWS_WITH_AS((void)GameObject{}.scene(), "Expired GameObject handle", std::out_of_range);
+    auto orphan = std::make_unique<Scene>();
+    const auto left = orphan->create();
+    orphan.reset();
+    CHECK_THROWS_WITH_AS((void)left.scene(), "Expired GameObject handle", std::out_of_range);
+}
 
 TEST_CASE("Objects append in slot order, and recreated objects fill holes first-free with new generations") {
     Scene scene;
