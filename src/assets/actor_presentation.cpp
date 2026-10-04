@@ -19,10 +19,8 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
         if (!document.at("sockets").is_object())
             throw std::invalid_argument("Invalid actor presentation profile");
         id = text(document.at("id"));
-        const auto relative = std::filesystem::path(text(document.at("manifest")));
-        if (relative.is_absolute() ||
-            std::any_of(relative.begin(), relative.end(), [](const auto &part) { return part == ".."; }))
-            throw std::invalid_argument("Actor manifest must be inside its profile directory");
+        const auto relative = relative_document_path(text(document.at("manifest")), {},
+                                                     "Actor manifest must be inside its profile directory");
         manifest = anima::read_manifest(manifest_override.value_or(profile.parent_path() / relative));
         const auto model = anima::load_asset(manifest.directory / manifest.model);
         anima::validate_manifest(manifest, *model);

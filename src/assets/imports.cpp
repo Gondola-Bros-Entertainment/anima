@@ -1,3 +1,4 @@
+#include "../detail/utf8_path.hpp"
 #include <algorithm>
 #include <anima/assets/imports.hpp>
 #include <fstream>
@@ -8,7 +9,7 @@ namespace {
 std::vector<std::byte> read_file(const std::filesystem::path &path, std::size_t limit) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file)
-        throw std::runtime_error("Cannot open import dependency: " + path.string());
+        throw std::runtime_error("Cannot open import dependency: " + detail::utf8_text(path));
     const auto size = file.tellg();
     if (size < 0 || static_cast<std::uint64_t>(size) > limit)
         throw std::length_error("Import dependency exceeds the byte limit");
@@ -53,7 +54,7 @@ void AssetImports::verify(const ImportSource::Files &files) const {
     ImportSource source(root_, unused, file_limit_);
     for (const auto &[path, bytes] : files)
         if (read_file(source.resolve(path), file_limit_) != bytes)
-            throw std::runtime_error("Import input changed before publication: " + path.string());
+            throw std::runtime_error("Import input changed before publication: " + detail::utf8_text(path));
 }
 std::vector<std::string> AssetImports::refresh() {
     Mutation mutation(importing_);

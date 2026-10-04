@@ -61,7 +61,8 @@ struct AttachmentHandling {
 /// A prop model with its grip and markers.
 struct AttachmentVisual {
     std::string id;
-    /// Relative `.glb` path without `..`, resolved against AttachmentCatalog::directory.
+    /// Relative `.glb` path, decoded from the catalog's UTF-8, without a root, colon, backslash or
+    /// `..` component; resolved against AttachmentCatalog::directory.
     std::filesystem::path model;
     /// Rigid, right-handed frame in prop model space that the primary socket holds.
     anima::Mat4 primary_grip = anima::identity();
@@ -115,12 +116,12 @@ struct AttachmentSocket {
 /// or empty), `layer_overrides` (base clip name to nonempty layer clip name, `{}` for none) and
 /// `support_contacts`: an array of at most 4 entries, `[]` for none, of `chain`, `socket`,
 /// `marker`, `pole` (three numbers in body model space), `clips` and `actions`, each active for at
-/// least one clip or action. A visual has `id`, `model`, `primary_grip`, `markers`,
-/// `primary_node` (a nonempty node name, or null for none), `marker_nodes` (marker name to node
-/// name) and `animation_tracks` (track name to clip name). An item has `id`, `visual` and
-/// `handling`; its visual must have every marker that its handling's contacts use. Every field is
-/// required. Frames are 16 column-major numbers. Layer clips and chains are checked against a
-/// MotionRuntime by validate_attachment_ownership, not here.
+/// least one clip or action. A visual has `id`, `model` (a path as AttachmentVisual::model
+/// describes), `primary_grip`, `markers`, `primary_node` (a nonempty node name, or null for none),
+/// `marker_nodes` (marker name to node name) and `animation_tracks` (track name to clip name). An
+/// item has `id`, `visual` and `handling`; its visual must have every marker that its handling's
+/// contacts use. Every field is required. Frames are 16 column-major numbers. Layer clips and
+/// chains are checked against a MotionRuntime by validate_attachment_ownership, not here.
 [[nodiscard]] AttachmentCatalog decode_attachment_catalog(std::string_view document,
                                                           const std::filesystem::path &directory);
 /// Decodes the body sockets of @p body, the model of @p manifest.

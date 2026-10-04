@@ -252,10 +252,9 @@ struct MotionRuntime::Impl {
         return result;
     }
     void load_resource(const anima::Manifest &manifest, const nlohmann::json &document) {
-        const auto path = std::filesystem::path(document.at("resource").get<std::string>());
-        if (path.empty() || path.is_absolute() || path.extension() != ".glb" ||
-            std::any_of(path.begin(), path.end(), [](const auto &part) { return part == ".."; }))
-            throw std::invalid_argument("Motion resource must be a relative GLB inside its contract directory");
+        const auto path = presentation_data::relative_document_path(
+            document.at("resource").get<std::string>(), ".glb",
+            "Motion resource must be a relative GLB inside its contract directory");
         resource_ = anima::load_motion_asset((manifest.directory / manifest.motion_contract).parent_path() / path);
         rest_ = anima::sample_pose(*asset_);
         const auto source_rest = anima::sample_pose(*resource_);

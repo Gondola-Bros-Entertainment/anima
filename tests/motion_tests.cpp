@@ -873,6 +873,45 @@ TEST_CASE("A handling profile's layer overrides are an object keyed by base clip
         "Layer overrides must map base clips to layer clips", std::invalid_argument);
 }
 
+TEST_CASE("Document file references stay inside their directory on every platform") {
+    const MotionFixture fixture;
+    const auto profile = fixture.directory.path / "actor.profile.json";
+    // JSON strings for a root, a Windows drive and a Windows parent directory. Windows reads the colon and the
+    // backslash as a drive and a separator, so every platform rejects them.
+    for (const std::string reference : {"/x.glb", "C:x.glb", R"(..\\x.glb)"}) {
+        CAPTURE(reference);
+        const auto quoted = "\"" + reference + "\"";
+        CHECK_THROWS_WITH_AS(
+            decode_attachment_catalog(replaced(attachment_catalog(), "\"prop.glb\"", quoted), fixture.directory.path),
+            "Attachment model must be a relative GLB inside the catalog directory", std::invalid_argument);
+        CHECK_THROWS_WITH_AS(
+            MotionRuntime(fixture.body, fixture.manifest, replaced(fixture.contract, "\"motion.glb\"", quoted)),
+            "Motion resource must be a relative GLB inside its contract directory", std::invalid_argument);
+        std::ofstream(profile) << R"({"version":2,"id":"actor","manifest":)" + quoted + R"(,"sockets":{}})";
+        CHECK_THROWS_WITH_AS(ActorPresentation{profile}, "Actor manifest must be inside its profile directory",
+                             std::invalid_argument);
+    }
+}
+
+TEST_CASE("A catalog and a manifest name their models in UTF-8 on every platform") {
+    const MotionFixture fixture;
+    // "mod\u00e8le.glb" in UTF-8, which Windows would read in its code page as a narrow string, naming another file.
+    const std::filesystem::path model(u8"mod\u00e8le.glb");
+    write_prop(fixture.directory.path / model, false);
+    const AttachmentLibrary library(decode_attachment_catalog(
+        replaced(attachment_catalog(), "\"prop.glb\"", R"("mod\u00e8le.glb")"), fixture.directory.path));
+    CHECK(library.visual("prop").model == model);
+    CHECK(library.load("prop")->source->nodes.at(0).name == "prop");
+    const auto manifest_path = fixture.directory.path / "prop.manifest.json";
+    std::ofstream(manifest_path)
+        << R"({"schema_version":3,"units":"meters","asset_id":"prop","model":"mod\u00e8le.glb",)"
+           R"("skeleton":{"id":"test.rig","bind_signature":")" +
+               rig_signature + R"(","joint_count":1},"clips":[]})";
+    const auto manifest = read_manifest(manifest_path);
+    CHECK(manifest.model == model);
+    CHECK(load_asset(manifest.directory / manifest.model)->nodes.at(0).name == "prop");
+}
+
 TEST_CASE("Presentation frames and poles hold exactly their count of numbers, each within the float range") {
     constexpr std::size_t end = 3;
     const MotionFixture fixture;

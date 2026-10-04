@@ -76,10 +76,8 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
             entry, {"id", "model", "primary_grip", "markers", "primary_node", "marker_nodes", "animation_tracks"});
         AttachmentVisual visual;
         visual.id = text(entry.at("id"));
-        visual.model = text(entry.at("model"));
-        if (visual.model.is_absolute() || visual.model.extension() != ".glb" ||
-            std::any_of(visual.model.begin(), visual.model.end(), [](const auto &part) { return part == ".."; }))
-            throw std::invalid_argument("Attachment model must be a relative GLB inside the catalog directory");
+        visual.model = relative_document_path(text(entry.at("model")), ".glb",
+                                              "Attachment model must be a relative GLB inside the catalog directory");
         visual.primary_grip = matrix(entry.at("primary_grip"), true);
         if (!entry.at("markers").is_object())
             throw std::invalid_argument("Attachment markers must be named frames");
