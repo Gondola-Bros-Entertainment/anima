@@ -29,7 +29,8 @@ namespace anima {
 struct MotionLayer {
     /// Base clip or layer clip to sample.
     std::string clip;
-    /// Contract mask that the layer affects; a layer clip must use its declared mask.
+    /// Contract mask that the layer affects, or empty for every evaluation joint; a layer clip must
+    /// use its declared mask.
     std::string mask;
     /// Seconds into #clip.
     double time{};
@@ -106,8 +107,9 @@ class MotionRuntime {
     /// `joints` [start, middle, end], `minimum_angle` and `maximum_angle`, as in TwoBoneContact).
     /// `clips` lists the base clips: unique nonempty `name`, `loop`, `events` (`time` and nonempty
     /// `name`, in nondecreasing time within the clip) and optional positive finite
-    /// `reference_speed`. `layers` maps each layer clip to its `mask`, `owned_joints` and
-    /// `context_joints`.
+    /// `reference_speed`. Each base clip must have a positive duration in the motion GLB, so a pose
+    /// clip, whose keys all sit at time 0, throws "Motion requires a positive duration". `layers`
+    /// maps each layer clip to its `mask`, `owned_joints` and `context_joints`.
     ///
     /// Clips of the model and of the manifest are ignored. Each joint name must name one model
     /// node and one motion node, and every motion node must match a uniquely named model node with
@@ -167,16 +169,24 @@ class MotionRuntime {
     /// @p to.
     Pose blend(const Pose &from, const Pose &to, float weight) const;
     /// Applies @p controls to @p source: each layer, then each offset, then each contact, solved on
-    /// the result so far.
+    /// the result so far. A layer with an empty mask covers every evaluation joint.
     ///
-    /// Empty controls return @p source unchanged; otherwise the pose is world-only. With nonempty
-    /// controls, a world-only @p source, such as an earlier result, fails where the evaluation
-    /// parent of a joint, or the asset parent of a node that is not an evaluation joint, is
-    /// collapsed, since only local transforms recover what lies below it (see EvaluationRig::encode
-    /// and EvaluationRig::render_pose). Throws for an invalid weight, a layer clip on another mask,
-    /// an override with a reference clip or an additive layer without one, as EvaluationRig::encode
-    /// and EvaluationRig::render_pose do for @p source and solve_contact for each contact, and
-    /// `std::out_of_range` for an unknown clip, mask (an empty name included), chain or joint.
+    /// Empty controls return @p source unchanged; otherwise the pose is world-only. Nodes that are
+    /// not evaluation joints keep their transforms relative to their parents (see
+    /// EvaluationRig::render_pose) from the sampled pose of the last override layer with an empty
+    /// mask and a weight above 0, as blend() takes them from its target, or from @p source when no
+    /// layer is one. So controls holding only an override of base clip `c` at time `t`, with an
+    /// empty mask and a weight `w` in (0, 1), give the pose that `blend(source, sample(c, t), w)`
+    /// does.
+    ///
+    /// With nonempty controls, a world-only @p source, such as an earlier result, fails where the
+    /// evaluation parent of a joint, or the asset parent of a node that is not an evaluation joint
+    /// and follows @p source, is collapsed, since only local transforms recover what lies below it
+    /// (see EvaluationRig::encode and EvaluationRig::render_pose). Throws for an invalid weight, a
+    /// layer clip on another mask, an override with a reference clip or an additive layer without
+    /// one, as EvaluationRig::encode and EvaluationRig::render_pose do for @p source and
+    /// solve_contact for each contact, and `std::out_of_range` for an unknown clip, mask, chain or
+    /// joint.
     MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 
   private:

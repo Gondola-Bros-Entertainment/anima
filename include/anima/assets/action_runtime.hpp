@@ -118,8 +118,9 @@ struct ActionDefinition {
 };
 /// Result of ActionRuntime::sample.
 struct ActionSample {
-    /// Pose after every layer of the current phase; world-only unless each layer was a full-body
-    /// layer at weight 0 or 1.
+    /// Pose after every layer of the current phase: the base pose exactly when every layer has
+    /// weight 0, and the pose of the full-body layer's clip exactly when that layer has weight 1 and
+    /// every other layer weight 0; otherwise world-only.
     anima::Pose pose;
     anima::ActionTime clock;
     /// Clip of the current phase's first layer.
@@ -177,10 +178,14 @@ class ActionRuntime {
     ///
     /// The timeline is sampled at ActionRequest::elapsed and ActionRequest::released_at times
     /// scale(). Each layer of the current phase then samples its clip at the interval position
-    /// for the phase progress, weighted by its curve: full-body layers blend with
-    /// MotionRuntime::blend and masked layers apply through MotionRuntime::evaluate. Prop track
-    /// progress and contact weights are reported for the same progress. @p handling is the
-    /// caller's choice among ActionDefinition::handling; throws also when it is not one of them.
+    /// for the phase progress, weighted by its curve. Layers at weight 0 are skipped, and a
+    /// full-body layer at weight 1 replaces @p base with its clip's pose (see
+    /// MotionRuntime::sample). The other layers apply in order in one MotionRuntime::evaluate of
+    /// that pose, a full-body layer through an empty mask, which blends it as MotionRuntime::blend
+    /// does. So a world-only @p base that they apply to fails as that function states for its
+    /// source, such as below a collapsed joint. Prop track progress and contact weights are reported
+    /// for the same progress. @p handling is the caller's choice among ActionDefinition::handling;
+    /// throws also when it is not one of them.
     ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
     /// Decodes a JSON weight curve: 2 to 32 [phase, weight] pairs, both in [0, 1], with phases
     /// strictly increasing from 0 to 1.

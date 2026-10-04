@@ -1,3 +1,4 @@
+#include "action_layers.hpp"
 #include "presentation_data.hpp"
 #include <anima/assets/interaction_runtime.hpp>
 namespace anima {
@@ -104,12 +105,17 @@ struct InteractionRuntime::Impl {
         if (free_worlds.size() != actors_.size())
             throw std::invalid_argument("Every interaction role needs a free placement");
         InteractionSample result{timeline_->sample(elapsed, released), {}, {}, {}};
+        // Each role's layers, which a role with contacts evaluates again together with them, since evaluating the
+        // world-only pose that its layers give would fail below a collapsed joint.
+        std::vector<detail::PhaseLayers> layers;
         std::vector<anima::InteractionFrame> frames;
         for (const auto &role : bindings_->roles()) {
             const auto &actor = actors_.at(role.id);
-            auto sampled = runtimes_.at(role.id)->sample(anima::sample_pose(*actor.asset),
-                                                         ActionRequest{id_, 1, elapsed, released, {}}, role.id);
-            frames.push_back({std::move(sampled.pose), free_worlds.at(role.id)});
+            layers.push_back(detail::phase_layers(*actor.motion,
+                                                  runtimes_.at(role.id)->definition(id_).phases.at(result.clock.phase),
+                                                  result.clock.progress, anima::sample_pose(*actor.asset)));
+            frames.push_back(
+                {actor.motion->evaluate(layers.back().source, layers.back().controls).pose, free_worlds.at(role.id)});
         }
         std::vector<anima::InteractionPlacement> placements;
         for (const auto &curves : placement_weights_) {
@@ -131,21 +137,24 @@ struct InteractionRuntime::Impl {
                         anima::interaction_world(result.frames[bindings_->role(binding.parent)], binding.parent_socket,
                                                  child.pose, binding.child_socket, frames[index].world, placements[i]);
             }
+            // The role's contacts solve in document order, each on the result of those before it, after its layers.
+            auto controls = std::move(layers[index].controls);
             for (const auto &contact : contacts_)
                 if (contact.child == role.id) {
                     const auto &parent = result.frames[bindings_->role(contact.parent)];
                     const auto target = anima::inverse(child.world) * parent.world *
                                         anima::interaction_socket(parent.pose, contact.target);
-                    MotionControls controls;
-                    const auto weight = contact.weights.at(result.clock.phase).sample(result.clock.progress);
                     controls.contacts.push_back(
-                        {contact.chain, anima::point(target, {}), contact.pole, weight,
+                        {contact.chain, anima::point(target, {}), contact.pole,
+                         contact.weights.at(result.clock.phase).sample(result.clock.progress),
                          contact.orientation ? std::optional(anima::affine_rotation(target)) : std::nullopt});
-                    auto evaluated = actors_.at(role.id).motion->evaluate(child.pose, controls);
-                    for (const auto &value : evaluated.contacts)
-                        result.contacts.push_back({role.id, value.chain, weight, value.error, value.reachable});
-                    child.pose = std::move(evaluated.pose);
                 }
+            if (controls.contacts.empty())
+                continue;
+            auto evaluated = actors_.at(role.id).motion->evaluate(layers[index].source, controls);
+            for (const auto &value : evaluated.contacts)
+                result.contacts.push_back({role.id, value.chain, value.weight, value.error, value.reachable});
+            child.pose = std::move(evaluated.pose);
         }
         return result;
     }

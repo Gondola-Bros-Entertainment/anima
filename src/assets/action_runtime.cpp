@@ -1,3 +1,4 @@
+#include "action_layers.hpp"
 #include "presentation_data.hpp"
 #include <anima/assets/action_runtime.hpp>
 namespace anima {
@@ -7,6 +8,27 @@ constexpr std::size_t maximum_phase_layers = 8;
 constexpr std::size_t maximum_phase_props = 8;
 constexpr std::size_t maximum_action_roles = 8;
 } // namespace
+namespace detail {
+PhaseLayers phase_layers(const MotionRuntime &motion, const ActionPhaseBinding &phase, double progress, Pose base) {
+    PhaseLayers result{std::move(base), {}};
+    for (const auto &layer : phase.layers) {
+        const float amount = layer.weight.sample(progress);
+        if (amount == 0)
+            continue;
+        const double time =
+            std::lerp(layer.interval[0], layer.interval[1], progress) * motion.clip(layer.clip).duration;
+        // A full-body layer, always a phase's first, replaces the base exactly at weight 1, as MotionRuntime::blend
+        // returns its target.
+        if (layer.mask.empty() && amount == 1 && result.controls.layers.empty())
+            result.source = motion.sample(layer.clip, time);
+        else
+            result.controls.layers.push_back(
+                {layer.clip, layer.mask, time, amount, layer.mode, layer.reference,
+                 layer.reference.empty() ? 0 : layer.reference_at * motion.clip(layer.reference).duration});
+    }
+    return result;
+}
+} // namespace detail
 struct ActionRuntime::Impl {
   public:
     Impl(std::shared_ptr<const MotionRuntime> motion, const nlohmann::json &document) : motion_(std::move(motion)) {
@@ -155,25 +177,11 @@ struct ActionRuntime::Impl {
             throw std::invalid_argument("Action is incompatible with this handling profile");
         const auto rate = scale(request);
         const auto released = request.released_at ? std::optional(*request.released_at * rate) : std::nullopt;
-        ActionSample result{base, action.timeline.sample(request.elapsed * rate, released), {}, {}, {}};
+        ActionSample result{{}, action.timeline.sample(request.elapsed * rate, released), {}, {}, {}};
         const auto &phase = action.phases.at(result.clock.phase);
-        for (const auto &layer : phase.layers) {
-            const double time =
-                std::lerp(layer.interval[0], layer.interval[1], result.clock.progress) * clip(layer.clip).duration;
-            const float amount = layer.weight.sample(result.clock.progress);
-            if (layer.mask.empty()) {
-                const auto contribution = motion_->sample(layer.clip, time);
-                result.pose = motion_->blend(result.pose, contribution, amount);
-            } else {
-                MotionControls controls;
-                controls.layers.push_back(
-                    {layer.clip, layer.mask, time, amount, layer.mode, layer.reference,
-                     layer.reference.empty() ? 0 : layer.reference_at * clip(layer.reference).duration});
-                result.pose = motion_->evaluate(result.pose, controls).pose;
-            }
-            if (result.clip.empty())
-                result.clip = layer.clip;
-        }
+        const auto layers = detail::phase_layers(*motion_, phase, result.clock.progress, base);
+        result.pose = motion_->evaluate(layers.source, layers.controls).pose;
+        result.clip = phase.layers.front().clip;
         for (const auto &track : phase.props)
             result.props.push_back({track.role, track.track,
                                     std::lerp(track.interval[0], track.interval[1], result.clock.progress),

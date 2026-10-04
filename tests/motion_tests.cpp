@@ -115,12 +115,7 @@ Asset helper_model() {
 
 // The limb model's nodes, with a base clip that moves the root 1 unit along +Z over a second, and a layer
 // clip for each mask that turns its root joint a quarter turn about +Z.
-void write_motion(const std::filesystem::path &file) {
-    std::vector<char> binary;
-    for (const float number :
-         {0.F, 1.F, 0.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, .70710678F, .70710678F})
-        append_f32(binary, number);
-    write_glb(file, R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+constexpr auto motion_document = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
         "nodes":[{"name":"root","children":[1,4,6]},{"name":"upper","translation":[0,1,0],"children":[2]},
                  {"name":"middle","translation":[0,-0.4,0.1],"children":[3]},{"name":"end","translation":[0,-0.4,-0.1]},
                  {"name":"side","translation":[0.5,1,0],"children":[5]},{"name":"tip","translation":[0.2,0,0]},
@@ -136,8 +131,15 @@ void write_motion(const std::filesystem::path &file) {
         "animations":[
           {"name":"base","samplers":[{"input":0,"output":1}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]},
           {"name":"layer.limb","samplers":[{"input":0,"output":2}],"channels":[{"sampler":0,"target":{"node":1,"path":"rotation"}}]},
-          {"name":"layer.side","samplers":[{"input":0,"output":2}],"channels":[{"sampler":0,"target":{"node":4,"path":"rotation"}}]}]})",
-              binary);
+          {"name":"layer.side","samplers":[{"input":0,"output":2}],"channels":[{"sampler":0,"target":{"node":4,"path":"rotation"}}]}]})";
+// Writes a motion GLB of @p document, whose buffer holds the keys that motion_document reads: the times 0 and 1, two
+// translations and two rotations.
+void write_motion(const std::filesystem::path &file, const std::string &document = motion_document) {
+    std::vector<char> binary;
+    for (const float number :
+         {0.F, 1.F, 0.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, .70710678F, .70710678F})
+        append_f32(binary, number);
+    write_glb(file, document, binary);
 }
 
 // A one-triangle model for attachment visuals; an @p animated one has a clip that moves it.
@@ -239,6 +241,38 @@ struct MotionFixture {
     }
     [[nodiscard]] MotionRuntime runtime() const { return {body, manifest, contract}; }
 };
+
+// The limb model and its motion with the side joint hidden by a scale of 0 at rest, which collapses the tip below it.
+struct HiddenSide {
+    std::shared_ptr<const Asset> body;
+    std::shared_ptr<const MotionRuntime> motion;
+};
+// Binds @p fixture's contract to a limb model whose side joint is hidden, through a motion GLB that hides it too.
+HiddenSide hidden_side(const MotionFixture &fixture) {
+    constexpr std::size_t side = 4;
+    auto model = limb_model(); // Nothing here reads the inverse binds, which the visible side joint gave.
+    model.nodes[side].rest.scale = {0, 0, 0};
+    write_motion(fixture.directory.path / "hidden.glb",
+                 replaced(motion_document, R"({"name":"side","translation":[0.5,1,0],)",
+                          R"({"name":"side","translation":[0.5,1,0],"scale":[0,0,0],)"));
+    HiddenSide result{std::make_shared<const Asset>(std::move(model)), nullptr};
+    result.motion = std::make_shared<const MotionRuntime>(
+        result.body, fixture.manifest,
+        replaced(fixture.contract, R"("resource":"motion.glb")", R"("resource":"hidden.glb")"));
+    return result;
+}
+// Checks that the side joint and the tip below it stay collapsed at the side joint's offset from the root in @p pose.
+void check_hidden_side(const Pose &pose) {
+    constexpr std::size_t root = 0, side = 4, tip = 5;
+    const auto at = point(pose.world[root], {.5F, 1, 0});
+    for (const auto node : {side, tip}) {
+        CAPTURE(node);
+        CHECK(length(point(pose.world[node], {}) - at) < pose_tolerance);
+        CHECK(length(axis_x(pose.world[node])) < pose_tolerance);
+        CHECK(length(axis_y(pose.world[node])) < pose_tolerance);
+        CHECK(length(axis_z(pose.world[node])) < pose_tolerance);
+    }
+}
 } // namespace
 
 TEST_CASE("A motion contract binds to a model that carries clips of its own, and ignores them") {
@@ -397,9 +431,53 @@ TEST_CASE("An evaluated additive layer adds its change from the reference clip i
     controls.layers.front().mode = LayerMode::override_pose;
     CHECK_THROWS_WITH_AS(runtime.evaluate(base, controls), "Override layer cannot have an additive reference",
                          std::invalid_argument);
-    // A mask has a nonempty name, so an empty one is unknown.
-    controls.layers.front() = {.clip = "base", .mask = ""};
-    CHECK_THROWS_WITH_AS(runtime.evaluate(base, controls), "Unknown motion mask: ", std::out_of_range);
+    controls.layers.front() = {.clip = "base", .mask = "absent"};
+    CHECK_THROWS_WITH_AS(runtime.evaluate(base, controls), "Unknown motion mask: absent", std::out_of_range);
+}
+
+TEST_CASE("An evaluated layer with an empty mask covers every joint, and nodes outside the rig follow its clip") {
+    constexpr std::size_t root = 0, end = 3;
+    const Vec3 moved_offset{.3F, 0, 0};
+    const MotionFixture fixture;
+    const auto model = std::make_shared<const Asset>(helper_model());
+    const MotionRuntime runtime(model, fixture.manifest, fixture.contract);
+    // The source carries the socket node below the limb's end away from its rest offset, which the clip keeps.
+    auto local = runtime.sample("base", 0).local;
+    local[helper_socket].translation = moved_offset;
+    const auto source = pose_from_local(*model, local);
+    MotionControls controls;
+    controls.layers.push_back({.clip = "base", .mask = "", .time = .5, .weight = .5F});
+    const auto evaluated = runtime.evaluate(source, controls).pose;
+    // The root, which no mask names, moves halfway to the clip's half-second position.
+    CHECK(evaluated.world[root][14] == Near{.25, pose_tolerance});
+    CHECK(length(point(evaluated.world[helper_socket], {}) - point(evaluated.world[end], helper_offset)) <
+          pose_tolerance);
+    CHECK(evaluated.world == runtime.blend(source, runtime.sample("base", .5), .5F).world);
+    // Under a masked layer, the socket node keeps the source's offset.
+    controls.layers.front().mask = "limb";
+    const auto masked = runtime.evaluate(source, controls).pose;
+    CHECK(masked.world[root][14] == Near{0, pose_tolerance});
+    CHECK(length(point(masked.world[helper_socket], {}) - point(masked.world[end], moved_offset)) < pose_tolerance);
+    // A layer clip keeps its declared mask, so it cannot cover every joint.
+    controls.layers.front() = {.clip = "layer.limb", .mask = ""};
+    CHECK_THROWS_WITH_AS(runtime.evaluate(source, controls), "Layer control exceeds the resource's declared ownership",
+                         std::invalid_argument);
+}
+
+TEST_CASE("A motion contract rejects a base clip whose keys all sit at time 0") {
+    const MotionFixture fixture;
+    // The base clip samples a single key of each accessor, at time 0, so the motion GLB gives it a duration of 0.
+    write_motion(fixture.directory.path / "pose.glb",
+                 replaced(replaced(motion_document, R"({"name":"base","samplers":[{"input":0,"output":1}])",
+                                   R"({"name":"base","samplers":[{"input":3,"output":4}])"),
+                          R"({"bufferView":2,"componentType":5126,"count":2,"type":"VEC4"}])",
+                          R"({"bufferView":2,"componentType":5126,"count":2,"type":"VEC4"},
+                     {"bufferView":0,"componentType":5126,"count":1,"type":"SCALAR","min":[0],"max":[0]},
+                     {"bufferView":1,"componentType":5126,"count":1,"type":"VEC3"}])"));
+    CHECK_THROWS_WITH_AS(
+        MotionRuntime(fixture.body, fixture.manifest,
+                      replaced(fixture.contract, R"("resource":"motion.glb")", R"("resource":"pose.glb")")),
+        "Motion requires a positive duration", std::invalid_argument);
 }
 
 TEST_CASE("A contact chain answers for every model node below its start joint, evaluation joint or not") {
@@ -609,6 +687,17 @@ TEST_CASE("Presentation frames and poles hold exactly their count of numbers, ea
                          "JSON number outside the float range", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("primary_grip":[1,)", R"("primary_grip":[1,1,)")),
                          "Presentation transform requires 16 column-major values", std::invalid_argument);
+    // A frame whose bottom row differs from (0, 0, 0, 1) in any element is not affine.
+    for (std::size_t element = 3; element < 16; element += 4) {
+        CAPTURE(element);
+        std::array<int, 16> frame{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        ++frame[element];
+        std::string text = R"("primary_grip":[)";
+        for (std::size_t i = 0; i < frame.size(); ++i)
+            text += (i ? "," : "") + std::to_string(frame[i]);
+        CHECK_THROWS_WITH_AS(decode(replaced(catalog, std::string(R"("primary_grip":)") + identity_frame, text + "]")),
+                             "Presentation transform must be affine", std::invalid_argument);
+    }
     // nlohmann's own conversion ignores numbers past the third.
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("pole":[0,0,2])", R"("pole":[0,0,2,0])")),
                          "Support contact pole requires three numbers", std::invalid_argument);
@@ -802,4 +891,94 @@ TEST_CASE("Support contacts solve together on a pose that hides a joint by scali
     const auto hidden = bind_attachment({side, identity()}, visual);
     CHECK_THROWS_WITH_AS(apply_attachment_contacts(runtime, source, "base", handling, visual, hidden, sockets),
                          "Affine transform is collapsed", std::invalid_argument);
+}
+
+TEST_CASE("Action layers evaluate together on a pose that hides a joint by scaling it to zero") {
+    constexpr std::size_t root = 0, upper = 1;
+    // The limb's layer clip turns the upper joint an eighth turn about +Z halfway through, and half of that is a
+    // sixteenth.
+    constexpr float eighth_turn_cosine = .70710678F, sixteenth_turn_cosine = .92387953F;
+    const MotionFixture fixture;
+    const auto hidden = hidden_side(fixture);
+    // Each action's one phase lasts a second. "masked" turns the limb and then blends it halfway back to the base
+    // clip's rest; "blended" blends the whole body halfway to the base clip's half-second pose and then turns the limb;
+    // "resting" turns the limb at weight 0.
+    const ActionRuntime actions(hidden.motion, R"({"schema_version":1,"actions":[
+        {"id":"masked","handling":["free"],"phases":[{"id":"reach","duration":1,"layers":[
+          {"clip":"layer.limb","mask":"limb","interval":[0,1]},
+          {"clip":"base","mask":"limb","interval":[0,1],"weight":[[0,0.5],[1,0.5]]}]}]},
+        {"id":"blended","handling":["free"],"phases":[{"id":"reach","duration":1,"layers":[
+          {"clip":"base","interval":[0,1],"weight":[[0,0.5],[1,0.5]]},
+          {"clip":"layer.limb","mask":"limb","interval":[0,1]}]}]},
+        {"id":"resting","handling":["free"],"phases":[{"id":"reach","duration":1,"layers":[
+          {"clip":"layer.limb","mask":"limb","interval":[0,1],"weight":[[0,0],[1,0]]}]}]}]})");
+    const auto base = hidden.motion->sample("base", 0);
+    ActionSample masked, blended;
+    CHECK_NOTHROW(masked = actions.sample(base, {"masked", 1, .5, {}, {}}, "free"));
+    CHECK(masked.pose.world[root][14] == Near{0, pose_tolerance});
+    CHECK(masked.pose.world[upper][0] == Near{sixteenth_turn_cosine, pose_tolerance});
+    check_hidden_side(masked.pose);
+    CHECK_NOTHROW(blended = actions.sample(base, {"blended", 1, .5, {}, {}}, "free"));
+    CHECK(blended.pose.world[root][14] == Near{.25, pose_tolerance});
+    CHECK(blended.pose.world[upper][0] == Near{eighth_turn_cosine, pose_tolerance});
+    check_hidden_side(blended.pose);
+    // A layer at weight 0 is skipped, so the base pose returns exactly, local transforms and all.
+    const auto resting = actions.sample(base, {"resting", 1, .5, {}, {}}, "free");
+    CHECK(resting.pose.world == base.world);
+    REQUIRE(resting.pose.local.size() == base.local.size());
+    for (std::size_t i = 0; i < base.local.size(); ++i) {
+        CAPTURE(i);
+        CHECK(matrix(resting.pose.local[i]) == matrix(base.local[i]));
+    }
+}
+
+TEST_CASE("An interaction role solves its layers and contacts together on a pose that hides a joint") {
+    // Distance a solved contact may leave between its chain's end and its target.
+    constexpr float reach_tolerance = 2e-5F;
+    constexpr std::size_t root = 0, end = 3, other_end = 8;
+    const MotionFixture fixture;
+    const auto hidden = hidden_side(fixture);
+    const auto parent_motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    // The child stands on the parent's root and reaches both limbs to targets just off the parent's limb ends.
+    Transform offset;
+    offset.translation = {.1F, .1F, 0};
+    const InteractionRuntime::Actors actors{{"child", {hidden.body, hidden.motion, {{"anchor", {root, identity()}}}}},
+                                            {"parent",
+                                             {fixture.body,
+                                              parent_motion,
+                                              {{"anchor", {root, identity()}},
+                                               {"target", {end, matrix(offset)}},
+                                               {"other.target", {other_end, matrix(offset)}}}}}};
+    const auto both = replaced(meeting, R"("contacts":[)", R"("contacts":[
+        {"child":"child","parent":"parent","chain":"other","target_socket":"other.target","pole":[0,0,2],
+         "weights":{"hold":[[0,1],[1,1]]}},)");
+    // The child's layers then end with a masked one, so they give a world-only pose.
+    const auto layered = replaced(both, R"("child":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}})",
+                                  R"("child":{"hold":{"layers":[{"clip":"base","interval":[0,1]},
+                                      {"clip":"layer.limb","mask":"limb","interval":[0,1]}]}})");
+    const std::map<std::string, Mat4, std::less<>> free_worlds{{"child", identity()}, {"parent", identity()}};
+    for (const auto &document : {both, layered}) {
+        CAPTURE(document);
+        const InteractionRuntime interaction(actors, document);
+        InteractionSample sampled;
+        CHECK_NOTHROW(sampled = interaction.sample(.5, {}, free_worlds));
+        REQUIRE(sampled.contacts.size() == 2);
+        CHECK(sampled.contacts[0].chain == "other");
+        CHECK(sampled.contacts[1].chain == "limb");
+        for (const auto &contact : sampled.contacts) {
+            CAPTURE(contact.chain);
+            CHECK(contact.role == "child");
+            CHECK(contact.reachable);
+            CHECK(contact.error < reach_tolerance);
+        }
+        check_hidden_side(sampled.frames[interaction.bindings().role("child")].pose);
+    }
+}
+
+TEST_CASE("An actor presentation profile reports a value of the wrong JSON type as an invalid argument") {
+    const MotionFixture fixture;
+    const auto profile = fixture.directory.path / "actor.profile.json";
+    std::ofstream(profile) << R"({"version":2,"id":5,"manifest":"actor.manifest.json","sockets":{}})";
+    CHECK_THROWS_WITH_AS(ActorPresentation{profile},
+                         "[json.exception.type_error.302] type must be string, but is number", std::invalid_argument);
 }
