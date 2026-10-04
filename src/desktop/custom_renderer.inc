@@ -290,15 +290,15 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     if (!writes.empty())
         vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     if (value->shadow_vertex)
-        create_custom_pipeline(*value, true);
-    create_custom_pipeline(*value, false);
+        value->shadow_pipeline = create_custom_pipeline(*value, true);
+    value->pipeline = create_custom_pipeline(*value, false);
     auto &cached = *custom_cache.emplace(material.get(), std::move(value)).first->second;
     // Every copy has completed, so a material with TexelRetention::until_upload no longer needs its texels.
     material->release_texels();
     return cached;
 }
-// Creates @p gpu's main-view pipeline, or with @p shadow its depth-only variant's.
-void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {
+// Returns a new main-view pipeline for @p gpu, or with @p shadow its depth-only variant's, which the caller owns.
+[[nodiscard]] VkPipeline create_custom_pipeline(const GpuCustomMaterial &gpu, bool shadow) const {
     const auto &source = *gpu.source;
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     for (auto &stage : stages) {
@@ -325,61 +325,33 @@ void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {
         if (attributes.size() != first)
             bindings.push_back(binding);
     }
-    VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size());
-    vertex.pVertexBindingDescriptions = bindings.data();
-    vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size());
-    vertex.pVertexAttributeDescriptions = attributes.data();
-    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0F;
-    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    GraphicsPipelineState state;
+    // A depth-only variant without a fragment shader writes the depth of every covered pixel.
+    state.stages = std::span(stages).first(stages[1].module ? 2 : 1);
+    state.vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size());
+    state.vertex.pVertexBindingDescriptions = bindings.data();
+    state.vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size());
+    state.vertex.pVertexAttributeDescriptions = attributes.data();
     // Opaque materials write depth; blended and additive ones test it without writing, as blended materials do.
     const bool opaque = shadow || source.blend() == CustomBlend::opaque;
-    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = opaque ? VK_TRUE : VK_FALSE;
+    state.depth.depthTestEnable = VK_TRUE;
+    state.depth.depthWriteEnable = opaque ? VK_TRUE : VK_FALSE;
     // Reversed depth in the view; shadow maps keep forward depth, as the built-in shadow pass does.
-    depth.depthCompareOp = shadow ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_GREATER;
-    VkPipelineColorBlendAttachmentState attachment{};
-    attachment.blendEnable = opaque ? VK_FALSE : VK_TRUE;
-    attachment.srcColorBlendFactor = attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    attachment.dstColorBlendFactor = attachment.dstAlphaBlendFactor =
-        source.blend() == CustomBlend::additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    attachment.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    blend.attachmentCount = shadow ? 0 : 1;
-    blend.pAttachments = &attachment;
-    const VkDynamicState dynamic_states[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = static_cast<std::uint32_t>(std::size(dynamic_states));
-    dynamic.pDynamicStates = dynamic_states;
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    // A depth-only variant without a fragment shader writes the depth of every covered pixel.
-    info.stageCount = stages[1].module ? 2 : 1;
-    info.pStages = stages.data();
-    info.pVertexInputState = &vertex;
-    info.pInputAssemblyState = &assembly;
-    info.pViewportState = &viewport;
-    info.pRasterizationState = &raster;
-    info.pMultisampleState = &multisample;
-    info.pDepthStencilState = &depth;
-    info.pColorBlendState = &blend;
-    info.pDynamicState = &dynamic;
-    info.layout = custom_pipeline_layout;
-    info.renderPass = shadow ? shadow_pass : render_pass;
-    check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr,
-                                    shadow ? &gpu.shadow_pipeline : &gpu.pipeline),
-          "Create custom material pipeline");
+    state.depth.depthCompareOp = shadow ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_GREATER;
+    // The shadow pass has no color attachment.
+    if (!shadow) {
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.blendEnable = opaque ? VK_FALSE : VK_TRUE;
+        blend.srcColorBlendFactor = blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.dstColorBlendFactor = blend.dstAlphaBlendFactor =
+            source.blend() == CustomBlend::additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        state.blend = blend;
+    }
+    state.layout = custom_pipeline_layout;
+    state.pass = shadow ? shadow_pass : render_pass;
+    return create_graphics_pipeline(state, "Create custom material pipeline");
 }
 // Binds @p gpu's pipeline, or with @p shadow its depth-only variant's, with the frame, pose and material sets.
 void bind_custom(const GpuCustomMaterial &gpu, bool shadow) {
