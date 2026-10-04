@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -41,7 +42,7 @@ std::vector<anima::DrawLevel> levels(std::initializer_list<float> errors) {
         result.push_back({0, 0, error});
     return result;
 }
-anima::Mat4 projection() { return anima::perspective(1.5F, .5F, 20); }
+anima::Mat4 projection() { return anima::perspective(std::numbers::pi_v<float> / 4, 1.5F, .5F, 20); }
 // projection() with its far plane at infinity.
 anima::Mat4 infinite_far() {
     auto infinite = projection();

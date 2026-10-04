@@ -187,7 +187,8 @@ inline int run(int argc, char **argv) {
         return stats;
     };
     const auto view = [&](anima::Vec3 eye, anima::Vec3 target) {
-        renderer.set_view(anima::operator*(anima::perspective(1, .1F, 300), anima::look_at(eye, target)));
+        renderer.set_view(anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, 300),
+                                           anima::look_at(eye, target)));
     };
 
     // Simplified levels may move silhouettes and shadow edges by up to a pixel and nothing more: every pixel that

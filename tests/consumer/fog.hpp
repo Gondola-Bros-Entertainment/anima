@@ -31,7 +31,8 @@ using Point = std::array<double, 3>;
 constexpr anima::Vec3 eye{0, 2, 0};
 inline anima::Mat4 view(float aspect) {
     using anima::operator*;
-    return anima::perspective(aspect, .1F, 1000) * anima::look_at(eye, eye + anima::Vec3{0, 0, -1});
+    return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 1000) *
+           anima::look_at(eye, eye + anima::Vec3{0, 0, -1});
 }
 // The unit direction from the eye through the center of @p pixel of @p image, drawn through the view-projection whose
 // inverse is @p inverse.

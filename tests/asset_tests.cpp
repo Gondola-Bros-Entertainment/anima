@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -418,14 +419,14 @@ TEST_CASE("Material factors outside their ranges are rejected by validate_materi
 }
 
 TEST_CASE("A perspective projection maps the near and far planes to reversed Vulkan depths 1 and 0") {
-    const auto projection = perspective(1.5F, 0.1F, 100.F);
+    const auto projection = perspective(std::numbers::pi_v<float> / 4, 1.5F, 0.1F, 100.F);
     CHECK((-0.1F * projection[10] + projection[14]) / 0.1F == Near{1, tolerance});
     CHECK((-100.F * projection[10] + projection[14]) / 100.F == Near{0, tolerance});
 }
 
 TEST_CASE("Reversed depth keeps surfaces 1 cm apart at 450 m in order") {
     // A 3 cm near plane with forward depth spaces adjacent float depths about 40 cm apart at 450 m.
-    const auto projection = perspective(16.F / 9.F, .03F, 500.F);
+    const auto projection = perspective(std::numbers::pi_v<float> / 4, 16.F / 9.F, .03F, 500.F);
     const auto depth = [&](float distance) { return (-distance * projection[10] + projection[14]) / distance; };
     for (int step = 0; step < 100; ++step) {
         const float distance = 450.F + float(step) * .01F;

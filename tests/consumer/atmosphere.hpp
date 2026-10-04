@@ -21,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -101,7 +102,7 @@ class Rig {
     // The size of every capture, from a first frame.
     [[nodiscard]] std::pair<std::size_t, std::size_t> size() {
         if (!width_) {
-            draw("size", anima::perspective(aspect(), .1F, 1), anima::Environment{});
+            draw("size", anima::perspective(std::numbers::pi_v<float> / 4, aspect(), .1F, 1), anima::Environment{});
             width_ = images["size"].width;
             height_ = images["size"].height;
             images.discard({"size"});
@@ -137,7 +138,7 @@ class Rig {
 inline anima::Vec3 vec(const Direction &d) { return {float(d.x), float(d.y), float(d.z)}; }
 inline anima::Mat4 camera(float aspect, anima::Vec3 eye, double pitch, double azimuth) {
     using anima::operator*;
-    return anima::perspective(aspect, .1F, 1000) *
+    return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 1000) *
            anima::look_at(eye, eye + vec(atmosphere_reference::direction(pitch, azimuth)));
 }
 // The pixel of a @p width by @p height image that shows @p world through @p view_projection.

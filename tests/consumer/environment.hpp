@@ -200,7 +200,8 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, 
     lighting.shadow_cascades.enabled = true;
     lighting.shadow_cascades.count = 1;
     lighting.shadow_cascades.distance = 10;
-    const auto view = anima::perspective(4.F / 3, .05F, 50) * anima::look_at({0, 5, 3}, {0, 0, -1});
+    const auto view =
+        anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 50) * anima::look_at({0, 5, 3}, {0, 0, -1});
     renderer.set_view(view);
     renderer.set_environment(lighting);
     renderer.set_scenes({scene});
@@ -312,7 +313,8 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture,
     lighting.ambient_sky = {.25F, .3F, .4F};
     lighting.ambient_ground = {.04F, .03F, .02F};
     lighting.shadow_cascades.enabled = false;
-    const auto view = anima::perspective(4.F / 3, .05F, 50) * anima::look_at({0, 2, 5}, {0, half, 0});
+    const auto view =
+        anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 50) * anima::look_at({0, 2, 5}, {0, half, 0});
     renderer.set_view(view);
     renderer.set_environment(lighting);
     renderer.set_scenes({scene});
@@ -536,7 +538,8 @@ inline int run(int argc, char **argv) {
     const auto compiled = anima::Mesh::compile(*asset);
     auto scene = std::make_shared<anima::Scene>();
     const auto id = scene->add(compiled);
-    const auto view = anima::perspective(4.F / 3, .05F, 100) * anima::look_at({0, 6, 10}, {0, 0, 0});
+    const auto view =
+        anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 100) * anima::look_at({0, 6, 10}, {0, 0, 0});
     renderer.set_view(view);
     renderer.set_scenes({scene});
     anima::Environment environment;
@@ -685,7 +688,8 @@ inline int run(int argc, char **argv) {
     environment.shadow_cascades.resolution = 2048;
     renderer.set_environment(environment);
     capture("restored-shadow");
-    renderer.set_view(anima::perspective(4.F / 3, .05F, 2) * anima::look_at({0, 1, 1}, {0, 0, 0}));
+    renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 2) *
+                      anima::look_at({0, 1, 1}, {0, 0, 0}));
     capture("");
     require(renderer.resource_stats().culled_draws >= 1 && renderer.resource_stats().shadow_draw_calls == 2,
             "Main camera incorrectly removed an offscreen shadow caster");
@@ -694,7 +698,8 @@ inline int run(int argc, char **argv) {
     // the original view must reproduce the original shadowed image.
     for (int step = 0; step <= 16; ++step) {
         const float x = step <= 8 ? -.5F * step : -4.F + .5F * (step - 8);
-        renderer.set_view(anima::perspective(4.F / 3, .05F, 100) * anima::look_at({x, 6, 10}, {0, 0, 0}));
+        renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 100) *
+                          anima::look_at({x, 6, 10}, {0, 0, 0}));
         capture(step == 8 ? "camera-left" : step == 16 ? "camera-restored" : "");
     }
     // Optional detail region: keep the cascades' coverage while refining a small subject, including independent
@@ -727,7 +732,8 @@ inline int run(int argc, char **argv) {
     environment.shadow_cascades.enabled = false;
     renderer.set_environment(environment);
     capture("detail-only");
-    renderer.set_view(anima::perspective(4.F / 3, .05F, 2) * anima::look_at({0, 1, 1}, {0, 0, 0}));
+    renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 2) *
+                      anima::look_at({0, 1, 1}, {0, 0, 0}));
     capture("");
     require(renderer.resource_stats().culled_draws >= 1 && renderer.resource_stats().shadow_draw_calls == 2,
             "Main camera removed a detail-region caster");
@@ -739,7 +745,8 @@ inline int run(int argc, char **argv) {
     environment.shadow_cascades.distance = 1;
     environment.detail_shadow.center.x = 40;
     renderer.set_environment(environment);
-    renderer.set_view(anima::perspective(4.F / 3, .05F, 100) * anima::look_at({40, 6, 10}, {40, 0, 0}));
+    renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 100) *
+                      anima::look_at({40, 6, 10}, {40, 0, 0}));
     capture("detail-outside-world");
     require(renderer.resource_stats().shadow_draw_calls == 2, "Detail casters depended on cascade coverage");
     environment.shadow_cascades.distance = 25;
