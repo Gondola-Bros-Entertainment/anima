@@ -262,32 +262,17 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     check(vkAllocateDescriptorSets(device, &allocate, &value->set), "Allocate custom material set");
     // Validation limited the shaders to the supplied parameters and textures, so the bindings left unwritten here
     // are never used.
-    std::array<VkDescriptorImageInfo, CustomMaterial::max_textures> image_infos{};
-    std::vector<VkWriteDescriptorSet> writes;
-    const VkDescriptorBufferInfo buffer{value->parameters ? value->parameters->buffer : VK_NULL_HANDLE, 0,
-                                        definition.parameters.size()};
     if (value->parameters) {
+        const VkDescriptorBufferInfo buffer{value->parameters->buffer, 0, definition.parameters.size()};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = value->set;
         write.dstBinding = 0;
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         write.pBufferInfo = &buffer;
-        writes.push_back(write);
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
-    for (std::size_t i = 0; i < value->textures.size(); ++i) {
-        const auto &texture = value->textures[i];
-        image_infos[i] = {texture.sampler, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = value->set;
-        write.dstBinding = static_cast<std::uint32_t>(i + 1);
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &image_infos[i];
-        writes.push_back(write);
-    }
-    if (!writes.empty())
-        vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    write_custom_textures(*value);
     if (value->shadow_vertex)
         create_custom_pipeline(*value, true);
     if (render_pass)
@@ -296,6 +281,24 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     // Every copy has completed, so a material with TexelRetention::until_upload no longer needs its texels.
     material->release_texels();
     return cached;
+}
+// Points @p gpu's texture bindings, from binding 1 in CustomMaterial::textures order, at its textures' views and
+// samplers. No frame in flight may use its set.
+void write_custom_textures(const GpuCustomMaterial &gpu) const {
+    std::array<VkDescriptorImageInfo, CustomMaterial::max_textures> image_infos{};
+    std::array<VkWriteDescriptorSet, CustomMaterial::max_textures> writes{};
+    for (std::size_t i = 0; i < gpu.textures.size(); ++i) {
+        const auto &texture = gpu.textures[i];
+        image_infos[i] = {texture.sampler, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = gpu.set;
+        writes[i].dstBinding = static_cast<std::uint32_t>(i + 1);
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &image_infos[i];
+    }
+    if (!gpu.textures.empty())
+        vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(gpu.textures.size()), writes.data(), 0, nullptr);
 }
 // Creates @p gpu's main-view pipeline, or with @p shadow its depth-only variant's.
 void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {

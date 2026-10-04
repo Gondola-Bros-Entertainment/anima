@@ -60,6 +60,15 @@ inline std::array<double, 3> default_view() {
             std::cos(orbit_yaw) * std::cos(orbit_pitch)};
 }
 
+// A scene of one object: the mesh that @p glb compiles to, placed at @p world.
+inline std::shared_ptr<const anima::Scene> imported_scene(const std::vector<std::byte> &glb,
+                                                          const anima::Mat4 &world = anima::identity()) {
+    const auto asset = anima::load_asset(std::span<const std::byte>(glb));
+    auto scene = std::make_shared<anima::Scene>();
+    scene->set_transform(scene->add(anima::Mesh::compile(*asset)), world);
+    return scene;
+}
+
 // Renders fixtures one at a time in one window and keeps each first frame by name.
 class Harness {
   public:
@@ -77,15 +86,18 @@ class Harness {
     /// back its first frame as @p name.
     void render(const std::string &name, const std::vector<std::byte> &glb,
                 const anima::Mat4 &world = anima::identity(), const std::optional<Eye> &eye = std::nullopt) {
-        const auto asset = anima::load_asset(std::span<const std::byte>(glb));
-        auto scene = std::make_shared<anima::Scene>();
-        scene->set_transform(scene->add(anima::Mesh::compile(*asset)), world);
-        render(name, scene, eye);
+        render(name, imported_scene(glb, world), eye);
     }
     /// Views @p scene from @p eye or else frames it with an OrbitCamera, reads back its first frame as @p name, and
     /// keeps the frame's counters in #resources.
     void render(const std::string &name, const std::shared_ptr<const anima::Scene> &scene,
                 const std::optional<Eye> &eye = std::nullopt) {
+        select(scene, eye);
+        capture(name);
+    }
+    /// Selects @p scene alone, which waits for every frame in flight, and views it from @p eye or else frames it with
+    /// an OrbitCamera.
+    void select(const std::shared_ptr<const anima::Scene> &scene, const std::optional<Eye> &eye = std::nullopt) {
         renderer_.set_scenes({scene});
         int width = 0, height = 0;
         require(SDL_GetWindowSizeInPixels(window_.get(), &width, &height) && width > 0 && height > 0,
@@ -100,7 +112,16 @@ class Harness {
             camera.frame(scene->bounds().minimum, scene->bounds().maximum);
             renderer_.set_view(camera.matrix(aspect));
         }
+    }
+    /// Reads back the next frame that draw() presents as @p name, and keeps the frame's counters in #resources.
+    void capture(const std::string &name) {
         renderer_.request_capture();
+        present();
+        images.add(name, gpu_check::take(renderer_));
+        resources = renderer_.resource_stats();
+    }
+    /// Draws until draw() presents a frame, which it leaves in flight unless a capture waits for it.
+    void present() {
         const auto started = std::chrono::steady_clock::now();
         for (;;) {
             require(std::chrono::steady_clock::now() - started < gpu_check::watchdog, "Material watchdog");
@@ -112,8 +133,6 @@ class Harness {
                 break;
             SDL_Delay(5);
         }
-        images.add(name, gpu_check::take(renderer_));
-        resources = renderer_.resource_stats();
     }
     /// Shuts the renderer down and requires clean validation.
     void finish() {
@@ -122,6 +141,8 @@ class Harness {
     }
     /// VulkanRenderer::max_anisotropy.
     [[nodiscard]] float max_anisotropy() const noexcept { return renderer_.max_anisotropy(); }
+    /// The renderer, for settings that the harness does not wrap.
+    [[nodiscard]] anima::VulkanRenderer &renderer() noexcept { return renderer_; }
 
   private:
     static anima::RendererOptions options(float anisotropy) {
@@ -282,11 +303,16 @@ inline double stripe_contrast(const gpu_check::Image &image, std::size_t first, 
     }
     return deviation / double(count);
 }
+// What RendererOptions::max_anisotropy and VulkanRenderer::set_max_anisotropy() report for a degree that is not finite
+// or is below 1.
+constexpr std::string_view invalid_anisotropy = "Maximum anisotropy must be finite and at least 1";
 // Draws the striped floor from 1 m above it with the default RendererOptions::max_anisotropy, with 64, above the 16
 // that devices commonly allow, and with 1, and returns the degree that the first renderer used. Between 12 and 30 m
 // ahead, a pixel's footprint on the floor is 12 to 30 times longer than it is wide, so isotropic filtering blurs the
 // stripes to gray, and anisotropic filtering, which Vulkan requires to reach 16 wherever it is supported, keeps more of
-// them. Nearest and unmipmapped floors must not change.
+// them. Nearest and unmipmapped floors must not change. The first renderer then lowers its anisotropy to 1 with
+// set_max_anisotropy() and must draw the floors that it has cached as the renderer created with 1 draws them, and raise
+// it again and draw its first frame again, with as many samplers throughout.
 inline float check_anisotropy(const std::filesystem::path &output) {
     constexpr double height = 1, aim = 20, farthest = 30, closest = 12, least_gain = 2;
     const Harness::Eye eye{{0, float(height), float(aim)}, {0, 0, 0}};
@@ -294,15 +320,52 @@ inline float check_anisotropy(const std::filesystem::path &output) {
         {{"floor-trilinear", striped_floor(linear, linear_mipmap_linear)},
          {"floor-nearest", striped_floor(nearest, nearest)},
          {"floor-unmipmapped", striped_floor(linear, linear)}}};
-    std::vector<std::pair<std::string, gpu_check::Image>> anisotropic;
+    std::vector<std::pair<std::string, gpu_check::Image>> anisotropic, lowered;
     float degree{};
     {
         Harness harness(output);
         degree = harness.max_anisotropy();
+        // Each floor keeps its scene, so its mesh stays cached and the changes below replace its samplers rather than
+        // upload it again.
+        std::vector<std::shared_ptr<const anima::Scene>> floor_scenes;
         for (const auto &[name, glb] : floors) {
-            harness.render(name, glb, anima::identity(), eye);
+            floor_scenes.push_back(imported_scene(glb));
+            harness.render(name, floor_scenes.back(), eye);
             anisotropic.emplace_back(name + "-anisotropic", harness.images[name]);
         }
+        const auto samplers = harness.resources.resident_material_samplers;
+        auto &renderer = harness.renderer();
+        constexpr auto infinity = std::numeric_limits<float>::infinity();
+        for (const auto value : {0.F, .5F, -infinity, infinity, std::numeric_limits<float>::quiet_NaN()})
+            rejection::rejects<std::invalid_argument>([&] { renderer.set_max_anisotropy(value); }, invalid_anisotropy);
+        require(harness.max_anisotropy() == degree, "A rejected set_max_anisotropy() changed the anisotropy");
+        // Each change is applied by a draw() while the frame before it is still in flight, so validation checks that
+        // the descriptors it rewrites wait for that frame.
+        const auto change = [&](float samples, std::size_t index, const std::string &name) {
+            harness.select(floor_scenes[index], eye);
+            harness.present();
+            renderer.set_max_anisotropy(samples);
+            harness.capture(name);
+            require(harness.resources.resident_material_samplers == samplers,
+                    "set_max_anisotropy(" + std::to_string(samples) + ") left " +
+                        std::to_string(harness.resources.resident_material_samplers) + " material samplers, not " +
+                        std::to_string(samplers));
+        };
+        change(1, 0, "floor-trilinear-lowered");
+        require(harness.max_anisotropy() == 1, "set_max_anisotropy(1) did not filter isotropically");
+        for (std::size_t index = 1; index < floors.size(); ++index) {
+            harness.render(floors[index].first + "-lowered", floor_scenes[index], eye);
+            require(harness.resources.resident_material_samplers == samplers,
+                    "A cached floor drawn at anisotropy 1 changed the material samplers");
+        }
+        for (const auto &[name, glb] : floors)
+            lowered.emplace_back(name + "-lowered", harness.images[name + "-lowered"]);
+        change(anima::RendererOptions{}.max_anisotropy, 0, "floor-trilinear-raised");
+        require(harness.max_anisotropy() == degree, "Raising the anisotropy again gave " +
+                                                        std::to_string(harness.max_anisotropy()) + ", not " +
+                                                        std::to_string(degree));
+        harness.images.require_same("floor-trilinear", "floor-trilinear-raised",
+                                    "Raising the anisotropy again filtered unlike the renderer's first frame");
         harness.finish();
     }
     require(degree == 1 || degree == anima::RendererOptions{}.max_anisotropy,
@@ -332,8 +395,13 @@ inline float check_anisotropy(const std::filesystem::path &output) {
     auto &images = harness.images;
     for (auto &[name, image] : anisotropic)
         images.add(name, std::move(image));
-    for (const auto &[name, glb] : floors)
+    for (auto &[name, image] : lowered)
+        images.add(name, std::move(image));
+    for (const auto &[name, glb] : floors) {
         harness.render(name + "-isotropic", glb, anima::identity(), eye);
+        images.require_same(name + "-lowered", name + "-isotropic",
+                            "set_max_anisotropy(1) filtered a cached floor unlike a renderer created with 1");
+    }
     images.require_same("floor-nearest-anisotropic", "floor-nearest-isotropic",
                         "Anisotropy changed a nearest-filtered texture");
     images.require_same("floor-unmipmapped-anisotropic", "floor-unmipmapped-isotropic",
@@ -359,7 +427,6 @@ inline float check_anisotropy(const std::filesystem::path &output) {
 // Rejects a RendererOptions::max_anisotropy that is not finite or is below 1, after an unknown failure stage and
 // before a missing window, so without a display or GPU.
 inline void reject_invalid_anisotropy() {
-    constexpr std::string_view invalid = "Maximum anisotropy must be finite and at least 1";
     const auto construct = [](float anisotropy, anima::RendererFailureStage stage) {
         anima::RendererOptions options;
         options.max_anisotropy = anisotropy;
@@ -369,7 +436,7 @@ inline void reject_invalid_anisotropy() {
     constexpr auto no_failure = anima::RendererFailureStage::none;
     constexpr auto infinity = std::numeric_limits<float>::infinity();
     for (const auto value : {0.F, .5F, -1.F, -infinity, infinity, std::numeric_limits<float>::quiet_NaN()})
-        rejection::rejects<std::invalid_argument>([&] { construct(value, no_failure); }, invalid);
+        rejection::rejects<std::invalid_argument>([&] { construct(value, no_failure); }, invalid_anisotropy);
     for (const auto value : {1.F, 16.F, 1000.F})
         rejection::rejects<std::invalid_argument>([&] { construct(value, no_failure); },
                                                   "Renderer requires an SDL window");
