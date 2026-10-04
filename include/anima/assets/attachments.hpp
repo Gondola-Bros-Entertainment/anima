@@ -273,7 +273,7 @@ struct AttachmentInstance {
     /// removed. Returns false and changes nothing when @p id is already attached. Throws
     /// `std::invalid_argument` ("Attachment instance belongs to another scene") when the old
     /// instance belongs to a scene other than @p scene, `std::out_of_range` for an unknown item or
-    /// socket, and as AttachmentLibrary::load and Scene::add do; on failure the old item stays
+    /// socket, and as AttachmentLibrary::load and Scene::create do; on failure the old item stays
     /// attached and @p scene is unchanged.
     bool replace(Scene &scene, const AttachmentLibrary &library, const AttachmentSockets &sockets, std::string_view id);
 };

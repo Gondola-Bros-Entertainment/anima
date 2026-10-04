@@ -215,7 +215,7 @@ class Mesh {
     /// ImageFormat::rgba8 map and read as stored for a block-compressed one. An ImageFormat::rgba8 base color's mips
     /// keep its alpha coverage at 0.5, as a masked material's do. impostor() returns @p atlas's frames.
     ///
-    /// A custom material assigned to the Mesh's material slot (Scene::set_custom_material) draws the quad's own
+    /// A custom material assigned to the Mesh's material slot (MeshRenderer::set_custom_material) draws the quad's own
     /// vertices instead of an impostor: positions at ImpostorFrames::center plus ImpostorFrames::radius times
     /// (-1, -1, -1), (1, -1, 1), (1, 1, 1) and (-1, 1, -1), on a diagonal plane of the cube rather than facing the eye,
     /// with uv (0, 0), (1, 0), (1, 1) and (0, 1) and normal (0, 0, 1). Its shaders receive no ImpostorFrames, so one

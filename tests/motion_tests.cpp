@@ -487,7 +487,7 @@ TEST_CASE("Replacing an attachment counts a removed instance as gone, and checks
     Scene scene;
     AttachmentInstance held;
     REQUIRE(held.replace(scene, library, fixture.sockets, "prop"));
-    scene.remove(*held.instance);
+    scene.object(*held.instance).destroy();
     CHECK(held.replace(scene, library, fixture.sockets, "brace"));
     CHECK(held.item_id == "brace");
     CHECK(scene.size() == 1);

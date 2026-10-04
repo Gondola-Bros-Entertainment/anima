@@ -335,7 +335,7 @@ TEST_CASE("A fitted load shares the Mesh that a scene still draws after its fitt
         R"("bind_signature":"signature"}}}]})");
     Scene scene;
     auto loaded = library.load("cover");
-    (void)scene.add(loaded->render);
+    (void)scene.create({}, loaded->render);
     const std::weak_ptr<const FittedAsset> dropped = loaded;
     const std::weak_ptr<const Mesh> drawn = loaded->render;
     loaded.reset();
