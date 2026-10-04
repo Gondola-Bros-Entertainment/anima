@@ -263,7 +263,10 @@ struct FrameProfile {
     /// than `enabled`, `ground_height`, `mie_anisotropy` and `sun_angular_radius`, rebuilds the transmittance and
     /// multiple scattering tables and redraws the sky view table. Any other frame redraws only the sky view table, when
     /// the altitude that the sky is seen from (EnvironmentSettings::atmosphere), the sun's elevation or
-    /// `mie_anisotropy` differs from that table's last write, and otherwise dispatches nothing.
+    /// `mie_anisotropy` differs from that table's last write, and otherwise dispatches nothing. That altitude stays the
+    /// same until the eye's differs from it by more than the larger of 1 mm and about 1e-6 times the eye's distance
+    /// from the world's origin, a margin over the rounding that turning the camera in place gives the eye, or until a
+    /// thinner atmosphere's top falls to less than 1 m above it.
     double gpu_atmosphere_ms{};
     /// Every shadow pass: each shadow cascade and the detail region.
     double gpu_shadow_ms{};

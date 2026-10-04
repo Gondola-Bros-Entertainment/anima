@@ -5,9 +5,11 @@
 // in a hazy atmosphere. Then the horizon reddening toward a low sun and the sky darkening through twilight; surfaces
 // lit by atmosphere_sunlight(), which follows each of its inputs the frame it changes; tables rebuilt when the medium
 // changes and the first frame back when it returns, left as they were when any other input changes, and the sky view
-// table redrawn when one of its inputs changes; the same frame when the eye and the ground move together; the time and
-// memory the tables take, with frames that change none of their inputs dispatching nothing; and the time
-// set_environment() takes, which integrates the sun's transmittance again only when an input of the sunlight changes.
+// table redrawn when one of its inputs changes; the same frame when the eye and the ground move together; the sky seen
+// from 1 m below the top of an atmosphere thinned under a distant eye; the time and memory the tables take, with frames
+// that change none of their inputs dispatching nothing, frames that only turn the camera among them, and frames that
+// raise a distant eye by about twice the tolerance redrawing the sky view table; and the time set_environment() takes,
+// which integrates the sun's transmittance again only when an input of the sunlight changes.
 #include "atmosphere_reference.hpp"
 #include "blending.hpp"
 #include "gpu_checks.hpp"
@@ -421,8 +423,9 @@ enum class Reader { tables, sky };
 // Since the renderer redraws the sky view table only on a frame that changes what it reads, the comparison also shows
 // that the eye's altitude, Mie scattering's asymmetry and the sun's direction each redraw it: a table left as it was
 // would show the sky from before the change. The changes cover every field of Atmosphere but `enabled`, which is true
-// whenever the tables are built. Changing only what the sky view table reads changes the frame too. Moving the eye and
-// the ground together leaves the frame as it was, to within a level of rounding.
+// whenever the tables are built. Each change must alter a least share of the frame, so that neither comparison passes
+// for a renderer that ignores the input. Moving the eye and the ground together leaves the frame as it was, to within
+// a level of rounding.
 inline void check_updates(Rig &rig) {
     const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 10, 25);
     auto environment = earth();
@@ -430,36 +433,45 @@ inline void check_updates(Rig &rig) {
     environment.exposure = 6;
     // Five times Earth's ozone, so that moving and narrowing its layer shows.
     environment.atmosphere.ozone_absorption = {3.25e-6F, 9.4e-6F, 4.25e-7F};
+    // The least share of the frame's pixels that a change must alter by more than 3 levels, so that the comparisons
+    // after it cannot pass for a renderer that ignores it: most of the sky for most changes, and for the sun's angular
+    // radius the ring that its disc gains when the radius grows from 0.0047 to 0.02 radians, about 0.18% of the frame.
+    constexpr double sky = .05, disc = 5e-4;
     struct Change {
         const char *input;
         Reader reader;
+        double least;
         void (*apply)(anima::Environment &);
     };
     using anima::Environment;
     const Change changes[]{
-        {"atmosphere.planet_radius", Reader::tables, [](Environment &e) { e.atmosphere.planet_radius = 3'000'000; }},
-        {"atmosphere.thickness", Reader::tables, [](Environment &e) { e.atmosphere.thickness = 20'000; }},
-        {"atmosphere.rayleigh_scattering", Reader::tables,
+        {"atmosphere.planet_radius", Reader::tables, sky,
+         [](Environment &e) { e.atmosphere.planet_radius = 3'000'000; }},
+        {"atmosphere.thickness", Reader::tables, sky, [](Environment &e) { e.atmosphere.thickness = 20'000; }},
+        {"atmosphere.rayleigh_scattering", Reader::tables, sky,
          [](Environment &e) { e.atmosphere.rayleigh_scattering = {1.2e-5F, 2.7e-5F, 6.6e-5F}; }},
-        {"atmosphere.rayleigh_scale_height", Reader::tables,
+        {"atmosphere.rayleigh_scale_height", Reader::tables, sky,
          [](Environment &e) { e.atmosphere.rayleigh_scale_height = 16'000; }},
-        {"atmosphere.mie_scattering", Reader::tables,
+        {"atmosphere.mie_scattering", Reader::tables, sky,
          [](Environment &e) { e.atmosphere.mie_scattering = {2e-5F, 2e-5F, 2e-5F}; }},
-        {"atmosphere.mie_absorption", Reader::tables,
+        {"atmosphere.mie_absorption", Reader::tables, sky,
          [](Environment &e) { e.atmosphere.mie_absorption = {1e-5F, 1e-5F, 1e-5F}; }},
-        {"atmosphere.mie_scale_height", Reader::tables, [](Environment &e) { e.atmosphere.mie_scale_height = 4'000; }},
-        {"atmosphere.ozone_absorption", Reader::tables,
+        {"atmosphere.mie_scale_height", Reader::tables, sky,
+         [](Environment &e) { e.atmosphere.mie_scale_height = 4'000; }},
+        {"atmosphere.ozone_absorption", Reader::tables, sky,
          [](Environment &e) { e.atmosphere.ozone_absorption = {0, 0, 0}; }},
-        {"atmosphere.ozone_altitude", Reader::tables, [](Environment &e) { e.atmosphere.ozone_altitude = 8'000; }},
-        {"atmosphere.ozone_width", Reader::tables, [](Environment &e) { e.atmosphere.ozone_width = 6'000; }},
-        {"atmosphere.ground_albedo", Reader::tables, [](Environment &e) { e.atmosphere.ground_albedo = {1, 1, 1}; }},
+        {"atmosphere.ozone_altitude", Reader::tables, sky, [](Environment &e) { e.atmosphere.ozone_altitude = 8'000; }},
+        {"atmosphere.ozone_width", Reader::tables, sky, [](Environment &e) { e.atmosphere.ozone_width = 6'000; }},
+        {"atmosphere.ground_albedo", Reader::tables, sky,
+         [](Environment &e) { e.atmosphere.ground_albedo = {1, 1, 1}; }},
         // The eye, 1.7 m above the ground, then 2,001.7 m.
-        {"atmosphere.ground_height", Reader::sky, [](Environment &e) { e.atmosphere.ground_height = -2'000; }},
-        {"atmosphere.mie_anisotropy", Reader::sky, [](Environment &e) { e.atmosphere.mie_anisotropy = .3F; }},
-        {"atmosphere.sun_angular_radius", Reader::sky, [](Environment &e) { e.atmosphere.sun_angular_radius = .02F; }},
-        {"sun.direction", Reader::sky,
+        {"atmosphere.ground_height", Reader::sky, sky, [](Environment &e) { e.atmosphere.ground_height = -2'000; }},
+        {"atmosphere.mie_anisotropy", Reader::sky, sky, [](Environment &e) { e.atmosphere.mie_anisotropy = .3F; }},
+        {"atmosphere.sun_angular_radius", Reader::sky, disc,
+         [](Environment &e) { e.atmosphere.sun_angular_radius = .02F; }},
+        {"sun.direction", Reader::sky, sky,
          [](Environment &e) { e.sun.direction = vec(atmosphere_reference::direction(20, 0)); }},
-        {"sun.radiance", Reader::sky, [](Environment &e) { e.sun.radiance = {.6F, .5F, .4F}; }},
+        {"sun.radiance", Reader::sky, sky, [](Environment &e) { e.sun.radiance = {.6F, .5F, .4F}; }},
     };
     rig.draw("first", view_projection, environment);
     for (const auto &change : changes) {
@@ -474,18 +486,20 @@ inline void check_updates(Rig &rig) {
         rig.draw("changed", view_projection, changed);
         rig.draw("", view_projection, detour);
         rig.draw("rebuilt", view_projection, changed);
-        if (change.reader == Reader::tables) {
+        if (change.reader == Reader::tables)
             rig.images.require_same("changed", "rebuilt",
                                     std::string("Changing ") + change.input +
                                         " did not rebuild the atmosphere's tables");
-            rig.images.require_changed("first", "rebuilt", .05,
-                                       std::string("Changing ") + change.input + " left the sky as it was");
-        } else {
+        else
             rig.images.require_same("changed", "rebuilt",
                                     std::string("Changing ") + change.input +
                                         " drew another sky than rebuilding every table: a table that it does not "
                                         "rebuild reads it, or the sky view table missed it");
-        }
+        std::cout << "ATMOSPHERE changing " << change.input << " altered "
+                  << gpu_check::changed(rig.images["first"], rig.images["changed"]) << " of the frame's pixels\n";
+        rig.images.require_changed("first", "changed", change.least,
+                                   std::string("Changing ") + change.input +
+                                       " left the frame as it was, so comparing it with rebuilt tables is blind");
     }
     auto broader = environment;
     broader.atmosphere.mie_anisotropy = .3F;
@@ -506,8 +520,35 @@ inline void check_updates(Rig &rig) {
     rig.images.discard({"first", "changed", "rebuilt", "broader", "level", "raised"});
 }
 
+// The altitude that the sky is seen from stays at least 1 m below the atmosphere's top while the renderer holds it.
+// 10,000 km from the world's origin, where the renderer holds that altitude through changes of up to 9.5 m (8 float
+// epsilons of the distance), an eye 50 m up, above an atmosphere 11 m thick, sees the sky from 10 m. When the
+// atmosphere thins to 3 m, the eye's altitude falls to 2 m, within 9.5 m of the 10 m held, which now lies 7 m above the
+// top. The frame must match the one that the thin atmosphere shows after a detour through one 1 km thick, inside which
+// the eye's altitude of 50 m lies beyond the hold from either.
+inline void check_thinned(Rig &rig) {
+    constexpr anima::Vec3 eye{6'000'000, 50, -8'000'000};
+    const auto view_projection = camera(rig.aspect(), eye, 10, 25);
+    auto thin = earth();
+    thin.exposure = 6;
+    // A thousand times Earth's Rayleigh scattering, so that a few meters of the medium show.
+    thin.atmosphere.rayleigh_scattering = {5.802e-3F, 13.558e-3F, 33.1e-3F};
+    thin.atmosphere.thickness = 3;
+    auto thicker = thin, detour = thin;
+    thicker.atmosphere.thickness = 11;
+    detour.atmosphere.thickness = 1'000;
+    rig.draw("", view_projection, detour);
+    rig.draw("thin", view_projection, thin);
+    rig.draw("", view_projection, detour);
+    rig.draw("", view_projection, thicker);
+    rig.draw("thinned", view_projection, thin);
+    rig.images.require_same("thin", "thinned",
+                            "Thinning the atmosphere under a distant eye kept the sky seen from above the new top");
+    rig.images.discard({"thin", "thinned"});
+}
+
 // What report_cost() changes every frame, in the order it measures them.
-enum class Changing { nothing, eye_altitude, sun_elevation, medium };
+enum class Changing { nothing, view_direction, eye_altitude, distant_eye_altitude, sun_elevation, medium };
 
 // The median of @p values, or -1 when there are none.
 inline double median(std::vector<double> values) {
@@ -523,35 +564,64 @@ inline double median(std::vector<double> values) {
 constexpr double skipped_share = .5;
 
 // The tables' memory, the time their dispatches take and the CPU time that set_environment() takes, as medians of 60
-// frames after 10 more: while nothing changes; while the eye's altitude changes every frame, which the sky view table
-// reads; while the sun's elevation changes, which the sky view table and the sun at the ground read; and while the
-// medium changes, which every table and the sun at the ground read. Where the device reports timestamps, the frames
-// that change nothing, whose timestamps around the atmosphere bracket no commands, must take under skipped_share of
-// the atmosphere time of the frames that move the eye, which redraw the 192 by 108 sky view table: FrameProfile states
-// that they dispatch nothing.
+// frames after 10 more: while nothing changes; while the camera turns in place 100 km from the world's origin; while
+// the eye's altitude changes every frame, which the sky view table reads, near the origin and then 100 km from it;
+// while the sun's elevation changes, which the sky view table and the sun at the ground read; and while the medium
+// changes, which every table and the sun at the ground read. Where the device reports timestamps, it requires what
+// FrameProfile states. The frames that change nothing and those that only turn the camera, whose timestamps around
+// the atmosphere bracket no commands, dispatch nothing: of each, at most noisy_share may take skipped_share of the
+// atmosphere time of the frames that move the eye near the origin, which redraw the 192 by 108 sky view table. A count
+// rather than a median, which a renderer that redraws on every other frame can pass or fail by one frame. 100 km
+// out, the eye that the renderer recovers from each float view-projection moves by a few millimeters as the camera
+// turns, past the tolerance's 1 mm floor, so the part of the tolerance that grows with the eye's distance, 0.095 m
+// there, carries the skip. Raising the eye there by distant_rise, about twice that part, redraws the table: those
+// frames' median must exceed 1 / skipped_share times that of the frames that change nothing.
 inline void report_cost(Rig &rig) {
     const auto stats = rig.renderer.resource_stats();
     constexpr std::uint64_t texels = 256 * 64 + 64 * 32 + 192 * 108;
     require(stats.atmosphere_bytes >= texels * 8,
             "The atmosphere's tables take fewer bytes than their half-float texels: " +
                 std::to_string(stats.atmosphere_bytes));
-    constexpr std::array modes{
-        std::pair{Changing::nothing, "nothing"}, std::pair{Changing::eye_altitude, "eye altitude"},
-        std::pair{Changing::sun_elevation, "sun elevation"}, std::pair{Changing::medium, "medium"}};
+    constexpr std::array modes{std::pair{Changing::nothing, "nothing"},
+                               std::pair{Changing::view_direction, "view direction"},
+                               std::pair{Changing::eye_altitude, "eye altitude"},
+                               std::pair{Changing::distant_eye_altitude, "distant eye altitude"},
+                               std::pair{Changing::sun_elevation, "sun elevation"},
+                               std::pair{Changing::medium, "medium"}};
     constexpr int warmup_frames = 10, measured_frames = 60;
-    std::array<double, modes.size()> atmosphere_medians{};
+    // The distant eye, 100 km from the world's origin and 1.7 m up, the camera's turn there in each frame, and how far
+    // the eye rises there every other frame.
+    constexpr anima::Vec3 distant_eye{60'000, 1.7F, -80'000};
+    constexpr double turn_degrees = .5;
+    constexpr float distant_rise = .2F;
+    // The share of the measured frames that dispatch nothing which may still take skipped_share of a redraw, a margin
+    // for timing noise. A renderer that redraws on every other turning frame, as a tolerance of 1 mm alone does at the
+    // distant eye, exceeds it five times over.
+    constexpr double noisy_share = .1;
+    std::array<std::vector<double>, modes.size()> atmosphere_times;
     for (const auto &[changing, name] : modes) {
-        std::vector<double> atmosphere_ms, gpu_ms, environment_us;
+        auto &atmosphere_ms = atmosphere_times[std::size_t(changing)];
+        std::vector<double> gpu_ms, environment_us;
         for (int frame = 0; frame < warmup_frames + measured_frames; ++frame) {
             const bool odd = frame % 2 != 0;
             auto environment = earth();
             environment.sun.direction = vec(atmosphere_reference::direction(10, 0));
             anima::Vec3 eye{0, 1.7F, 0};
+            double azimuth = 25;
             switch (changing) {
             case Changing::nothing:
                 break;
+            case Changing::view_direction:
+                eye = distant_eye;
+                azimuth += turn_degrees * frame;
+                break;
             case Changing::eye_altitude:
                 eye.y = odd ? 1.8F : 1.7F;
+                break;
+            case Changing::distant_eye_altitude:
+                eye = distant_eye;
+                if (odd)
+                    eye.y += distant_rise;
                 break;
             case Changing::sun_elevation:
                 environment.sun.direction = vec(atmosphere_reference::direction(odd ? 10.5 : 10, 0));
@@ -560,7 +630,7 @@ inline void report_cost(Rig &rig) {
                 environment.atmosphere.rayleigh_scale_height = odd ? 8'000.F : 8'001.F;
                 break;
             }
-            rig.draw("", camera(rig.aspect(), eye, 10, 25), environment);
+            rig.draw("", camera(rig.aspect(), eye, 10, azimuth), environment);
             const auto profile = rig.renderer.frame_profile();
             if (frame >= warmup_frames) {
                 environment_us.push_back(rig.environment_us);
@@ -570,20 +640,45 @@ inline void report_cost(Rig &rig) {
                 }
             }
         }
-        auto &atmosphere = atmosphere_medians[std::size_t(changing)];
-        atmosphere = median(atmosphere_ms);
         std::cout << "BENCH {\"atmosphere_changing\":\"" << name << "\",\"atmosphere_bytes\":" << stats.atmosphere_bytes
-                  << ",\"atmosphere_ms\":" << atmosphere << ",\"gpu_ms\":" << median(gpu_ms)
+                  << ",\"atmosphere_ms\":" << median(atmosphere_ms) << ",\"gpu_ms\":" << median(gpu_ms)
                   << ",\"set_environment_us\":" << median(environment_us) << "}\n";
     }
-    const auto skipping = atmosphere_medians[std::size_t(Changing::nothing)],
-               redrawing = atmosphere_medians[std::size_t(Changing::eye_altitude)];
-    // Both are -1 without timestamps.
-    if (skipping >= 0 && redrawing >= 0)
-        require(skipping < skipped_share * redrawing,
-                "Frames that change none of the atmosphere's inputs took " + std::to_string(skipping) +
-                    " ms of atmosphere dispatches, not under half of the " + std::to_string(redrawing) +
-                    " ms of frames that move the eye, so they still dispatch");
+    const auto times = [&](Changing changing) -> const std::vector<double> & {
+        return atmosphere_times[std::size_t(changing)];
+    };
+    const auto skipping = median(times(Changing::nothing)), redrawing = median(times(Changing::eye_altitude)),
+               rising = median(times(Changing::distant_eye_altitude));
+    // Each is -1 without timestamps.
+    if (skipping < 0 || redrawing < 0 || rising < 0)
+        return;
+    // The atmosphere time from which a frame counts as one that redrew the sky view table, and how many such frames
+    // each mode that dispatches nothing may have.
+    const double redrawn_from = skipped_share * redrawing;
+    const auto noisy = std::size_t(noisy_share * measured_frames);
+    const auto redrawn = [&](Changing changing) {
+        return std::size_t(std::count_if(times(changing).begin(), times(changing).end(),
+                                         [&](double ms) { return ms >= redrawn_from; }));
+    };
+    const auto still = redrawn(Changing::nothing), turned = redrawn(Changing::view_direction);
+    std::cout << "ATMOSPHERE " << still << " frames that change nothing and " << turned
+              << " that only turn the camera, of " << measured_frames << " each, took at least " << redrawn_from
+              << " ms of atmosphere dispatches, half of a redraw\n";
+    require(still <= noisy, std::to_string(still) + " of " + std::to_string(measured_frames) +
+                                " frames that change none of the atmosphere's inputs took at least half of the " +
+                                std::to_string(redrawing) +
+                                " ms of atmosphere dispatches of frames that move the eye, more than " +
+                                std::to_string(noisy) + ", so they still dispatch");
+    require(turned <= noisy, std::to_string(turned) + " of " + std::to_string(measured_frames) +
+                                 " frames that only turn the camera took at least half of the " +
+                                 std::to_string(redrawing) +
+                                 " ms of atmosphere dispatches of frames that move the eye, more than " +
+                                 std::to_string(noisy) + ", so turning redraws the sky view table");
+    require(rising > skipping / skipped_share,
+            "Frames that raise the eye " + std::to_string(distant_rise) + " m 100 km from the world's origin took " +
+                std::to_string(rising) + " ms of atmosphere dispatches, not more than twice the " +
+                std::to_string(skipping) +
+                " ms of frames that change nothing, so they did not redraw the sky view table");
 }
 
 // set_environment() integrates the sun's transmittance again only when an input of atmosphere_sunlight() changes: over
@@ -625,6 +720,7 @@ inline int run(int argc, char **argv) {
     check_sunlight(rig);
     check_sunlight_updates(rig);
     check_updates(rig);
+    check_thinned(rig);
     report_cost(rig);
     check_sunlight_cache(rig);
     const auto stats = rig.renderer.shutdown();
@@ -632,8 +728,10 @@ inline int run(int argc, char **argv) {
     std::cout << "PASS atmosphere: the sky from the ground and from 2 km in haze matches an independent evaluation of "
                  "the documented integral, reddens toward a low sun and darkens through twilight, lit surfaces show "
                  "atmosphere_sunlight() from the frame its inputs change, the medium alone rebuilds its tables and the "
-                 "sky follows the eye's altitude, frames that change none of the tables' inputs dispatch nothing and "
-                 "set_environment() integrates the sunlight only when its inputs change, with clean validation\n";
+                 "sky follows the eye's altitude, staying 1 m below a thinned atmosphere's top, frames that change "
+                 "none of the tables' inputs dispatch nothing, turning the camera among them, raising a distant eye by "
+                 "about twice the tolerance redraws the sky, and set_environment() integrates the sunlight only when "
+                 "its inputs change, with clean validation\n";
     return 0;
 }
 } // namespace atmosphere_test

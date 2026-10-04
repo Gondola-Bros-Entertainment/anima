@@ -204,8 +204,12 @@ struct EnvironmentSettings {
     /// atmosphere_sunlight(); the sky itself scatters the sun's radiance above the atmosphere. The sky is seen from the
     /// eye's altitude above Atmosphere::ground_height, kept between 1 m and 1 m below the atmosphere's top, with the
     /// planet's center straight below the eye, so that +Y is up wherever the eye moves; an orthographic view sees it
-    /// from 1 m above the ground. In perspective views fog applies to the sky as to a surface #fog_sky_distance along
-    /// each view ray. Disabled, nothing draws behind the scene and the sun keeps its radiance.
+    /// from 1 m above the ground. VulkanRenderer keeps the altitude that it last took from the eye until the eye's
+    /// altitude differs from it by more than the larger of 1 mm and 8 float epsilons (about 1e-6) times the eye's
+    /// distance from the world's origin, or until a thinner atmosphere's top falls to less than 1 m above it, then
+    /// takes the eye's again: VulkanRenderer::set_view recovers the eye from a float view-projection, whose rounding
+    /// moves the eye when the camera only turns. In perspective views fog applies to the sky as to a surface
+    /// #fog_sky_distance along each view ray. Disabled, nothing draws behind the scene and the sun keeps its radiance.
     Atmosphere atmosphere;
     /// Ambient light that fog scatters toward the eye.
     Vec3 fog_color{.55F, .65F, .75F};
