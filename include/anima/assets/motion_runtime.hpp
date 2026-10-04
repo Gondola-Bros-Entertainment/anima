@@ -122,15 +122,19 @@ class MotionRuntime {
     /// and the clip may animate only those joints. Every motion clip must be exactly one base clip
     /// or layer clip, with at least one base clip.
     ///
+    /// The motion GLB is imported with load_motion_asset and @p options, which cancel and count that
+    /// import only; a cancelled import throws StagingCancelled.
+    ///
     /// May run concurrently on any thread. Reads @p contract, the motion GLB file and the C locale,
     /// which must not change during the call, as load_motion_asset and prefab.hpp describe.
-    MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract);
+    MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract,
+                  const StagingOptions &options = {});
     /// Reads the file that Manifest::motion_contract names beside the manifest and constructs a
-    /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
-    /// file is missing or larger than 4 MiB. May run concurrently on any thread, and reads the C
-    /// locale as the constructor does.
-    [[nodiscard]] static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset,
-                                                                   const Manifest &manifest);
+    /// runtime from it with @p options. Throws `std::invalid_argument` when the manifest names no
+    /// contract or the file is missing or larger than 4 MiB, and as the constructor does. May run
+    /// concurrently on any thread, and reads the C locale as the constructor does.
+    [[nodiscard]] static std::shared_ptr<const MotionRuntime>
+    load(std::shared_ptr<const Asset> asset, const Manifest &manifest, const StagingOptions &options = {});
     /// The model bound at construction, which the runtime holds; not null, and shared with every
     /// copy of the runtime. sample(), compose() and the other evaluations return poses of its nodes.
     [[nodiscard]] const std::shared_ptr<const Asset> &model() const noexcept;

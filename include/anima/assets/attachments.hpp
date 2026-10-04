@@ -167,19 +167,27 @@ class AttachmentLibrary {
     /// Handling profile of item @p item_id, or the empty handling for an empty id. Throws
     /// `std::out_of_range` for an unknown id.
     [[nodiscard]] const AttachmentHandling &handling(std::string_view item_id) const;
-    /// Loads the model of visual @p visual_id.
+    /// Loads the model of visual @p visual_id, importing it with load_asset and @p options.
     ///
     /// Loads of one file share an AttachmentAsset while it is alive, and its Mesh while that is
     /// alive: with only the Mesh alive, a load imports the file again and keeps the Mesh when the
     /// Mesh accepts the new model as an animation source (see Mesh::accepts_animation_source) and
     /// has as many textures, and otherwise compiles a new one. Concurrent loads of one file share
     /// one import and compile, and their failure, which caches nothing, so a later load imports
-    /// again. Each load then checks the model against its own visual. Throws `std::out_of_range`
-    /// for an unknown visual, `std::invalid_argument` for an animated model without
-    /// AttachmentVisual::animation_tracks, `std::runtime_error` when the model does not have
-    /// exactly one node or clip of each name that the visual uses, and as load_asset and
-    /// Mesh::compile do.
-    [[nodiscard]] std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id) const;
+    /// again. Each load then checks the model against its own visual.
+    ///
+    /// @p options cancel and count the import only, not the compile after it. A load that returns
+    /// a live AttachmentAsset, or waits for another load's import, adds no steps to its
+    /// StagingProgress, and its StopToken does not end the wait. When the import it waits for
+    /// throws StagingCancelled, the load throws it too if its own token reports a stop, and
+    /// otherwise looks again, so that it imports the file itself unless another load has begun.
+    ///
+    /// Throws `std::out_of_range` for an unknown visual, `std::invalid_argument` for an animated
+    /// model without AttachmentVisual::animation_tracks, `std::runtime_error` when the model does
+    /// not have exactly one node or clip of each name that the visual uses, StagingCancelled when
+    /// its import is cancelled, and as load_asset and Mesh::compile do.
+    [[nodiscard]] std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id,
+                                                              const StagingOptions &options = {}) const;
     /// Every Mesh that loads compiled and that is still alive, once each, in no particular order.
     [[nodiscard]] std::vector<std::shared_ptr<const Mesh>> resident_meshes() const;
 
@@ -276,10 +284,14 @@ struct AttachmentSet {
     /// Whether the set holds exactly @p desired, a map from role to item id.
     [[nodiscard]] bool matches(const std::map<std::string, std::string, std::less<>> &desired) const;
     /// Loads the items of @p desired, a map from role to item id, and binds them to @p sockets,
-    /// without touching any scene. There is no fixed limit on the number of roles. Throws for an
-    /// empty role or item id, or an unknown item or socket, and as AttachmentLibrary::load does.
+    /// without touching any scene. There is no fixed limit on the number of roles. Each item loads
+    /// with AttachmentLibrary::load and @p options, one role after another in role order, so the
+    /// imports add to one StagingProgress and a stop ends the import in progress. Throws for an
+    /// empty role or item id, or an unknown item or socket, and as AttachmentLibrary::load does,
+    /// including StagingCancelled.
     [[nodiscard]] static AttachmentSet prepare(const AttachmentLibrary &library, const AttachmentSockets &sockets,
-                                               const std::map<std::string, std::string, std::less<>> &desired);
+                                               const std::map<std::string, std::string, std::less<>> &desired,
+                                               const StagingOptions &options = {});
     /// Adds every prepared item to @p scene as a root instance with an identity transform; place
     /// them with attachment_placement. On failure the instances already added are removed. Throws
     /// unless every role is prepared and not yet added.

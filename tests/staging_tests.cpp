@@ -1,5 +1,11 @@
+#include "consumer/presentation.hpp"
 #include "staging_fixture.hpp"
+#include <anima/assets/actor_presentation.hpp>
 #include <anima/assets/asset.hpp>
+#include <anima/assets/attachments.hpp>
+#include <anima/assets/fitted.hpp>
+#include <anima/assets/motion_runtime.hpp>
+#include <anima/assets/preview.hpp>
 #include <anima/core/math_error.hpp>
 #include <anima/prefab.hpp>
 #include <anima/scene_set.hpp>
@@ -16,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -323,6 +330,113 @@ TEST_CASE("Cancelling before, during or after staging") {
     CHECK(asset->primitives.size() == 3);
     CHECK_THROWS_WITH_AS((void)stage_scene(documents.scene, documents.resolve, {}, {after.get_token(), nullptr}),
                          cancelled, StagingCancelled);
+}
+
+TEST_CASE("Presentation loaders pass their staging options to the imports they run") {
+    const presentation_test::Workspace workspace;
+    const auto fixture = presentation_test::actor_fixture(workspace.directory, 2);
+    const auto profile = fixture.directory / "actor.profile.json";
+    StopSource source;
+    source.request_stop();
+    const StagingOptions stopped{source.get_token(), nullptr};
+    CHECK_THROWS_WITH_AS(ActorPresentation(profile, {}, TexelRetention::keep, stopped), cancelled, StagingCancelled);
+    CHECK_THROWS_WITH_AS(AssetPreview(fixture.directory / "actor.asset.json", TexelRetention::keep, stopped), cancelled,
+                         StagingCancelled);
+
+    // An actor imports its model and then its motion, and counts both imports.
+    StagingProgress body, motion;
+    (void)load_asset(fixture.directory / "actor.glb", {{}, &body});
+    (void)load_motion_asset(fixture.directory / "motion.glb", {{}, &motion});
+    StagingProgress progress;
+    const ActorPresentation actor(profile, {}, TexelRetention::until_upload, {{}, &progress});
+    CHECK(progress.total() == body.total() + motion.total());
+    CHECK(progress.completed() == progress.total());
+    CHECK(actor.render->texel_retention() == TexelRetention::until_upload);
+    CHECK_THROWS_WITH_AS((void)MotionRuntime::load(actor.actor.asset, actor.manifest, stopped), cancelled,
+                         StagingCancelled);
+    CHECK_THROWS_WITH_AS(MotionRuntime(actor.actor.asset, actor.manifest, fixture.contract, stopped), cancelled,
+                         StagingCancelled);
+
+    // A cancelled library load caches nothing, so the next load imports the file.
+    const AttachmentLibrary attachments(decode_attachment_catalog(fixture.catalog, fixture.directory));
+    const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.asset);
+    CHECK_THROWS_WITH_AS((void)attachments.load("instrument", stopped), cancelled, StagingCancelled);
+    CHECK_THROWS_WITH_AS((void)AttachmentSet::prepare(attachments, sockets, {{"tool", "probe"}}, stopped), cancelled,
+                         StagingCancelled);
+    CHECK(attachments.resident_meshes().empty());
+    StagingProgress instrument, prepared;
+    (void)load_asset(fixture.directory / "instrument.glb", {{}, &instrument});
+    const auto held = AttachmentSet::prepare(attachments, sockets, {{"tool", "probe"}}, {{}, &prepared});
+    CHECK(prepared.total() == instrument.total());
+    CHECK(prepared.completed() == prepared.total());
+    // A load that returns the live model adds no steps, and its stopped token does not cancel it.
+    CHECK(attachments.load("instrument", {source.get_token(), &prepared}) == held.roles.at("tool").asset);
+    CHECK(prepared.total() == instrument.total());
+
+    const auto fits = R"({"version":2,"items":[{"id":"shell","fits":{"consumer.profile":{"model":"actor.glb",)"
+                      R"("skeleton":"consumer.rig","bind_signature":")" +
+                      actor.manifest.bind_signature + R"("}}}]})";
+    const FittedLibrary fitted(actor.actor.asset, actor.manifest, "consumer.profile", fits);
+    CHECK_THROWS_WITH_AS((void)fitted.load("shell", stopped), cancelled, StagingCancelled);
+    CHECK(fitted.resident_meshes().empty());
+    StagingProgress shell;
+    (void)fitted.load("shell", {{}, &shell});
+    CHECK(shell.total() == body.total());
+    CHECK(shell.completed() == shell.total());
+}
+
+TEST_CASE("A load that waits for an import that another caller cancels imports the file itself") {
+    // Enough primitives that the first import is still running when the second load starts waiting for it.
+    constexpr std::size_t primitives = 20'000;
+    const TemporaryFile file(glb(primitives, 0));
+    AttachmentCatalog catalog;
+    catalog.directory = file.path.parent_path();
+    AttachmentVisual visual;
+    visual.id = "large";
+    visual.model = file.path.filename();
+    catalog.visuals.emplace(visual.id, visual);
+    const auto running = [](const auto &future) {
+        return future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+    };
+    // Each round needs the first import to be stopped before it ends. Nothing in the public API can hold
+    // it, so a preempted test thread lets it finish first: an optimized build under load misses about
+    // three rounds in four. A hundred rounds make missing every one negligible, and each round that
+    // catches the import checks the cancelled path exactly.
+    bool cancelled_first = false;
+    for (int round = 0; round < 100 && !cancelled_first; ++round) {
+        CAPTURE(round);
+        // A new library has nothing loaded, so the first load imports the file.
+        const AttachmentLibrary library(catalog);
+        StopSource stop;
+        StagingProgress first_progress, second_progress;
+        auto first = elsewhere([&] { return library.load("large", {stop.get_token(), &first_progress}); });
+        // Once the first import is under way, the second load finds it in progress and waits for it.
+        while (first_progress.completed() < 2 && running(first))
+            std::this_thread::yield();
+        auto second = elsewhere([&] { return library.load("large", {{}, &second_progress}); });
+        // The first import stops halfway through its primitives, which leaves the second load time to start waiting.
+        while (first_progress.completed() < 2 + primitives / 2 && running(first))
+            std::this_thread::yield();
+        stop.request_stop();
+        // The second load's own token never stops, so it imports the file once the shared import is cancelled.
+        const auto loaded = second.get();
+        CHECK(loaded->source->primitives.size() == primitives);
+        std::shared_ptr<const AttachmentAsset> shared;
+        try {
+            shared = first.get();
+        } catch (const StagingCancelled &) {
+            cancelled_first = true;
+        }
+        if (cancelled_first) {
+            // The second load ran its own import: its read, its parse and every primitive.
+            CHECK(second_progress.total() == 2 + primitives);
+            CHECK(second_progress.completed() == second_progress.total());
+            CHECK(library.resident_meshes() == std::vector{loaded->render});
+        } else {
+            CHECK(shared == loaded);
+        }
+    }
+    CHECK(cancelled_first);
 }
 
 TEST_CASE("Progress never decreases and ends at the input's images, primitives, objects and mesh keys") {

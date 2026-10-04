@@ -103,9 +103,10 @@ std::vector<ClipEvent> Playback::advance(double elapsed) {
     }
     return events;
 }
-AssetPreview::AssetPreview(const std::filesystem::path &manifest, TexelRetention texel_retention)
+AssetPreview::AssetPreview(const std::filesystem::path &manifest, TexelRetention texel_retention,
+                           const StagingOptions &options)
     : manifest_(read_manifest(manifest)) {
-    const auto model = load_asset(manifest_.directory / manifest_.model);
+    const auto model = load_asset(manifest_.directory / manifest_.model, options);
     validate_manifest(manifest_, *model);
     auto mesh = Mesh::compile(*model, texel_retention);
     auto motion = std::make_shared<Asset>();

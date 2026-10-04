@@ -14,6 +14,11 @@
 /// them: the application calls them from threads, a job system or `std::async`, as it schedules, and
 /// commits the results on the thread that owns its scenes. A call checks its StopToken between bounded steps and
 /// reports those steps to a StagingProgress.
+///
+/// The loaders that import GLB files pass their StagingOptions to those imports: AttachmentLibrary::load,
+/// AttachmentSet::prepare, FittedLibrary::load, MotionRuntime and MotionRuntime::load, ActorPresentation and
+/// AssetPreview. Their contracts say which of their work the options cover, and how loads that share one import
+/// treat a stop.
 
 namespace anima {
 namespace detail {
