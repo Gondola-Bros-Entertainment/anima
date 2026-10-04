@@ -67,8 +67,8 @@ class AudioSource {
     /// synchronization, so synchronize before rendering.
     void configure(AudioSourceSettings settings);
     /// Requests playback at the next synchronization in which the source is active, resuming a
-    /// paused voice or restarting a finished one. Synchronizing again never restarts a finished
-    /// one-shot or a voice that the engine's voice limit stopped or refused (see Sound::play).
+    /// paused voice or restarting a finished one. Synchronizing again never restarts a voice that
+    /// finished or that the engine's voice limit stopped or refused (see Sound::play).
     void play();
     /// Pauses at once, keeping the cursor, and cancels pending or interrupted playback, even while
     /// inactive.
@@ -107,7 +107,8 @@ class AudioSource {
 ///
 /// Call it after the application's transform changes. An engine with a device mixes what it
 /// publishes from its next block, and one without in its next Audio::render(). It runs no
-/// component hooks and does not advance audio time. Use one Scene or SceneSet driver per engine;
+/// component hooks and does not advance audio time. Last, it releases the engine's one-shots that
+/// stopped (see Audio::play_one_shot). Use one Scene or SceneSet driver per engine;
 /// standalone voices may share the engine. Throws `std::logic_error` while the scene is updating,
 /// under construction or destroyed, and for a moved-from engine.
 void synchronize_audio(Scene &scene, Audio &audio);

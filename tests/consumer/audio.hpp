@@ -79,6 +79,14 @@ inline void run() {
           "Independent decoded and streamed voices mixed differently");
     check(offline.voice_count() == 2, "Independent engine miscounted its voices");
 
+    // A one-shot plays in a voice the engine owns, which the render that reaches the clip's end releases.
+    anima::Audio fired(8000, 1);
+    fired.play_one_shot(decoded, {.pan = -1});
+    std::vector<float> third(2048);
+    fired.render(third);
+    check(std::abs(peak(third) - .25F) < 1e-6F && third[3] == 0 && fired.voice_count() == 0,
+          "Independent one-shot did not play once in a released voice");
+
     // A device on the null backend mixes on its own thread while this one sleeps.
     auto device = anima::Audio::open_device(anima::AudioBackend::null);
     auto bus = device.bus();
