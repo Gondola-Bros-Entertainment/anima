@@ -1,3 +1,4 @@
+#include "srgb.hpp"
 #include <anima/assets/asset.hpp>
 #include <limits>
 #include <stdexcept>
@@ -9,10 +10,6 @@ constexpr unsigned channel_count = 4;
 constexpr unsigned channel_max = std::numeric_limits<std::uint8_t>::max();
 using AlphaHistogram = std::array<std::size_t, channel_max + 1>;
 
-double decode_srgb(double value) { return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4); }
-double encode_srgb(double value) {
-    return value <= 0.0031308 ? value * 12.92 : 1.055 * std::pow(value, 1 / 2.4) - 0.055;
-}
 std::uint8_t byte(double value) {
     return static_cast<std::uint8_t>(std::lround(std::clamp(value, 0.0, double(channel_max))));
 }
@@ -85,7 +82,7 @@ MipLevel downsample(const MipLevel &previous, TextureEncoding encoding, bool wei
                     colour_weight += weight;
                     for (unsigned c = 0; c < alpha_channel; ++c) {
                         auto value = previous.rgba[offset + c] / double(channel_max);
-                        value = encoding == TextureEncoding::srgb ? decode_srgb(value) : value;
+                        value = encoding == TextureEncoding::srgb ? detail::decode_srgb(value) : value;
                         sums[c] += value * weight;
                         plain[c] += value;
                     }
@@ -96,7 +93,7 @@ MipLevel downsample(const MipLevel &previous, TextureEncoding encoding, bool wei
                 const auto weight = c == alpha_channel ? texels : colour_weight;
                 auto average = weight > 0 ? sums[c] / weight : plain[c] / texels;
                 if (c < alpha_channel && encoding == TextureEncoding::srgb)
-                    average = encode_srgb(average);
+                    average = detail::encode_srgb(average);
                 next.rgba[(std::size_t(y) * next.width + x) * channel_count + c] = byte(average * channel_max);
             }
         }

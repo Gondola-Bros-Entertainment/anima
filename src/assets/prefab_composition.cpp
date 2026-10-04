@@ -1,3 +1,4 @@
+#include "../detail/affine.hpp"
 #include "../detail/document_json.hpp"
 #include "../detail/document_limits.hpp"
 #include "../detail/json.hpp"
@@ -35,8 +36,6 @@ struct ResolvedPart {
 PrefabComposition::PrefabComposition(std::vector<Part> parts) : parts_(std::move(parts)) {
     require(!parts_.empty() && parts_.size() <= maximum_composition_parts, "Invalid prefab composition part count");
     std::map<std::string_view, std::size_t> indices;
-    Scene validation;
-    auto object = validation.create();
     for (std::size_t i = 0; i < parts_.size(); ++i) {
         const auto &part = parts_[i];
         validate_key(part.key);
@@ -51,17 +50,14 @@ PrefabComposition::PrefabComposition(std::vector<Part> parts) : parts_(std::move
         }
         // A part's parent world is unknown until resolution. Validate only its
         // authored affine matrix here, without inventing renderer bounds.
-        object.set_local_matrix(part.placement);
+        detail::require_affine(part.placement);
     }
 }
 
 GameObject PrefabComposition::create(Scene &scene, const GameObject *parent, const PrefabResolver &resolve,
                                      const ComponentCodecs &codecs, const Mat4 &placement) const {
     require(bool(resolve), "Prefab composition instantiation needs a resource resolver");
-    {
-        Scene validation;
-        validation.create().set_local_matrix(placement);
-    }
+    detail::require_affine(placement);
     std::map<std::string, Resource, std::less<>> resources;
     std::map<std::string_view, std::size_t> indices;
     std::vector<ResolvedPart> resolved;

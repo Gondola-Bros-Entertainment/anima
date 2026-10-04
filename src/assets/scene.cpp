@@ -1,5 +1,8 @@
+#include "../detail/affine.hpp"
 #include "../detail/rotation_matrix.hpp"
+#include "bind_pose.hpp"
 #include "mesh_limits.hpp"
+#include "render_bounds.hpp"
 #include "surface_validation.hpp"
 #include "texel_hold.hpp"
 #include "winding.hpp"
@@ -23,7 +26,6 @@
 
 namespace anima {
 namespace {
-constexpr float affine_tolerance = 1e-5F;
 constexpr std::size_t maximum_object_key_digits = std::numeric_limits<std::uint64_t>::digits10 + 1;
 void require(bool value, const char *message) {
     if (!value)
@@ -38,13 +40,6 @@ constexpr auto material_factor_slot = "Material factor slot is outside the mesh'
 constexpr auto custom_material_slot = "Custom material slot is outside the mesh's materials";
 constexpr auto primitive_slot = "Primitive is outside the mesh's primitives";
 bool finite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
-void affine(const Mat4 &m) {
-    for (auto v : m)
-        require(std::isfinite(v), "Non-finite instance transform");
-    require(std::abs(m[3]) < affine_tolerance && std::abs(m[7]) < affine_tolerance &&
-                std::abs(m[11]) < affine_tolerance && std::abs(m[15] - 1) < affine_tolerance,
-            "Instance transform must be affine");
-}
 void expand(RenderBounds &bounds, Vec3 v) {
     require(finite(v), "Non-finite render bounds");
     encapsulate(bounds, v);
@@ -92,7 +87,7 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
     for (const auto &node : source.nodes)
         result->nodes_.emplace_back(node.name, node.parent);
     for (const auto &m : result->rest_.world)
-        affine(m);
+        detail::require_affine(m);
     detail::validate_surfaces(source.materials, source.textures, detail::Texels::required);
     auto description = std::make_shared<MeshDescription>();
     description->materials = source.materials;
@@ -117,13 +112,11 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
         for (std::size_t j = 0; j < skin.joints.size(); ++j) {
             require(skin.joints[j] < source.nodes.size() && seen.insert(skin.joints[j]).second,
                     "Invalid render skin joint");
-            affine(skin.inverse_bind[j]);
-            const auto bind = result->rest_.world[skin.joints[j]] * skin.inverse_bind[j], unit = identity();
-            affine(bind);
-            for (unsigned k = 0; k < 16; ++k)
-                description->bind_deviation = std::max(description->bind_deviation, std::abs(bind[k] - unit[k]));
+            detail::require_affine(skin.inverse_bind[j]);
+            detail::require_affine(result->rest_.world[skin.joints[j]] * skin.inverse_bind[j]);
         }
     }
+    description->bind_deviation = detail::bind_deviation(result->rest_, source.skins);
     description->default_is_bind_pose = description->bind_deviation < mesh_limits::bind_pose_tolerance;
     require(palette_size <= UINT32_MAX, "Render palette index overflow");
     result->palette_size_ = palette_size;
@@ -416,36 +409,27 @@ RenderBounds Scene::place(const MeshPlacements &placements, const Mat4 &world, s
 RenderBounds Scene::append_pose(const Mesh &mesh, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
                                 std::vector<RenderBounds> &bounds) {
     require(pose.world.size() == mesh.rest_.world.size(), "Pose does not match the mesh");
-    affine(world);
+    detail::require_affine(world);
     const auto first_matrix = palette.size(), first_bound = bounds.size();
     for (const auto &node : pose.world) {
-        affine(node);
+        detail::require_affine(node);
         palette.push_back(world * node);
-        affine(palette.back());
+        detail::require_affine(palette.back());
     }
     for (const auto &skin : mesh.skins_)
         for (std::size_t j = 0; j < skin.joints.size(); ++j) {
             palette.push_back(world * pose.world[skin.joints[j]] * skin.inverse_bind[j]);
-            affine(palette.back());
+            detail::require_affine(palette.back());
         }
     bounds.resize(first_bound + mesh.primitives_.size());
     const auto posed = std::span(bounds).subspan(first_bound);
     for (std::size_t i = 0; i < posed.size(); ++i)
         for (const auto &part : mesh.bounds_[i])
             expand(posed[i], transformed(part.bound, palette[first_matrix + part.palette]));
-    for (auto &bound : posed)
-        if (bound.valid) {
-            // Pad for the accepted weight error and an equal rounding margin in
-            // the convex influence union at the GPU boundary.
-            const auto pad = [](float lo, float hi) {
-                return std::max({1.F, std::abs(lo), std::abs(hi)}) * (2 * mesh_limits::skin_weight_tolerance);
-            };
-            const Vec3 margin{pad(bound.minimum.x, bound.maximum.x), pad(bound.minimum.y, bound.maximum.y),
-                              pad(bound.minimum.z, bound.maximum.z)};
-            const auto lo = bound.minimum - margin, hi = bound.maximum + margin;
-            expand(bound, lo);
-            expand(bound, hi);
-        }
+    for (auto &bound : posed) {
+        detail::pad_posed_bounds(bound);
+        require(!bound.valid || (finite(bound.minimum) && finite(bound.maximum)), "Non-finite render bounds");
+    }
     RenderBounds combined;
     for (const auto &bound : posed)
         encapsulate(combined, bound);
@@ -703,8 +687,8 @@ void Scene::set_local_transform(Id id, const Mat4 &local) {
 }
 void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const Pose *replacement) {
     auto &entry = slot(id);
-    affine(local);
-    affine(world);
+    detail::require_affine(local);
+    detail::require_affine(world);
     // Most animated objects are leaves or keep their placement between samples, so only a moved
     // object with children re-poses more than itself.
     const bool moved = world != entry.world, descendants = moved && entry.first_child != no_slot;
@@ -718,7 +702,7 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
             const auto current = posed_objects_[i].id;
             const auto placed = posed_objects_[i].world;
             const auto &source = slots_[current.slot];
-            affine(placed);
+            detail::require_affine(placed);
             if (source.value.mesh) {
                 posed_objects_[i].palette = posed_palettes_.size();
                 posed_objects_[i].bounds = posed_bounds_.size();
