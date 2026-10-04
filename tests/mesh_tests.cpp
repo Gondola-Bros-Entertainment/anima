@@ -2,6 +2,7 @@
 #include <anima/assets/mesh_preparation.hpp>
 #include <anima/assets/scene_validation.hpp>
 #include <anima/mesh.hpp>
+#include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -477,6 +479,39 @@ TEST_CASE("A copy of a mesh holds its images on its own") {
     CHECK(mesh->texel_images() == copy->texel_images());
     copy->release_texels();
     CHECK(authored.expired());
+}
+
+TEST_CASE("A copy of a released mesh finds its images only while something else holds them") {
+    auto source = std::make_shared<Asset>(static_source({0}));
+    const std::weak_ptr<const Image> authored = source->textures[0].image;
+    const auto mesh = Mesh::compile(*source, TexelRetention::until_upload);
+    mesh->release_texels();
+    const auto copy = std::make_shared<const Mesh>(*mesh);
+    CHECK(copy->texel_images().at(0) == authored.lock());
+    source.reset();
+    CHECK(authored.expired());
+    CHECK_THROWS_WITH_AS((void)copy->texel_images(), released_texels, std::logic_error);
+}
+
+// Only compiling or copying creates a Mesh, so every Mesh has the materials that scenes and texel_images() read.
+static_assert(!std::is_default_constructible_v<Mesh>);
+static_assert(std::is_copy_constructible_v<Mesh> && std::is_copy_assignable_v<Mesh>);
+
+TEST_CASE("Moving a mesh copies it, so the mesh moved from keeps its content") {
+    const auto compiled = Mesh::compile(static_source({0, 1}));
+    Mesh constructed_from = *compiled, assigned_from = *compiled;
+    const Mesh constructed = std::move(constructed_from);
+    Mesh assigned = *Mesh::compile(static_source({1}));
+    assigned = std::move(assigned_from);
+    Scene scene;
+    // The meshes moved from are read on purpose: the moves copied them.
+    for (const Mesh *mesh :
+         std::initializer_list<const Mesh *>{&constructed_from, &assigned_from, &constructed, &assigned}) {
+        REQUIRE(mesh->materials() == compiled->materials());
+        CHECK(mesh->vertices().size() == compiled->vertices().size());
+        CHECK(mesh->draws().size() == compiled->draws().size());
+        CHECK_NOTHROW((void)scene.add(std::make_shared<const Mesh>(*mesh)));
+    }
 }
 
 TEST_CASE("Compilation rejects an unknown texel retention and images without texels") {
