@@ -30,8 +30,10 @@ layout(set = 1, binding = 0, std140) uniform EnvironmentData {
     vec4 fogShape, fogSun;
     // The atmosphere's ozone absorption per meter with the altitude of its peak; the ground's radius, the thickness,
     // sent apart from the radius whose float spacing would swallow it, the ozone layer's width and the sun's angular
-    // radius; the ground's albedo with the eye's altitude; and
-    // the sun's radiance above the atmosphere, with 1 in w while the atmosphere is enabled.
+    // radius; the ground's albedo with the altitude that the sky is seen from, which the renderer keeps while the eye's
+    // altitude stays within a tolerance of it (sky_altitude() in src/desktop/atmosphere_renderer.inc), so that it can
+    // differ from the eye's own; and the sun's radiance above the atmosphere, with 1 in w while the atmosphere is
+    // enabled.
     vec4 atmosphereOzone, atmosphereShape, atmosphereGround, atmosphereSun;
 }
 environment;

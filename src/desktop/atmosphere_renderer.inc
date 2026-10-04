@@ -1,8 +1,8 @@
 // The atmosphere's tables (shaders/atmosphere.glsl), which compute dispatches build at the start of a frame that draws
 // the sky: the transmittance and multiple scattering tables when the medium changes, and the sky view table when they
-// do or when the eye's altitude, the sun's elevation or Mie scattering's asymmetry changes. Included inside Impl. The
-// tables stay in the GENERAL layout from their first frame, which both their storage writes and their sampled reads
-// accept.
+// do or when the altitude that the sky is seen from (sky_altitude()), the sun's elevation or Mie scattering's asymmetry
+// changes. Included inside Impl. The tables stay in the GENERAL layout from their first frame, which both their
+// storage writes and their sampled reads accept.
 struct AtmosphereTable {
     VkImage image{};
     VmaAllocation allocation{};
@@ -30,8 +30,9 @@ static constexpr auto medium_fields =
                &Atmosphere::mie_scale_height,      &Atmosphere::ozone_absorption, &Atmosphere::ozone_altitude,
                &Atmosphere::ozone_width,           &Atmosphere::ground_albedo};
 // The fields that neither shader reads: `enabled`, which is true whenever the tables are built, and three that only the
-// sky view table and the sky read: the ground's height, through the eye's altitude above it, Mie scattering's
-// asymmetry, which sky_view_inputs holds with that altitude, and the sun's angular radius, which only the sky reads.
+// sky view table and the sky read: the ground's height, through the altitude above it that the sky is seen from, Mie
+// scattering's asymmetry, which sky_view_inputs holds with that altitude, and the sun's angular radius, which only the
+// sky reads.
 // The atmosphere GPU check, check_updates() in tests/consumer/atmosphere.hpp, changes each field of both lists but
 // `enabled`, and the sun's direction and radiance. It requires a medium field's change to rebuild the tables, and the
 // frame drawn after any other change to match one drawn after a rebuild.
@@ -46,10 +47,29 @@ static_assert(
 // scattering tables hold.
 bool atmosphere_ready{};
 std::optional<Atmosphere> atmosphere_built;
-// The sky view table's inputs besides the medium when it was last written, as atmosphere-sky.comp reads them from the
-// environment's uniform block: Mie scattering's asymmetry, the eye's altitude and the Y of the unit direction toward
-// the sun, as update_environment() writes them. None until the table is first written.
-std::optional<std::array<float, 3>> sky_view_inputs;
+// The sky view table's inputs besides the medium, as update_environment() writes them into the environment's uniform
+// block and atmosphere-sky.comp reads them: Mie scattering's asymmetry, the altitude that the sky is seen from
+// (sky_altitude()), before the block rounds it to float, and the Y of the unit direction toward the sun, the cosine of
+// its zenith angle.
+struct SkyViewInputs {
+    float mie_anisotropy{};
+    double altitude{};
+    float sun_cos_zenith{};
+    bool operator==(const SkyViewInputs &) const = default;
+};
+// Those that the table was last written with. None until it is first written.
+std::optional<SkyViewInputs> sky_view_inputs;
+// How far eye_altitude() may move from the altitude that the sky view table was last written with while the sky is
+// still seen from that one: the larger of sky_altitude_slack, in meters, and sky_altitude_rounding times the eye's
+// distance from the world's origin. set_view() recovers the eye from a float view-projection, whose elements round
+// differently as the camera turns, so a camera that only turns moves that eye. Over whole turns, 0.5 degrees a frame,
+// of look_at() views from 60,000 random eyes and Camera views from 30,000, 0.5 m to 1,600 km from the origin, with
+// pitches up to 80 degrees, near planes from 0.001 to 1 and a far plane at 1,000, its altitude spanned at most 3.99
+// float epsilons of its distance, and 3.9 for eyes beyond 1 km, where this term exceeds sky_altitude_slack;
+// sky_altitude_rounding allows 8, twice that. A millimeter moves the horizon, around which the table spends its rows,
+// by under 3e-7 radians at Earth's radius, even from the lowest altitude, 1 m, where it moves fastest.
+static constexpr double sky_altitude_slack = 1e-3;
+static constexpr double sky_altitude_rounding = 8 * double(std::numeric_limits<float>::epsilon());
 
 // Whether @p a and @p b give the same transmittance and multiple scattering tables: whether they hold the same value in
 // each of medium_fields, every channel of a Vec3.
@@ -210,6 +230,23 @@ void destroy_atmosphere() noexcept {
         table = {};
     }
 }
+// The altitude that the sky is seen from, which update_environment() writes for atmosphere-sky.comp and the sky to
+// read: that of the sky view table's last write while eye_altitude() stays within the tolerance of it
+// (sky_altitude_slack and sky_altitude_rounding) and it stays inside_atmosphere(), which a thinner atmosphere can leave
+// it above; else eye_altitude(). Holding it keeps a camera that only turns from redrawing the table, and keeps the
+// table and the sky that samples it seeing from one altitude. For an orthographic view, view_origin holds a unit
+// direction, so the distance is 1, and eye_altitude() stays at sky_altitude_margin. The atmosphere GPU check's
+// check_thinned() thins the atmosphere under an eye above it, 10,000 km from the world's origin, and requires the sky
+// that a detour shows, from 1 m below the new top.
+[[nodiscard]] double sky_altitude() const {
+    const double altitude = eye_altitude();
+    if (!sky_view_inputs)
+        return altitude;
+    const double held = sky_view_inputs->altitude;
+    const double distance = std::hypot(double(view_origin[0]), double(view_origin[1]), double(view_origin[2]));
+    const double tolerance = std::max(sky_altitude_slack, sky_altitude_rounding * distance);
+    return std::abs(altitude - held) <= tolerance && inside_atmosphere(held) == held ? held : altitude;
+}
 // Records the atmosphere's dispatches while it is enabled: the transmittance and multiple scattering tables when the
 // medium differs from the one they hold, then the sky view table when they were rebuilt or sky_view_inputs differ,
 // then a barrier that makes every write visible to the frame's later shaders. A recording that writes begins, after
@@ -217,15 +254,15 @@ void destroy_atmosphere() noexcept {
 // the tables in earlier frames that may still be in flight. A frame that writes no table records nothing: the barrier
 // after the tables' last writes reaches every command submitted to the queue after it, so it makes them visible to this
 // frame's shaders too, and without a write there is no earlier read to wait for. The atmosphere GPU check's
-// report_cost() requires the frames that record nothing to take under half the time of frames that redraw the sky view
-// table.
+// report_cost() requires nine tenths or more of the frames that change nothing, and of those that only turn the camera
+// 100 km from the world's origin, to take under half the time of frames that redraw the sky view table, and frames
+// that raise the eye there by about twice sky_altitude()'s tolerance to redraw it.
 void record_atmosphere() {
     const auto &atmosphere = environment.atmosphere;
     if (!atmosphere.enabled)
         return;
     const bool rebuild = !atmosphere_ready || !atmosphere_built || !same_medium(*atmosphere_built, atmosphere);
-    const std::array sky_inputs{atmosphere.mie_anisotropy, float(eye_altitude()),
-                                normalized(environment.sun.direction).y};
+    const SkyViewInputs sky_inputs{atmosphere.mie_anisotropy, sky_altitude(), normalized(environment.sun.direction).y};
     if (!rebuild && sky_view_inputs == sky_inputs)
         return;
     const auto command = frame().command;

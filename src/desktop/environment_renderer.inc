@@ -27,8 +27,9 @@ struct EnvironmentUniform {
     // The fog's height, falloff, sky distance and phase asymmetry, and fog_sun_scattering times the sun at the ground.
     std::array<float, 4> fog_shape, fog_sun;
     // The atmosphere's ozone with its peak's altitude; the ground's radius, the thickness, the ozone layer's width and
-    // the sun's angular radius; the ground's albedo with the eye's altitude; and the sun above the atmosphere, with 1
-    // while the atmosphere is enabled.
+    // the sun's angular radius; the ground's albedo with the altitude that the sky is seen from (sky_altitude()), held
+    // while the eye's stays within a tolerance of it; and the sun above the atmosphere, with 1 while the atmosphere is
+    // enabled.
     std::array<float, 4> atmosphere_ozone, atmosphere_shape, atmosphere_ground, atmosphere_sun;
 };
 static_assert(offsetof(EnvironmentUniform, view_rays) == 192);
@@ -145,12 +146,18 @@ static std::array<float, 4> fog_sunlight(const Environment &e, Vec3 ground_sun) 
     const auto &share = e.fog_sun_scattering;
     return {times(share.x, ground_sun.x), times(share.y, ground_sun.y), times(share.z, ground_sun.z), 0};
 }
-// The eye's altitude above the atmosphere's ground, kept 1 m inside both the ground and the top; an orthographic view
-// sees the sky from 1 m.
+// How far inside the atmosphere's ground and top the sky is seen from, in meters, and the altitude that an orthographic
+// view sees it from.
+static constexpr double sky_altitude_margin = 1;
+// @p altitude above the atmosphere's ground, kept sky_altitude_margin inside both the ground and the top.
+double inside_atmosphere(double altitude) const {
+    return std::clamp(altitude, sky_altitude_margin, double(environment.atmosphere.thickness) - sky_altitude_margin);
+}
+// The eye's altitude above the atmosphere's ground, inside_atmosphere(); an orthographic view sees the sky from
+// sky_altitude_margin.
 double eye_altitude() const {
     const auto &a = environment.atmosphere;
-    const double altitude = view_origin[3] != 0 ? double(view_origin[1]) - a.ground_height : 1.0;
-    return std::clamp(altitude, 1.0, double(a.thickness) - 1.0);
+    return inside_atmosphere(view_origin[3] != 0 ? double(view_origin[1]) - a.ground_height : sky_altitude_margin);
 }
 // Writes the environment and the latest fit of the shadow cascades (finish_shadow_cascades()) into the environment
 // block of the slot that records the next frame.
@@ -185,7 +192,7 @@ void update_environment() {
                             fog_sunlight(e, sunlight),
                             vec(a.ozone_absorption, a.ozone_altitude),
                             {a.planet_radius, a.thickness, a.ozone_width, a.sun_angular_radius},
-                            vec(a.ground_albedo, float(eye_altitude())),
+                            vec(a.ground_albedo, float(sky_altitude())),
                             vec(e.sun.radiance, a.enabled ? 1.F : 0.F)};
     const auto &settings = e.shadow_cascades;
     // A 16-bit map stores depth in steps of 1/65535, which the bias must also cover.
