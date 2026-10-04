@@ -4,11 +4,18 @@ struct GpuAsset {
     std::unique_ptr<ResourceBuffer> vertices, indices;
     std::unique_ptr<GpuMaterials> materials;
 };
+// How the matrices that place a draw orient its triangles, by the sign of the determinant of their first three
+// columns, which the resource vertex shader passes to mesh.frag: keeping the winding of the faces that the mesh turns
+// outward (positive), reversing it (negative), or varying, for matrices of both signs or one whose determinant lies so
+// near zero that rounding on the GPU may give it either sign.
+enum class Orientation : std::uint8_t { kept, reversed, varies };
 // The transforms of one MeshPlacements on the GPU, uploaded once and cached per MeshPlacements object as meshes are:
 // rows 0 to 2 of each affine matrix, which the vertex shaders read as per-instance attributes.
 struct GpuPlacements {
     std::shared_ptr<const MeshPlacements> source;
     std::unique_ptr<ResourceBuffer> rows;
+    // The orientation of each cluster's placements, by MeshPlacements::clusters() index.
+    std::vector<Orientation> orientations;
 };
 struct ResourceInstance {
     std::shared_ptr<GpuAsset> gpu;
@@ -29,11 +36,29 @@ struct ResourceInstance {
 // Placements, in MeshPlacements::transforms() order, that one draw call copies: one visible cluster's, which recording
 // merges with the next when they draw the same level of detail; a renderer without placements draws one run of its
 // single copy. With placements, the run also holds the distance from the eye to its cluster's world bounds and the
-// largest axis scale that places its copies, by which levels of detail are chosen.
+// largest axis scale that places its copies, by which levels of detail are chosen, and the orientation of the
+// cluster's placements and whether a copy may lie in a margin of the object's visibility range, which choose the
+// pipeline of its copies in the main view (run_pipeline()).
 struct PlacementRun {
     std::uint32_t first{}, count{};
     double distance{}, scale{};
+    Orientation orientation = Orientation::kept;
+    bool dissolving{};
 };
+// The main view's pipelines for opaque and masked mesh draws. mesh.frag discards the faces that a single-sided material
+// turns away from the eye, where gl_FrontFacing times the orientation is negative, the pixels that a visibility range's
+// margin dissolves and those that a masked material cuts out. A GPU that removes hidden surfaces before shading them,
+// as Apple's do, cannot treat the fragments of a shader that may discard as opaque, so the cull pipelines compile
+// without the discards (mesh.frag's mayDiscard). They cull the same faces in the rasterizer, whose facing is the one
+// that gl_FrontFacing reports: none for a double-sided material, back faces where every matrix that places a
+// single-sided draw keeps its winding, and front faces where every one reverses it. The discarding pipeline draws
+// masked materials, copies that may lie in a margin of their visibility range, and single-sided draws whose
+// orientation varies, as a skinned draw's may from one triangle to the next.
+enum class MeshPipeline : std::uint8_t { cull_none, cull_back, cull_front, discarding };
+static constexpr std::size_t mesh_pipeline_count = 4;
+// The rasterizer's culling in each MeshPipeline.
+static constexpr std::array<VkCullModeFlags, mesh_pipeline_count> mesh_pipeline_culling{
+    VK_CULL_MODE_NONE, VK_CULL_MODE_BACK_BIT, VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_NONE};
 struct GpuCustomMaterial;
 // One shadow pass's view and frustum (shadow_renderer.inc).
 struct ShadowPass;
@@ -94,8 +119,13 @@ static constexpr auto resource_attributes = std::to_array<VkVertexInputAttribute
 VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};
-// The view's mesh pipelines, indexed by whether they compile the height fog's code (uses_height_fog()).
-std::array<VkPipeline, 2> resource_pipelines{}, blended_resource_pipelines{};
+// The view's mesh pipelines, indexed by whether they compile the height fog's code (uses_height_fog()): the opaque and
+// masked draws' by MeshPipeline, and the blended draws'.
+std::array<std::array<VkPipeline, 2>, mesh_pipeline_count> resource_pipelines{};
+std::array<VkPipeline, 2> blended_resource_pipelines{};
+// The mesh pipeline that record_indexed() bound last in the main view, which record_resources() clears before its
+// meshes, the first draws that the main view records, so that it stays bound until the impostors bind theirs.
+VkPipeline bound_mesh_pipeline{};
 // Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow passes.
 VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
 std::array<VkPipeline, 2> impostor_pipelines{};
@@ -110,7 +140,15 @@ std::unique_ptr<ResourceBuffer> identity_placement;
 // The runs that the instance being recorded draws in the current pass.
 std::vector<PlacementRun> placement_runs;
 std::vector<ResourceInstance> resource_instances;
-std::vector<std::size_t> resource_draws, resource_shadow_draws;
+// The opaque and masked draws of the main view: each one's index into its instance's Mesh::draws() and its
+// view_pipeline().
+struct ViewDraw {
+    std::size_t draw{};
+    MeshPipeline pipeline = MeshPipeline::discarding;
+};
+std::vector<ViewDraw> resource_draws;
+// Indices into Mesh::draws() of the shadow casters.
+std::vector<std::size_t> resource_shadow_draws;
 std::vector<BlendedDraw> resource_blended_draws;
 std::vector<CustomDraw> resource_custom_draws, resource_custom_shadow_draws;
 // Whether a blended or additive custom material in resource_blended_draws reads opaque depth or color.
@@ -241,7 +279,66 @@ void create_resource_layout() {
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     upload_resource_buffer(*identity_placement, identity_rows.data(), VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
 }
-// The GPU rows of @p placements, uploading them on first use.
+// Orientation counts as varying where the determinant's magnitude is at most this share of the product of the lengths
+// of the three columns. The resource vertex shader computes the determinant of the same float columns as a dot and a
+// cross product, which rounding moves by a few units in the last place of that product, a small fraction of this.
+static constexpr double orientation_tolerance = 1e-4;
+// How @p m orients the triangles that it places.
+static Orientation orientation(const Mat4 &m) {
+    const std::array<double, 3> x{m[0], m[1], m[2]}, y{m[4], m[5], m[6]}, z{m[8], m[9], m[10]};
+    const auto length_of = [](const std::array<double, 3> &v) { return std::hypot(v[0], v[1], v[2]); };
+    const double determinant =
+        x[0] * (y[1] * z[2] - y[2] * z[1]) + x[1] * (y[2] * z[0] - y[0] * z[2]) + x[2] * (y[0] * z[1] - y[1] * z[0]);
+    const double margin = orientation_tolerance * length_of(x) * length_of(y) * length_of(z);
+    // A nonfinite matrix compares false both ways.
+    return determinant > margin    ? Orientation::kept
+           : determinant < -margin ? Orientation::reversed
+                                   : Orientation::varies;
+}
+// The orientation of copies that a matrix of orientation @p outer places through one of orientation @p inner.
+static Orientation compose(Orientation outer, Orientation inner) {
+    if (outer == Orientation::varies || inner == Orientation::varies)
+        return Orientation::varies;
+    return outer == inner ? Orientation::kept : Orientation::reversed;
+}
+// The pipeline of an opaque single-sided draw whose placing matrices orient its triangles as @p placed.
+static MeshPipeline culling(Orientation placed) {
+    return placed == Orientation::kept       ? MeshPipeline::cull_back
+           : placed == Orientation::reversed ? MeshPipeline::cull_front
+                                             : MeshPipeline::discarding;
+}
+// The main-view pipeline of draw @p draw of @p source, whose material is @p material or, when null, the default
+// Material, where @p dissolving says whether the object may lie in a margin of its visibility range. With placements it
+// is the pipeline for copies whose placements keep their winding and lie outside the range's margins; run_pipeline()
+// gives each cluster's.
+static MeshPipeline view_pipeline(const Scene::Instance &source, const IndexedDraw &draw, const Material *material,
+                                  bool dissolving) {
+    if (dissolving || (material && material->alpha_mode == AlphaMode::mask))
+        return MeshPipeline::discarding;
+    if (!material || material->double_sided)
+        return MeshPipeline::cull_none;
+    // The first vertex's blend of joint matrices orients each skinned triangle, which no matrix of the palette decides.
+    if (draw.skinned)
+        return MeshPipeline::discarding;
+    // A copy's matrix composes the object's world matrix, its placement and its node's rest matrix, as resource.vert
+    // composes them.
+    if (source.placements)
+        return culling(
+            compose(orientation(source.world), orientation(source.asset->rest_pose().world.at(draw.palette_offset))));
+    return culling(orientation(source.palette.at(draw.palette_offset)));
+}
+// The pipeline that draws the copies in @p run of a draw whose view_pipeline() is @p draw_pipeline: the discarding one
+// where they may lie in a margin of the visibility range, and for a single-sided draw culled by facing, the culling of
+// its placing matrices' orientation composed with that of the run's placements.
+static MeshPipeline run_pipeline(MeshPipeline draw_pipeline, const PlacementRun &run) {
+    if (run.dissolving)
+        return MeshPipeline::discarding;
+    if (draw_pipeline != MeshPipeline::cull_back && draw_pipeline != MeshPipeline::cull_front)
+        return draw_pipeline;
+    return culling(
+        compose(draw_pipeline == MeshPipeline::cull_back ? Orientation::kept : Orientation::reversed, run.orientation));
+}
+// The GPU rows of @p placements, uploading them on first use, with the orientation of each cluster's placements.
 std::shared_ptr<GpuPlacements> gpu_placements(const std::shared_ptr<const MeshPlacements> &placements) {
     if (auto found = placement_cache.find(placements.get()); found != placement_cache.end())
         return found->second;
@@ -258,6 +355,14 @@ std::shared_ptr<GpuPlacements> gpu_placements(const std::shared_ptr<const MeshPl
                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     upload_resource_buffer(*value->rows, rows.data(), VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+    value->orientations.reserve(placements->clusters().size());
+    for (const auto &cluster : placements->clusters()) {
+        auto shared = orientation(transforms[cluster.first]);
+        for (auto i = cluster.first + 1; i < cluster.first + cluster.count && shared != Orientation::varies; ++i)
+            if (orientation(transforms[i]) != shared)
+                shared = Orientation::varies;
+        value->orientations.push_back(shared);
+    }
     placement_cache.emplace(placements.get(), value);
     return value;
 }
@@ -275,8 +380,8 @@ static double nearest_distance(Vec3 eye, Vec3 minimum, Vec3 maximum) {
 static double axis_scale(const Mat4 &m) {
     return std::max({double(length(axis_x(m))), double(length(axis_y(m))), double(length(axis_z(m)))});
 }
-// Whether a box from @p minimum to @p maximum may hold a point at a distance from @p eye inside @p range.
-static bool within_range(const VisibilityRange &range, Vec3 eye, Vec3 minimum, Vec3 maximum) {
+// The distances from @p eye to the nearest and to the farthest point of the box from @p minimum to @p maximum.
+static std::pair<double, double> distance_span(Vec3 eye, Vec3 minimum, Vec3 maximum) {
     double nearest = 0, farthest = 0;
     for (const auto [lo, hi, at] : {std::array{minimum.x, maximum.x, eye.x}, std::array{minimum.y, maximum.y, eye.y},
                                     std::array{minimum.z, maximum.z, eye.z}}) {
@@ -285,7 +390,23 @@ static bool within_range(const VisibilityRange &range, Vec3 eye, Vec3 minimum, V
         nearest += gap * gap;
         farthest += reach * reach;
     }
-    return std::sqrt(nearest) < range.end && std::sqrt(farthest) >= range.begin;
+    return {std::sqrt(nearest), std::sqrt(farthest)};
+}
+// Whether a box from @p minimum to @p maximum may hold a point at a distance from @p eye inside @p range.
+static bool within_range(const VisibilityRange &range, Vec3 eye, Vec3 minimum, Vec3 maximum) {
+    const auto [nearest, farthest] = distance_span(eye, minimum, maximum);
+    return nearest < range.end && farthest >= range.begin;
+}
+// Whether a box from @p minimum to @p maximum may hold a point at a distance from @p eye strictly inside one of
+// @p range's margins, where visibilityAt() gives a copy measured to that point a share of its pixels between 0 and 1.
+// At a margin's edges a copy draws whole or not at all, and dissolved() keeps every pixel of a share above 15.5/16 and
+// none below 0.5/16, so where rounding moves a distance across an edge by less than 1/32 of the margin, the shader's
+// float distance and this test's double one draw the same pixels.
+static bool may_dissolve(const VisibilityRange &range, Vec3 eye, Vec3 minimum, Vec3 maximum) {
+    const auto [nearest, farthest] = distance_span(eye, minimum, maximum);
+    const auto overlaps = [&](double from, double to) { return from < to && nearest < to && farthest > from; };
+    return overlaps(range.begin, double(range.begin) + range.begin_margin) ||
+           overlaps(double(range.end) - range.end_margin, range.end);
 }
 // The center of @p mesh's rest bounds, which visibility ranges measure to once an object or copy places it, as Godot
 // measures to the center of an instance's bounds; the mesh's origin when it has no bounds.
@@ -364,8 +485,9 @@ const VisibilityRange *culling_range(const Scene::Instance &render_instance) con
 }
 Vec3 eye() const { return {view_origin[0], view_origin[1], view_origin[2]}; }
 // Fills placement_runs with one run for each of @p render_instance's placement clusters that @p frustum, when given,
-// contains and its visibility range can draw; record_indexed() merges adjacent runs that draw the same level. Without
-// placements the single copy is one run.
+// contains and its visibility range can draw; record_indexed() merges adjacent runs that draw the same level through
+// the same pipeline. Without placements the single copy is one run, whose draws' view_pipeline() already holds its
+// orientation and visibility range.
 void find_placement_runs(const ResourceInstance &render_instance, const RenderFrustum *frustum) {
     placement_runs.clear();
     if (!render_instance.placements) {
@@ -375,12 +497,15 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
     const auto &world = render_instance.source->world;
     const auto *range = culling_range(*render_instance.source);
     const auto world_scale = axis_scale(world);
-    for (const auto &cluster : render_instance.placements->source->clusters()) {
+    const auto clusters = render_instance.placements->source->clusters();
+    for (std::size_t i = 0; i < clusters.size(); ++i) {
+        const auto &cluster = clusters[i];
         const auto bounds = cluster_bounds(cluster, world);
         if (cluster_visible(bounds, frustum, range, eye()))
             placement_runs.push_back({cluster.first, cluster.count,
                                       nearest_distance(eye(), bounds.minimum, bounds.maximum),
-                                      world_scale * cluster.scale});
+                                      world_scale * cluster.scale, render_instance.placements->orientations[i],
+                                      range && may_dissolve(*range, eye(), bounds.minimum, bounds.maximum)});
     }
 }
 std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, RendererFailureStage failure,
@@ -438,7 +563,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     vkGetPhysicalDeviceProperties(physical, &properties);
     std::vector<Mat4> palettes;
     std::vector<ResourceInstance> instances;
-    std::vector<std::size_t> draws, shadows;
+    std::vector<ViewDraw> draws;
+    std::vector<std::size_t> shadows;
     // The current instance's masked casters, which follow its opaque ones in shadows.
     std::vector<std::size_t> masked_shadows;
     std::vector<BlendedDraw> blended;
@@ -450,7 +576,9 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             const auto &render_instance = source->instance(id);
             if (!render_instance.visible || !render_instance.active || render_instance.asset->draws().empty())
                 continue;
-            // An object outside its visibility range draws in no pass; placed copies are culled by cluster instead.
+            // An object outside its visibility range draws in no pass, and one in a margin dissolves; placed copies are
+            // culled and dissolve by cluster instead.
+            bool dissolving = false;
             if (const auto *range = use_frustum ? culling_range(render_instance) : nullptr;
                 range && !render_instance.placements) {
                 const auto center = point(render_instance.world, range_center(*render_instance.asset));
@@ -458,6 +586,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                     ++range_culled;
                     continue;
                 }
+                dissolving = may_dissolve(*range, eye(), center, center);
             }
             const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size(),
                        first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size();
@@ -489,7 +618,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                     custom_draws.push_back(
                         {instances.size(), i, &gpu_custom(render_instance.custom_materials[material_index])});
                 else
-                    draws.push_back(i);
+                    draws.push_back({i, view_pipeline(render_instance, source_draws[i], material, dissolving)});
                 // A depth-only shadow map holds neither unlit surfaces nor partial transmission; a custom material
                 // casts through its depth-only variant.
                 const bool casts = custom ? custom->casts_shadows() : !material || !(material->unlit || blend);
@@ -618,6 +747,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
 // Zeroes the main view's draw counters, which record_indexed() accumulates as the main view records.
 void clear_main_view_counters() noexcept {
     resources.draw_calls = resources.submitted_indices = resources.drawn_copies = resources.lod_draws = 0;
+    resources.discarding_draw_calls = 0;
 }
 void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions settings,
                 bool initial = false) {
@@ -722,9 +852,11 @@ void bind_geometry(const ResourceInstance &render_instance) {
     vkCmdBindVertexBuffers(command, 0, static_cast<std::uint32_t>(buffers.size()), buffers.data(), offsets.data());
     vkCmdBindIndexBuffer(command, gpu.indices->buffer, 0, VK_INDEX_TYPE_UINT32);
 }
-// Records draw @p draw_index of @p render_instance with the bound pipeline and geometry, through @p view, and
-// counts it in the shadow or main-view statistics.
-void record_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view, bool shadow) {
+// Records draw @p draw_index of @p render_instance with the bound geometry, through @p view, and counts it in the
+// shadow or main-view statistics: with @p mesh_pipeline, its view_pipeline() in the main view, through the pipeline
+// that record_indexed() binds for each run, and otherwise through the bound pipeline.
+void record_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view, bool shadow,
+                 std::optional<MeshPipeline> mesh_pipeline = std::nullopt) {
     const auto command = frame().command;
     const auto &source = *render_instance.source;
     const auto &draw = source.asset->draws()[draw_index];
@@ -751,12 +883,17 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
                                  frame().environment_set, frame().pose_set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
-    record_indexed(render_instance, draw_index, shadow);
+    record_indexed(render_instance, draw_index, shadow, mesh_pipeline);
 }
-// Records draw @p draw_index of @p render_instance for every run of placement_runs, with the bound pipeline, geometry,
+// Records draw @p draw_index of @p render_instance for every run of placement_runs, with the bound geometry,
 // descriptors and push constants, each at the level of detail its distance and scale choose, merging adjacent runs
-// that choose the same level into one call, and counts each call and copy in the shadow or main-view statistics.
-void record_indexed(const ResourceInstance &render_instance, std::size_t draw_index, bool shadow) {
+// that choose the same level into one call, and counts each call and copy in the shadow or main-view statistics. With
+// @p mesh_pipeline, the draw's view_pipeline() in the main view, each run draws through its run_pipeline(), bound
+// before its call unless bound_mesh_pipeline is already that pipeline, and runs merge only within one pipeline;
+// otherwise every run draws through the bound pipeline. Pipelines that share resource_pipeline_layout keep the
+// descriptor sets and push constants bound before them.
+void record_indexed(const ResourceInstance &render_instance, std::size_t draw_index, bool shadow,
+                    std::optional<MeshPipeline> mesh_pipeline = std::nullopt) {
     const auto &source = *render_instance.source;
     const auto &draw = source.asset->draws()[draw_index];
     // Without placements the draw's own bounds and placing matrices choose its level, the largest scale among its
@@ -776,7 +913,14 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
         return level_for(draw, run.distance, run.scale * axis_scale(source.asset->rest_pose().world[draw.node]));
     };
     const auto command = frame().command;
-    const auto record = [&](const DrawLevel *level, std::uint32_t first, std::uint32_t count) {
+    const auto record = [&](const DrawLevel *level, std::uint32_t first, std::uint32_t count, MeshPipeline through) {
+        if (mesh_pipeline) {
+            const auto bound = resource_pipelines[std::size_t(through)][uses_height_fog()];
+            if (bound != bound_mesh_pipeline)
+                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
+            bound_mesh_pipeline = bound;
+            resources.discarding_draw_calls += through == MeshPipeline::discarding;
+        }
         const auto index_count = level ? level->index_count : draw.index_count;
         vkCmdDrawIndexed(command, index_count, count, level ? level->first_index : draw.first_index, 0, first);
         const auto indices = std::uint64_t{index_count} * count;
@@ -791,21 +935,25 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
         }
     };
     const DrawLevel *pending_level = nullptr;
+    auto pending_pipeline = MeshPipeline::discarding;
     std::uint32_t pending_first = 0, pending_count = 0;
     for (const auto &run : placement_runs) {
         const auto *level = level_of(run);
-        if (pending_count && level == pending_level && pending_first + pending_count == run.first) {
+        const auto through = mesh_pipeline ? run_pipeline(*mesh_pipeline, run) : MeshPipeline::discarding;
+        if (pending_count && level == pending_level && through == pending_pipeline &&
+            pending_first + pending_count == run.first) {
             pending_count += run.count;
             continue;
         }
         if (pending_count)
-            record(pending_level, pending_first, pending_count);
+            record(pending_level, pending_first, pending_count, pending_pipeline);
         pending_level = level;
+        pending_pipeline = through;
         pending_first = run.first;
         pending_count = run.count;
     }
     if (pending_count)
-        record(pending_level, pending_first, pending_count);
+        record(pending_level, pending_first, pending_count, pending_pipeline);
 }
 // Records the casters of shadow pass @p shadow or, without one, the main view: every opaque and masked draw in
 // selection, instance and draw order, then the opaque custom material draws, then the sky where none of them drew,
@@ -813,14 +961,17 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
 // opaque casters before their masked ones.
 void record_resources(const ShadowPass *shadow = nullptr) {
     const auto command = frame().command;
-    if (!shadow)
+    if (!shadow) {
         clear_main_view_counters();
+        bound_mesh_pipeline = VK_NULL_HANDLE;
+    }
     const auto &view = shadow ? shadow->view : view_projection;
     const auto *frustum = shadow ? &shadow->frustum : options.frustum_culling ? &resource_frustum : nullptr;
-    // Meshes, then impostors, each through their pipeline, bound once their first draw records. A shadow pass draws
-    // its meshes' opaque casters through a pipeline without a fragment shader, then their masked ones, whose discard
-    // keeps a tile-based GPU from removing hidden surfaces before it shades them. A shadow map keeps the least depth
-    // of each texel whatever the order.
+    // Meshes, then impostors, each through their pipeline, bound once their first draw records; in the main view each
+    // mesh draw's runs bind the MeshPipeline that they need instead. A shadow pass draws its meshes' opaque casters
+    // through a pipeline without a fragment shader, then their masked ones, whose discard keeps a tile-based GPU from
+    // removing hidden surfaces before it shades them. A shadow map keeps the least depth of each texel whatever the
+    // order.
     enum class Group { meshes, masked_meshes, impostors };
     for (const auto group : {Group::meshes, Group::masked_meshes, Group::impostors}) {
         if (group == Group::masked_meshes && !shadow)
@@ -828,7 +979,7 @@ void record_resources(const ShadowPass *shadow = nullptr) {
         const bool impostors = group == Group::impostors;
         const auto group_pipeline = impostors
                                         ? (shadow ? shadow_impostor_pipeline : impostor_pipelines[uses_height_fog()])
-                                    : !shadow                ? resource_pipelines[uses_height_fog()]
+                                    : !shadow                ? VK_NULL_HANDLE
                                     : group == Group::meshes ? shadow_opaque_pipeline
                                                              : shadow_masked_pipeline;
         bool bound = false;
@@ -849,15 +1000,21 @@ void record_resources(const ShadowPass *shadow = nullptr) {
             find_placement_runs(render_instance, frustum);
             if (placement_runs.empty())
                 continue;
-            if (!bound)
+            if (!bound && group_pipeline)
                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, group_pipeline);
             bound = true;
             bind_geometry(render_instance);
             for (std::size_t i = first; i < first + count; ++i) {
-                const auto draw_index = (shadow ? resource_shadow_draws : resource_draws)[i];
-                if (shadow && !shadow->frustum.intersects(render_instance.source->primitive_bounds[draw_index]))
+                if (!shadow) {
+                    const auto &[draw_index, draw_pipeline] = resource_draws[i];
+                    record_draw(render_instance, draw_index, view, false,
+                                impostors ? std::nullopt : std::optional(draw_pipeline));
                     continue;
-                record_draw(render_instance, draw_index, view, shadow != nullptr);
+                }
+                const auto draw_index = resource_shadow_draws[i];
+                if (!shadow->frustum.intersects(render_instance.source->primitive_bounds[draw_index]))
+                    continue;
+                record_draw(render_instance, draw_index, view, true);
             }
         }
     }

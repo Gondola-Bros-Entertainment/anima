@@ -7,6 +7,7 @@
 #include "gpu_checks.hpp"
 #include "rejection.hpp"
 #include <anima/assets/asset.hpp>
+#include <anima/mesh_placements.hpp>
 #include <anima/scene.hpp>
 #include <array>
 #include <cmath>
@@ -79,6 +80,12 @@ class Harness {
         const auto asset = anima::load_asset(std::span<const std::byte>(glb));
         auto scene = std::make_shared<anima::Scene>();
         scene->set_transform(scene->add(anima::Mesh::compile(*asset)), world);
+        render(name, scene, eye);
+    }
+    /// Views @p scene from @p eye or else frames it with an OrbitCamera, reads back its first frame as @p name, and
+    /// keeps the frame's counters in #resources.
+    void render(const std::string &name, const std::shared_ptr<const anima::Scene> &scene,
+                const std::optional<Eye> &eye = std::nullopt) {
         renderer_.set_scenes({scene});
         int width = 0, height = 0;
         require(SDL_GetWindowSizeInPixels(window_.get(), &width, &height) && width > 0 && height > 0,
@@ -106,6 +113,7 @@ class Harness {
             SDL_Delay(5);
         }
         images.add(name, gpu_check::take(renderer_));
+        resources = renderer_.resource_stats();
     }
     /// Shuts the renderer down and requires clean validation.
     void finish() {
@@ -128,6 +136,8 @@ class Harness {
 
   public:
     gpu_check::Captures images;
+    /// VulkanRenderer::resource_stats() after the latest render().
+    anima::ResourceStats resources{};
 };
 
 // A quad textured with a gray checker of 0 and 128, 2x2 texels, or 64x64 when mipmapped, repeated @p uv_extent
@@ -598,35 +608,114 @@ inline std::vector<std::byte> sided_quad(bool back, bool double_sided, bool hidd
                        (double_sided ? "true" : "false") + R"(}],"meshes":[{"primitives":[{"attributes":{"POSITION":)" +
                        std::to_string(first) + R"(,"NORMAL":)" + std::to_string(first + 1) + R"(},"material":0}]}])");
 }
+// sided_quad() as an Asset, narrowed onto its left half, from -1 to 0 in X, which keeps its winding.
+inline anima::Asset sided_half(bool back) {
+    auto asset = *anima::load_asset(std::span<const std::byte>(sided_quad(back, false)));
+    for (auto &vertex : asset.primitives.at(0).vertices)
+        vertex.position.x = (vertex.position.x - 1) / 2;
+    return asset;
+}
+// sided_half() twice in one skinned primitive, bound whole to a joint at rest and to one that mirrors X, which carries
+// the second half onto the right with its winding reversed, so that together they cover sided_quad().
+inline anima::Asset skinned_halves(bool back) {
+    auto asset = sided_half(back);
+    auto &vertices = asset.primitives.at(0).vertices;
+    const auto half = vertices;
+    vertices.insert(vertices.end(), half.begin(), half.end());
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        vertices[i].joints = {i < half.size() ? 0U : 1U, 0, 0, 0};
+        vertices[i].weights = {1, 0, 0, 0};
+    }
+    const auto joint = asset.nodes.size();
+    asset.nodes.resize(joint + 2);
+    asset.nodes[joint + 1].rest.scale = {-1, 1, 1};
+    asset.skins.push_back({{joint, joint + 1}, {anima::identity(), anima::identity()}});
+    asset.primitives.at(0).skin = 0;
+    return asset;
+}
 inline int run_sidedness(int argc, char **argv) {
     require(argc == 3, "Usage: consumer --sidedness OUTPUT");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     Harness harness(argv[2]);
     auto &images = harness.images;
+    // Renders a fixture as @p name, requiring one draw call, @p discarding of them through the pipeline whose fragment
+    // shader may discard. The others cull single-sided faces in the rasterizer instead.
+    const auto render = [&](const std::string &name, std::uint64_t discarding, const auto &...fixture) {
+        harness.render(name, fixture...);
+        const auto &drawn = harness.resources;
+        images.require(drawn.draw_calls == 1 && drawn.discarding_draw_calls == discarding,
+                       name + " recorded " + std::to_string(drawn.draw_calls) + " draw calls, " +
+                           std::to_string(drawn.discarding_draw_calls) +
+                           " through the pipeline that may discard, instead of 1 and " + std::to_string(discarding),
+                       {name});
+    };
+    // A scene of one object that draws @p mesh, at @p placements unless they are empty, within @p range.
+    const auto object = [](const std::shared_ptr<const anima::Mesh> &mesh, const std::vector<anima::Mat4> &placements,
+                           const anima::VisibilityRange &range) {
+        auto scene = std::make_shared<anima::Scene>();
+        const auto id = scene->add(mesh);
+        if (!placements.empty()) {
+            const auto copies = anima::MeshPlacements::create(mesh, placements);
+            require(copies->clusters().size() == 1, "The sidedness placements do not form one cluster");
+            scene->set_placements(id, copies);
+        }
+        scene->set_visibility_range(id, range);
+        return std::shared_ptr<const anima::Scene>(std::move(scene));
+    };
     // Mirroring X winds the quad's outward faces clockwise; its normal still points to +Z.
     auto mirrored = anima::identity();
     mirrored[0] = -1;
-    harness.render("empty", sided_quad(false, false, true));
-    harness.render("front", sided_quad(false, false));
-    harness.render("back", sided_quad(true, false));
-    harness.render("double-sided-back", sided_quad(true, true));
-    harness.render("mirrored-front", sided_quad(false, false), mirrored);
-    harness.render("mirrored-back", sided_quad(true, false), mirrored);
+    // A masked material discards; the rest cull a single-sided back face in the rasterizer, or under a mirrored
+    // transform a front face, as the shader would discard it.
+    render("empty", 1, sided_quad(false, false, true));
+    render("front", 0, sided_quad(false, false));
+    render("back", 0, sided_quad(true, false));
+    render("double-sided-back", 0, sided_quad(true, true));
+    render("mirrored-front", 0, sided_quad(false, false), mirrored);
+    render("mirrored-back", 0, sided_quad(true, false), mirrored);
+    // A cluster whose placements all mirror culls front faces, and one whose placements differ in orientation, here
+    // half of the quad in place and half mirrored onto the other half, discards in the shader.
+    const auto quad = anima::Mesh::compile(*anima::load_asset(std::span<const std::byte>(sided_quad(false, false))));
+    const std::vector<anima::Mat4> mixed{anima::identity(), mirrored};
+    render("placed-mirrored-front", 0, object(quad, {mirrored}, {}));
+    render("placed-mixed-front", 1, object(anima::Mesh::compile(sided_half(false)), mixed, {}));
+    render("placed-mixed-back", 1, object(anima::Mesh::compile(sided_half(true)), mixed, {}));
+    // Each skinned triangle's first vertex orients it, here one half in place and one mirrored, so a single-sided
+    // skinned draw discards in the shader.
+    render("skinned-front", 1, object(anima::Mesh::compile(skinned_halves(false)), {}, {}));
+    render("skinned-back", 1, object(anima::Mesh::compile(skinned_halves(true)), {}, {}));
+    // The orbit camera lies 3 sqrt(2), about 4.24, from the quad's center: inside the end margin of a range that ends
+    // at 6 after a 4 wide margin, where the object, or a copy placed at it, dissolves, and outside the margin of one
+    // that ends at 100.
+    constexpr anima::VisibilityRange fading{0, 6, 0, 4}, whole{0, 100, 0, 4};
+    render("ranged-front", 1, object(quad, {}, fading));
+    render("placed-ranged-front", 1, object(quad, {anima::identity()}, fading));
+    render("ranged-whole-front", 0, object(quad, {}, whole));
     constexpr int least_surface_difference = 32;
     const auto background = sample(images["empty"], 1, 1), surface = sample(images["front"], 1, 1);
     images.require(gpu_check::difference(background, surface) >= least_surface_difference,
                    "The front of a single-sided quad shows " + gpu_check::text(surface) +
                        " at its center, too close to the background " + gpu_check::text(background),
                    {"empty", "front"});
-    // A single-sided back discards every fragment, a double-sided one is lit as its front, and a mirrored
-    // transform keeps its outward side.
+    // A single-sided back draws nothing, a double-sided one is lit as its front, and mirrored transforms and placements
+    // keep their outward sides, as does a skinned draw whose joints differ in orientation.
     images.require_parity("empty", "back");
     images.require_parity("front", "double-sided-back");
     images.require_parity("front", "mirrored-front");
     images.require_parity("empty", "mirrored-back");
+    for (const auto *name : {"placed-mirrored-front", "placed-mixed-front", "skinned-front", "ranged-whole-front"})
+        images.require_parity("front", name);
+    for (const auto *name : {"placed-mixed-back", "skinned-back"})
+        images.require_parity("empty", name);
+    // In the margin the quad dissolves, the same pixels as an object and as a placed copy.
+    constexpr double least_dissolved = .01;
+    images.require_changed("front", "ranged-front", least_dissolved, "The quad in its range's margin kept every pixel");
+    images.require_changed("empty", "ranged-front", least_dissolved, "The quad in its range's margin drew nothing");
+    images.require_parity("ranged-front", "placed-ranged-front");
     harness.finish();
     std::cout << "PASS sidedness: single-sided backs culled, double-sided backs lit as their fronts, mirrored "
-                 "transforms keeping their outward sides\n";
+                 "transforms, placements and joints keeping their outward sides, through pipelines that discard only "
+                 "where the rasterizer cannot cull\n";
     return 0;
 }
 } // namespace material_test

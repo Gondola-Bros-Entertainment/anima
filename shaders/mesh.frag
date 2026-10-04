@@ -20,13 +20,17 @@ surface;
 layout(location = 0) out vec4 outColor;
 // Set in the blended pipeline, which composites premultiplied color over the target with ONE, ONE_MINUS_SRC_ALPHA.
 layout(constant_id = 0) const bool blended = false;
+// False in the pipelines that cull by facing in the rasterizer (MeshPipeline in resource_renderer.inc), which compile
+// without a discard: they draw no masked material, no copy in a visibility range's margin, and no face that a
+// single-sided material turns away.
+layout(constant_id = 2) const bool mayDiscard = true;
 void main() {
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.
     float facing = (gl_FrontFacing ? 1.0 : -1.0) * orientation;
     // A single-sided material draws only the side its faces front. Facing is constant across a primitive, so this
     // discards whole quads and leaves derivatives defined.
-    if (material.maps.y < 0.5 && facing < 0.0)
+    if (mayDiscard && material.maps.y < 0.5 && facing < 0.0)
         discard;
     vec3 n = unit(worldNormal);
     // Authored tangent frames survive skinning and mirrored instance transforms.
@@ -78,7 +82,8 @@ void main() {
     // Every texture is sampled before a pixel discards, since a discard leaves undefined the derivatives that choose
     // mip levels for the rest of its 2x2 quad. In its visibility range's margins an object dissolves, keeping the share
     // of its pixels that its visibility gives, and a masked material discards what lies below its cutoff.
-    if (dissolved(visibility, gl_FragCoord.xy) || (material.detail.y >= 0.0 && alpha < material.detail.y))
+    if (mayDiscard &&
+        (dissolved(visibility, gl_FragCoord.xy) || (material.detail.y >= 0.0 && alpha < material.detail.y)))
         discard;
     vec3 albedo = clamp(base.rgb * baseColor, 0.0, 1.0);
     vec3 color = reflectedLight(n, worldPosition, surface.viewOrigin, albedo, surface.factors.x * mr.b,
