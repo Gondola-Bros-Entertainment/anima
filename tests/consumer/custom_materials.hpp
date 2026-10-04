@@ -448,7 +448,9 @@ inline void check_time(Harness &harness) {
 
 // The water reads opaque depth and color: a near and a far backdrop show through it by the transmittance of the
 // water between its surface and each, and the rest of the frame is unchanged. A frame whose water is hidden or
-// culled copies nothing.
+// culled copies nothing. Until a frame copies opaque inputs the view's depth is transient, so the scene targets count
+// no more bytes than after, and fewer where the device has lazily allocated memory; the depth that can be copied
+// stays until the swapchain is recreated.
 inline void check_water(Harness &harness) {
     const auto view = blending_test::perspective_view(harness.aspect());
     const Color near_color{.9, .5, .1}, far_color{.1, .6, .9};
@@ -458,9 +460,20 @@ inline void check_water(Harness &harness) {
     (void)scene->add(blending_test::facing(blending_test::opaque(far_color), {3, 0, -9}, 3, 4));
     const anima::Vec3 surface_center{0, 0, -2};
     const auto pool = add(*scene, surface(surface_center, 1, .6F), water_material(water));
+    harness.renderer().request_resize();
+    scene->set_visible(pool, false);
+    harness.render("water-unread", {scene}, view);
+    require(!harness.stats.opaque_inputs, "A frame whose water is hidden copied opaque inputs");
+    const auto unread_bytes = harness.stats.world_target_bytes;
+    scene->set_visible(pool, true);
     harness.render("water", {scene}, view);
     require(harness.stats.opaque_inputs && harness.stats.opaque_input_bytes > 0,
             "A frame that draws water did not copy opaque depth and color");
+    const auto read_bytes = harness.stats.world_target_bytes;
+    std::cout << "CUSTOM scene target bytes: " << unread_bytes << " with a transient depth, " << read_bytes
+              << " with one that can be copied\n";
+    require(unread_bytes > 0 && unread_bytes <= read_bytes,
+            "The transient depth counted more bytes than the one that opaque inputs copy");
     const auto &image = harness.images["water"];
     const auto inverse = anima::inverse(view);
     for (const auto x : {-.4F, .4F}) {
@@ -480,12 +493,18 @@ inline void check_water(Harness &harness) {
     harness.renderer().request_resize();
     harness.render("water-recreated", {scene}, view);
     harness.images.require_same("water", "water-recreated", "Water after swapchain recreation");
+    require(harness.stats.world_target_bytes == read_bytes,
+            "The water after swapchain recreation counted other scene target bytes");
     harness.images.discard({"water", "water-recreated"});
 
     scene->set_visible(pool, false);
     harness.render("water-hidden", {scene}, view);
     require(!harness.stats.opaque_inputs, "A frame whose water is hidden copied opaque inputs");
+    require(harness.stats.world_target_bytes == read_bytes,
+            "A frame that copies no opaque inputs released the depth that they copy");
     harness.expect("water-hidden", view, {-.4F, 0, -2}, near_color, "The near backdrop without the water");
+    harness.images.require_same("water-unread", "water-hidden",
+                                "The hidden water with a transient depth and with one that can be copied");
     scene->set_visible(pool, true);
     // Behind the camera, the water is culled.
     auto behind = anima::identity();
@@ -494,7 +513,7 @@ inline void check_water(Harness &harness) {
     harness.render("water-culled", {scene}, view);
     require(!harness.stats.opaque_inputs && harness.stats.culled_draws == 1,
             "A frame whose water is culled copied opaque inputs");
-    harness.images.discard({"water-hidden", "water-culled"});
+    harness.images.discard({"water-unread", "water-hidden", "water-culled"});
 }
 
 // A skinned custom quad follows its joint, through the pose buffer and the joint attributes. It draws after a

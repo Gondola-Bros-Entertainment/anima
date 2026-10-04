@@ -23,6 +23,15 @@ struct WorldTarget {
     }
 };
 std::unique_ptr<WorldTarget> world_target;
+// A world framebuffer that a replacement of the depth target retired, destroyed once no frame in flight uses it.
+struct RetiredFramebuffer {
+    VkDevice device{};
+    VkFramebuffer framebuffer{};
+    ~RetiredFramebuffer() {
+        if (framebuffer)
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+    }
+};
 VkDescriptorSetLayout scene_input_layout{};
 VkPipelineLayout post_pipeline_layout{};
 VkShaderModule resolve_fragment_shader{};
@@ -128,6 +137,21 @@ VkRenderPass create_display_pass() {
     check(vkCreateRenderPass(device, &info, nullptr, &pass), "Create display pass");
     return pass;
 }
+// Creates the world framebuffer of @p size that attaches @p color_view and @p depth_view, scene targets of that size.
+// Throws `std::runtime_error` when creation fails.
+VkFramebuffer create_world_framebuffer(VkImageView color_view, VkImageView depth_view, VkExtent2D size) const {
+    const VkImageView views[]{color_view, depth_view};
+    VkFramebufferCreateInfo info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    info.renderPass = render_pass;
+    info.attachmentCount = 2;
+    info.pAttachments = views;
+    info.width = size.width;
+    info.height = size.height;
+    info.layers = 1;
+    VkFramebuffer framebuffer{};
+    check(vkCreateFramebuffer(device, &info, nullptr, &framebuffer), "Create world framebuffer");
+    return framebuffer;
+}
 // Creates the world target of @p size, whose framebuffer attaches @p depth_view, a depth target of that size. Throws
 // `std::runtime_error` when the device lacks the target's format or a Vulkan call fails, releasing what it created.
 std::unique_ptr<WorldTarget> create_world_target(VkImageView depth_view, VkExtent2D size) {
@@ -135,15 +159,7 @@ std::unique_ptr<WorldTarget> create_world_target(VkImageView depth_view, VkExten
     next->device = device;
     next->allocator = allocator;
     create_world_image(next->color, size);
-    const VkImageView views[]{next->color.view, depth_view};
-    VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    framebuffer.renderPass = render_pass;
-    framebuffer.attachmentCount = 2;
-    framebuffer.pAttachments = views;
-    framebuffer.width = size.width;
-    framebuffer.height = size.height;
-    framebuffer.layers = 1;
-    check(vkCreateFramebuffer(device, &framebuffer, nullptr, &next->framebuffer), "Create world framebuffer");
+    next->framebuffer = create_world_framebuffer(next->color.view, depth_view, size);
     const VkDescriptorPoolSize sampled{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = 1;
@@ -166,15 +182,16 @@ std::unique_ptr<WorldTarget> create_world_target(VkImageView depth_view, VkExten
     return next;
 }
 // Gives the scene targets the size that the render scale sets for the swapchain: creates the depth and world targets
-// after a swapchain creation, which destroyed the previous ones, and replaces them when that size changes. The replaced
-// targets and the opaque input copies, which the next frame that reads them creates at the new size, are destroyed once
-// no frame in flight can use them. A failure keeps the current targets, or none after a swapchain creation, and the
-// next call tries again.
+// after a swapchain creation, which destroyed the previous ones, and replaces them when that size changes. A depth
+// target created after a swapchain creation is transient until a frame copies opaque inputs (make_depth_copy_source()),
+// and one that replaces a copy source is one too. The replaced targets and the opaque input copies, which the next
+// frame that reads them creates at the new size, are destroyed once no frame in flight can use them. A failure keeps
+// the current targets, or none after a swapchain creation, and the next call tries again.
 void ensure_scene_targets() {
     const auto size = scene_size(extent);
     if (size.width == scene_extent.width && size.height == scene_extent.height)
         return;
-    auto next_depth = create_depth(size);
+    auto next_depth = create_depth(size, depth_target && depth_target->copy_source);
     // Between the two creations, so that an injected failure releases the new depth target alone, as a failure to
     // create the world target does.
     if (options.render_scale > 1)

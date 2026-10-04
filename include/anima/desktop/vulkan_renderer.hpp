@@ -396,7 +396,11 @@ struct ResourceStats {
     /// VulkanRenderer::set_render_scale), and 0 while there are none: until a draw() first creates them, after a
     /// swapchain recreation, which releases them, until a draw() creates them again, and after shutdown(). A draw()
     /// that fails to resize them keeps the previous targets, which this counts. Excludes the swapchain and shadow
-    /// images, the opaque input copies, and targets that a resize replaced but a frame in flight still uses.
+    /// images, the opaque input copies, targets that a resize or the depth target's replacement retired but a frame in
+    /// flight still uses, and a depth target in lazily allocated memory, which the device backs only as rendering needs
+    /// it. The depth target is a transient attachment, in lazily allocated memory where the device has a type for it,
+    /// until the first frame that copies opaque inputs (opaque_inputs) replaces it with a device-local one that can be
+    /// copied. Scene targets keep a depth target of that kind, through resizes, until the swapchain is recreated.
     std::uint64_t world_target_bytes{};
 };
 
