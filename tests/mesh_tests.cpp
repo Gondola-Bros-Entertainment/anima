@@ -601,7 +601,7 @@ TEST_CASE("Compilation rejects an unknown texel retention and images without tex
     CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.mesh = {.texel_retention = unknown}}), unknown_retention,
                          std::invalid_argument);
     // compile() checks the levels of detail first, and compile_static() the retention before anything else.
-    const MeshOptions both{.texel_retention = unknown, .lods = {.levels = 9}};
+    const MeshOptions both{.texel_retention = unknown, .lods = {.levels = MeshLodOptions::max_levels + 1}};
     CHECK_THROWS_WITH_AS(Mesh::compile(source, both), "Mesh LOD levels must be from 0 to 8", std::invalid_argument);
     CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.max_vertices = 1, .mesh = both}), unknown_retention,
                          std::invalid_argument);

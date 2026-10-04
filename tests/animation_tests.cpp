@@ -1,6 +1,7 @@
 #include "near.hpp"
 #include <anima/assets/fitted.hpp>
 #include <anima/assets/preview.hpp>
+#include <anima/mesh.hpp>
 // This suite supplies its own main, which reads the optional manifest argument.
 #define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest/doctest.h>
@@ -251,6 +252,12 @@ TEST_CASE("Invalid manifests are rejected with their reason") {
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"motion_contract\":null", "\"motion_contract\":\"\"")),
                          "Manifest motion_contract must be a filename beside the manifest: ", std::invalid_argument);
     CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":2.5")),
+                         "Invalid manifest joint count", std::invalid_argument);
+    CHECK(file.read(changed(valid_manifest, "\"joint_count\":2",
+                            "\"joint_count\":" + std::to_string(Mesh::max_skin_joints)))
+              .joint_count == Mesh::max_skin_joints);
+    CHECK_THROWS_WITH_AS(file.read(changed(valid_manifest, "\"joint_count\":2",
+                                           "\"joint_count\":" + std::to_string(Mesh::max_skin_joints + 1))),
                          "Invalid manifest joint count", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
         validate_manifest(file.read(changed(valid_manifest, "\"joint_count\":2", "\"joint_count\":3")), asset),

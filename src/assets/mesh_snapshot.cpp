@@ -1,3 +1,4 @@
+#include "../detail/image_limits.hpp"
 #include "../detail/rotation_matrix.hpp"
 #include "../detail/staging.hpp"
 #include "bind_pose.hpp"
@@ -21,10 +22,10 @@
 
 namespace anima {
 namespace {
+static_assert(max_image_edge == detail::maximum_image_edge && max_image_texels == detail::maximum_image_texels,
+              "asset.hpp must publish the image limits that the decoder and the UI share");
 // Bound decoded allocation and hierarchy traversal before accepting a GLB.
 constexpr std::size_t maximum_source_bytes = 64 * 1024 * 1024;
-constexpr int maximum_image_edge = 8192;
-constexpr std::size_t maximum_image_pixels = 16 * 1024 * 1024;
 // Decoded bytes of every image that a texture uses, each counted once: 16 images at the pixel limit.
 constexpr std::size_t maximum_decoded_bytes = std::size_t{1} << 30;
 constexpr std::size_t maximum_nodes = 4096, maximum_materials = 4096;
@@ -35,8 +36,6 @@ constexpr std::size_t maximum_animation_keys = 8'000'000;
 constexpr unsigned maximum_hierarchy_depth = 256;
 // A skinned vertex whose joint weights sum to this or less is unweighted.
 constexpr float minimum_skin_weight_sum = 1e-6F;
-// Images decode to 8-bit RGBA.
-constexpr int rgba_channels = 4;
 
 void require(bool condition, const char *message) {
     if (!condition)
@@ -104,7 +103,9 @@ struct EncodedImage {
     int width{};
     int height{};
     // Bytes of the image decoded to RGBA.
-    std::size_t decoded_bytes() const { return std::size_t(width) * std::size_t(height) * rgba_channels; }
+    std::size_t decoded_bytes() const {
+        return std::size_t(width) * std::size_t(height) * detail::rgba_bytes_per_pixel;
+    }
 };
 // Reads @p image's header, without decoding it, and checks the limits of one image.
 EncodedImage measure(const cgltf_image *image) {
@@ -118,16 +119,16 @@ EncodedImage measure(const cgltf_image *image) {
     int channels = 0;
     require(stbi_info_from_memory(result.bytes, result.size, &result.width, &result.height, &channels),
             "Invalid embedded image");
-    require(result.width > 0 && result.height > 0 && result.width <= maximum_image_edge &&
-                result.height <= maximum_image_edge &&
-                std::size_t(result.width) * result.height <= maximum_image_pixels,
+    require(result.width > 0 && result.height > 0 && std::cmp_less_equal(result.width, max_image_edge) &&
+                std::cmp_less_equal(result.height, max_image_edge) &&
+                std::size_t(result.width) * result.height <= max_image_texels,
             "Decoded image exceeds import dimensions or pixel limit");
     return result;
 }
 std::shared_ptr<const Image> decode(const EncodedImage &image) {
     int width = 0, height = 0, channels = 0;
     std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels{
-        stbi_load_from_memory(image.bytes, image.size, &width, &height, &channels, rgba_channels), stbi_image_free};
+        stbi_load_from_memory(image.bytes, image.size, &width, &height, &channels, STBI_rgb_alpha), stbi_image_free};
     // The import's byte limit counted the dimensions from the header, so the pixels must have them too.
     require(pixels && width == image.width && height == image.height, "PNG/JPEG decode failed");
     return std::make_shared<Image>(Image{static_cast<std::uint32_t>(width),
@@ -275,7 +276,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
     for (std::size_t i = 0; i < data->skins_count; ++i) {
         const auto &skin = data->skins[i];
         AssetSkin value;
-        require(skin.joints_count > 0 && skin.joints_count <= mesh_limits::maximum_skin_joints,
+        require(skin.joints_count > 0 && skin.joints_count <= Mesh::max_skin_joints,
                 "Invalid/oversized skin joint palette");
         for (std::size_t j = 0; j < skin.joints_count; ++j) {
             value.joints.push_back(static_cast<std::size_t>(skin.joints[j] - data->nodes));

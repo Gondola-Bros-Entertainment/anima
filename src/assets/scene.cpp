@@ -79,7 +79,8 @@ std::shared_ptr<const Mesh>
 Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint32_t>> indices, MeshOptions options) {
     const auto lods = options.lods;
     const auto texel_retention = options.texel_retention;
-    require(lods.levels <= 8, "Mesh LOD levels must be from 0 to 8");
+    static_assert(MeshLodOptions::max_levels == 8, "The LOD message states the limit");
+    require(lods.levels <= MeshLodOptions::max_levels, "Mesh LOD levels must be from 0 to 8");
     if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
         throw std::invalid_argument("Unknown texel retention");
     auto result = std::shared_ptr<Mesh>(new Mesh);
@@ -101,7 +102,7 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
     std::size_t palette_size = source.nodes.size();
     std::vector<std::uint32_t> offsets;
     for (const auto &skin : source.skins) {
-        require(!skin.joints.empty() && skin.joints.size() <= mesh_limits::maximum_skin_joints &&
+        require(!skin.joints.empty() && skin.joints.size() <= max_skin_joints &&
                     skin.joints.size() == skin.inverse_bind.size(),
                 "Invalid render skin palette");
         require(palette_size <= UINT32_MAX - skin.joints.size(), "Render palette index overflow");
