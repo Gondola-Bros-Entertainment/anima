@@ -130,16 +130,21 @@ class Prefab {
     static Prefab capture(GameObject root, const ComponentCodecs &codecs = {});
     /// Nodes in hierarchy order, with keys assigned.
     [[nodiscard]] std::span<const Node> nodes() const { return nodes_; }
-    /// Instantiates the prefab as a new root of @p scene, with @p placement multiplied by the
-    /// authored root matrix, restores its components with the retained codecs and returns the new
-    /// root. Every component type is checked before any object is created.
+    /// Instantiates the prefab as a new root of @p scene, whose local matrix, and so its world
+    /// matrix, is @p placement times the authored root matrix, restores its components with the
+    /// retained codecs and returns the new root. Every component type is checked before any object
+    /// is created.
     [[nodiscard]] GameObject instantiate(Scene &scene, const Mat4 &placement = identity()) const;
-    /// Instantiates the prefab under @p parent, as instantiate(Scene &, const Mat4 &) does.
+    /// Instantiates the prefab as instantiate(Scene &, const Mat4 &) does, but with the new root as
+    /// the last child of @p parent. @p placement is relative to @p parent, not a world pose: the new
+    /// root's local matrix is @p placement times the authored root matrix, so its world matrix is
+    /// @p parent's world matrix times that.
     [[nodiscard]] GameObject instantiate(GameObject parent, const Mat4 &placement = identity()) const;
     /// Instantiates the prefab with @p codecs, borrowed for this call, in place of the retained
     /// codecs, which stay unchanged. Use it to bind an instance to another session's services.
     [[nodiscard]] GameObject instantiate(Scene &scene, const Mat4 &placement, const ComponentCodecs &codecs) const;
-    /// Instantiates the prefab under @p parent with @p codecs, borrowed for this call.
+    /// Instantiates the prefab under @p parent, placed relative to it as
+    /// instantiate(GameObject, const Mat4 &) places it, with @p codecs, borrowed for this call.
     [[nodiscard]] GameObject instantiate(GameObject parent, const Mat4 &placement, const ComponentCodecs &codecs) const;
     /// Writes an `anima.prefab` version 4 document: exactly `version`, `kind` and `objects`, with
     /// objects as in serialize_scene and the root first. No codec runs.
