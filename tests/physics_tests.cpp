@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 
 using namespace anima;
@@ -23,7 +24,13 @@ constexpr Quat identity_rotation{0, 0, 0, 1};                // Quat{} is all ze
 constexpr Quat quarter_turn_z{0, 0, .70710678F, .70710678F}; // 90 degrees about +Z.
 constexpr std::size_t hull_point_limit = 256;                // Documented in include/anima/physics.hpp.
 constexpr std::size_t compound_child_limit = 64;
-constexpr float beyond_vector_range = 2e6F; // Physics vectors are limited to +/-1e6.
+constexpr float vector_limit = 1e6F; // Physics vector components are limited to +/-1e6.
+constexpr float beyond_vector_range = 2 * vector_limit;
+// Velocity caps, documented in include/anima/physics.hpp: units or radians per second.
+constexpr float dynamic_speed_cap = 500;
+constexpr float dynamic_angular_speed_cap = 15 * std::numbers::pi_v<float>;
+constexpr float kinematic_speed_cap = 2 * vector_limit; // Beyond the length of any valid vector.
+constexpr float cap_tolerance = 1e-5F;                  // Relative error of a velocity clamped to its cap.
 constexpr auto expired_body = "Expired physics body";
 constexpr auto vector_range = "Physics vector outside finite supported range";
 constexpr auto step_range = "Physics step must be in [0.000001, 0.1] seconds";
@@ -33,6 +40,11 @@ constexpr auto compound_child = "Compound children must be primitives or hulls";
 constexpr auto stray_children = "Noncompound collider contains children";
 
 bool near(Vec3 a, Vec3 b) { return length(a - b) < tolerance; }
+bool identical(Vec3 a, Vec3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
+// Whether @p velocity points along the unit @p direction with the length @p cap.
+bool at_cap(Vec3 velocity, Vec3 direction, float cap) {
+    return length(velocity - direction * cap) <= cap * cap_tolerance;
+}
 WorldSettings weightless(std::uint32_t max_bodies) { return {{0, 0, 0}, max_bodies}; }
 BodySettings box(Vec3 position, Vec3 extent, Motion motion = Motion::stationary) {
     BodySettings s;
@@ -623,6 +635,61 @@ TEST_CASE("Disabling a body keeps its velocities") {
     moving.set_enabled(true);
     REQUIRE_MESSAGE((near(moving.velocity(), velocity) && near(moving.angular_velocity(), spin)),
                     "Reenabling lost the saved velocities");
+}
+
+TEST_CASE("A dynamic body's velocities are clamped to the caps") {
+    // Each velocity exceeds its cap and must keep its direction, scaled to the cap's length.
+    World world(weightless(1));
+    auto settings = box({}, {.5F, .5F, .5F}, Motion::dynamic);
+    settings.velocity = {600, 0, 0};
+    settings.angular_velocity = {0, 94, 0};
+    auto body = world.create(settings);
+    REQUIRE_MESSAGE(at_cap(body.velocity(), {1, 0, 0}, dynamic_speed_cap), "Creation did not clamp the velocity");
+    REQUIRE_MESSAGE(at_cap(body.angular_velocity(), {0, 1, 0}, dynamic_angular_speed_cap),
+                    "Creation did not clamp the angular velocity");
+    body.set_velocity({0, 0, -600});
+    body.set_angular_velocity({-94, 0, 0});
+    REQUIRE_MESSAGE(at_cap(body.velocity(), {0, 0, -1}, dynamic_speed_cap), "set_velocity did not clamp");
+    REQUIRE_MESSAGE(at_cap(body.angular_velocity(), {-1, 0, 0}, dynamic_angular_speed_cap),
+                    "set_angular_velocity did not clamp");
+}
+
+TEST_CASE("A kinematic body keeps velocities beyond the dynamic caps") {
+    const Vec3 start{0, 10, 0};
+    const Vec3 velocity{600, 0, 0};
+    const Vec3 spin{0, 94, 0}; // About 1.57 radians per 1/60 s step, just under twice the dynamic cap.
+    World world(weightless(1));
+    auto settings = box(start, {.5F, .5F, .5F}, Motion::kinematic);
+    settings.velocity = velocity;
+    settings.angular_velocity = spin;
+    auto body = world.create(settings);
+    REQUIRE_MESSAGE((identical(body.velocity(), velocity) && identical(body.angular_velocity(), spin)),
+                    "Creation clamped a kinematic body's velocities");
+    world.step(tick);
+    REQUIRE_MESSAGE((identical(body.velocity(), velocity) && identical(body.angular_velocity(), spin)),
+                    "A step changed a kinematic body's velocities");
+    const auto pose = body.pose();
+    const auto turn = spin.y * static_cast<float>(tick);
+    REQUIRE_MESSAGE(near(pose.position, start + velocity * static_cast<float>(tick)),
+                    "A kinematic body did not move at its velocity");
+    REQUIRE_MESSAGE((std::abs(pose.rotation[1] - std::sin(turn / 2)) < tolerance &&
+                     std::abs(pose.rotation[3] - std::cos(turn / 2)) < tolerance),
+                    "A kinematic body did not turn at its angular velocity");
+    // The longest vector that passes validation is kept as well.
+    const Vec3 fastest{vector_limit, vector_limit, -vector_limit};
+    body.set_velocity(fastest);
+    body.set_angular_velocity(fastest);
+    REQUIRE_MESSAGE((identical(body.velocity(), fastest) && identical(body.angular_velocity(), fastest)),
+                    "A kinematic body's longest valid velocities were clamped");
+    // Only Body::move_kinematic exceeds the kinematic cap, which disabling the body then applies.
+    constexpr double shortest_move = .000001;
+    const Vec3 leap{20, 0, 0}; // Twenty million units per second over the shortest move.
+    const auto here = body.pose();
+    body.move_kinematic({here.position + leap, here.rotation}, shortest_move);
+    REQUIRE_MESSAGE(body.velocity().x > kinematic_speed_cap, "move_kinematic clamped the velocity");
+    body.set_enabled(false);
+    REQUIRE_MESSAGE(at_cap(body.velocity(), {1, 0, 0}, kinematic_speed_cap),
+                    "Disabling did not clamp the velocity to the kinematic cap");
 }
 
 TEST_CASE("Kinematic bodies pair with stationary bodies only as sensors") {

@@ -27,6 +27,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <numbers>
 
 namespace anima::physics {
 namespace {
@@ -37,6 +38,16 @@ constexpr float hull_construction_tolerance = .0001F;
 constexpr float minimum_body_mass = .001F;
 constexpr float maximum_body_mass = 1'000'000.F;
 constexpr std::uint32_t maximum_world_bodies = 65'536;
+// A dynamic body's velocity caps, equal to Jolt's defaults. Jolt's clamping setters, impulses and steps shorten a
+// longer velocity to its cap, keeping its direction.
+constexpr float maximum_dynamic_speed = 500;
+constexpr float maximum_dynamic_angular_speed = 15 * std::numbers::pi_v<float>;
+// Steps never clamp a kinematic body's velocity, and MoveKinematic sets it without the cap. A kinematic cap
+// longer than any validated vector, whose length is at most sqrt(3) * 1,000,000, lets World::create and the
+// setters keep every velocity they accept too.
+constexpr float maximum_kinematic_speed = 2 * detail::maximum_vector_component;
+static_assert(maximum_kinematic_speed * maximum_kinematic_speed >
+              3 * detail::maximum_vector_component * detail::maximum_vector_component);
 // Jolt is stable at one collision step per 1/60 s and asks for one per started 1/60 s beyond that
 // (HelloWorld.cpp). The tolerance keeps a 1/60 s step rounded up to whole nanoseconds, such as
 // FixedStepClock's default, at one collision step.
@@ -475,8 +486,10 @@ Body World::create(const BodySettings &s) {
     JPH::BodyCreationSettings settings(
         collider, j(s.pose.position), rotation, motion,
         static_cast<JPH::ObjectLayer>(s.layer + (s.motion == Motion::stationary ? 0 : detail::collision_layer_count)));
-    settings.mLinearVelocity = j(s.velocity);
-    settings.mAngularVelocity = j(s.angular_velocity);
+    // Jolt keeps caps only for bodies that move; a stationary body ignores them.
+    const bool dynamic = s.motion == Motion::dynamic;
+    settings.mMaxLinearVelocity = dynamic ? maximum_dynamic_speed : maximum_kinematic_speed;
+    settings.mMaxAngularVelocity = dynamic ? maximum_dynamic_angular_speed : maximum_kinematic_speed;
     // Only kinematic sensors pair with stationary and kinematic bodies, as in Box2D. Jolt reserves this costly
     // pairing for sensors.
     settings.mCollideKinematicVsNonDynamic = s.motion == Motion::kinematic && s.sensor;
@@ -492,6 +505,12 @@ Body World::create(const BodySettings &s) {
     auto *body = state_->system.GetBodyInterface().CreateBody(settings);
     if (!body)
         throw std::length_error("Physics body capacity exhausted");
+    // BodyCreationSettings' velocities must already be within the caps: Jolt asserts that when NDEBUG is unset, as
+    // in Debug builds, and keeps a longer one otherwise. The clamping setters apply the caps before the body steps.
+    if (s.motion != Motion::stationary) {
+        body->SetLinearVelocityClamped(j(s.velocity));
+        body->SetAngularVelocityClamped(j(s.angular_velocity));
+    }
     const auto id = body->GetID();
     try {
         state_->entries.emplace(settings.mUserData, detail::WorldState::Entry{id, s.motion});

@@ -229,6 +229,32 @@ TEST_CASE("Rigid bodies synchronize scene poses and follow enablement, activity 
     CHECK_MESSAGE(world.size() == 0u, "Scene teardown leaked physics bodies");
 }
 
+TEST_CASE("A kinematic body's captured velocity restores beyond the dynamic caps") {
+    // The driver moves a kinematic body to its object's pose through Body::move_kinematic, which does not clamp
+    // its velocity: turning 1.6 radians in a 1/60 s step is 96 radians per second, about twice the dynamic cap.
+    constexpr double tick = 1. / 60;
+    constexpr float turn = 1.6F;
+    constexpr float relative_tolerance = 1e-4F;
+    p::World world({{0, 0, 0}, 4});
+    ComponentCodecs codecs;
+    p::add_component_codec(codecs, world);
+    Scene scene;
+    auto spinner = scene.create("spinner");
+    p::BodySettings settings;
+    settings.motion = p::Motion::kinematic;
+    const auto rigid = spinner.add_component<p::RigidBody>(world, settings);
+    spinner.set_transform({{}, {0, std::sin(turn / 2), 0, std::cos(turn / 2)}, {1, 1, 1}});
+    p::step(scene, world, tick);
+    const auto spin = rigid->body().angular_velocity();
+    const auto expected = turn / static_cast<float>(tick);
+    REQUIRE_MESSAGE(std::abs(spin.y - expected) <= expected * relative_tolerance,
+                    "The driver did not turn the kinematic body in one step");
+    auto copy = Prefab::deserialize(Prefab::capture(spinner, codecs).serialize({}), {}, codecs).instantiate(scene);
+    const auto restored = copy.get_component<p::RigidBody>()->body().angular_velocity();
+    CHECK_MESSAGE((restored.x == spin.x && restored.y == spin.y && restored.z == spin.z),
+                  "Restoring changed a kinematic body's captured angular velocity");
+}
+
 TEST_CASE("A stationary child's body follows its hierarchy's activity") {
     p::World world;
     {
