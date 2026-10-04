@@ -201,6 +201,54 @@ TEST_CASE("Malformed renderer overrides are rejected with their reason") {
                          renderer_state, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"mesh\":null", "\"mesh\":null,\"unknown\":0")),
                          "Unknown JSON field: unknown", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"mesh\":null",
+                                           "\"mesh\":null,\"placements\":[[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]]")),
+                         "Prefab variant placements must copy the renderer's mesh, which has no pose",
+                         std::invalid_argument);
+}
+
+TEST_CASE("A renderer override holds the RendererState of a prefab node, which both readers decode alike") {
+    const auto mesh = prefab_variant_test::mesh();
+    Prefab::Node root;
+    root.key = {41};
+    auto &state = root.renderer;
+    state.mesh = mesh;
+    state.pose.emplace().world = mesh->rest_pose().world;
+    state.visible = false;
+    state.material_factors = {{0.25F, 0.5F, 1}};
+    state.custom_materials = {nullptr};
+    state.primitive_visible = {false};
+    state.casts_shadows = false;
+    state.visibility_range = {3, 120, 2, 20};
+    const auto base = std::make_shared<const Prefab>(std::vector{root});
+    const auto &authored = base->nodes()[0].renderer;
+    REQUIRE(authored == state);
+    PrefabVariant::Override change;
+    change.key = root.key;
+    change.renderer = authored;
+    const PrefabVariant variant("base", {change});
+    CHECK(variant.resolve([&](std::string_view) { return base; }, {}).nodes()[0].renderer == authored);
+
+    // The prefab and variant documents write the same renderer fields, and reading them back with the same mesh
+    // gives equal states.
+    const MeshName name = [](const std::shared_ptr<const Mesh> &) { return std::string("triangle"); };
+    const MeshResolver resolve = [&](std::string_view) { return mesh; };
+    CHECK(Prefab::deserialize(base->serialize(name), resolve).nodes()[0].renderer == authored);
+    const auto read = PrefabVariant::deserialize(variant.serialize(name), resolve);
+    REQUIRE(read.overrides()[0].renderer);
+    CHECK(*read.overrides()[0].renderer == authored);
+
+    // A changed setting or pose matrix makes the states differ, and so does another mesh, which compares by address.
+    auto other = authored;
+    other.casts_shadows = true;
+    CHECK_FALSE(other == authored);
+    other = authored;
+    other.pose->world[0][12] = 1;
+    CHECK_FALSE(other == authored);
+    other = authored;
+    other.mesh = prefab_variant_test::mesh();
+    CHECK_FALSE(other == authored);
+    CHECK(RendererState{} == RendererState{});
 }
 
 TEST_CASE("Invalid programmatic variants are rejected with their reason") {

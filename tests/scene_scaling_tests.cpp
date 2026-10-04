@@ -255,7 +255,7 @@ TEST_CASE("Posing a renderer allocates nothing after a pose as large") {
     CHECK(bytes == 0);
     // The last pose was published, and stored with its local transforms, which capture reads.
     CHECK(renderer.bounds().minimum.x > 8.9F);
-    const auto stored = [&] { return anima::Prefab::capture(object).nodes().front().pose.value(); };
+    const auto stored = [&] { return anima::Prefab::capture(object).nodes().front().renderer.pose.value(); };
     CHECK(stored().world == pose.world);
     CHECK(stored().local.front().translation.x == 9.F);
     // A rejected pose of the same size leaves the stored pose and the published palette.

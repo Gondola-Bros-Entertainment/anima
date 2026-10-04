@@ -1,10 +1,10 @@
 #include "../detail/component_data.hpp"
 #include "../detail/json.hpp"
 #include "../detail/prefab_instantiation.hpp"
+#include "../detail/renderer_state.hpp"
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_persistence.hpp"
 #include "../detail/staging.hpp"
-#include "../detail/visibility_range_json.hpp"
 #include <algorithm>
 #include <anima/prefab.hpp>
 #include <map>
@@ -49,18 +49,19 @@ struct ScenePersistence {
         node.key = source.key;
         node.active = source.active_self;
         node.local = source.local;
-        node.mesh = source.value.asset;
-        node.pose = source.pose;
-        if (node.mesh) {
-            node.visible = source.value.visible;
-            node.material_factors = source.value.factors;
+        auto &renderer = node.renderer;
+        renderer.mesh = source.value.asset;
+        renderer.pose = source.pose;
+        if (renderer.mesh) {
+            renderer.visible = source.value.visible;
+            renderer.material_factors = source.value.factors;
             const auto &custom = source.value.custom_materials;
             if (std::any_of(custom.begin(), custom.end(), [](const auto &material) { return bool(material); }))
-                node.custom_materials = custom;
-            node.primitive_visible = source.value.primitive_visible;
-            node.casts_shadows = source.value.casts_shadows;
-            node.placements = source.value.placements;
-            node.visibility_range = source.value.visibility_range;
+                renderer.custom_materials = custom;
+            renderer.primitive_visible = source.value.primitive_visible;
+            renderer.casts_shadows = source.value.casts_shadows;
+            renderer.placements = source.value.placements;
+            renderer.visibility_range = source.value.visibility_range;
         }
         return node;
     }
@@ -79,8 +80,7 @@ using Json = nlohmann::json;
 constexpr unsigned document_version = 3;
 constexpr std::string_view scene_kind = "anima.scene", prefab_kind = "anima.prefab";
 constexpr std::size_t maximum_objects = 65'536, maximum_document_bytes = 16 * 1024 * 1024;
-constexpr std::size_t maximum_components = 1024, maximum_mesh_key_bytes = 4096;
-static_assert(CustomMaterial::max_name_bytes == 4096, "prefab.hpp documents the custom material name limit");
+constexpr std::size_t maximum_components = 1024;
 constexpr unsigned scene_set_version = 1;
 constexpr std::string_view scene_set_kind = "anima.scene-set";
 constexpr std::size_t maximum_scenes = 1024, maximum_namespace_bytes = 4096;
@@ -101,6 +101,26 @@ Mat4 matrix_value(const Json &value) {
         result[i] = scalar(value[i]);
     return result;
 }
+constexpr detail::RendererFormat renderer_format{
+    .empty_state = "Empty scene object has renderer state",
+    .placements = "Scene placements must copy the object's mesh, which has no pose",
+    .mesh_naming = "Scene serialization needs a mesh naming callback",
+    .written_mesh_key = "Invalid scene mesh key",
+    .shared_mesh_key = "Different meshes share a scene resource key",
+    .read_mesh_key = "Scene loading needs a mesh resolver and key",
+    .mesh_resolver = "Scene loading needs a mesh resolver and key",
+    .unresolved_mesh = "Scene mesh key could not be resolved",
+    .pose = "Scene pose does not match the mesh",
+    .material_factors = "Invalid scene material factors",
+    .material_factor = "Scene material factor requires RGB",
+    .custom_materials = "Invalid scene custom materials",
+    .custom_material_name = "Invalid scene custom material name",
+    .unresolved_custom_material = "Scene custom material name could not be resolved",
+    .renamed_custom_material = "Scene custom material resolved to a material of another name",
+    .visibility_range = "Invalid scene visibility range",
+    .scalar = scalar,
+    .matrix = matrix_value,
+};
 void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
     require(nodes.size() <= maximum_objects && (!single_root || !nodes.empty()), "Invalid scene object count");
     std::set<ObjectKey> keys;
@@ -111,13 +131,7 @@ void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
         detail::require_distinct_component_types(node.components);
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
-        require(node.mesh || (!node.pose && node.material_factors.empty() && node.custom_materials.empty() &&
-                              node.primitive_visible.empty() && node.visible && node.casts_shadows &&
-                              !node.placements && node.visibility_range == VisibilityRange{}),
-                "Empty scene object has renderer state");
-        require(!node.placements || (node.placements->mesh() == node.mesh && !node.pose),
-                "Scene placements must copy the object's mesh, which has no pose");
-        validate_visibility_range(node.visibility_range);
+        detail::validate_renderer_state(node.renderer, renderer_format);
     }
 }
 std::vector<GameObject> instantiate_nodes(Scene &scene, std::span<const Prefab::Node> nodes, const GameObject *parent,
@@ -172,74 +186,30 @@ std::vector<Prefab::Node> capture_nodes(std::span<const GameObject> roots, const
     capture_components(captured, codecs, references);
     return std::move(captured.nodes);
 }
-// Names written into one document.
-struct ResourceNames {
-    std::map<const Mesh *, std::string> names;
-    std::map<std::string, const Mesh *, std::less<>> identities;
-    std::map<std::string, const CustomMaterial *, std::less<>> materials;
-};
-Json encode_custom_materials(std::span<const std::shared_ptr<const CustomMaterial>> custom, ResourceNames &resources) {
-    auto result = Json::array();
-    for (const auto &material : custom) {
-        if (!material) {
-            result.push_back(nullptr);
-            continue;
-        }
-        const auto [existing, inserted] = resources.materials.emplace(material->name(), material.get());
-        require(inserted || existing->second == material.get(), "Different custom materials share a document name");
-        result.push_back(material->name());
-    }
-    return result;
-}
-Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, ResourceNames &resources) {
+Json encode_nodes(std::span<const Prefab::Node> nodes, const MeshName &name, detail::ResourceNames &resources) {
     auto objects = Json::array();
     for (const auto &node : nodes) {
-        Json mesh = nullptr, parent = nullptr, pose = nullptr, placements = nullptr;
+        Json parent = nullptr;
         if (node.parent)
             parent = *node.parent;
-        if (node.placements)
-            placements = node.placements->transforms();
-        if (node.mesh) {
-            if (!resources.names.contains(node.mesh.get())) {
-                require(bool(name), "Scene serialization needs a mesh naming callback");
-                auto key = name(node.mesh);
-                require(!key.empty() && key.size() <= maximum_mesh_key_bytes, "Invalid scene mesh key");
-                const auto [existing, inserted] = resources.identities.emplace(key, node.mesh.get());
-                require(inserted || existing->second == node.mesh.get(), "Different meshes share a scene resource key");
-                resources.names.emplace(node.mesh.get(), std::move(key));
-            }
-            mesh = resources.names.at(node.mesh.get());
-        }
-        if (node.pose)
-            pose = node.pose->world;
-        auto factors = Json::array();
-        for (auto factor : node.material_factors)
-            factors.push_back({factor.x, factor.y, factor.z});
         auto components = Json::array();
         for (const auto &component : node.components)
             components.push_back(
                 {{"type", component.type}, {"state", component.state}, {"enabled", component.enabled}});
-        objects.push_back({{"key", node.key.string()},
-                           {"name", node.name},
-                           {"parent", parent},
-                           {"local", node.local},
-                           {"mesh", mesh},
-                           {"pose", pose},
-                           {"visible", node.visible},
-                           {"active", node.active},
-                           {"material_factors", factors},
-                           {"custom_materials", encode_custom_materials(node.custom_materials, resources)},
-                           {"primitive_visible", node.primitive_visible},
-                           {"casts_shadows", node.casts_shadows},
-                           {"placements", placements},
-                           {"visibility_range", detail::encode_visibility_range(node.visibility_range)},
-                           {"components", components}});
+        auto object = detail::encode_renderer_state(node.renderer, name, resources, renderer_format);
+        object["key"] = node.key.string();
+        object["name"] = node.name;
+        object["parent"] = parent;
+        object["local"] = node.local;
+        object["active"] = node.active;
+        object["components"] = std::move(components);
+        objects.push_back(std::move(object));
     }
     return objects;
 }
 std::string encode(std::span<const Prefab::Node> nodes, std::string_view kind, const MeshName &name,
                    std::uint64_t next_key = 1) {
-    ResourceNames resources;
+    detail::ResourceNames resources;
     Json value{{"version", document_version}, {"kind", kind}, {"objects", encode_nodes(nodes, name, resources)}};
     if (kind == scene_kind)
         value["next_key"] = ObjectKey{next_key}.string();
@@ -247,14 +217,10 @@ std::string encode(std::span<const Prefab::Node> nodes, std::string_view kind, c
     require(document.size() <= maximum_document_bytes, "Scene document exceeds the byte limit");
     return document;
 }
+using detail::Resources;
 using detail::SceneSetStage;
 using detail::SceneStage;
 using detail::StagingSteps;
-// Resources resolved while reading one document, each once per key or name.
-struct Resources {
-    std::map<std::string, std::shared_ptr<const Mesh>, std::less<>> meshes;
-    std::map<std::string, std::shared_ptr<const CustomMaterial>, std::less<>> materials;
-};
 // Mesh keys and custom material names that a staging call has counted as steps.
 struct CountedNames {
     std::set<std::string_view> meshes, materials;
@@ -292,44 +258,19 @@ std::size_t retained_bytes(std::span<const Prefab::Node> nodes) {
     constexpr std::size_t flags_per_byte = 8;
     std::size_t bytes = 0;
     for (const auto &node : nodes) {
-        bytes += sizeof(Prefab::Node) + node.name.size() + node.material_factors.size() * sizeof(Vec3) +
-                 node.custom_materials.size() * sizeof(std::shared_ptr<const CustomMaterial>) +
-                 (node.primitive_visible.size() + flags_per_byte - 1) / flags_per_byte;
-        if (node.pose)
-            bytes += node.pose->world.size() * sizeof(Mat4);
+        const auto &renderer = node.renderer;
+        bytes += sizeof(Prefab::Node) + node.name.size() + renderer.material_factors.size() * sizeof(Vec3) +
+                 renderer.custom_materials.size() * sizeof(std::shared_ptr<const CustomMaterial>) +
+                 (renderer.primitive_visible.size() + flags_per_byte - 1) / flags_per_byte;
+        if (renderer.pose)
+            bytes += renderer.pose->world.size() * sizeof(Mat4);
         for (const auto &component : node.components)
             bytes += sizeof(ComponentData) + component.type.size() + component.state.size();
-        if (const auto &placements = node.placements)
+        if (const auto &placements = renderer.placements)
             bytes += sizeof(MeshPlacements) + placements->transforms().size_bytes() +
                      placements->clusters().size_bytes() + placements->primitive_bounds().size_bytes();
     }
     return bytes;
-}
-std::vector<std::shared_ptr<const CustomMaterial>> decode_custom_materials(const Json &custom,
-                                                                           const CustomMaterialResolver &resolve,
-                                                                           Resources &resources,
-                                                                           const StagingSteps &steps) {
-    require(custom.is_array(), "Invalid scene custom materials");
-    std::vector<std::shared_ptr<const CustomMaterial>> result;
-    for (const auto &entry : custom) {
-        if (entry.is_null()) {
-            result.emplace_back();
-            continue;
-        }
-        const auto name = entry.get<std::string>();
-        require(!name.empty() && name.size() <= CustomMaterial::max_name_bytes, "Invalid scene custom material name");
-        auto found = resources.materials.find(name);
-        if (found == resources.materials.end()) {
-            steps.check();
-            auto material = resolve ? resolve(name) : nullptr;
-            require(bool(material), "Scene custom material name could not be resolved");
-            require(material->name() == name, "Scene custom material resolved to a material of another name");
-            found = resources.materials.emplace(name, std::move(material)).first;
-            steps.complete();
-        }
-        result.push_back(found->second);
-    }
-    return result;
 }
 std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, const MeshResolver &resolve,
                                        const CustomMaterialResolver &materials, Resources &resources,
@@ -340,7 +281,7 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
     // Resource resolution is explicit and cached once per key. No scene is mutated here.
     for (const auto &value : objects) {
         steps.check();
-        // An omitted setting takes the default that Prefab::Node declares.
+        // An omitted setting takes the default that Prefab::Node or its RendererState declares.
         anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh"},
                                    {"pose", "visible", "active", "material_factors", "custom_materials",
                                     "primitive_visible", "casts_shadows", "placements", "visibility_range",
@@ -358,57 +299,7 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
             node.parent = static_cast<std::size_t>(index);
         }
         node.local = matrix_value(value.at("local"));
-        const auto &mesh = value.at("mesh");
-        if (!mesh.is_null()) {
-            const auto key = mesh.get<std::string>();
-            require(!key.empty() && key.size() <= maximum_mesh_key_bytes && bool(resolve),
-                    "Scene loading needs a mesh resolver and key");
-            auto found = resources.meshes.find(key);
-            if (found == resources.meshes.end()) {
-                steps.check();
-                auto resource = resolve(key);
-                require(bool(resource), "Scene mesh key could not be resolved");
-                found = resources.meshes.emplace(key, std::move(resource)).first;
-                steps.complete();
-            }
-            node.mesh = found->second;
-        }
-        static const Json omitted;
-        const auto &pose = value.contains("pose") ? value.at("pose") : omitted;
-        if (!pose.is_null()) {
-            require(pose.is_array() && node.mesh && pose.size() == node.mesh->rest_pose().world.size(),
-                    "Scene pose does not match the mesh");
-            node.pose.emplace();
-            for (const auto &world : pose)
-                node.pose->world.push_back(matrix_value(world));
-        }
-        node.visible = value.value("visible", node.visible);
-        if (value.contains("material_factors")) {
-            const auto &factors = value.at("material_factors");
-            require(factors.is_array(), "Invalid scene material factors");
-            for (const auto &factor : factors) {
-                require(factor.is_array() && factor.size() == 3, "Scene material factor requires RGB");
-                node.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
-            }
-        }
-        if (value.contains("custom_materials"))
-            node.custom_materials = decode_custom_materials(value.at("custom_materials"), materials, resources, steps);
-        if (value.contains("primitive_visible"))
-            node.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
-        node.casts_shadows = value.value("casts_shadows", node.casts_shadows);
-        const auto &placements = value.contains("placements") ? value.at("placements") : omitted;
-        if (!placements.is_null()) {
-            require(placements.is_array() && node.mesh && !node.pose,
-                    "Scene placements must copy the object's mesh, which has no pose");
-            std::vector<Mat4> transforms;
-            transforms.reserve(placements.size());
-            for (const auto &transform : placements)
-                transforms.push_back(matrix_value(transform));
-            node.placements = MeshPlacements::create(node.mesh, transforms);
-        }
-        node.visibility_range =
-            detail::decode_visibility_range(value.contains("visibility_range") ? value.at("visibility_range") : omitted,
-                                            "Invalid scene visibility range");
+        node.renderer = detail::decode_renderer_state(value, resolve, materials, resources, steps, renderer_format);
         if (value.contains("components")) {
             const auto &components = value.at("components");
             require(components.is_array() && components.size() <= maximum_components,
@@ -561,29 +452,30 @@ std::vector<GameObject> instantiate_prefab_nodes(Scene &scene, std::span<const P
             else if (parent)
                 object.set_parent(*parent, ReparentMode::keep_local);
             object.set_local_matrix(node.parent ? node.local : placement * node.local);
-            if (!node.mesh)
+            const auto &state = node.renderer;
+            if (!state.mesh)
                 continue;
-            ScenePersistence::assign_mesh(scene, object.id(), node.mesh, node.pose);
+            ScenePersistence::assign_mesh(scene, object.id(), state.mesh, state.pose);
             auto renderer = object.renderer();
-            renderer.set_visible(node.visible);
+            renderer.set_visible(state.visible);
             const auto &instance = scene.instance(object.id());
-            require(node.material_factors.empty() || node.material_factors.size() == instance.factors.size(),
+            require(state.material_factors.empty() || state.material_factors.size() == instance.factors.size(),
                     "Prefab material factors do not match the mesh");
-            require(node.custom_materials.empty() || node.custom_materials.size() == instance.custom_materials.size(),
+            require(state.custom_materials.empty() || state.custom_materials.size() == instance.custom_materials.size(),
                     "Prefab custom materials do not match the mesh");
-            require(node.primitive_visible.empty() ||
-                        node.primitive_visible.size() == instance.primitive_visible.size(),
+            require(state.primitive_visible.empty() ||
+                        state.primitive_visible.size() == instance.primitive_visible.size(),
                     "Prefab primitive visibility does not match the mesh");
-            for (std::size_t i = 0; i < node.material_factors.size(); ++i)
-                renderer.set_material_factor(i, node.material_factors[i]);
-            for (std::size_t i = 0; i < node.custom_materials.size(); ++i)
-                renderer.set_custom_material(i, node.custom_materials[i]);
-            for (std::size_t i = 0; i < node.primitive_visible.size(); ++i)
-                renderer.set_primitive_visible(i, node.primitive_visible[i]);
-            renderer.set_casts_shadows(node.casts_shadows);
-            if (node.placements)
-                renderer.set_placements(node.placements);
-            renderer.set_visibility_range(node.visibility_range);
+            for (std::size_t i = 0; i < state.material_factors.size(); ++i)
+                renderer.set_material_factor(i, state.material_factors[i]);
+            for (std::size_t i = 0; i < state.custom_materials.size(); ++i)
+                renderer.set_custom_material(i, state.custom_materials[i]);
+            for (std::size_t i = 0; i < state.primitive_visible.size(); ++i)
+                renderer.set_primitive_visible(i, state.primitive_visible[i]);
+            renderer.set_casts_shadows(state.casts_shadows);
+            if (state.placements)
+                renderer.set_placements(state.placements);
+            renderer.set_visibility_range(state.visibility_range);
         }
     } catch (...) {
         destroy_prefab_objects(objects);
@@ -723,7 +615,7 @@ std::string serialize_scene_set(SceneSet &scenes, const MeshName &name, const Co
         }
     const ObjectReferences references(entries);
     auto documents = Json::array();
-    ResourceNames resources;
+    detail::ResourceNames resources;
     for (std::size_t i = 0; i < selected.size(); ++i) {
         capture_components(captured[i], codecs, references);
         validate_nodes(captured[i].nodes, false);

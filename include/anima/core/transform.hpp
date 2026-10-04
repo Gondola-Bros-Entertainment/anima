@@ -16,6 +16,9 @@ struct Transform {
     Vec3 translation{};
     Quat rotation{0, 0, 0, 1};
     Vec3 scale{1, 1, 1};
+    /// Compares the components with `float` `==`, so `-0` equals `0` and a NaN component equals nothing; a
+    /// quaternion and its negation, the same rotation, differ.
+    bool operator==(const Transform &) const = default;
 };
 /// Column-major matrix that scales, then rotates, then translates (T * R * S), after normalizing
 /// the rotation. Throws MathError when the rotation cannot be normalized.

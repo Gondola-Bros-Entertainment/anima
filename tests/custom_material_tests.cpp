@@ -685,11 +685,11 @@ TEST_CASE("Documents store custom materials by name and resolve them through the
           std::vector<std::shared_ptr<const CustomMaterial>>(2));
 
     const auto prefab = Prefab::capture(object);
-    REQUIRE(prefab.nodes().front().custom_materials.size() == 2);
+    REQUIRE(prefab.nodes().front().renderer.custom_materials.size() == 2);
     const auto restored =
         Prefab::deserialize(prefab.serialize(library.names()), library.meshes(), {}, library.materials());
-    CHECK(restored.nodes().front().custom_materials[1] == water);
-    CHECK(Prefab::capture(scene.find(ObjectKey{2})).nodes().front().custom_materials.empty());
+    CHECK(restored.nodes().front().renderer.custom_materials[1] == water);
+    CHECK(Prefab::capture(scene.find(ObjectKey{2})).nodes().front().renderer.custom_materials.empty());
 
     PrefabVariant::Override change;
     change.key = ObjectKey{1};
@@ -702,7 +702,7 @@ TEST_CASE("Documents store custom materials by name and resolve them through the
     CHECK(variant_loaded.overrides().front().renderer->custom_materials[0] == water);
     const auto resolved =
         variant_loaded.resolve([&](std::string_view) { return std::make_shared<const Prefab>(prefab); }, {});
-    CHECK(resolved.nodes().front().custom_materials[0] == water);
+    CHECK(resolved.nodes().front().renderer.custom_materials[0] == water);
 
     SceneSet set;
     (void)set.load("pool", document, library.meshes(), {}, library.materials());
