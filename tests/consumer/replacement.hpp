@@ -52,7 +52,7 @@ inline anima::Asset geometry(unsigned count) {
 }
 inline std::shared_ptr<anima::Scene> scene(const anima::Asset &asset) {
     auto result = std::make_shared<anima::Scene>();
-    (void)result->add(anima::Mesh::compile(asset));
+    (void)result->create({}, anima::Mesh::compile(asset));
     return result;
 }
 // Construction rejects a failure stage that neither it nor draw() can fire, before it needs a window or GPU. The
@@ -409,7 +409,7 @@ inline int run(int argc, char **argv) {
     auto b_data = geometry(3);
     b_data.primitives.back().material = anima::no_index; // Default white descriptor survives replacements.
     auto a = scene(a_data), b = scene(b_data);
-    const auto id = a->instances().front();
+    auto drawn = a->object(a->instances().front()).renderer();
     std::cout << "STABLE_SWAPCHAIN_BEGIN\n";
     replace({a});
     capture("scene-a");
@@ -441,13 +441,13 @@ inline int run(int argc, char **argv) {
     const auto saved = anima::sample_pose(a_data);
     auto moved = saved;
     moved.world[0][13] += .15F;
-    a->set_pose(id, moved);
-    a->set_material_factor(id, 0, {1, .2F, .1F});
-    a->set_primitive_visible(id, 1, false);
+    drawn.set_pose(moved);
+    drawn.set_material_factor(0, {1, .2F, .1F});
+    drawn.set_primitive_visible(1, false);
     capture("updated");
-    a->set_pose(id, saved);
-    a->clear_material_factor(id, 0);
-    a->set_primitive_visible(id, 1, true);
+    drawn.set_pose(saved);
+    drawn.clear_material_factor(0);
+    drawn.set_primitive_visible(1, true);
     capture("restored");
     for (const auto *stage : {"vertex", "index", "texture", "texture-upload", "descriptors", "ready"}) {
         frame(); // Old scene can still have graphics work in flight.
@@ -492,11 +492,11 @@ inline int run(int argc, char **argv) {
     };
     auto malformed = saved;
     malformed.world.pop_back();
-    mutation([&] { a->set_pose(id, malformed); }, "Pose does not match render asset");
+    mutation([&] { drawn.set_pose(malformed); }, "Pose does not match render asset");
     malformed = saved;
     malformed.world[0][0] = std::numeric_limits<float>::quiet_NaN();
-    mutation([&] { a->set_pose(id, malformed); }, "Non-finite instance transform");
-    mutation([&] { a->set_material_factor(id, 0, {-1, 0, 0}); }, "Invalid render material factor");
+    mutation([&] { drawn.set_pose(malformed); }, "Non-finite instance transform");
+    mutation([&] { drawn.set_material_factor(0, {-1, 0, 0}); }, "Invalid render material factor");
     capture("rollback-update");
     replace({b});
     capture("scene-b");
@@ -597,8 +597,8 @@ inline int run(int argc, char **argv) {
     images.require_same("resized", "recreated", "Recreating the swapchain changed the frame");
     images.require(!gpu_check::same_size(images["resized"], images["scene-a"]),
                    "The resized window kept its capture size", {"resized", "scene-a"});
-    for (const auto *drawn : {"scene-a", "scene-b", "resized", "restored-window"})
-        images.require_foreground(drawn, "Expected geometry is not visible");
+    for (const auto *name : {"scene-a", "scene-b", "resized", "restored-window"})
+        images.require_foreground(name, "Expected geometry is not visible");
     if (imported)
         images.require_foreground("external-asset", "The imported asset is not visible");
     std::cout

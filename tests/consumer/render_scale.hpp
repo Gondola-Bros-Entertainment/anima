@@ -101,7 +101,7 @@ inline TurnedSquare add_turned_square(anima::Scene &scene, const blending_test::
     constexpr float turn = std::numbers::pi_v<float> / 7;
     const anima::Vec3 u{std::cos(turn) * half_side, std::sin(turn) * half_side, 0},
         v{-std::sin(turn) * half_side, std::cos(turn) * half_side, 0};
-    (void)scene.add(blending_test::quad(blending_test::opaque(color), center, u, v));
+    (void)scene.create({}, blending_test::quad(blending_test::opaque(color), center, u, v));
     return {center, {center - u - v, center + u - v, center + u + v, center - u + v}};
 }
 // The box of @p square's corners through @p view in @p image, grown by a pixel on each side.
@@ -137,8 +137,8 @@ struct Pool {
     std::shared_ptr<anima::Scene> scene = std::make_shared<anima::Scene>();
     TurnedSquare square;
     Pool() {
-        (void)scene->add(blending_test::facing(blending_test::opaque(near_color), {-1.5F, 0, -4}, 1.5F, 2));
-        (void)scene->add(blending_test::facing(blending_test::opaque(far_color), {3, 0, -9}, 3, 4));
+        (void)scene->create({}, blending_test::facing(blending_test::opaque(near_color), {-1.5F, 0, -4}, 1.5F, 2));
+        (void)scene->create({}, blending_test::facing(blending_test::opaque(far_color), {3, 0, -9}, 3, 4));
         (void)custom_material_test::add(*scene, custom_material_test::surface(water_center, .6F, .4F),
                                         custom_material_test::water_material({{.02, .15, .2}, .35}));
         constexpr float half_side = .2F;
@@ -264,7 +264,7 @@ inline void check_levels(anima::VulkanRenderer &renderer, gpu_check::Captures &c
 inline void check_bright_edges(anima::VulkanRenderer &renderer, gpu_check::Captures &captures, float aspect) {
     constexpr float exposure = 16;
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque({1, 1, 1}), {0, 0, -4}, 3, 2.5F));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque({1, 1, 1}), {0, 0, -4}, 3, 2.5F));
     constexpr float half_side = .3F;
     const auto square = add_turned_square(*scene, blending_test::black, {0, 0, -3}, half_side);
     anima::Environment bright;

@@ -127,9 +127,8 @@ TEST_CASE("Renderers keep their visibility range until their mesh changes") {
     CHECK(renderer.visibility_range() == range);
     renderer.set_mesh(triangle());
     CHECK(renderer.visibility_range() == VisibilityRange{});
-    auto bare = scene.create("bare");
-    CHECK_THROWS_WITH_AS(scene.set_visibility_range(bare.id(), range), "GameObject has no MeshRenderer",
-                         std::logic_error);
+    object.remove_mesh();
+    CHECK_THROWS_WITH_AS(renderer.set_visibility_range(range), "GameObject has no MeshRenderer", std::logic_error);
 }
 
 TEST_CASE("Scene documents and prefabs keep visibility ranges") {

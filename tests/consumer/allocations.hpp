@@ -18,11 +18,10 @@ inline int run(int argc, char **argv) {
     for (std::size_t i = 0; i < meshes; ++i) {
         // The renderer caches resources per Mesh object, so each instance gets its own.
         const auto mesh = anima::Mesh::compile(*asset);
-        const auto id = scene->add(mesh);
         auto world = anima::identity();
         world[12] = 1.5F * float(i % columns);
         world[13] = 1.5F * float(i / columns);
-        scene->set_pose(id, mesh->rest_pose(), world);
+        scene->create({}, mesh).renderer().set_pose(mesh->rest_pose(), world);
     }
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     gpu_check::Video video;

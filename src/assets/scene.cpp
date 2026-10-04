@@ -863,7 +863,7 @@ void GameObject::set_position(Vec3 position) {
     set_translation(world, position);
     set_world_matrix(world);
 }
-void GameObject::set_transform(const Transform &transform) { set_world_matrix(matrix(transform)); }
+void GameObject::set_world_transform(const Transform &transform) { set_world_matrix(matrix(transform)); }
 void GameObject::set_world_matrix(const Mat4 &world) { scene().set_transform(id_, world); }
 bool GameObject::has_renderer() const { return bool(scene().slot(id_).value.asset); }
 MeshRenderer GameObject::add_mesh(std::shared_ptr<const Mesh> mesh) {
@@ -892,6 +892,7 @@ const Pose &MeshRenderer::pose() const {
     return entry.pose ? *entry.pose : value.asset->rest_pose();
 }
 void MeshRenderer::set_pose(const Pose &pose) { object_.scene().set_pose(object_.id_, pose, object_.world_matrix()); }
+void MeshRenderer::set_pose(const Pose &pose, const Mat4 &world) { object_.scene().set_pose(object_.id_, pose, world); }
 bool MeshRenderer::visible() const { return object_.scene().instance(object_.id_).visible; }
 void MeshRenderer::set_visible(bool visible) { object_.scene().set_visible(object_.id_, visible); }
 Vec3 MeshRenderer::material_factor(std::size_t material) const {

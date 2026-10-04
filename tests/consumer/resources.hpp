@@ -88,13 +88,13 @@ inline int run(int argc, char **argv) {
     const auto asset = path.empty() ? fixture() : anima::load_asset(path);
     const auto compiled = anima::Mesh::compile(*asset);
     auto source = std::make_shared<anima::Scene>();
-    const auto a = source->add(compiled), b = source->add(compiled);
+    const auto a = source->create({}, compiled), b = source->create({}, compiled);
     std::array reference{anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset)),
                          anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset))};
     for (std::size_t i = 0; i < asset->primitives.size(); ++i)
         if (!hide.empty() && asset->nodes[asset->primitives[i].node].name.find(hide) != std::string::npos) {
-            source->set_primitive_visible(a, i, false);
-            source->set_primitive_visible(b, i, false);
+            a.renderer().set_primitive_visible(i, false);
+            b.renderer().set_primitive_visible(i, false);
             reference[0].primitives[i].visible = reference[1].primitives[i].visible = false;
         }
     const auto pose_at = [&](double time) {
@@ -115,8 +115,8 @@ inline int run(int argc, char **argv) {
     auto left = anima::identity(), right = anima::identity();
     left[12] = -1.2F;
     right[12] = 1.2F;
-    source->set_pose(a, pose_a, left);
-    source->set_pose(b, pose_b, right);
+    a.renderer().set_pose(pose_a, left);
+    b.renderer().set_pose(pose_b, right);
     anima::pose_mesh_snapshot(*asset, pose_a, reference[0], 0, left);
     anima::pose_mesh_snapshot(*asset, pose_b, reference[1], 0, right);
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
@@ -186,7 +186,7 @@ inline int run(int argc, char **argv) {
             "Frame uploaded geometry instead of poses");
     if (!fatal.empty()) {
         auto candidate = std::make_shared<anima::Scene>();
-        (void)candidate->add(anima::Mesh::compile(*asset));
+        (void)candidate->create({}, anima::Mesh::compile(*asset));
         // The timeout reports the failed wait; the lost device is reported once the upload is retired.
         const bool timeout = fatal == "upload-timeout";
         constexpr std::string_view timed_out = "Injected upload timeout failed (VkResult 2)";
@@ -211,34 +211,34 @@ inline int run(int argc, char **argv) {
     images.require_foreground("gpu", "The GPU-skinned instances are not visible");
     images.require_parity("reference", "gpu");
     images.discard({"reference"});
-    const auto visible = source->instance(a).primitive_visible;
+    const auto visible = source->instance(a.id()).primitive_visible;
     for (std::size_t i = 0; i < visible.size(); ++i) {
-        source->set_primitive_visible(a, i, false);
+        a.renderer().set_primitive_visible(i, false);
         reference[0].primitives[i].visible = false;
     }
     capture("gpu-hidden");
     renderer.set_scenes({reference_test::scene(reference)});
     capture("reference-hidden");
     renderer.set_scenes({source});
-    source->set_visible(a, false);
+    a.renderer().set_visible(false);
     capture("gpu-hidden-instance");
     require(renderer.resource_stats().instances == 1, "Hidden instance still uploaded a pose");
     images.require_parity("reference-hidden", "gpu-hidden");
     images.require_same("gpu-hidden-instance", "gpu-hidden", "Hiding the instance differs from hiding its primitives");
     images.require_changed("gpu", "gpu-hidden", least_change, "Hiding the primitives had no visible effect");
     images.discard({"reference-hidden", "gpu-hidden", "gpu-hidden-instance"});
-    source->set_visible(a, true);
+    a.renderer().set_visible(true);
     for (std::size_t i = 0; i < visible.size(); ++i) {
-        source->set_primitive_visible(a, i, visible[i]);
+        a.renderer().set_primitive_visible(i, visible[i]);
         reference[0].primitives[i].visible = visible[i];
     }
     frame();
     const auto churn_uploads = renderer.resource_stats().mesh_uploads;
     for (unsigned i = 0; i < 16; ++i) {
-        const auto joined = source->add(compiled);
-        source->set_pose(joined, pose_at(.1 * i));
+        auto joined = source->create({}, compiled);
+        joined.renderer().set_pose(pose_at(.1 * i));
         frame();
-        source->remove(joined);
+        joined.destroy();
         frame();
         require(renderer.resource_stats().mesh_uploads == churn_uploads &&
                     renderer.resource_stats().resident_geometry_bytes == baseline.resident_geometry_bytes,
@@ -259,7 +259,7 @@ inline int run(int argc, char **argv) {
         images.require_same(preload, "gpu", "A failed preparation changed the accepted image");
         {
             auto candidate = std::make_shared<anima::Scene>();
-            (void)candidate->add(anima::Mesh::compile(*asset));
+            (void)candidate->create({}, anima::Mesh::compile(*asset));
             injected(stage, [&] { renderer.set_scenes({candidate}, {stage}); });
         }
         const auto rollback = std::string("rollback-") + name;
@@ -270,18 +270,18 @@ inline int run(int argc, char **argv) {
     {
         auto candidate = std::make_shared<anima::Scene>();
         for (unsigned i = 0; i < 33; ++i)
-            (void)candidate->add(compiled);
+            (void)candidate->create({}, compiled);
         injected(anima::RendererFailureStage::palette,
                  [&] { renderer.set_scenes({candidate}, {anima::RendererFailureStage::palette}); });
         capture("rollback-palette");
         images.require_same("rollback-palette", "gpu", "A failed palette upload changed the accepted image");
         images.discard({"rollback-palette"});
     }
-    source->set_pose(a, pose_at(.6), left);
+    a.renderer().set_pose(pose_at(.6), left);
     auto colored = *asset;
     colored.materials[0].factor = {.9F, .2F, .3F};
     anima::pose_mesh_snapshot(colored, pose_at(.6), reference[0], 0, left);
-    source->set_material_factor(a, 0, {.9F, .2F, .3F});
+    a.renderer().set_material_factor(0, {.9F, .2F, .3F});
     capture("gpu-updated");
     renderer.set_scenes({reference_test::scene(reference)});
     capture("reference-updated");
@@ -303,10 +303,10 @@ inline int run(int argc, char **argv) {
             "Unused prepared resource did not retire after its frame fence");
     {
         const auto temporary = anima::Mesh::compile(*asset);
-        const auto joined = source->add(temporary);
+        auto joined = source->create({}, temporary);
         frame();
         require(renderer.resource_stats().cached_assets == 2, "Distinct resource was not uploaded");
-        source->remove(joined);
+        joined.destroy();
     }
     frame();
     require(renderer.resource_stats().cached_assets == 1 &&
@@ -314,17 +314,17 @@ inline int run(int argc, char **argv) {
             "Last-owner departure did not retire GPU geometry after its frame fence");
     if (path.empty()) {
         const auto samplers = renderer.resource_stats().resident_material_samplers;
-        std::vector<anima::Scene::Id> joined;
+        std::vector<anima::GameObject> joined;
         // Distinct assets previously allocated more than the M2's 1,024-sampler
         // limit even though every image used the same two sampling policies.
         for (unsigned i = 0; i < 600; ++i)
-            joined.push_back(source->add(anima::Mesh::compile(*asset)));
+            joined.push_back(source->create({}, anima::Mesh::compile(*asset)));
         frame();
         require(renderer.resource_stats().cached_assets == 601 &&
                     renderer.resource_stats().resident_material_samplers == samplers,
                 "Distinct images did not share identical material samplers");
-        for (const auto id : joined)
-            source->remove(id);
+        for (auto &object : joined)
+            object.destroy();
         frame();
         require(renderer.resource_stats().cached_assets == 1, "Sampler sharing retained departed assets");
         for (unsigned policy = 0; policy < 7; ++policy) {
@@ -353,11 +353,11 @@ inline int run(int argc, char **argv) {
                 texture.image = std::make_shared<anima::Image>(anima::Image{4, 4, std::vector<std::uint8_t>(64, 255)});
                 break;
             }
-            const auto id = source->add(anima::Mesh::compile(variant));
+            auto object = source->create({}, anima::Mesh::compile(variant));
             frame();
             require(renderer.resource_stats().resident_material_samplers == samplers + 1,
                     "Different filtering, wrapping or LOD limits shared a sampler");
-            source->remove(id);
+            object.destroy();
             // The draw() that releases the mesh destroys it, and its sampler, only once no frame in flight can draw
             // it; with two frames in flight, the next draw() does.
             frame();
@@ -371,9 +371,9 @@ inline int run(int argc, char **argv) {
         {
             auto variant = *asset;
             variant.textures.front().sampler.mag = anima::Filter::nearest;
-            const auto id = source->add(anima::Mesh::compile(variant));
+            auto object = source->create({}, anima::Mesh::compile(variant));
             frame();
-            source->remove(id);
+            object.destroy();
             frame();
             const auto before_preparation = renderer.resource_stats();
             require(before_preparation.resident_material_samplers == samplers + 1,
@@ -403,10 +403,10 @@ inline int run(int argc, char **argv) {
     const auto resources = renderer.resource_stats();
     unsigned clip_captures = 0;
     for (const auto &clip : asset->animations) {
-        source->clear_material_factor(a, 0);
+        a.renderer().clear_material_factor(0);
         const auto pa = anima::sample_pose(*asset, &clip, .2), pb = anima::sample_pose(*asset, &clip, .7);
-        source->set_pose(a, pa, left);
-        source->set_pose(b, pb, right);
+        a.renderer().set_pose(pa, left);
+        b.renderer().set_pose(pb, right);
         anima::pose_mesh_snapshot(*asset, pa, reference[0], 0, left);
         anima::pose_mesh_snapshot(*asset, pb, reference[1], 0, right);
         const auto suffix = std::to_string(clip_captures++);

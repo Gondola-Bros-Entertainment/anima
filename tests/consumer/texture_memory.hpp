@@ -120,7 +120,7 @@ inline std::size_t held_bytes(std::initializer_list<const std::weak_ptr<const an
 }
 inline std::shared_ptr<anima::Scene> scene_of(const std::shared_ptr<const anima::Mesh> &mesh) {
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(mesh);
+    (void)scene->create({}, mesh);
     return scene;
 }
 
@@ -278,10 +278,10 @@ inline int run(int argc, char **argv) {
     rejects<std::logic_error>([&] { (void)anima::MeshPreparation(released); }, released_message);
     // A mesh that becomes visible after selection is uploaded by draw(), which reports the same failure.
     const auto hidden = std::make_shared<anima::Scene>();
-    const auto hidden_id = hidden->add(released);
-    hidden->set_visible(hidden_id, false);
+    auto hidden_renderer = hidden->create({}, released).renderer();
+    hidden_renderer.set_visible(false);
     second.select({hidden});
-    hidden->set_visible(hidden_id, true);
+    hidden_renderer.set_visible(true);
     rejects<anima::SceneResourceError>([&] { (void)second.renderer().draw(); }, released_message);
     // Texels that the application still holds stay readable, so another renderer can upload them again.
     const auto application_image = ramp();
@@ -297,7 +297,7 @@ inline int run(int argc, char **argv) {
     const auto material = std::make_shared<const anima::CustomMaterial>(std::move(definition));
     require(!effect_image.expired(), "A custom material must hold its texture until upload");
     const auto effect_scene = scene_of(blending_test::facing(blending_test::opaque({1, 1, 1}), {0, 0, -3}, 1, 1));
-    effect_scene->set_custom_material(effect_scene->instances().front(), 0, material);
+    effect_scene->object(effect_scene->instances().front()).renderer().set_custom_material(0, material);
     second.select({effect_scene});
     require(effect_image.expired(), "A custom material compiled until upload must let its texels go once uploaded");
     second.render("effect");

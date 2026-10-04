@@ -40,7 +40,7 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
     using namespace anima;
     Scene scene, foreign;
     auto root = scene.create("Root");
-    root.transform().set({.translation = {4, 1, 0}, .scale = {2, 3, 1}});
+    root.transform().set_world_transform({.translation = {4, 1, 0}, .scale = {2, 3, 1}});
     auto child = scene.create("Animated", mesh);
     child.set_position({8, 4, 0});
     child.set_parent(root);
@@ -93,7 +93,7 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
                 "Local/world matrices disagree after reparenting");
 
     auto collapsed = scene.create("Collapsed");
-    collapsed.transform().set({.scale = {0, 1, 1}});
+    collapsed.transform().set_world_transform({.scale = {0, 1, 1}});
     rejects<anima::MathError>([&] { child.set_parent(collapsed); },
                               anima::math_error_message(anima::MathErrorCode::singular_matrix));
     child.set_parent(collapsed, ReparentMode::keep_local);
@@ -107,7 +107,7 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
 
     auto group = scene.create("Atomic group");
     auto large = scene.create("Large child", mesh);
-    large.transform().set_local({.scale = {2, 1, 1}});
+    large.transform().set_local_transform({.scale = {2, 1, 1}});
     large.set_parent(group, ReparentMode::keep_local);
     const auto before = scene.instance(large.id()).palette;
     auto overflow = identity();
@@ -331,7 +331,7 @@ inline void run() {
     require(empty.valid() && !empty.has_renderer() && scene.size() == 1 && scene.instances().empty(),
             "Empty objects must own a transform without creating draws");
     require(empty.world_matrix() == identity(), "Empty object's transform is not identity");
-    empty.transform().set({.translation = {4, 0, 0}, .scale = {2, 2, 2}});
+    empty.transform().set_world_transform({.translation = {4, 0, 0}, .scale = {2, 2, 2}});
     auto renderer = empty.add_mesh(mesh);
     require(renderer.mesh() == mesh && scene.instance(empty.id()).palette[0][12] == 4,
             "Attaching a mesh lost the empty object's transform");

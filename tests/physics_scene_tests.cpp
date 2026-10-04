@@ -217,7 +217,7 @@ TEST_CASE("Rigid bodies synchronize scene poses and follow enablement, activity 
         CHECK_FALSE(rigid);
         CHECK_MESSAGE(world.size() == 1u, "Removal during callback leaked body");
         auto bad = scene.create();
-        bad.set_transform({{}, {0, 0, 0, 1}, {2, 1, 1}});
+        bad.set_world_transform({{}, {0, 0, 0, 1}, {2, 1, 1}});
         CHECK_THROWS_WITH_AS(bad.add_component<p::RigidBody>(world, s),
                              "Physics transforms require unit scale and no shear/reflection", std::invalid_argument);
         CHECK_MESSAGE(world.size() == 1u, "Failed construction leaked body");
@@ -243,7 +243,7 @@ TEST_CASE("A kinematic body's captured velocity restores beyond the dynamic caps
     p::BodySettings settings;
     settings.motion = p::Motion::kinematic;
     const auto rigid = spinner.add_component<p::RigidBody>(world, settings);
-    spinner.set_transform({{}, {0, std::sin(turn / 2), 0, std::cos(turn / 2)}, {1, 1, 1}});
+    spinner.set_world_transform({{}, {0, std::sin(turn / 2), 0, std::cos(turn / 2)}, {1, 1, 1}});
     p::step(scene, world, tick);
     const auto spin = rigid->body().angular_velocity();
     const auto expected = turn / static_cast<float>(tick);

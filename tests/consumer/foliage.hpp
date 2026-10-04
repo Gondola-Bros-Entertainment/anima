@@ -67,7 +67,7 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
     const auto asset = fixture();
     auto scene = std::make_shared<anima::Scene>();
-    const auto id = scene->add(anima::Mesh::compile(*asset));
+    auto drawn = scene->create({}, anima::Mesh::compile(*asset)).renderer();
     renderer.set_scenes({scene});
     gpu_check::Captures captures(output);
     const auto began = std::chrono::steady_clock::now();
@@ -92,12 +92,12 @@ inline int run(int argc, char **argv) {
         renderer.set_view(projection);
         for (std::size_t material = 0; material < 4; ++material) {
             for (std::size_t p = 0; p < 4; ++p)
-                scene->set_primitive_visible(id, p, p == material);
+                drawn.set_primitive_visible(p, p == material);
             capture(std::to_string(size) + "-" + std::to_string(material));
         }
     }
     for (std::size_t p = 0; p < 4; ++p)
-        scene->set_primitive_visible(id, p, p == 0);
+        drawn.set_primitive_visible(p, p == 0);
     capture("resource-mask");
     auto reference = std::make_shared<anima::MeshSnapshot>(scene->snapshot());
     renderer.set_scenes({reference_test::scene(*reference)});

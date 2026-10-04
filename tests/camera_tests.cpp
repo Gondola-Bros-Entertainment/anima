@@ -225,7 +225,7 @@ TEST_CASE("orthographic() maps a box to Vulkan clip space with reversed depth, a
 TEST_CASE("The view follows the camera's world pose and ignores its positive scale") {
     Viewed viewed(CameraProjection::orthographic);
     auto parent = viewed.scene.create();
-    parent.set_transform({.translation = {10, 3, 4}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
+    parent.set_world_transform({.translation = {10, 3, 4}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     viewed.eye.set_parent(parent, ReparentMode::keep_local);
     viewed.eye.set_local_position({1, 0, 0});
     // The parent's half turn about Y puts the eye at (8, 3, 4), looking along +Z.
@@ -233,7 +233,7 @@ TEST_CASE("The view follows the camera's world pose and ignores its positive sca
     CHECK(project(scaled, {8, 3, 5}).z == Near{1, tolerance});
     CHECK(project(scaled, {8, 3, 15}).z == Near{0, tolerance});
     viewed.eye.clear_parent();
-    viewed.eye.set_transform({.translation = {8, 3, 4}, .rotation = {0, 1, 0, 0}});
+    viewed.eye.set_world_transform({.translation = {8, 3, 4}, .rotation = {0, 1, 0, 0}});
     CHECK(same(scaled, view_matrix(viewed.scene, 2)));
 }
 
@@ -243,9 +243,9 @@ TEST_CASE("Sheared, collapsed and mirrored camera axes are rejected") {
     sheared[4] = .3F;
     viewed.eye.set_world_matrix(sheared);
     CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), skewed_axes, std::invalid_argument);
-    viewed.eye.set_transform({.scale = {0, 1, 1}});
+    viewed.eye.set_world_transform({.scale = {0, 1, 1}});
     CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), "Camera world axes must be nonzero", std::invalid_argument);
-    viewed.eye.set_transform({.scale = {-1, 1, 1}});
+    viewed.eye.set_world_transform({.scale = {-1, 1, 1}});
     CHECK_THROWS_WITH_AS(view_matrix(viewed.scene, 2), skewed_axes, std::invalid_argument);
 }
 
