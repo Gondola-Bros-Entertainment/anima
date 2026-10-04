@@ -1472,6 +1472,86 @@ TEST_CASE("The animator rejects invalid bindings, parameters, states and steps")
                          std::logic_error);
 }
 
+TEST_CASE("Parameter ids resolved once read and write the parameters that their names do") {
+    Actor actor(states());
+    auto &animator = actor.animator;
+    const auto speed = actor.machine->parameter("speed");
+    const auto stance = actor.machine->parameter("stance");
+    const auto grounded = actor.machine->parameter("grounded");
+    const auto jump = actor.machine->parameter("jump");
+    CHECK(speed.index == 0);
+    CHECK(speed.type == ParameterType::real);
+    CHECK(stance.index == 1);
+    CHECK(stance.type == ParameterType::integer);
+    CHECK(grounded.index == 2);
+    CHECK(grounded.type == ParameterType::boolean);
+    CHECK(jump.index == 4);
+    CHECK(jump.type == ParameterType::trigger);
+    CHECK_THROWS_WITH_AS((void)actor.machine->parameter("pace"), "Unknown animation parameter: pace",
+                         std::out_of_range);
+
+    CHECK(animator->get_bool(grounded));
+    animator->set_float(speed, 1.5F);
+    animator->set_integer(stance, -3);
+    animator->set_bool(grounded, false);
+    animator->set_trigger(jump);
+    CHECK(animator->get_float("speed") == 1.5F);
+    CHECK(animator->get_integer("stance") == -3);
+    CHECK_FALSE(animator->get_bool("grounded"));
+    CHECK(animator->get_bool("jump"));
+    animator->set_float("speed", 2);
+    animator->set_integer("stance", 4);
+    animator->set_bool("grounded", true);
+    animator->reset_trigger(jump);
+    CHECK(animator->get_float(speed) == 2);
+    CHECK(animator->get_integer(stance) == 4);
+    CHECK(animator->get_bool(grounded));
+    CHECK_FALSE(animator->get_bool(jump));
+
+    // The id form reports a parameter of another type, and a nonfinite float, by the parameter's name.
+    CHECK_THROWS_WITH_AS(animator->set_float(stance, 1), "Animation parameter has another type: stance",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator->set_integer(speed, 1), "Animation parameter has another type: speed",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator->set_bool(jump, true), "Animation parameter has another type: jump",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator->set_trigger(grounded), "Animation parameter has another type: grounded",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator->reset_trigger(grounded), "Animation parameter has another type: grounded",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)animator->get_float(stance), "Animation parameter has another type: stance",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)animator->get_integer(speed), "Animation parameter has another type: speed",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)animator->get_bool(speed), "Animation parameter has another type: speed",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator->set_float(speed, std::numeric_limits<float>::quiet_NaN()),
+                         "Animation float parameter must be finite: speed", std::invalid_argument);
+    CHECK(animator->get_float(speed) == 2);
+
+    // An id from another machine is rejected when its index lies outside this machine or its type differs from
+    // the parameter there, and accepted when the parameter there has its type.
+    auto triggered = states();
+    triggered.parameters = {parameter("up", ParameterType::trigger), parameter("down", ParameterType::trigger)};
+    Actor other(std::move(triggered));
+    auto &triggers = other.animator;
+    const auto down = other.machine->parameter("down");
+    for (const AnimationParameterId foreign : {jump, speed, AnimationParameterId{2, ParameterType::trigger}}) {
+        CAPTURE(foreign.index);
+        CHECK_THROWS_WITH_AS(triggers->set_trigger(foreign), "Animation parameter id does not match the machine",
+                             std::invalid_argument);
+        CHECK_THROWS_WITH_AS((void)triggers->get_bool(foreign), "Animation parameter id does not match the machine",
+                             std::invalid_argument);
+    }
+    CHECK_THROWS_WITH_AS(triggers->set_float(speed, 1), "Animation parameter id does not match the machine",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(animator->set_trigger(AnimationParameterId{1, ParameterType::trigger}),
+                         "Animation parameter id does not match the machine", std::invalid_argument);
+    CHECK(animator->get_integer(stance) == 4);
+    triggers->set_trigger(AnimationParameterId{1, ParameterType::trigger});
+    CHECK(triggers->get_bool(down));
+}
+
 TEST_CASE("A machine over a motion runtime plays the motion's base clips on the model's mesh") {
     MotionActor actor;
     const auto machine = std::make_shared<const Machine>(actor.motion, motion_states());

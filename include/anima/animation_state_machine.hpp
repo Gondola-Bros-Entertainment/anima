@@ -26,6 +26,7 @@
 
 namespace anima {
 class MotionRuntime;
+struct AnimationParameterId;
 namespace detail {
 struct AnimationStateMachineData;
 struct StateMachineAnimatorAccess;
@@ -230,6 +231,10 @@ class AnimationStateMachine {
     /// The motion runtime whose base clips the states play, or null for a machine over the clips of
     /// source().
     [[nodiscard]] const std::shared_ptr<const MotionRuntime> &motion() const noexcept { return motion_; }
+    /// Resolves parameter @p name to its id, which the StateMachineAnimator parameter accessors take
+    /// to skip the lookup by name. The id stays valid for the machine's lifetime. Throws
+    /// `std::out_of_range` with "Unknown animation parameter: " and @p name for an unknown parameter.
+    [[nodiscard]] AnimationParameterId parameter(std::string_view name) const;
 
   private:
     friend class StateMachineAnimator;
@@ -240,6 +245,18 @@ class AnimationStateMachine {
     std::shared_ptr<const MotionRuntime> motion_;
     Definition definition_;
     std::shared_ptr<const detail::AnimationStateMachineData> data_;
+};
+
+/// A parameter of an AnimationStateMachine, resolved by AnimationStateMachine::parameter.
+///
+/// The StateMachineAnimator accessors check only that #index lies within their machine's parameters and
+/// that the parameter there has #type, so an id resolved from another machine is accepted when the
+/// parameter at its index has its type.
+struct AnimationParameterId {
+    /// Index of the parameter in AnimationStateMachine::Definition::parameters.
+    std::size_t index{};
+    /// Type of the parameter.
+    AnimationStateMachine::ParameterType type = AnimationStateMachine::ParameterType::real;
 };
 
 /// Returns the persistent key of a machine when a StateMachineAnimator is captured.
@@ -319,6 +336,28 @@ class StateMachineAnimator {
     /// Value of bool parameter @p name, or whether trigger @p name is set. Throws as set_integer() does
     /// for other types.
     [[nodiscard]] bool get_bool(std::string_view name) const;
+    /// The overloads that take an AnimationParameterId act as those that take the parameter's name, without
+    /// looking it up. Each throws `std::invalid_argument` with "Animation parameter id does not match the
+    /// machine" for an @p id whose index lies outside the machine's parameters or whose type differs from
+    /// the parameter's there; then, as its name form does, with "Animation parameter has another type: "
+    /// and the parameter's name for a parameter of another type, and set_float() with "Animation float
+    /// parameter must be finite: " and the name for a nonfinite value.
+    void set_float(AnimationParameterId id, float value);
+    /// Sets integer parameter @p id; see set_float(AnimationParameterId, float).
+    void set_integer(AnimationParameterId id, std::int32_t value);
+    /// Sets bool parameter @p id; see set_float(AnimationParameterId, float).
+    void set_bool(AnimationParameterId id, bool value);
+    /// Sets trigger @p id, as set_trigger(std::string_view) does; see set_float(AnimationParameterId, float).
+    void set_trigger(AnimationParameterId id);
+    /// Unsets trigger @p id; see set_float(AnimationParameterId, float).
+    void reset_trigger(AnimationParameterId id);
+    /// Value of float parameter @p id; see set_float(AnimationParameterId, float).
+    [[nodiscard]] float get_float(AnimationParameterId id) const;
+    /// Value of integer parameter @p id; see set_float(AnimationParameterId, float).
+    [[nodiscard]] std::int32_t get_integer(AnimationParameterId id) const;
+    /// Value of bool parameter @p id, or whether trigger @p id is set; see
+    /// set_float(AnimationParameterId, float).
+    [[nodiscard]] bool get_bool(AnimationParameterId id) const;
     /// Enters state @p name at normalized time @p normalized_time, ending any crossfade, and publishes
     /// its pose. As on entry through a transition, the next update that advances the state reports
     /// the events at its entry point. Parameters are unchanged. Throws `std::out_of_range` for an
@@ -421,7 +460,8 @@ class StateMachineAnimator {
 
   private:
     friend struct detail::StateMachineAnimatorAccess;
-    std::size_t parameter(std::string_view name, AnimationStateMachine::ParameterType type) const;
+    // Index of the parameter that @p id names, checked against the machine and against the accessor's type.
+    std::size_t parameter(AnimationParameterId id, AnimationStateMachine::ParameterType type) const;
     void commit(detail::AnimationStateRuntime next);
     GameObject object_;
     std::shared_ptr<const Mesh> mesh_;
