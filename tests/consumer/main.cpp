@@ -50,6 +50,7 @@
 #include "environment.hpp"
 #include "fog.hpp"
 #include "foliage.hpp"
+#include "frames_in_flight.hpp"
 #include "impostors.hpp"
 #include "lod.hpp"
 #include "materials.hpp"
@@ -310,6 +311,7 @@ int main(int argc, char **argv) {
 #ifdef CONSUMER_DESKTOP
         replacement_test::reject_unfireable_injection();
         replacement_test::reject_invalid_lod_threshold();
+        replacement_test::reject_invalid_frames_in_flight();
         material_test::reject_invalid_anisotropy();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
@@ -333,6 +335,8 @@ int main(int argc, char **argv) {
             return cascades_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--profile")
             return profile_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--frames-in-flight")
+            return frames_in_flight_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")

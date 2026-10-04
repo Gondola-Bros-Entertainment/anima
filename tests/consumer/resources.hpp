@@ -358,6 +358,9 @@ inline int run(int argc, char **argv) {
             require(renderer.resource_stats().resident_material_samplers == samplers + 1,
                     "Different filtering, wrapping or LOD limits shared a sampler");
             source->remove(id);
+            // The draw() that releases the mesh destroys it, and its sampler, only once no frame in flight can draw
+            // it; with two frames in flight, the next draw() does.
+            frame();
             frame();
             require(renderer.resource_stats().resident_material_samplers == samplers,
                     "Last-owner departure retained an unused sampler");

@@ -1,5 +1,5 @@
-// Included inside Impl. Set 1 is shared by
-// world passes; material set 0 and palette set 2 stay independent.
+// Included inside Impl. Set 1, each frame slot's environment set, is shared by world passes; material set 0 and
+// palette set 2 stay independent.
 Environment environment;
 // The sun at the ground, atmosphere_sunlight() of the environment, which set_environment() computes once.
 Vec3 sunlight = Environment{}.sun.radiance;
@@ -40,9 +40,8 @@ static_assert(offsetof(EnvironmentUniform, detail_shadow_view) == 656 &&
               offsetof(EnvironmentUniform, fog_sun) == 752 && offsetof(EnvironmentUniform, atmosphere_sun) == 816 &&
               sizeof(EnvironmentUniform) == 832);
 VkDescriptorSetLayout environment_layout{};
+// Holds each frame slot's environment set (FrameSlot::environment_set).
 VkDescriptorPool environment_pool{};
-VkDescriptorSet environment_set{};
-std::unique_ptr<ResourceBuffer> environment_buffer;
 Mat4 inverse_view = identity(), view_rays{};
 // A matrix that takes a pixel's normalized device coordinates (x, y, 0, 1) to a vector along its ray from the eye of
 // @p view_projection, a perspective view whose eye is @p origin: for its inverse Q and the eye e, Q's third column,
@@ -85,28 +84,33 @@ void create_environment_layout() {
     layout.bindingCount = 5;
     layout.pBindings = bindings;
     check(vkCreateDescriptorSetLayout(device, &layout, nullptr, &environment_layout), "Create environment layout");
-    environment_buffer = resource_buffer(sizeof(EnvironmentUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4}};
+    // Each set's four image bindings: the cascades, the detail region and the atmosphere's two tables.
+    constexpr std::uint32_t environment_images = 4;
+    const auto slots = static_cast<std::uint32_t>(frames.size());
+    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, slots},
+                                       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, environment_images * slots}};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 1;
+    pool.maxSets = slots;
     pool.poolSizeCount = 2;
     pool.pPoolSizes = sizes;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &environment_pool), "Create environment pool");
-    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = environment_pool;
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &environment_layout;
-    check(vkAllocateDescriptorSets(device, &allocate, &environment_set), "Allocate environment set");
-    const VkDescriptorBufferInfo buffer{environment_buffer->buffer, 0, sizeof(EnvironmentUniform)};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = environment_set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo = &buffer;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    for (auto &slot : frames) {
+        slot.environment_buffer = resource_buffer(sizeof(EnvironmentUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = environment_pool;
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &environment_layout;
+        check(vkAllocateDescriptorSets(device, &allocate, &slot.environment_set), "Allocate environment set");
+        const VkDescriptorBufferInfo buffer{slot.environment_buffer->buffer, 0, sizeof(EnvironmentUniform)};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = slot.environment_set;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &buffer;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
 }
 // Records the sky while the atmosphere is enabled. It lies at the far plane, depth 0, tests depth with
 // GREATER_OR_EQUAL and writes none, so recorded after every opaque and masked surface of the pass it shades only the
@@ -114,9 +118,10 @@ void create_environment_layout() {
 void record_sky() {
     if (!environment.atmosphere.enabled)
         return;
+    const auto command = frame().command;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, environment_pipeline_layout, 1, 1,
-                            &environment_set, 0, nullptr);
+                            &frame().environment_set, 0, nullptr);
     vkCmdDraw(command, 3, 1, 0, 0);
 }
 // Whether the view's fog needs the shaders' height fog code: fog whose density falls with height or that scatters
@@ -146,7 +151,8 @@ double eye_altitude() const {
     const double altitude = view_origin[3] != 0 ? double(view_origin[1]) - a.ground_height : 1.0;
     return std::clamp(altitude, 1.0, double(a.thickness) - 1.0);
 }
-// Writes the environment and the latest fit of the shadow cascades (finish_shadow_cascades()) for the next frame.
+// Writes the environment and the latest fit of the shadow cascades (finish_shadow_cascades()) into the environment
+// block of the slot that records the next frame.
 void update_environment() {
     const auto vec = [](Vec3 v, float w = 0.F) { return std::array<float, 4>{v.x, v.y, v.z, w}; };
     const auto &e = environment;
@@ -196,6 +202,7 @@ void update_environment() {
                            cascade_fits.count ? float(cascade_fits.cascades[0].begin) : 0.F};
     data.cascade_axis = {float(forward[0]), float(forward[1]), float(forward[2]), settings.blend};
     data.cascades = {float(cascade_fits.count), 0, 0, 0};
-    std::memcpy(environment_buffer->mapping, &data, sizeof(data));
-    flush_resource(*environment_buffer);
+    auto &block = *frame().environment_buffer;
+    std::memcpy(block.mapping, &data, sizeof(data));
+    flush_resource(block);
 }

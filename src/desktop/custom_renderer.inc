@@ -81,14 +81,16 @@ struct OpaqueInputs {
 };
 VkDescriptorSetLayout custom_frame_layout{}, custom_material_layout{};
 VkPipelineLayout custom_pipeline_layout{};
+// Holds each frame slot's frame set (FrameSlot::custom_frame_set).
 VkDescriptorPool custom_frame_pool{};
-VkDescriptorSet custom_frame_set{};
-std::unique_ptr<ResourceBuffer> custom_frame_buffer;
 std::map<const CustomMaterial *, std::unique_ptr<GpuCustomMaterial>> custom_cache;
 // Seconds that VulkanRenderer::set_time received.
 float shader_time{};
 // Created on the first frame that draws a custom material reading opaque inputs, released with the swapchain.
 std::unique_ptr<OpaqueInputs> opaque_inputs;
+// Counts the opaque input copies created, so that each frame slot's frame set can tell whether it points at the current
+// ones (FrameSlot::opaque_generation).
+std::uint64_t opaque_generation{};
 // World passes that split the frame around the opaque input copy. They are compatible with render_pass: the same
 // attachments and subpass, with other load and store operations and layouts.
 VkRenderPass opaque_pass{}, composite_pass{};
@@ -130,31 +132,36 @@ void create_custom_layout() {
     info.pushConstantRangeCount = 1;
     info.pPushConstantRanges = &range;
     check(vkCreatePipelineLayout(device, &info, nullptr, &custom_pipeline_layout), "Create custom pipeline layout");
-    custom_frame_buffer = resource_buffer(sizeof(CustomFrameUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
+    // Each set's opaque depth and color copies.
+    constexpr std::uint32_t opaque_input_count = 2;
+    const auto slots = static_cast<std::uint32_t>(frames.size());
+    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, slots},
+                                       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, opaque_input_count * slots}};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 1;
+    pool.maxSets = slots;
     pool.poolSizeCount = static_cast<std::uint32_t>(std::size(sizes));
     pool.pPoolSizes = sizes;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &custom_frame_pool), "Create custom frame pool");
-    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = custom_frame_pool;
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &custom_frame_layout;
-    check(vkAllocateDescriptorSets(device, &allocate, &custom_frame_set), "Allocate custom frame set");
-    // Bindings 1 and 2 are written when the opaque input copies exist; only materials that read them use them.
-    const VkDescriptorBufferInfo buffer{custom_frame_buffer->buffer, 0, sizeof(CustomFrameUniform)};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = custom_frame_set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo = &buffer;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    for (auto &slot : frames) {
+        slot.custom_frame_buffer = resource_buffer(sizeof(CustomFrameUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = custom_frame_pool;
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &custom_frame_layout;
+        check(vkAllocateDescriptorSets(device, &allocate, &slot.custom_frame_set), "Allocate custom frame set");
+        // Bindings 1 and 2 are written when the opaque input copies exist; only materials that read them use them.
+        const VkDescriptorBufferInfo buffer{slot.custom_frame_buffer->buffer, 0, sizeof(CustomFrameUniform)};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = slot.custom_frame_set;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &buffer;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
 }
-// Writes the frame block for the coming frame, after the previous frame's fence.
+// Writes the frame block into the slot that records the next frame, whose previous frame has finished.
 void update_custom_frame() {
     const auto vec = [](Vec3 v) { return std::array<float, 4>{v.x, v.y, v.z, 0}; };
     const auto &e = environment;
@@ -175,8 +182,9 @@ void update_custom_frame() {
                                   {},
                                   fog_shape(e),
                                   fog_sunlight(e, sunlight)};
-    std::memcpy(custom_frame_buffer->mapping, &data, sizeof(data));
-    flush_resource(*custom_frame_buffer);
+    auto &block = *frame().custom_frame_buffer;
+    std::memcpy(block.mapping, &data, sizeof(data));
+    flush_resource(block);
 }
 VkShaderModule custom_module(std::span<const std::uint32_t> words) const {
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -373,8 +381,9 @@ void create_custom_pipeline(GpuCustomMaterial &gpu, bool shadow) {
 }
 // Binds @p gpu's pipeline, or with @p shadow its depth-only variant's, with the frame, pose and material sets.
 void bind_custom(const GpuCustomMaterial &gpu, bool shadow) {
+    const auto command = frame().command;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? gpu.shadow_pipeline : gpu.pipeline);
-    const VkDescriptorSet sets[]{custom_frame_set, pose_set, gpu.set};
+    const VkDescriptorSet sets[]{frame().custom_frame_set, frame().pose_set, gpu.set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, custom_pipeline_layout, 0,
                             static_cast<std::uint32_t>(std::size(sets)), sets, 0, nullptr);
 }
@@ -392,8 +401,8 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
                           render_instance.placements ? 1U : 0U,
                           {factor.x, factor.y, factor.z, 1},
                           render_instance.ranged ? 1U : 0U};
-    vkCmdPushConstants(command, custom_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(push), &push);
+    vkCmdPushConstants(frame().command, custom_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     record_indexed(render_instance, draw_index, shadow);
 }
 // Records @p draws in order through @p view, culled by @p frustum when given: opaque custom materials in the main view,
@@ -448,11 +457,36 @@ void destroy_opaque_inputs() noexcept {
         *pass = VK_NULL_HANDLE;
     }
 }
-// Creates the opaque depth and color copies for the current swapchain, if they do not exist, and binds them to the
-// frame set. Throws `std::runtime_error` when the device cannot copy or sample them.
+// Creates the opaque depth and color copies for the current swapchain, if they do not exist, and points the frame set
+// of the slot that records the next frame at them, unless it already does. Throws `std::runtime_error` when the device
+// cannot copy or sample them.
 void ensure_opaque_inputs() {
-    if (opaque_inputs)
+    if (!opaque_inputs)
+        create_opaque_inputs();
+    auto &slot = frame();
+    if (slot.opaque_generation == opaque_generation)
         return;
+    const std::array<VkDescriptorImageInfo, 2> descriptors{
+        VkDescriptorImageInfo{opaque_inputs->depth.sampler, opaque_inputs->depth.view,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        VkDescriptorImageInfo{opaque_inputs->color.sampler, opaque_inputs->color.view,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    for (std::uint32_t i = 0; i < writes.size(); ++i) {
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = slot.custom_frame_set;
+        writes[i].dstBinding = i + 1;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &descriptors[i];
+    }
+    // The slot's previous frame has finished, so nothing reads its frame set.
+    vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    slot.opaque_generation = opaque_generation;
+}
+// Creates the opaque depth and color copies for the current swapchain. Throws `std::runtime_error` when the device
+// cannot copy or sample them.
+void create_opaque_inputs() {
     if (!opaque_copies_supported())
         throw std::runtime_error("Device cannot copy the world color and depth that custom materials read");
     auto next = std::make_unique<OpaqueInputs>();
@@ -484,25 +518,13 @@ void ensure_opaque_inputs() {
     // Depth formats need not filter linearly, so depth samples the nearest texel.
     create(next->depth, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT, VK_FILTER_NEAREST);
     create(next->color, world_color_format, VK_IMAGE_ASPECT_COLOR_BIT, VK_FILTER_LINEAR);
-    const std::array<VkDescriptorImageInfo, 2> descriptors{
-        VkDescriptorImageInfo{next->depth.sampler, next->depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        VkDescriptorImageInfo{next->color.sampler, next->color.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-    std::array<VkWriteDescriptorSet, 2> writes{};
-    for (std::uint32_t i = 0; i < writes.size(); ++i) {
-        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[i].dstSet = custom_frame_set;
-        writes[i].dstBinding = i + 1;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &descriptors[i];
-    }
-    // The previous frame's fence has retired every reader of the frame set.
-    vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     opaque_inputs.swap(next);
+    ++opaque_generation;
 }
 // Records the copy between the opaque pass, which stored the world color and depth, and the composite pass, which
 // loads them back. The copies become readable by fragment shaders.
 void copy_opaque_inputs() {
+    const auto command = frame().command;
     const auto &inputs = *opaque_inputs;
     const auto barrier = [](VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
                             VkAccessFlags source, VkAccessFlags destination) {
@@ -516,8 +538,9 @@ void copy_opaque_inputs() {
         value.subresourceRange = {aspect, 0, 1, 0, 1};
         return value;
     };
-    // The opaque pass's depth and color writes, including its stores, precede the copy. The previous frame's
-    // fragment shaders last read the copies, whose contents are replaced whole.
+    // The opaque pass's depth and color writes, including its stores, precede the copy. Earlier frames' fragment
+    // shaders last read the copies, whose contents are replaced whole; the barrier's first scope holds every command
+    // submitted before it, those of a frame still in flight included.
     const std::array sources{barrier(depth_image, VK_IMAGE_ASPECT_DEPTH_BIT,
                                      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,

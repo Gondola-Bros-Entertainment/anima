@@ -693,7 +693,7 @@ if(ANIMA_BUILD_TESTS)
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
         foreach(check_mode IN ITEMS allocations culling placements lod impostors cascades foliage fog atmosphere
-            environment resources
+            environment resources frames-in-flight
             material-sampling pbr surface-maps sidedness blending custom-materials texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
@@ -722,10 +722,13 @@ if(ANIMA_BUILD_TESTS)
             endif()
             anima_add_gpu_check(desktop_${replace}
                 "${desktop}" --replace "${anima_gpu_checks}/desktop_${replace}" ${replace_options})
+            # The same replacements, resizes, captures and shutdown with one frame in flight instead of two.
+            anima_add_gpu_check(desktop_${replace}_one_frame "${desktop}" --replace
+                "${anima_gpu_checks}/desktop_${replace}_one_frame" ${replace_options} --frames-in-flight 1)
             # Replacing scenes must not recreate the swapchain between these markers, which only the log shows.
-            set_property(TEST gpu_desktop_${replace} APPEND PROPERTY
+            set_property(TEST gpu_desktop_${replace} gpu_desktop_${replace}_one_frame APPEND PROPERTY
                 FAIL_REGULAR_EXPRESSION "STABLE_SWAPCHAIN_BEGIN.*Swapchain [0-9].*STABLE_SWAPCHAIN_END")
-            list(APPEND desktop_checks ${replace})
+            list(APPEND desktop_checks ${replace} ${replace}_one_frame)
             foreach(stage IN ITEMS upload-timeout device-lost)
                 string(REPLACE "-" "_" stage_id "${stage}")
                 anima_add_gpu_check(desktop_${replace}_${stage_id} "${desktop}" --replace

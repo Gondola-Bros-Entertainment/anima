@@ -77,6 +77,14 @@ struct RendererOptions {
     /// Initial level of detail threshold, in pixels; see VulkanRenderer::set_lod_threshold. Must be finite and
     /// nonnegative, or construction throws `std::invalid_argument`.
     float lod_threshold = 1;
+    /// Frames that draw() may submit before the GPU finishes the earliest of them: 1 or 2, or construction throws
+    /// `std::invalid_argument`. With 2, draw() prepares and records a frame while the GPU still runs the previous one,
+    /// so that the CPU's work overlaps the GPU's, at the cost of a second copy of the per-frame buffers (palettes, the
+    /// environment and custom material frame blocks, UI vertices) and of up to a frame more between the inputs that a
+    /// frame shows and its display. With 1, each draw() waits for the previous frame before preparing the next. Either
+    /// way, a draw() that uploads, as when a mesh first becomes visible, waits for the frames already in flight, since
+    /// the fence that an upload waits for signals only after every earlier submission.
+    std::uint32_t frames_in_flight = 2;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -159,16 +167,21 @@ struct RenderStats {
 /// since each draw() resets them. CPU fields are elapsed intervals, not CPU utilization. They follow one another
 /// from draw() entry through the presentation call, so their sum is the call's duration, except that a draw() that
 /// captures then waits for its frame and reads the image back, which no field times; a draw() that returns early
-/// sets only the fields it reached. One frame is in flight: the previous frame's GPU work has finished when
-/// fence_wait_ms ends, so no later CPU field overlaps it, and the frame submitted at the end of record_submit_ms can
-/// run on the GPU during present_ms and after draw() returns.
+/// sets only the fields it reached. When fence_wait_ms ends, the GPU has finished the frame submitted
+/// RendererOptions::frames_in_flight submissions before the one that the draw() submits, and every frame before that.
+/// With one frame in flight that is the previous frame, so no later CPU field overlaps GPU frame work; with two, the
+/// previous frame can still run on the GPU during every later field. The frame submitted at the end of
+/// record_submit_ms can run on the GPU during present_ms and after draw() returns.
 struct FrameProfile {
-    /// From draw() entry through the wait for the previous frame's fence, including swapchain recreation.
+    /// From draw() entry through the wait for the fence of the frame submitted RendererOptions::frames_in_flight
+    /// submissions earlier, including swapchain recreation.
     double fence_wait_ms{};
-    /// Frame preparation after that wait: releasing unowned cache entries, sizing the shadow maps and fitting their
-    /// cascades to the view, writing the custom materials' frame block, reading the previous frame's GPU timestamps,
-    /// and for a UiContext frame, copying its vertices, creating the UI pipeline when first needed and uploading each
-    /// new UI texture, which waits for the GPU.
+    /// Frame preparation after that wait: destroying what earlier calls released once no frame in flight can use it,
+    /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in
+    /// flight and otherwise in a later call, once that frame has finished, sizing the shadow maps and fitting their
+    /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
+    /// fence_wait_ms waited for, and for a UiContext frame, copying its vertices, creating the UI pipeline when first
+    /// needed and uploading each new UI texture, which waits for the GPU.
     double prepare_ms{};
     /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
     /// and placements, palette writes, sorting blended draws back to front, creating the opaque depth and color copies
@@ -184,8 +197,10 @@ struct FrameProfile {
     /// Palette bytes written for this frame, reported even without profiling; excludes UI geometry and push
     /// constants.
     std::uint64_t uploaded_bytes{};
-    /// Whether the GPU fields are set. They time the previously submitted command buffer, read after its
-    /// fence, and exclude presentation. False means unsupported or not yet available, not zero cost.
+    /// Whether the GPU fields are set. They time the frame that fence_wait_ms waited for, read after its fence, and
+    /// exclude presentation. A frame's first timestamp is written once every command submitted before it has finished,
+    /// so with two frames in flight they leave out the time that the GPU spent finishing the frame before it. False
+    /// means unsupported or not yet available, not zero cost.
     bool gpu_available{};
     /// The whole command buffer.
     double gpu_ms{};
@@ -200,13 +215,16 @@ struct FrameProfile {
     /// Capture copy and the transition for presentation.
     double gpu_transfer_ms{};
     /// From the last timestamp of the frame submitted before the one the GPU fields time to that frame's first
-    /// timestamp: how long the graphics queue went without frame work between them. With one frame in flight it spans
-    /// at least the prepare_ms, upload_ms and acquire_ms of the draw() that submitted the timed frame, and uploads that
-    /// run in that gap count toward it. Set with the GPU fields where VulkanRenderer::measures_gpu_idle() is true and
-    /// the frame submitted before the timed one was timed too, unless the device's timestamp counter may have wrapped
-    /// in between: the field stays empty when, on the host's steady clock, the timed frame's fence wait in this draw()
-    /// ended at least half the counter's wrap period (2^timestampValidBits ticks of timestampPeriod nanoseconds) after
-    /// the earlier frame's submission. Empty otherwise too, as on the first timed frame.
+    /// timestamp: how long the graphics queue went without frame work between them. With one frame in flight the timed
+    /// frame was submitted after the earlier one had finished, so this spans at least the prepare_ms, upload_ms and
+    /// acquire_ms of the draw() that submitted it, and uploads that run in that gap count toward it. With two, the
+    /// timed frame can be queued before the earlier one finishes; its first timestamp still follows the earlier frame's
+    /// work, but Vulkan does not order it after that frame's last timestamp, and where it is the lower the field is 0.
+    /// Set with the GPU fields where VulkanRenderer::measures_gpu_idle() is true and the frame submitted before the
+    /// timed one was timed too, unless the device's timestamp counter may have wrapped in between: the field stays
+    /// empty when, on the host's steady clock, the timed frame's fence wait in this draw() ended at least a quarter of
+    /// the counter's wrap period (2^timestampValidBits ticks of timestampPeriod nanoseconds) after the earlier frame's
+    /// submission. Empty otherwise too, as on the first timed frame.
     std::optional<double> gpu_idle_ms;
 };
 
@@ -216,7 +234,8 @@ struct FrameProfile {
 /// not total device or process memory. Frame counters describe the latest preparation:
 /// VulkanRenderer::set_scenes prepares without culling, and VulkanRenderer::draw with it.
 struct ResourceStats {
-    /// Live material samplers; images with identical sampling settings and mip level count share one.
+    /// Live material samplers, those of released meshes included until no frame in flight can use them; images with
+    /// identical sampling settings and mip level count share one.
     std::uint64_t resident_material_samplers{};
     /// Meshes uploaded since construction; cache hits are not counted.
     std::uint64_t mesh_uploads{};
@@ -236,7 +255,8 @@ struct ResourceStats {
     /// Allocation bytes of the opaque depth and color copies, which exist from the first frame that copies them
     /// until the swapchain is recreated.
     std::uint64_t opaque_input_bytes{};
-    /// Allocation bytes of the pose buffer, which holds every prepared instance's palette.
+    /// Allocation bytes of the pose buffers, one for each frame in flight (RendererOptions::frames_in_flight), each of
+    /// which holds every instance palette of the frames that it serves.
     std::uint64_t pose_buffer_bytes{};
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
     std::uint64_t pose_uploaded_bytes{};
@@ -310,9 +330,13 @@ struct ResourceStats {
 /// objects, and cannot change the standard material's shading.
 ///
 /// Use the renderer from the application's SDL video thread, with no concurrent calls. Scenes and settings
-/// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. One frame
-/// is in flight, and palettes, descriptors and cached resources are replaced or destroyed only after its
-/// fence. Transfers go through staging buffers, which are freed only after their upload completes.
+/// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. Up to
+/// RendererOptions::frames_in_flight frames are in flight. Each has its own command buffer, palettes, environment and
+/// custom material frame blocks, UI vertices and descriptor sets, which draw() rewrites only once the frame that used
+/// them last has finished. Frames share the shadow maps, the atmosphere's tables, the scene targets and the opaque
+/// input copies, which their commands order on the GPU, and cached resources, UI images and replaced shadow maps are
+/// destroyed only once every frame that may use them has finished. Transfers go through staging buffers, which are
+/// freed only after their upload completes.
 ///
 /// Uploads read texels through Mesh::texel_images() and CustomMaterial::texel_images(), and once an upload has
 /// completed they call release_texels() on the Mesh or CustomMaterial, so that one compiled with
@@ -324,10 +348,10 @@ struct ResourceStats {
 /// its own material images, even when another Mesh has identical content. Buffers and images are suballocated
 /// from larger device memory blocks, except that a large resource, or one the driver asks to place alone, gets
 /// its own allocation. The device's `maxMemoryAllocationCount`, which Vulkan allows to be as low as 4096,
-/// therefore limits only resources placed alone, not how many Meshes can be cached. Once the previous frame finishes,
-/// draw() releases every cached Mesh that only the renderer still references; a draw() that returns early
-/// because the window is not drawable releases nothing. Selection, culling and visibility never evict, and
-/// there is no size budget.
+/// therefore limits only resources placed alone, not how many Meshes can be cached. Once the frame that it waits for
+/// has finished, draw() releases every cached Mesh that only the renderer still references, and destroys the Mesh's GPU
+/// resources once no frame in flight can draw them; a draw() that returns early because the window is not drawable
+/// releases nothing. Selection, culling and visibility never evict, and there is no size budget.
 ///
 /// An object with placements (Scene::set_placements) draws each of its mesh's draws as instances of one indexed draw,
 /// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that draw the
@@ -459,7 +483,8 @@ class VulkanRenderer {
     /// RendererOptions::fail_after stage that the option says construction rejects, before anything else, then for a
     /// RendererOptions::max_anisotropy that is not finite or is below 1 ("Maximum anisotropy must be finite and at
     /// least 1"), for a RendererOptions::lod_threshold that is not finite or is negative ("LOD threshold must be finite
-    /// and nonnegative") and for a null @p window; RendererUnavailableError when no driver or device can present to the
+    /// and nonnegative"), for a RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or 2")
+    /// and for a null @p window; RendererUnavailableError when no driver or device can present to the
     /// window; what set_scenes() throws for the initial selection; InjectedRendererFailure for
     /// RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
     /// Completed stages are released before the exception propagates.
@@ -541,8 +566,8 @@ class VulkanRenderer {
     /// Selects the scenes to draw, or clears the selection with an empty list; the renderer keeps the pointers.
     /// It never follows SceneSet::active(); SceneSet::render_scenes() lists a set's scenes.
     ///
-    /// Throws `std::invalid_argument` for a null or repeated scene before any work. Then waits for the frame in flight
-    /// and uploads the meshes of every visible, active instance, whatever the view. If that fails, the previous
+    /// Throws `std::invalid_argument` for a null or repeated scene before any work. Then waits for every frame in
+    /// flight and uploads the meshes of every visible, active instance, whatever the view. If that fails, the previous
     /// selection stays and meshes uploaded so far stay cached. It throws `std::invalid_argument` for a mesh beyond
     /// device limits (more vertices than the indexed-draw range, or a texture larger than the 2D image limit),
     /// `std::logic_error` as Mesh::texel_images() and CustomMaterial::texel_images() do for texels that
@@ -558,7 +583,7 @@ class VulkanRenderer {
     /// Cached or repeated meshes are reused.
     ///
     /// Throws `std::invalid_argument` for a null pointer anywhere in @p assets before any upload; an empty span
-    /// does nothing. Waits for the frame in flight and leaves the selection, view and poses unchanged. Not
+    /// does nothing. Waits for every frame in flight and leaves the selection, view and poses unchanged. Not
     /// atomic: after a failure, meshes uploaded earlier stay cached while they have other owners. Throws
     /// `std::invalid_argument` for a mesh beyond device limits, `std::logic_error` as Mesh::texel_images() does for
     /// texels that TexelRetention::until_upload let go, `std::runtime_error` for other upload failures,
@@ -590,14 +615,14 @@ class VulkanRenderer {
     /// 100 ms, and when the swapchain is out of date, which the next call recreates; keep running the event
     /// loop and call again. Returns true when the frame was presented.
     ///
-    /// Each call waits for the previous frame, releases unowned cache entries, culls, uploads meshes that
-    /// became visible or cast shadows (prepare_meshes() can upload them earlier) and writes every prepared
-    /// instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
-    /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface
-    /// loss, a fence timeout, any other Vulkan failure, or any failure to build a new swapchain once the
-    /// previous one is released; and `std::runtime_error` for other failures, such as a surface that offers no
-    /// usable format, which leaves the current swapchain in place, or a capture request that fails, which only
-    /// that call reports (see request_capture()).
+    /// Each call waits for the frame submitted RendererOptions::frames_in_flight submissions before the one that it
+    /// submits, releases unowned cache entries, culls, uploads meshes that became visible or cast shadows
+    /// (prepare_meshes() can upload them earlier) and writes every prepared instance's palette. The palettes of one
+    /// frame must fit the device's storage-buffer range. Throws SceneResourceError when that preparation fails
+    /// recoverably; RendererFatalError for device or surface loss, a fence timeout, any other Vulkan failure, or any
+    /// failure to build a new swapchain once the previous one is released; and `std::runtime_error` for other failures,
+    /// such as a surface that offers no usable format, which leaves the current swapchain in place, or a capture
+    /// request that fails, which only that call reports (see request_capture()).
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;
