@@ -1,4 +1,5 @@
 #include <anima/assets/action.hpp>
+#include <anima/assets/interaction.hpp>
 #include <anima/assets/interaction_bindings.hpp>
 #include <doctest/doctest.h>
 
@@ -110,4 +111,35 @@ TEST_CASE("Invalid attachment graphs, weights and placements are rejected") {
     frames[0].world[0] = 2;
     CHECK_THROWS_WITH_AS(bindings.sample(frames, released),
                          "Interaction actor placement and socket offsets must be rigid", std::invalid_argument);
+}
+
+TEST_CASE("Interaction frames, placements and sockets reject a transform within the collapse threshold") {
+    // Uniform scales whose determinants, 1.03e-12 and 9.7e-13, lie just either side of the 1e-12 collapse threshold.
+    constexpr float small_scale = 1.01e-4F, collapsed_scale = .99e-4F;
+    constexpr auto collapsed = "Affine transform is collapsed";
+    const auto scaled = [](float scale) {
+        Transform frame;
+        frame.scale = {scale, scale, scale};
+        return matrix(frame);
+    };
+    const auto small = scaled(small_scale), tiny = scaled(collapsed_scale);
+    const Chain chain;
+    const auto pose = chain.frames()[0].pose;
+    const PoseFrame anchor{0};
+    CHECK_NOTHROW((void)pose_frame(pose, {0, small}));
+    CHECK_THROWS_WITH_AS((void)pose_frame(pose, {0, tiny}), collapsed, std::invalid_argument);
+    CHECK_NOTHROW((void)interaction_socket(pose, {0, small}));
+    CHECK_THROWS_WITH_AS((void)interaction_socket(pose, {0, tiny}), collapsed, std::invalid_argument);
+    // A leader, or either actor of a contact, placed at that scale has no rotation to transfer.
+    CHECK_NOTHROW((void)align_interaction(small, pose, anchor, pose, anchor));
+    CHECK_THROWS_WITH_AS((void)align_interaction(tiny, pose, anchor, pose, anchor), collapsed, std::invalid_argument);
+    CHECK_NOTHROW((void)interaction_contact(small, small, pose, anchor));
+    CHECK_THROWS_WITH_AS((void)interaction_contact(tiny, identity(), pose, anchor), collapsed, std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)interaction_contact(identity(), tiny, pose, anchor), collapsed, std::invalid_argument);
+    // The role graph checks each socket's local frame when it is built.
+    auto attachments = chain.attachments;
+    attachments.front().child_socket.local = small;
+    CHECK_NOTHROW(InteractionBindings(chain.roles, attachments));
+    attachments.front().child_socket.local = tiny;
+    CHECK_THROWS_WITH_AS(InteractionBindings(chain.roles, attachments), collapsed, std::invalid_argument);
 }

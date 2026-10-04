@@ -70,12 +70,14 @@ class InteractionRuntime {
     const std::string &id() const;
     /// Evaluates every role at @p elapsed seconds, with the held phase released at @p released.
     ///
-    /// Each role's layers are evaluated over its rest pose. Roles are then placed from their
-    /// @p free_worlds entries, rigid model-to-world matrices keyed by role id, through the
-    /// attachments. In parent-before-child order, each role is placed on its parent's final pose
-    /// and then solves its contacts toward its parent's target sockets. Throws unless
-    /// @p free_worlds has one entry per role, `std::out_of_range` when its keys differ from the
-    /// role ids, and as ActionTimeline::sample and InteractionBindings::sample do.
+    /// Each role's layers are evaluated over its rest pose, as ActionRuntime::sample evaluates
+    /// them. Roles are then placed from their @p free_worlds entries, rigid model-to-world
+    /// matrices keyed by role id, through the attachments. In parent-before-child order, each role
+    /// is placed on its parent's final pose and then solves its contacts toward its parent's target
+    /// sockets: one MotionRuntime::evaluate applies the role's layers again and then its contacts in
+    /// document order, each solved on the result of those before it. Throws unless @p free_worlds
+    /// has one entry per role, `std::out_of_range` when its keys differ from the role ids, and as
+    /// ActionTimeline::sample, InteractionBindings::sample and MotionRuntime::evaluate do.
     InteractionSample sample(double elapsed, std::optional<double> released,
                              const std::map<std::string, Mat4, std::less<>> &free_worlds) const;
 

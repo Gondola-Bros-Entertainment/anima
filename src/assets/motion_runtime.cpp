@@ -148,6 +148,9 @@ struct MotionRuntime::Impl {
         if (controls.empty())
             return {source, {}}; // Preserve the exact default path.
         auto evaluated = rig_.encode(source);
+        // Sampled pose of the last full-body override above weight 0, whose nodes outside the rig the result follows,
+        // as blend() follows its target.
+        std::optional<anima::Pose> full_body;
         for (const auto &layer : controls.layers) {
             const bool additive = layer.mode == anima::LayerMode::additive;
             if (additive && layer.reference_clip.empty())
@@ -156,14 +159,17 @@ struct MotionRuntime::Impl {
                 throw std::invalid_argument("Override layer cannot have an additive reference");
             if (is_layer(layer.clip) && layer.mask != layer_mask(layer.clip))
                 throw std::invalid_argument("Layer control exceeds the resource's declared ownership");
-            auto weights = mask_named(layer.mask);
+            auto weights = layer.mask.empty() ? std::vector<float>(rig_.size(), 1) : mask_named(layer.mask);
             for (auto &weight : weights)
                 weight *= layer.weight;
-            const auto contribution = rig_.encode(sample(layer.clip, layer.time));
+            auto sampled = sample(layer.clip, layer.time);
+            const auto contribution = rig_.encode(sampled);
             std::optional<anima::EvaluationPose> reference;
             if (additive)
                 reference = rig_.encode(sample(layer.reference_clip, layer.reference_time));
             evaluated = rig_.layer(evaluated, contribution, weights, layer.mode, reference ? &*reference : nullptr);
+            if (layer.mask.empty() && !additive && layer.weight > 0)
+                full_body = std::move(sampled);
         }
         for (const auto &offset : controls.offsets) {
             const auto joint = rig_.joint(offset.joint);
@@ -181,7 +187,7 @@ struct MotionRuntime::Impl {
             evaluated = std::move(solved.pose);
             result.contacts.push_back({request.chain, solved.error, solved.reachable, request.weight});
         }
-        result.pose = rig_.render_pose(source, evaluated);
+        result.pose = rig_.render_pose(full_body ? *full_body : source, evaluated);
         return result;
     }
 

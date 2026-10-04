@@ -74,7 +74,9 @@ struct PoseFrame {
 /// @p attachment frame, with the leader placed at @p leader_world.
 ///
 /// Only position and rotation transfer, so a large leader or a scaled attachment joint does not
-/// resize the follower.
+/// resize the follower. Throws as affine_rotation does for @p leader_world and both posed frames:
+/// `std::invalid_argument` ("Affine transform is collapsed") for one whose determinant is within
+/// `1e-12` of 0.
 [[nodiscard]] inline Mat4 align_interaction(const Mat4 &leader_world, const Pose &leader, const PoseFrame &attachment,
                                             const Pose &follower, const PoseFrame &anchor) {
     (void)affine_rotation(leader_world);
@@ -90,7 +92,9 @@ struct PoseFrame {
 }
 /// Another participant's animated @p marker in this actor's model space, for a contact solve.
 /// When the marker targets a grip, post-multiply the result by the inverse of the holding
-/// socket's local frame.
+/// socket's local frame. Throws as affine_rotation does for @p actor_world, @p other_world and the
+/// posed marker frame: `std::invalid_argument` ("Affine transform is collapsed") for one whose
+/// determinant is within `1e-12` of 0.
 [[nodiscard]] inline Mat4 interaction_contact(const Mat4 &actor_world, const Mat4 &other_world, const Pose &other,
                                               const PoseFrame &marker) {
     (void)affine_rotation(actor_world);
