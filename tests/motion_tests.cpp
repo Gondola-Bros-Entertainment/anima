@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -612,10 +613,37 @@ TEST_CASE("Actions check the roles they require, and the caller chooses the hand
     const auto base = motion->sample("base", 0);
     for (const auto *handling : {"free", "grip"}) {
         CAPTURE(handling);
-        CHECK(actions.sample(base, {"reach", 1, .25, {}, {}}, handling).clock.phase == 0);
+        CHECK(actions.sample(base, {"reach", .25, {}, {}}, handling).clock.phase == 0);
     }
-    CHECK_THROWS_WITH_AS(actions.sample(base, {"reach", 1, .25, {}, {}}, "other"),
+    CHECK_THROWS_WITH_AS(actions.sample(base, {"reach", .25, {}, {}}, "other"),
                          "Action is incompatible with this handling profile", std::invalid_argument);
+}
+
+TEST_CASE("A requested duration rescales a timed action, and the sample's clock stays in declared seconds") {
+    constexpr double time_tolerance = 1e-12; // Timeline arithmetic is exact up to rounding.
+    constexpr auto invalid_duration = "Invalid fixed action duration";
+    const MotionFixture fixture;
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    // twirl's single phase becomes held, so it keeps its declared timing.
+    const ActionRuntime actions(motion, replaced(action_catalog, R"("id":"spin","duration":0.5,)",
+                                                 R"("id":"spin","duration":0.5,"held":true,)"));
+    CHECK(actions.scale({.action = "reach"}) == 1);
+    CHECK(actions.scale({.action = "twirl"}) == 1);
+    // reach declares 0.5 seconds, so lasting 1 second plays it at half rate.
+    CHECK(actions.scale({.action = "reach", .duration = 1.}) == Near{.5, time_tolerance});
+    const auto base = motion->sample("base", 0);
+    const auto clock = actions.sample(base, {.action = "reach", .elapsed = .5, .duration = 1.}, "free").clock;
+    CHECK(clock.elapsed == Near{.25, time_tolerance});
+    CHECK(clock.progress == Near{.5, time_tolerance});
+
+    CHECK_THROWS_WITH_AS(actions.scale({.action = "x"}), "Unknown action: x", std::out_of_range);
+    CHECK_THROWS_WITH_AS(actions.scale({.action = "x", .duration = 0.}), "Unknown action: x", std::out_of_range);
+    for (const double duration : {0., -1., std::numeric_limits<double>::infinity()}) {
+        CAPTURE(duration);
+        CHECK_THROWS_WITH_AS(actions.scale({.action = "reach", .duration = duration}), invalid_duration,
+                             std::invalid_argument);
+    }
+    CHECK_THROWS_WITH_AS(actions.scale({.action = "twirl", .duration = 1.}), invalid_duration, std::invalid_argument);
 }
 
 TEST_CASE("An action layer that plays a layer clip uses that clip's mask") {
