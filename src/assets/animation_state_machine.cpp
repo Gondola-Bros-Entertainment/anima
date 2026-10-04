@@ -698,6 +698,13 @@ AnimationStateMachine AnimationStateMachine::deserialize(std::shared_ptr<const M
     return AnimationStateMachine(std::move(motion), std::move(decoded));
 }
 
+AnimationParameterId AnimationStateMachine::parameter(std::string_view name) const {
+    const auto found = data_->parameter_names.find(name);
+    if (found == data_->parameter_names.end())
+        throw std::out_of_range("Unknown animation parameter: " + std::string(name));
+    return {found->second, data_->parameter_types[found->second]};
+}
+
 StateMachineAnimator::StateMachineAnimator(GameObject object, std::shared_ptr<const AnimationStateMachine> machine)
     : object_(std::move(object)), mesh_(object_.renderer().mesh()), machine_(std::move(machine)) {
     if (!machine_)
@@ -709,47 +716,59 @@ StateMachineAnimator::StateMachineAnimator(GameObject object, std::shared_ptr<co
     entry.current.fresh = true;
     commit(std::move(entry));
 }
-std::size_t StateMachineAnimator::parameter(std::string_view name, AnimationStateMachine::ParameterType type) const {
-    const auto &data = *machine_->data_;
-    const auto found = data.parameter_names.find(name);
-    if (found == data.parameter_names.end())
-        throw std::out_of_range("Unknown animation parameter: " + std::string(name));
-    if (data.parameter_types[found->second] != type)
-        throw std::invalid_argument("Animation parameter has another type: " + std::string(name));
-    return found->second;
+std::size_t StateMachineAnimator::parameter(AnimationParameterId id, AnimationStateMachine::ParameterType type) const {
+    const auto &types = machine_->data_->parameter_types;
+    if (id.index >= types.size() || types[id.index] != id.type)
+        throw std::invalid_argument("Animation parameter id does not match the machine");
+    if (id.type != type)
+        throw std::invalid_argument("Animation parameter has another type: " +
+                                    machine_->definition().parameters[id.index].name);
+    return id.index;
 }
 void StateMachineAnimator::set_float(std::string_view name, float value) {
-    const auto index = parameter(name, AnimationStateMachine::ParameterType::real);
-    if (!std::isfinite(value))
-        throw std::invalid_argument("Animation float parameter must be finite: " + std::string(name));
-    runtime_.parameters[index] = value;
+    set_float(machine_->parameter(name), value);
 }
 void StateMachineAnimator::set_integer(std::string_view name, std::int32_t value) {
-    runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::integer)] = value;
+    set_integer(machine_->parameter(name), value);
 }
-void StateMachineAnimator::set_bool(std::string_view name, bool value) {
-    runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::boolean)] = value ? 1 : 0;
-}
-void StateMachineAnimator::set_trigger(std::string_view name) {
-    runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::trigger)] = 1;
-}
-void StateMachineAnimator::reset_trigger(std::string_view name) {
-    runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::trigger)] = 0;
-}
-float StateMachineAnimator::get_float(std::string_view name) const {
-    return static_cast<float>(runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::real)]);
-}
+void StateMachineAnimator::set_bool(std::string_view name, bool value) { set_bool(machine_->parameter(name), value); }
+void StateMachineAnimator::set_trigger(std::string_view name) { set_trigger(machine_->parameter(name)); }
+void StateMachineAnimator::reset_trigger(std::string_view name) { reset_trigger(machine_->parameter(name)); }
+float StateMachineAnimator::get_float(std::string_view name) const { return get_float(machine_->parameter(name)); }
 std::int32_t StateMachineAnimator::get_integer(std::string_view name) const {
-    return static_cast<std::int32_t>(
-        runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::integer)]);
+    return get_integer(machine_->parameter(name));
 }
-bool StateMachineAnimator::get_bool(std::string_view name) const {
-    const auto &data = *machine_->data_;
-    const auto found = data.parameter_names.find(name);
-    if (found != data.parameter_names.end() &&
-        data.parameter_types[found->second] == AnimationStateMachine::ParameterType::trigger)
-        return runtime_.parameters[found->second] != 0;
-    return runtime_.parameters[parameter(name, AnimationStateMachine::ParameterType::boolean)] != 0;
+bool StateMachineAnimator::get_bool(std::string_view name) const { return get_bool(machine_->parameter(name)); }
+void StateMachineAnimator::set_float(AnimationParameterId id, float value) {
+    const auto index = parameter(id, AnimationStateMachine::ParameterType::real);
+    if (!std::isfinite(value))
+        throw std::invalid_argument("Animation float parameter must be finite: " +
+                                    machine_->definition().parameters[index].name);
+    runtime_.parameters[index] = value;
+}
+void StateMachineAnimator::set_integer(AnimationParameterId id, std::int32_t value) {
+    runtime_.parameters[parameter(id, AnimationStateMachine::ParameterType::integer)] = value;
+}
+void StateMachineAnimator::set_bool(AnimationParameterId id, bool value) {
+    runtime_.parameters[parameter(id, AnimationStateMachine::ParameterType::boolean)] = value ? 1 : 0;
+}
+void StateMachineAnimator::set_trigger(AnimationParameterId id) {
+    runtime_.parameters[parameter(id, AnimationStateMachine::ParameterType::trigger)] = 1;
+}
+void StateMachineAnimator::reset_trigger(AnimationParameterId id) {
+    runtime_.parameters[parameter(id, AnimationStateMachine::ParameterType::trigger)] = 0;
+}
+float StateMachineAnimator::get_float(AnimationParameterId id) const {
+    return static_cast<float>(runtime_.parameters[parameter(id, AnimationStateMachine::ParameterType::real)]);
+}
+std::int32_t StateMachineAnimator::get_integer(AnimationParameterId id) const {
+    return static_cast<std::int32_t>(runtime_.parameters[parameter(id, AnimationStateMachine::ParameterType::integer)]);
+}
+bool StateMachineAnimator::get_bool(AnimationParameterId id) const {
+    const auto type = id.type == AnimationStateMachine::ParameterType::trigger
+                          ? AnimationStateMachine::ParameterType::trigger
+                          : AnimationStateMachine::ParameterType::boolean;
+    return runtime_.parameters[parameter(id, type)] != 0;
 }
 void StateMachineAnimator::play(std::string_view name, double normalized_time) {
     const auto &names = machine_->data_->state_names;
