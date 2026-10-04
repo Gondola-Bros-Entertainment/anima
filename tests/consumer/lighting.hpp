@@ -13,7 +13,7 @@ inline void run() {
     anima::EnvironmentSettings settings;
     settings.atmosphere.enabled = true;
     settings.atmosphere.ground_height = -3;
-    settings.fog_density = .025F;
+    settings.fog.density = .025F;
     settings.exposure = 1.25F;
     auto environment = rig.add_component<anima::SceneEnvironment>(settings);
     auto sun = authored.create("sun"), fill = authored.create("fill");
@@ -34,7 +34,7 @@ inline void run() {
         throw std::runtime_error("Independent lighting prefab did not remap its source");
     const auto result = anima::lighting_environment(scenes);
     if (result.sun.direction.z != -1 || result.sun.irradiance.x != 2 || result.fill.irradiance.x != 0 ||
-        !result.atmosphere.enabled || result.atmosphere.ground_height != -3 || result.fog_density != .025F ||
+        !result.atmosphere.enabled || result.atmosphere.ground_height != -3 || result.fog.density != .025F ||
         result.exposure != 1.25F)
         throw std::runtime_error("Independent scene lighting changed authored settings");
     level = scenes.replace(level, anima::serialize_scene(level.get(), {}, codecs), {}, codecs);

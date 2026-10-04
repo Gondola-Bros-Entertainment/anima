@@ -394,8 +394,8 @@ inline void check_curved_receiver(const gpu_check::Captures &images) {
     // The cascade's texels, which the renderer lays out as fit_shadow_cascades() states, and its biases in them.
     const auto &cascade = cascades.front();
     const double texel = cascade.texel, shadow_width = 2. * cascade.radius, shadow_texels = shadow_width / texel;
-    const double constant_bias = lighting.shadow_cascades.constant_bias,
-                 slope_bias = lighting.shadow_cascades.slope_bias;
+    const double constant_bias = lighting.shadow_cascades.bias.constant,
+                 slope_bias = lighting.shadow_cascades.bias.slope;
     images.require_same("curved-shadowed", "curved-reference-shadowed", "The curved receiver's backends differ");
     const auto &unshadowed = images["curved-unshadowed"];
     const auto &shadowed = images["curved-shadowed"];
@@ -613,7 +613,7 @@ inline int run(int argc, char **argv) {
     capture("scene-light-tinted");
     auto changed_settings = settings->settings();
     changed_settings.exposure = .4F;
-    changed_settings.fog_density = .08F;
+    changed_settings.fog.density = .08F;
     settings->configure(changed_settings);
     renderer.set_environment(anima::lighting_environment(lighting));
     capture("scene-light-settings");
@@ -671,7 +671,7 @@ inline int run(int argc, char **argv) {
     auto bad = environment;
     bad.exposure = std::numeric_limits<float>::quiet_NaN();
     rejection::rejects<std::invalid_argument>([&] { renderer.set_environment(bad); },
-                                              "Invalid environment exposure or fog density");
+                                              "Environment exposure must be finite and positive");
     capture("invalid-preserved");
     renderer.set_scenes({reference_test::scene(anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset)))});
     capture("reference-shadowed");

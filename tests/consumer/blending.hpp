@@ -259,17 +259,17 @@ inline void check_compositing(Harness &harness) {
     // Fog blends each surface toward the fog color by its own transmittance before compositing, and exposure scales
     // the composite.
     anima::Environment fogged;
-    fogged.fog_color = {.35F, .3F, .45F};
-    fogged.fog_density = .15F;
+    fogged.fog.color = {.35F, .3F, .45F};
+    fogged.fog.density = .15F;
     fogged.exposure = 1.25F;
     harness.render("composite-fog", {scene}, view, fogged);
     const auto &image = harness.images["composite-fog"];
     const auto inverse = anima::inverse(view);
-    const Color fog{fogged.fog_color.x, fogged.fog_color.y, fogged.fog_color.z};
+    const Color fog{fogged.fog.color.x, fogged.fog.color.y, fogged.fog.color.z};
     for (const auto &c : cases) {
         const auto at = pixel_of(view, c.front, image);
         const auto fogged_color = [&](const Color &color, double plane) {
-            return over(std::exp(-fogged.fog_density * distance_to_plane(inverse, origin, at, image, plane)), color,
+            return over(std::exp(-fogged.fog.density * distance_to_plane(inverse, origin, at, image, plane)), color,
                         fog);
         };
         auto expected = over(c.alpha, fogged_color(c.source, c.front.z), fogged_color(c.destination, c.back.z));

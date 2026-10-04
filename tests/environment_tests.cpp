@@ -167,29 +167,130 @@ TEST_CASE("The detail region lies along the cascades' axes across the sun, howev
     }
 }
 
-TEST_CASE("Invalid lights, exposure, fog and shadow settings are rejected") {
+TEST_CASE("Each invalid environment setting is rejected with a message that names it") {
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN(), infinite = std::numeric_limits<float>::infinity();
+    constexpr auto background = "Environment background must be finite nonnegative linear RGB of at most 65504",
+                   count = "Shadow cascade count must be from 1 to 4",
+                   distance = "Shadow cascade distance must be positive and at most 1,000,000,000",
+                   sun_direction = "Environment sun direction must have a finite squared length of at least 1e-12";
+    const std::vector<std::pair<std::function<void(Environment &)>, const char *>> breaks{
+        {[](Environment &e) { e.ambient_sky.x = -1; }, "Environment ambient_sky must be finite nonnegative linear RGB"},
+        {[](Environment &e) { e.ambient_ground.y = infinite; },
+         "Environment ambient_ground must be finite nonnegative linear RGB"},
+        {[](Environment &e) { e.ambient_specular.z = nan; },
+         "Environment ambient_specular must be finite nonnegative linear RGB"},
+        {[](Environment &e) { e.atmosphere.ozone_width = 0; }, "Atmosphere ozone_width must be finite and positive"},
+        {[](Environment &e) { e.background.x = -.01F; }, background},
+        {[](Environment &e) { e.background.y = 65505; }, background},
+        {[](Environment &e) { e.background.z = nan; }, background},
+        {[](Environment &e) { e.fog.falloff = -1; }, "Fog falloff must be finite and nonnegative"},
+        {[](Environment &e) { e.exposure = 0; }, "Environment exposure must be finite and positive"},
+        {[](Environment &e) { e.exposure = infinite; }, "Environment exposure must be finite and positive"},
+        {[](Environment &e) { e.tone_mapping = static_cast<ToneMapping>(2); }, "Unknown tone mapping"},
+        {[](Environment &e) { e.shadow_cascades.count = 0; }, count},
+        {[](Environment &e) { e.shadow_cascades.count = ShadowCascades::max_count + 1; }, count},
+        {[](Environment &e) { e.shadow_cascades.distance = 0; }, distance},
+        {[](Environment &e) { e.shadow_cascades.distance = 2e9F; }, distance},
+        {[](Environment &e) { e.shadow_cascades.distance = nan; }, distance},
+        {[](Environment &e) { e.shadow_cascades.logarithmic_split = -.1F; },
+         "Shadow cascade logarithmic_split must lie from 0 to 1"},
+        {[](Environment &e) { e.shadow_cascades.blend = nan; }, "Shadow cascade blend must lie from 0 to 1"},
+        {[](Environment &e) { e.shadow_cascades.resolution = ShadowCascades::min_resolution - 1; },
+         "Shadow cascade resolution must be at least 16"},
+        {[](Environment &e) { e.shadow_cascades.bias.constant = infinite; },
+         "Shadow cascade bias constant must be finite and nonnegative"},
+        {[](Environment &e) { e.shadow_cascades.bias.slope = -1; },
+         "Shadow cascade bias slope must be finite and nonnegative"},
+        {[](Environment &e) { e.detail_shadow.center.y = nan; }, "Detail shadow center must be finite"},
+        {[](Environment &e) { e.detail_shadow.extent = 0; }, "Detail shadow extent must be finite and positive"},
+        {[](Environment &e) { e.detail_shadow.depth = infinite; }, "Detail shadow depth must be finite and positive"},
+        {[](Environment &e) { e.detail_shadow.resolution = 0; }, "Detail shadow resolution must be nonzero"},
+        {[](Environment &e) { e.detail_shadow.bias.constant = nan; },
+         "Detail shadow bias constant must be finite and nonnegative"},
+        {[](Environment &e) { e.detail_shadow.bias.slope = -.5F; },
+         "Detail shadow bias slope must be finite and nonnegative"},
+        {[](Environment &e) { e.sun.direction = {}; }, sun_direction},
+        {[](Environment &e) { e.sun.direction = {infinite, 0, 0}; }, sun_direction},
+        {[](Environment &e) { e.sun.irradiance.x = -1; },
+         "Environment sun irradiance must be finite nonnegative linear RGB"},
+        {[](Environment &e) { e.fill.direction = {nan, 1, 0}; },
+         "Environment fill direction must have a finite squared length of at least 1e-12"},
+        {[](Environment &e) { e.fill.irradiance.y = infinite; },
+         "Environment fill irradiance must be finite nonnegative linear RGB"}};
+    for (std::size_t index = 0; index < breaks.size(); ++index) {
+        CAPTURE(index);
+        auto bad = overhead_sun();
+        breaks[index].first(bad);
+        CHECK_THROWS_WITH_AS(validate_environment(bad), breaks[index].second, std::invalid_argument);
+    }
+    // Disabled cascades are validated as enabled ones are.
+    auto bad = overhead_sun();
+    bad.shadow_cascades.count = 0;
+    CHECK_THROWS_WITH_AS(fit_shadow_cascades(bad, wide_view()), count, std::invalid_argument);
+    // The bounds that the ranges include, which the most cascades a set may have fit.
+    auto edge = cascaded();
+    edge.background = {65504, 0, 65504};
+    edge.tone_mapping = ToneMapping::reinhard;
+    edge.shadow_cascades.count = ShadowCascades::max_count;
+    edge.shadow_cascades.resolution = ShadowCascades::min_resolution;
+    edge.shadow_cascades.distance = 1e9F;
+    edge.shadow_cascades.bias = {0, 0};
+    edge.detail_shadow.bias = {0, 0};
+    edge.detail_shadow.resolution = 1;
+    CHECK_NOTHROW(validate_environment(edge));
+    CHECK(fit_shadow_cascades(edge, wide_view()).size() == ShadowCascades::max_count);
+}
+
+TEST_CASE("Each invalid height fog setting is rejected with a message that names it") {
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN(), infinite = std::numeric_limits<float>::infinity();
+    constexpr auto color = "Fog color must be finite nonnegative linear RGB",
+                   density = "Fog density must be finite and nonnegative", height = "Fog height must be finite",
+                   falloff = "Fog falloff must be finite and nonnegative",
+                   scattering = "Fog sun_scattering must be finite and nonnegative",
+                   anisotropy = "Fog sun_anisotropy must lie strictly between -1 and 1",
+                   sky_distance = "Fog sky_distance must lie from 0 to 1,000,000,000";
+    const std::vector<std::pair<std::function<void(HeightFog &)>, const char *>> breaks{
+        {[](HeightFog &f) { f.color.x = -1; }, color},
+        {[](HeightFog &f) { f.color.z = nan; }, color},
+        {[](HeightFog &f) { f.density = -1; }, density},
+        {[](HeightFog &f) { f.density = infinite; }, density},
+        {[](HeightFog &f) { f.height = infinite; }, height},
+        {[](HeightFog &f) { f.height = nan; }, height},
+        {[](HeightFog &f) { f.falloff = -.1F; }, falloff},
+        {[](HeightFog &f) { f.falloff = nan; }, falloff},
+        {[](HeightFog &f) { f.sun_scattering.y = -1; }, scattering},
+        {[](HeightFog &f) { f.sun_scattering.z = infinite; }, scattering},
+        {[](HeightFog &f) { f.sun_anisotropy = 1; }, anisotropy},
+        {[](HeightFog &f) { f.sun_anisotropy = -1; }, anisotropy},
+        {[](HeightFog &f) { f.sun_anisotropy = nan; }, anisotropy},
+        {[](HeightFog &f) { f.sky_distance = -1; }, sky_distance},
+        {[](HeightFog &f) { f.sky_distance = 2e9F; }, sky_distance},
+        {[](HeightFog &f) { f.sky_distance = infinite; }, sky_distance},
+        {[](HeightFog &f) { f.sky_distance = nan; }, sky_distance}};
+    for (std::size_t index = 0; index < breaks.size(); ++index) {
+        CAPTURE(index);
+        EnvironmentSettings bad;
+        bad.fog.density = .05F;
+        breaks[index].first(bad.fog);
+        CHECK_THROWS_WITH_AS(validate_height_fog(bad.fog), breaks[index].second, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(validate_environment_settings(bad), breaks[index].second, std::invalid_argument);
+    }
+    // The bounds that the ranges include.
+    HeightFog edge;
+    edge.color = {0, 1e6F, 0};
+    edge.density = 0;
+    edge.falloff = 0;
+    edge.sun_anisotropy = -.99F;
+    edge.sky_distance = 1e9F;
+    CHECK_NOTHROW(validate_height_fog(edge));
+    edge.sun_anisotropy = .99F;
+    edge.sky_distance = 0;
+    CHECK_NOTHROW(validate_height_fog(edge));
+}
+
+TEST_CASE("The detail region's projection must be finite and invertible") {
     const auto env = overhead_sun();
     auto bad = env;
-    bad.sun.direction = {};
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid directional light", std::invalid_argument);
-    bad = env;
-    bad.exposure = 0;
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment exposure or fog density",
-                         std::invalid_argument);
-    bad = env;
-    bad.fog_density = -1;
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment exposure or fog density",
-                         std::invalid_argument);
-    bad = env;
-    bad.fog_falloff = -1;
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment height fog", std::invalid_argument);
-    // The phase function's asymmetry lies strictly between -1 and 1.
-    bad = env;
-    bad.fog_sun_anisotropy = -.99F;
-    CHECK_NOTHROW(validate_environment(bad));
-    bad.fog_sun_anisotropy = 1;
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid environment height fog", std::invalid_argument);
-    bad = env;
     bad.detail_shadow.extent = std::numeric_limits<float>::max();
     CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), texel_range, std::invalid_argument);
     bad = env;
@@ -204,14 +305,10 @@ TEST_CASE("Invalid lights, exposure, fog and shadow settings are rejected") {
     // float.
     bad.detail_shadow.center.y = 0;
     CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), "Shadow projection exceeds finite range", std::invalid_argument);
+    // The region's projection validates the whole environment first.
     bad = env;
     bad.detail_shadow.center.y = std::numeric_limits<float>::quiet_NaN();
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid directional shadow region", std::invalid_argument);
-    bad = env;
-    bad.shadow_cascades.count = 0;
-    CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid shadow cascades", std::invalid_argument);
-    // Disabled cascades are validated as enabled ones are.
-    CHECK_THROWS_WITH_AS(fit_shadow_cascades(bad, wide_view()), "Invalid shadow cascades", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), "Detail shadow center must be finite", std::invalid_argument);
 }
 
 TEST_CASE("Shadow cascades split a perspective view's depth as ShadowCascades states") {
@@ -489,38 +586,48 @@ TEST_CASE("An atmosphere reddens and dims the light as the path lowers, and the 
     }
 }
 
-TEST_CASE("Invalid atmospheres and samples are rejected") {
-    constexpr auto invalid = "Invalid atmosphere", sample = "Invalid atmosphere sample";
+TEST_CASE("Each invalid atmosphere setting is rejected with a message that names it, as are invalid samples") {
+    constexpr auto sample = "Invalid atmosphere sample";
     constexpr auto nan = std::numeric_limits<float>::quiet_NaN(), infinite = std::numeric_limits<float>::infinity();
-    const std::vector<std::function<void(Atmosphere &)>> breaks{
-        [](Atmosphere &a) { a.planet_radius = 0; },
-        [](Atmosphere &a) { a.planet_radius = infinite; },
-        [](Atmosphere &a) { a.thickness = -1; },
-        [](Atmosphere &a) { a.thickness = nan; },
-        [](Atmosphere &a) { a.thickness = 2; },
-        [](Atmosphere &a) { a.thickness = infinite; },
-        [](Atmosphere &a) { a.planet_radius = 9.9999e8F; },
-        [](Atmosphere &a) { a.rayleigh_scattering.y = -1e-6F; },
-        [](Atmosphere &a) { a.rayleigh_scale_height = 0; },
-        [](Atmosphere &a) { a.mie_scattering.z = nan; },
-        [](Atmosphere &a) { a.mie_absorption.x = infinite; },
-        [](Atmosphere &a) { a.mie_scale_height = -1; },
-        [](Atmosphere &a) { a.ozone_absorption.x = -1e-9F; },
-        [](Atmosphere &a) { a.ozone_altitude = nan; },
-        [](Atmosphere &a) { a.ozone_width = 0; },
-        [](Atmosphere &a) { a.ground_height = nan; },
-        [](Atmosphere &a) { a.mie_anisotropy = 1; },
-        [](Atmosphere &a) { a.mie_anisotropy = -1; },
-        [](Atmosphere &a) { a.ground_albedo.y = 1.01F; },
-        [](Atmosphere &a) { a.ground_albedo.z = -.01F; },
-        [](Atmosphere &a) { a.sun_angular_radius = 0; },
-        [](Atmosphere &a) { a.sun_angular_radius = std::numbers::pi_v<float> / 2; }};
+    constexpr auto radius = "Atmosphere planet_radius must be finite and positive",
+                   thickness = "Atmosphere thickness must be finite and more than 2",
+                   anisotropy = "Atmosphere mie_anisotropy must lie strictly between -1 and 1",
+                   albedo = "Atmosphere ground_albedo must lie from 0 to 1 in every channel",
+                   sun_radius = "Atmosphere sun_angular_radius must lie strictly between 0 and pi / 2";
+    const std::vector<std::pair<std::function<void(Atmosphere &)>, const char *>> breaks{
+        {[](Atmosphere &a) { a.ground_height = nan; }, "Atmosphere ground_height must be finite"},
+        {[](Atmosphere &a) { a.planet_radius = 0; }, radius},
+        {[](Atmosphere &a) { a.planet_radius = infinite; }, radius},
+        {[](Atmosphere &a) { a.thickness = -1; }, thickness},
+        {[](Atmosphere &a) { a.thickness = nan; }, thickness},
+        {[](Atmosphere &a) { a.thickness = 2; }, thickness},
+        {[](Atmosphere &a) { a.thickness = infinite; }, thickness},
+        {[](Atmosphere &a) { a.planet_radius = 9.9999e8F; },
+         "Atmosphere planet_radius plus thickness must be at most 1,000,000,000"},
+        {[](Atmosphere &a) { a.rayleigh_scattering.y = -1e-6F; },
+         "Atmosphere rayleigh_scattering must be finite and nonnegative"},
+        {[](Atmosphere &a) { a.rayleigh_scale_height = 0; },
+         "Atmosphere rayleigh_scale_height must be finite and positive"},
+        {[](Atmosphere &a) { a.mie_scattering.z = nan; }, "Atmosphere mie_scattering must be finite and nonnegative"},
+        {[](Atmosphere &a) { a.mie_absorption.x = infinite; },
+         "Atmosphere mie_absorption must be finite and nonnegative"},
+        {[](Atmosphere &a) { a.mie_scale_height = -1; }, "Atmosphere mie_scale_height must be finite and positive"},
+        {[](Atmosphere &a) { a.ozone_absorption.x = -1e-9F; },
+         "Atmosphere ozone_absorption must be finite and nonnegative"},
+        {[](Atmosphere &a) { a.ozone_altitude = nan; }, "Atmosphere ozone_altitude must be finite"},
+        {[](Atmosphere &a) { a.ozone_width = 0; }, "Atmosphere ozone_width must be finite and positive"},
+        {[](Atmosphere &a) { a.mie_anisotropy = 1; }, anisotropy},
+        {[](Atmosphere &a) { a.mie_anisotropy = -1; }, anisotropy},
+        {[](Atmosphere &a) { a.ground_albedo.y = 1.01F; }, albedo},
+        {[](Atmosphere &a) { a.ground_albedo.z = -.01F; }, albedo},
+        {[](Atmosphere &a) { a.sun_angular_radius = 0; }, sun_radius},
+        {[](Atmosphere &a) { a.sun_angular_radius = std::numbers::pi_v<float> / 2; }, sun_radius}};
     for (std::size_t index = 0; index < breaks.size(); ++index) {
         CAPTURE(index);
         Atmosphere bad;
-        breaks[index](bad);
-        CHECK_THROWS_WITH_AS(validate_atmosphere(bad), invalid, std::invalid_argument);
-        CHECK_THROWS_WITH_AS((void)atmosphere_transmittance(bad, 0, 1), invalid, std::invalid_argument);
+        breaks[index].first(bad);
+        CHECK_THROWS_WITH_AS(validate_atmosphere(bad), breaks[index].second, std::invalid_argument);
+        CHECK_THROWS_WITH_AS((void)atmosphere_transmittance(bad, 0, 1), breaks[index].second, std::invalid_argument);
     }
     const Atmosphere earth;
     CHECK_NOTHROW(validate_atmosphere(earth));
@@ -582,8 +689,11 @@ TEST_CASE("The sun reaches the ground through the atmosphere, and fades out acro
         CHECK(light.z == 0);
     }
     env.atmosphere.mie_anisotropy = 1;
-    CHECK_THROWS_WITH_AS((void)atmosphere_sunlight(env), "Invalid atmosphere", std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)atmosphere_sunlight(env), "Atmosphere mie_anisotropy must lie strictly between -1 and 1",
+                         std::invalid_argument);
     env.atmosphere.mie_anisotropy = .8F;
     env.sun.direction = {};
-    CHECK_THROWS_WITH_AS((void)atmosphere_sunlight(env), "Invalid directional light", std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)atmosphere_sunlight(env),
+                         "Environment sun direction must have a finite squared length of at least 1e-12",
+                         std::invalid_argument);
 }

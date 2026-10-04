@@ -9,10 +9,12 @@ layout(push_constant) uniform Display { vec2 footprint; }
 display;
 #include "environment.glsl"
 const float maximumHalfFloat = 65504.0;
-// Linear scene color after exposure and, when enabled, tone mapping.
+// anima::ToneMapping::reinhard's value, as controls.y holds the tone mapping.
+const float toneMappingReinhard = 1.0;
+// Linear scene color after exposure and tone mapping.
 vec3 exposed(vec3 color) {
     color = clamp(color * environment.controls.x, vec3(0), vec3(maximumHalfFloat));
-    if (environment.controls.y > 0.5)
+    if (environment.controls.y == toneMappingReinhard)
         color = color / (vec3(1) + color);
     return color;
 }
