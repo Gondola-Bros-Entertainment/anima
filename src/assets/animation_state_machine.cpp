@@ -74,6 +74,8 @@ using Playing = detail::AnimationStatePlaying;
 using Json = nlohmann::json;
 // The largest normalized advance of a looping state in one update, as Playback bounds a looping step.
 constexpr double maximum_state_loops = 10'000;
+// Seconds per pass of a state whose clips have zero duration, at speed 1, so that its exit times are reached.
+constexpr double pose_pass_seconds = 1;
 constexpr std::size_t maximum_machine_document_bytes = 4 * 1024 * 1024;
 constexpr int maximum_machine_document_depth = 16;
 constexpr std::int64_t machine_document_version = 1;
@@ -255,9 +257,11 @@ double state_rate(const Data &data, const Data::State &state, const std::vector<
             throw std::invalid_argument("Animation state speed must be at least 0: " + state.name);
     }
     const auto weight = static_cast<double>(pair.weight);
+    // A blend's clips all have zero duration or all have a positive one, so this is 0 only when the state's clips
+    // are poses, which hold their only time.
     const auto duration =
         (1 - weight) * data.clips[pair.a].animation->duration + weight * data.clips[pair.b].animation->duration;
-    const auto rate = state.speed * multiplier / duration;
+    const auto rate = state.speed * multiplier / (duration > 0 ? duration : pose_pass_seconds);
     if (!std::isfinite(rate))
         throw std::runtime_error("Animation state time overflow");
     return rate;
@@ -292,8 +296,10 @@ void advance(const Data &data, Playing &playing, const std::vector<double> &valu
             if (weight <= 0)
                 return;
             const auto &entry = data.clips[clip];
+            const auto duration = entry.animation->duration;
             for (const auto &event : entry.events) {
-                const auto point = event.time / entry.animation->duration;
+                // The events of a clip of zero duration all lie at its only time, 0.
+                const auto point = duration > 0 ? event.time / duration : 0.;
                 const auto cross = [&](double at) {
                     const auto offset = std::clamp(from + (at - start) / rate, from, to);
                     events.push_back({offset, state.name, entry.name, event, weight * fading.at(offset)});
@@ -528,10 +534,11 @@ AnimationStateMachine::AnimationStateMachine(std::shared_ptr<const Asset> source
                 ++count;
             }
         require(count == 1, "Animation clip must name exactly one source clip: " + name);
-        bool valid = std::isfinite(animation->duration) && animation->duration > 0;
+        require(std::isfinite(animation->duration) && animation->duration >= 0,
+                "Animation clip duration must be finite and nonnegative: " + name);
         for (const auto &event : policy->second->events)
-            valid = valid && std::isfinite(event.time) && event.time >= 0 && event.time <= animation->duration;
-        require(valid, "Animation clip needs a positive duration and events within it: " + name);
+            require(std::isfinite(event.time) && event.time >= 0 && event.time <= animation->duration,
+                    "Animation clip event outside its duration: " + name);
         data->clips.push_back({name, animation, policy->second->loop, policy->second->events});
         clip_indices.emplace(name, data->clips.size() - 1);
         return data->clips.size() - 1;
@@ -565,10 +572,17 @@ AnimationStateMachine::AnimationStateMachine(std::shared_ptr<const Asset> source
             }
         } else
             compiled.clips.push_back(clip_index(state.clip));
+        // A clip of zero duration is a pose.
+        const auto pose = [&](std::size_t clip) { return data->clips[clip].animation->duration == 0; };
         compiled.loop = data->clips[compiled.clips.front()].loop;
-        for (const auto played : compiled.clips)
+        for (const auto played : compiled.clips) {
             require(data->clips[played].loop == compiled.loop,
                     "Animation blend clips must all loop or all hold: " + state.name);
+            // Weighting a pose against a clip with a duration would shorten the state's pass, and raise its rate,
+            // without bound as the pose's weight approaches 1.
+            require(pose(played) == pose(compiled.clips.front()),
+                    "Animation blend mixes clips of zero and positive duration: " + state.name);
+        }
         data->states.push_back(std::move(compiled));
     }
 

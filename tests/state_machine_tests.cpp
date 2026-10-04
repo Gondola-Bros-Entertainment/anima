@@ -22,7 +22,8 @@ namespace {
 constexpr double pose_tolerance = 1e-5; // Absolute error allowed in pose translations and weights.
 
 // One root node, one triangle, and clips that move the root along +X: idle stays at 0, walk moves 1 unit over its
-// 1 s, run moves 2 units over its 0.5 s, and jump (1 s) and hit (0.5 s) hold at 10 and -8.
+// 1 s, run moves 2 units over its 0.5 s, and jump (1 s) and hit (0.5 s) hold at 10 and -8. The poses aim_low,
+// aim_high and guard, clips of zero duration, hold it at -3, 3 and 6.
 std::shared_ptr<const Asset> clip_asset() {
     auto asset = std::make_shared<Asset>();
     asset->nodes.resize(1);
@@ -54,6 +55,9 @@ std::shared_ptr<const Asset> clip_asset() {
     add_clip("run", {0, .5}, {0, 2});
     add_clip("jump", {0, 1}, {10, 10});
     add_clip("hit", {0, .5}, {-8, -8});
+    add_clip("aim_low", {0}, {-3});
+    add_clip("aim_high", {0}, {3});
+    add_clip("guard", {0}, {6});
     return asset;
 }
 std::vector<ClipMetadata> clip_policies() {
@@ -61,7 +65,10 @@ std::vector<ClipMetadata> clip_policies() {
             {"walk", true, {{.5, "step"}}, {}},
             {"run", true, {{.25, "stride"}}, {}},
             {"jump", false, {{0, "takeoff"}, {1, "land"}}, {}},
-            {"hit", false, {}, {}}};
+            {"hit", false, {}, {}},
+            {"aim_low", false, {{0, "aimed"}}, {}},
+            {"aim_high", false, {}, {}},
+            {"guard", true, {{0, "guard"}}, {}}};
 }
 Machine::Parameter parameter(std::string name, ParameterType type, double initial = 0) {
     Machine::Parameter result;
@@ -595,6 +602,73 @@ TEST_CASE("A state's speed and speed parameter scale its rate") {
     CHECK(animator->time() == .625);
 }
 
+TEST_CASE("A state of a clip with zero duration holds its pose and reaches its exit times at its speed") {
+    auto definition = states("walk");
+    definition.states.push_back(clip_state("aim", "aim_low"));
+    definition.states.push_back(clip_state("guard", "guard"));
+    definition.states.back().speed = 2;
+    definition.transitions = {transition("walk", "aim", {condition("go", ConditionMode::is_true)}),
+                              transition("aim", "guard", {})};
+    definition.transitions[1].exit_time = .75;
+    Actor actor(std::move(definition));
+    auto &animator = actor.animator;
+
+    // At speed 1 the pose advances one normalized unit per second, and reports its event once, at its entry.
+    animator->set_trigger("go");
+    const auto entered = animator->update(.25);
+    CHECK(animator->state() == "aim");
+    CHECK(animator->time() == .25);
+    CHECK(actor.x() == Near{-3, pose_tolerance});
+    REQUIRE(entered.size() == 1);
+    CHECK(entered[0].event.name == "aimed");
+    CHECK(entered[0].offset == 0);
+    CHECK(animator->update(.5).empty()); // Crosses the exit time, 0.75.
+    CHECK(animator->state() == "aim");
+    CHECK(animator->time() == .75);
+    CHECK(actor.x() == Near{-3, pose_tolerance});
+
+    // A looping pose at speed 2 takes half a second a pass and crosses its event at 0 once per pass.
+    const auto guarded = animator->update(.125);
+    CHECK(animator->state() == "guard");
+    CHECK(animator->time() == .25);
+    CHECK(actor.x() == Near{6, pose_tolerance});
+    REQUIRE(guarded.size() == 1);
+    CHECK(guarded[0].offset == 0);
+    const auto passes = animator->update(1);
+    CHECK(animator->time() == 2.25);
+    CHECK(actor.x() == Near{6, pose_tolerance});
+    REQUIRE(passes.size() == 2);
+    CHECK(passes[0].event.name == "guard");
+    CHECK(passes[0].offset == .375);
+    CHECK(passes[1].offset == .875);
+}
+
+TEST_CASE("A blend of clips with zero duration blends their poses and advances at its speed") {
+    auto definition = states();
+    Machine::Blend blend;
+    blend.parameter = "speed";
+    blend.clips = {{"aim_low", -1}, {"aim_high", 1}};
+    definition.states[0] = clip_state("aim", "");
+    definition.states[0].blend = blend;
+    definition.transitions = {transition("aim", "walk", {})};
+    definition.transitions[0].exit_time = 1;
+    Actor actor(std::move(definition));
+    auto &animator = actor.animator;
+    CHECK(actor.x() == Near{0, pose_tolerance}); // Halfway between -3 and 3.
+    animator->set_float("speed", .5F);
+    const auto events = animator->update(.5);
+    CHECK(animator->time() == .5);
+    CHECK(actor.x() == Near{.25 * -3 + .75 * 3, pose_tolerance});
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].clip == "aim_low");
+    CHECK(events[0].weight == .25F);
+    (void)animator->update(.5); // Reaches its end, and the exit time.
+    CHECK(animator->state() == "aim");
+    CHECK(animator->time() == 1);
+    (void)animator->update(.25);
+    CHECK(animator->state() == "walk");
+}
+
 TEST_CASE("play enters a state at a time and ends a crossfade") {
     auto definition = states("walk");
     definition.transitions = {transition("walk", "idle", {condition("go", ConditionMode::is_true)}, 1)};
@@ -958,6 +1032,8 @@ TEST_CASE("Invalid definitions are rejected with their reason") {
          "Animation blend thresholds must be finite and increasing: move"},
         {[](Machine::Definition &d) { d.states.back().blend->clips[1].clip = "jump"; },
          "Animation blend clips must all loop or all hold: move"},
+        {[](Machine::Definition &d) { d.states.back().blend->clips[1].clip = "guard"; },
+         "Animation blend mixes clips of zero and positive duration: move"},
         {[](Machine::Definition &d) { d.states[1].clip = "swim"; }, "Animation clip has no metadata: swim"},
         {[](Machine::Definition &d) { d.transitions[0].from = "sky"; }, "Unknown animation state: sky"},
         {[](Machine::Definition &d) { d.transitions[0].to = "sea"; }, "Unknown animation state: sea"},
@@ -1017,12 +1093,15 @@ TEST_CASE("Invalid definitions are rejected with their reason") {
                          std::invalid_argument);
     auto late = policies;
     late[1].events.push_back({1.5, "late"});
-    CHECK_THROWS_WITH_AS(Machine(asset, late, valid),
-                         "Animation clip needs a positive duration and events within it: walk", std::invalid_argument);
-    auto still = std::make_shared<Asset>(*asset);
-    still->animations[0].duration = 0;
-    CHECK_THROWS_WITH_AS(Machine(still, policies, valid),
-                         "Animation clip needs a positive duration and events within it: idle", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(Machine(asset, late, valid), "Animation clip event outside its duration: walk",
+                         std::invalid_argument);
+    for (const auto duration : {-1., std::numeric_limits<double>::quiet_NaN()}) {
+        CAPTURE(duration);
+        auto invalid = std::make_shared<Asset>(*asset);
+        invalid->animations[0].duration = duration;
+        CHECK_THROWS_WITH_AS(Machine(invalid, policies, valid),
+                             "Animation clip duration must be finite and nonnegative: idle", std::invalid_argument);
+    }
 }
 
 TEST_CASE("The animator rejects invalid bindings, parameters, states and steps") {

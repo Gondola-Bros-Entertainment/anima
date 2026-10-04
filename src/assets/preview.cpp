@@ -7,9 +7,18 @@
 #include <string_view>
 
 namespace anima {
+namespace {
+// Whether playback wraps at the end of @p animation. A looping clip of zero duration holds time 0 instead, since
+// wrapping it would divide by zero.
+bool wraps(const Animation &animation, const ClipMetadata &metadata) noexcept {
+    return metadata.loop && animation.duration > 0;
+}
+} // namespace
 void Playback::select(const Animation &animation, const ClipMetadata &metadata, bool play) {
-    if (animation.name != metadata.name || !std::isfinite(animation.duration) || animation.duration <= 0)
-        throw std::invalid_argument("Playback clip/metadata mismatch");
+    if (animation.name != metadata.name)
+        throw std::invalid_argument("Clip metadata names another clip: " + metadata.name);
+    if (!std::isfinite(animation.duration) || animation.duration < 0)
+        throw std::invalid_argument("Clip duration must be finite and nonnegative: " + animation.name);
     for (const auto &event : metadata.events)
         if (!std::isfinite(event.time) || event.time < 0 || event.time > animation.duration)
             throw std::invalid_argument("Preview event outside animation duration");
@@ -43,7 +52,8 @@ void Playback::toggle() {
 void Playback::seek(double time) {
     if (!animation_ || !std::isfinite(time) || time < 0)
         throw std::invalid_argument("Invalid playback seek");
-    elapsed_ = metadata_.loop ? std::fmod(time, animation_->duration) : std::min(time, animation_->duration);
+    elapsed_ =
+        wraps(*animation_, metadata_) ? std::fmod(time, animation_->duration) : std::min(time, animation_->duration);
     finished_ = !metadata_.loop && elapsed_ == animation_->duration;
     fresh_ = false;
     if (finished_)
@@ -52,7 +62,7 @@ void Playback::seek(double time) {
 double Playback::time() const noexcept {
     if (!animation_)
         return 0;
-    return metadata_.loop ? std::fmod(elapsed_, animation_->duration) : elapsed_;
+    return wraps(*animation_, metadata_) ? std::fmod(elapsed_, animation_->duration) : elapsed_;
 }
 std::vector<ClipEvent> Playback::advance(double elapsed) {
     if (!std::isfinite(elapsed) || elapsed < 0)
@@ -61,19 +71,21 @@ std::vector<ClipEvent> Playback::advance(double elapsed) {
     if (!playing_ || !animation_ || elapsed == 0)
         return events;
     const auto duration = animation_->duration;
-    // A looping step crosses every event once per loop; a clip that does not loop stops at its end.
+    // A looping step crosses every event once per loop; a clip that does not loop stops at its end. A looping clip of
+    // zero duration holds time 0 instead of wrapping, so it crosses its events, all at 0, only after a fresh start.
+    const bool wrapping = wraps(*animation_, metadata_);
     constexpr unsigned maximum_loops_per_step = 10'000;
-    if (metadata_.loop && elapsed / duration > maximum_loops_per_step)
+    if (wrapping && elapsed / duration > maximum_loops_per_step)
         throw std::invalid_argument("Playback step exceeds " + std::to_string(maximum_loops_per_step) +
                                     " loops; split large offline advances");
-    const auto from = elapsed_, to = metadata_.loop ? from + elapsed : std::min(from + elapsed, duration);
+    const auto from = elapsed_, to = wrapping ? from + elapsed : std::min(from + elapsed, duration);
     if (!std::isfinite(to))
         throw std::runtime_error("Playback timeline overflow");
     std::vector<std::pair<double, ClipEvent>> crossed;
     for (const auto &event : metadata_.events) {
         if (fresh_ && event.time == 0)
             crossed.emplace_back(0, event);
-        if (metadata_.loop) {
+        if (wrapping) {
             const auto first = static_cast<long long>(std::floor((from - event.time) / duration)) + 1;
             const auto last = static_cast<long long>(std::floor((to - event.time) / duration));
             for (auto cycle = first; cycle <= last; ++cycle)
@@ -85,7 +97,7 @@ std::vector<ClipEvent> Playback::advance(double elapsed) {
     for (const auto &event : crossed)
         events.push_back(event.second);
     // Discard whole loop counts after event crossing to retain fractional precision indefinitely.
-    elapsed_ = metadata_.loop ? std::fmod(to, duration) : to;
+    elapsed_ = wrapping ? std::fmod(to, duration) : to;
     fresh_ = false;
     if (!metadata_.loop && to == duration) {
         playing_ = false;

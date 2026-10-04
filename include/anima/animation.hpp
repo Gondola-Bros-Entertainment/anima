@@ -33,8 +33,11 @@ struct ClipMetadata {
 class Playback {
   public:
     /// Selects @p animation with @p metadata and rewinds to 0, playing when @p play is true.
-    /// Throws `std::invalid_argument` when the names differ, the duration is not positive and
-    /// finite, or an event lies outside [0, duration].
+    ///
+    /// A clip of zero duration, as load_asset imports one whose keys all sit at time 0, plays as a
+    /// pose: its time stays 0, and advance() describes its events. Throws `std::invalid_argument`
+    /// when @p metadata names another clip, the duration is negative or not finite, or an event
+    /// lies outside [0, duration].
     void select(const Animation &animation, const ClipMetadata &metadata, bool play = true);
     /// Rewinds to 0 and plays; events at 0 are reported again. Does nothing before select().
     void restart();
@@ -44,17 +47,19 @@ class Playback {
     /// Plays again, restarting a finished clip. Does nothing before select().
     void resume();
     /// Moves to @p time seconds without reporting events: looping clips wrap, others clamp and
-    /// finish at the end. Throws `std::invalid_argument` before select() or for a negative or
-    /// nonfinite time.
+    /// finish at the end. A clip of zero duration stays at 0, its end, so one that does not loop
+    /// finishes. Throws `std::invalid_argument` before select() or for a negative or nonfinite time.
     void seek(double time);
     /// Advances by @p elapsed seconds while playing and returns the events crossed, in time order.
     ///
     /// An event is crossed when its time lies after the previous position and at or before the
     /// new one, once per loop crossed; events at 0 are reported by the first nonzero advance while
-    /// playing after select() or restart(). A non-looping clip stops and finishes at its end.
-    /// Paused playback, no clip or a zero step reports nothing. Throws `std::invalid_argument` for
-    /// a negative or nonfinite step, and for a step longer than 10,000 clip durations on a looping
-    /// clip.
+    /// playing after select() or restart(). A non-looping clip stops and finishes at its end. A
+    /// clip of zero duration does not wrap: its events, all at 0, are reported once, by that first
+    /// advance, which also finishes it unless it loops; a looping one keeps playing at 0 and
+    /// reports nothing more. Paused playback, no clip or a zero step reports nothing. Throws
+    /// `std::invalid_argument` for a negative or nonfinite step, and for a step longer than 10,000
+    /// clip durations on a looping clip of positive duration.
     [[nodiscard]] std::vector<ClipEvent> advance(double elapsed);
     /// Clip time in seconds; 0 before select().
     [[nodiscard]] double time() const noexcept;
