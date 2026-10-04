@@ -2,11 +2,12 @@
 #include <anima/core/math.hpp>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
 /// @file
-/// Weighted directed graphs, grid construction, A* route queries and a route follower.
+/// Weighted directed graphs, grid construction and lookup, A* route queries and a route follower.
 ///
 /// Part of the `anima::core` target, which has no third-party dependencies. Positions are world coordinates in
 /// caller-consistent units, and edge costs may use any unit. Every position component must be finite and within
@@ -54,23 +55,32 @@ class Graph {
 /// Cells for make_grid(), in the XZ plane at `origin.y`.
 struct Grid {
     /// Cells along X.
-    std::uint32_t width{};
-    /// Cells along Z; `width * height` must be in [1, 1,000,000].
-    std::uint32_t height{};
+    std::uint32_t columns{};
+    /// Cells along Z; `columns * rows` must be in [1, 1,000,000].
+    std::uint32_t rows{};
     /// Position of cell (0, 0); cell (x, z) lies at `origin + (x, 0, z) * cell_size`.
     Vec3 origin{};
     /// Distance between neighbouring cells, in [0.001, 10,000].
     float cell_size = 1;
-    /// One cost per cell, indexed `z * width + x`, each in [0, 1,000,000]. Zero blocks the cell. An edge entering a
+    /// One cost per cell, indexed `z * columns + x`, each in [0, 1,000,000]. Zero blocks the cell. An edge entering a
     /// cell costs its length times that cell's cost, so the two directions between cells can differ.
     std::vector<float> costs;
     /// Adds diagonal edges of length `cell_size * sqrt(2)` where both cardinal neighbours they pass between are
     /// walkable, so routes never cut a blocked corner.
     bool diagonal = true;
 };
-/// Builds a Graph with node `z * width + x` for cell (x, z) and edges both ways between walkable neighbours. A
+/// Builds a Graph with node `z * columns + x` for cell (x, z) and edges both ways between walkable neighbours. A
 /// blocked cell keeps its node, marked not walkable, with no edges.
 [[nodiscard]] Graph make_grid(const Grid &grid);
+/// Node that make_grid() builds for the cell whose center is nearest @p position in the XZ plane, or empty when
+/// @p position lies outside every cell.
+///
+/// Cell (x, z) covers the positions whose X and Z each lie in [-cell_size / 2, cell_size / 2) of its center, so a
+/// position on an edge between cells belongs to the cell on its +X or +Z side, and the grid reaches half a cell
+/// beyond its outer centers. Y and walkability are ignored: a blocked cell still returns its node. Throws for a
+/// position outside the supported range, or for an origin, cell counts, cost count or cell size that make_grid()
+/// rejects; the cost values are not read, so a lookup takes constant time.
+[[nodiscard]] std::optional<NodeId> grid_node(const Grid &grid, Vec3 position);
 /// Outcome of find_path().
 enum class PathStatus {
     found,           ///< Path::nodes holds a least-cost route.
@@ -107,6 +117,24 @@ struct Path {
 /// node that is not walkable.
 [[nodiscard]] std::vector<Vec3> waypoints(const Graph &graph, const Path &path);
 
+/// Arrival distance of a default SteerSettings.
+inline constexpr float default_arrival_distance = .05F;
+/// Space in which Follower::steer measures arrival and steers.
+enum class SteerPlane {
+    xyz, ///< Full 3D distance and velocity, for flight or routes over several levels.
+    xz   ///< Distance and velocity in the XZ plane only: heights are ignored and the velocity's Y is zero, for an
+         ///< agent whose position is above or below its route, such as a character's center over a grid.
+};
+/// Steering parameters of Follower::steer and Agent.
+struct SteerSettings {
+    /// Speed in units per second, in [0, 10,000].
+    float speed = 1;
+    /// Distance within which a waypoint counts as reached, in [0, 10,000], measured in #plane.
+    float arrival_distance = default_arrival_distance;
+    /// Space of the arrival distance and the velocity.
+    SteerPlane plane = SteerPlane::xyz;
+};
+
 /// Tracks progress along a route and suggests a velocity toward the next waypoint.
 ///
 /// Copies share one immutable route but keep separate cursors. Only observed arrival advances the cursor, so
@@ -119,13 +147,14 @@ class Follower {
     /// Replaces the route and cursor. @p route holds at most 1,000,000 waypoints, and @p next is at most its size,
     /// where equal means finished.
     void set_route(std::vector<Vec3> route, std::size_t next = 0);
-    /// Advances past each successive waypoint within @p arrival_distance of @p position, then returns a velocity
-    /// toward the next one, or zero once finished.
+    /// Advances past each successive waypoint within SteerSettings::arrival_distance of @p position, then returns a
+    /// velocity toward the next one, or zero once finished.
     ///
-    /// The velocity has magnitude @p speed, in units per second, capped so that moving for @p seconds reaches the
-    /// waypoint without passing it. @p speed and @p arrival_distance are in [0, 10,000], and @p seconds is in
-    /// [0.000001, 0.1]. The cursor advances even at zero speed.
-    [[nodiscard]] Vec3 steer(Vec3 position, float speed, double seconds, float arrival_distance = .05F);
+    /// The velocity has magnitude SteerSettings::speed, in units per second, capped so that moving for @p seconds
+    /// reaches the waypoint without passing it. With SteerPlane::xz, distances, the cap and the velocity use only X
+    /// and Z, and the velocity's Y is zero. @p seconds is in [0.000001, 0.1]. The cursor advances even at zero speed.
+    /// Throws for @p settings outside the ranges SteerSettings states, or a plane that is not a SteerPlane enumerator.
+    [[nodiscard]] Vec3 steer(Vec3 position, double seconds, SteerSettings settings = {});
     /// Route waypoints, valid while this follower keeps its route.
     [[nodiscard]] std::span<const Vec3> route() const {
         return route_ ? std::span<const Vec3>(*route_) : std::span<const Vec3>{};

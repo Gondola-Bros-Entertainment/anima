@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -23,6 +24,7 @@ constexpr auto set_changing = "Scene set is changing membership";
 constexpr auto step_range = "Navigation step must be in [0.000001, 0.1] seconds";
 constexpr auto position_range = "Navigation position outside finite supported range";
 constexpr auto invalid_settings = "Invalid navigation speed/arrival distance";
+constexpr auto unknown_plane = "Unknown navigation steer plane";
 constexpr auto duplicate_field = "Duplicate JSON document field";
 struct HookCounts {
     int enabled{}, frame{}, fixed{}, late{};
@@ -66,7 +68,8 @@ TEST_CASE("An agent steers from its world pose and keeps its state through rejec
     parent.set_position({5, 0, 0});
     auto object = scene.create();
     object.set_parent(parent, ReparentMode::keep_local);
-    auto agent = object.add_component<n::Agent>(std::vector<Vec3>{{5, 0, 0}, {6, 0, 0}}, 2.F, 0.F);
+    auto agent = object.add_component<n::Agent>(std::vector<Vec3>{{5, 0, 0}, {6, 0, 0}},
+                                                n::SteerSettings{.speed = 2, .arrival_distance = 0});
     n::update_agents(scene, .1);
     // Navigation reads the world pose and leaves moving the object to the application.
     CHECK(agent->follower().next() == 1u);
@@ -76,14 +79,20 @@ TEST_CASE("An agent steers from its world pose and keeps its state through rejec
     for (const auto invalid : {-1.F, std::nextafter(10'000.F, std::numeric_limits<float>::infinity()),
                                std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         CAPTURE(invalid);
-        CHECK_THROWS_WITH_AS(agent->set_speed(invalid), invalid_settings, std::invalid_argument);
-        CHECK_THROWS_WITH_AS(agent->set_arrival_distance(invalid), invalid_settings, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(agent->configure({.speed = invalid}), invalid_settings, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(agent->configure({.speed = 2, .arrival_distance = invalid}), invalid_settings,
+                             std::invalid_argument);
         // Rejected settings leave the accepted state unchanged.
-        CHECK(agent->speed() == 2);
-        CHECK(agent->arrival_distance() == 0);
+        CHECK(agent->settings().speed == 2);
+        CHECK(agent->settings().arrival_distance == 0);
         CHECK(agent->desired_velocity().x == 2);
         CHECK(agent->follower().next() == 1u);
     }
+    CHECK_THROWS_WITH_AS(agent->configure({.speed = 2, .arrival_distance = 0, .plane = static_cast<n::SteerPlane>(2)}),
+                         unknown_plane, std::invalid_argument);
+    CHECK(agent->settings().plane == n::SteerPlane::xyz);
+    CHECK(agent->desired_velocity().x == 2);
+    CHECK_THROWS_WITH_AS(n::Agent({}, {.speed = -1}), invalid_settings, std::invalid_argument);
     Scene empty;
     CHECK_THROWS_WITH_AS(n::update_agents(empty, 0), step_range, std::invalid_argument);
     CHECK_THROWS_WITH_AS(n::update_agents(empty, std::numeric_limits<double>::quiet_NaN()), step_range,
@@ -109,7 +118,8 @@ TEST_CASE("An agent steers from its world pose and keeps its state through rejec
     auto copy = restored.get_component<n::Agent>();
     CHECK_FALSE_MESSAGE(copy.enabled(), "Agent persistence lost enablement");
     CHECK(copy->follower().next() == 1u);
-    CHECK(copy->speed() == 2);
+    CHECK(copy->settings().speed == 2);
+    CHECK(copy->settings().plane == n::SteerPlane::xyz);
     copy.set_enabled(true);
     restored.set_position({6, 0, 0});
     n::update_agents(scene, .1);
@@ -132,27 +142,82 @@ TEST_CASE("An agent steers from its world pose and keeps its state through rejec
     nodes.back().key = {};
     nodes[1].parent = 0;
     const auto before = scene.size();
-    const auto payloads = invalid_component_payloads(nodes[0].components[0].state, "speed");
-    // invalid_component_payloads returns an empty object, the field renamed, an unknown field, the field
-    // duplicated, the duplicate spelled with an escape, and an unknown field nested past the depth limit.
-    const std::array errors{"Missing JSON field: route",
-                            "Missing JSON field: speed",
-                            "Unknown JSON field: unexpected",
-                            duplicate_field,
-                            duplicate_field,
-                            "JSON document exceeds nesting limit"};
-    REQUIRE(payloads.size() == errors.size());
-    for (std::size_t i = 0; i < payloads.size(); ++i) {
-        CAPTURE(i);
-        nodes[1].components[0].state = payloads[i];
-        CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), errors[i], std::invalid_argument);
-        CHECK_MESSAGE(scene.size() == before, "Navigation prefab rollback leaked objects");
+    const auto state = nodes[0].components[0].state;
+    for (const std::string_view field : {"speed", "plane"}) {
+        CAPTURE(field);
+        const auto payloads = invalid_component_payloads(state, field);
+        // invalid_component_payloads returns an empty object, the field renamed, an unknown field, the field
+        // duplicated, the duplicate spelled with an escape, and an unknown field nested past the depth limit.
+        const auto missing = "Missing JSON field: " + std::string(field);
+        const std::array<std::string, 6> errors{"Missing JSON field: route",
+                                                missing,
+                                                "Unknown JSON field: unexpected",
+                                                duplicate_field,
+                                                duplicate_field,
+                                                "JSON document exceeds nesting limit"};
+        REQUIRE(payloads.size() == errors.size());
+        for (std::size_t i = 0; i < payloads.size(); ++i) {
+            CAPTURE(i);
+            nodes[1].components[0].state = payloads[i];
+            CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), errors[i].c_str(), std::invalid_argument);
+            CHECK_MESSAGE(scene.size() == before, "Navigation prefab rollback leaked objects");
+        }
+    }
+    // The plane is stored by name, so neither another name nor an enumerator's number restores.
+    for (const auto *plane : {"\"plane\":\"xy\"", "\"plane\":0"}) {
+        CAPTURE(plane);
+        auto payload = state;
+        const std::string stored = "\"plane\":\"xyz\"";
+        REQUIRE(payload.find(stored) != std::string::npos);
+        nodes[1].components[0].state = payload.replace(payload.find(stored), stored.size(), plane);
+        CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), unknown_plane, std::invalid_argument);
+        CHECK(scene.size() == before);
     }
     object.destroy();
     restored.destroy();
     // Component handles expire with their objects.
     CHECK_FALSE(agent);
     CHECK_FALSE(copy);
+}
+
+TEST_CASE("An agent above a grid route steers in the XZ plane and keeps its plane through persistence") {
+    const n::Grid grid{4, 3, {-2, 0, -1}, 1, std::vector<float>(12, 1), true};
+    const auto map = n::make_grid(grid);
+    const auto start = n::grid_node(grid, {-2, 1, -1}), goal = n::grid_node(grid, {1, 1, 1});
+    REQUIRE(start.has_value());
+    REQUIRE(goal.has_value());
+    const auto route = n::waypoints(map, n::find_path(map, *start, *goal));
+    Scene scene;
+    // The object's origin is one unit above the grid, like the center of a character standing on it.
+    auto object = scene.create();
+    object.set_position({-2, 1, -1});
+    auto agent = object.add_component<n::Agent>(route, n::SteerSettings{.speed = 2, .plane = n::SteerPlane::xz});
+    constexpr double step = .05;
+    for (int i = 0; i < 100 && !agent->follower().finished(); ++i) {
+        n::update_agents(scene, step);
+        const auto velocity = agent->desired_velocity();
+        CHECK_MESSAGE(velocity.y == 0, "Planar agent steered out of the XZ plane");
+        object.set_position(object.position() + velocity * static_cast<float>(step));
+    }
+    CHECK_MESSAGE(agent->follower().finished(), "Agent above its route never arrived");
+    CHECK(length(object.position() - Vec3{1, 1, 1}) < .06F);
+    CHECK(object.position().y == 1);
+
+    // The codec stores the plane, and the restored agent steers in it.
+    ComponentCodecs codecs;
+    n::add_component_codec(codecs);
+    agent->set_route(route);
+    auto restored = Prefab::deserialize(Prefab::capture(object, codecs).serialize({}), {}, codecs).instantiate(scene);
+    auto copy = restored.get_component<n::Agent>();
+    CHECK(copy->settings().speed == 2);
+    CHECK(copy->settings().arrival_distance == n::default_arrival_distance);
+    CHECK(copy->settings().plane == n::SteerPlane::xz);
+    CHECK(copy->follower().route().size() == route.size());
+    restored.set_position({-2, 5, -1});
+    n::update_agents(scene, step);
+    CHECK(copy->follower().next() == 1u);
+    CHECK(copy->desired_velocity().y == 0);
+    CHECK(length(copy->desired_velocity()) == doctest::Approx(2));
 }
 
 TEST_CASE("Set navigation derives each scene's intent and never runs inside a phase") {
@@ -162,8 +227,9 @@ TEST_CASE("Set navigation derives each scene's intent and never runs inside a ph
     auto parent = first->create(), early = first->create(), late = second->create();
     early.set_parent(parent);
     late.set_position({5, 0, 0});
-    auto a = early.add_component<n::Agent>(std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}}, 2.F, 0.F);
-    auto b = late.add_component<n::Agent>(std::vector<Vec3>{{5, 0, 0}, {6, 0, 0}}, 2.F, 0.F);
+    constexpr n::SteerSettings settings{.speed = 2, .arrival_distance = 0};
+    auto a = early.add_component<n::Agent>(std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}}, settings);
+    auto b = late.add_component<n::Agent>(std::vector<Vec3>{{5, 0, 0}, {6, 0, 0}}, settings);
     auto probe = early.add_component<DriverProbe>(&first.get(), &scenes, &counts, set_updating);
     early.add_component<DriverConstruction>(first.get(), scenes);
     n::update_agents(scenes, .1);
