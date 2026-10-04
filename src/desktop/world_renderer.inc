@@ -71,18 +71,20 @@ VkExtent2D max_scene_extent{};
 using DisplayFootprint = std::array<float, 2>;
 
 void create_world_layout() {
-    const VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+    const VkDescriptorSetLayoutBinding binding{ANIMA_SCENE_INPUT_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                                VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     info.bindingCount = 1;
     info.pBindings = &binding;
     check(vkCreateDescriptorSetLayout(device, &info, nullptr, &scene_input_layout), "Create scene input layout");
-    const VkDescriptorSetLayout layouts[]{scene_input_layout, environment_layout};
+    std::array<VkDescriptorSetLayout, ANIMA_SET_ENVIRONMENT + 1> layouts{};
+    layouts[ANIMA_SET_SCENE_INPUT] = scene_input_layout;
+    layouts[ANIMA_SET_ENVIRONMENT] = environment_layout;
     // The display shader's footprint (DisplayFootprint).
     const VkPushConstantRange footprint{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(DisplayFootprint)};
     VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout.setLayoutCount = 2;
-    layout.pSetLayouts = layouts;
+    layout.setLayoutCount = static_cast<std::uint32_t>(layouts.size());
+    layout.pSetLayouts = layouts.data();
     layout.pushConstantRangeCount = 1;
     layout.pPushConstantRanges = &footprint;
     check(vkCreatePipelineLayout(device, &layout, nullptr, &post_pipeline_layout), "Create display pipeline layout");
@@ -203,7 +205,7 @@ std::unique_ptr<WorldTarget> create_world_target(VkImageView depth_view, VkExten
     const VkDescriptorImageInfo image{next->color.sampler, next->color.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     write.dstSet = next->descriptor;
-    write.dstBinding = 0;
+    write.dstBinding = ANIMA_SCENE_INPUT_COLOR;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &image;
@@ -247,7 +249,7 @@ void ensure_scene_targets() {
     // A known UNORM format stores what the shader writes, so the shader encodes to sRGB itself.
     const auto *surface_info = surface_format_info(format);
     const VkBool32 encode = surface_info && !surface_info->srgb;
-    const VkSpecializationMapEntry entry{0, 0, sizeof(encode)};
+    const VkSpecializationMapEntry entry{ANIMA_SPEC_ENCODE_SRGB, 0, sizeof(encode)};
     const VkSpecializationInfo specialization{1, &entry, sizeof(encode), &encode};
     stages[1].pSpecializationInfo = &specialization;
     // A fullscreen triangle without vertex input, depth or blending.
@@ -278,9 +280,12 @@ void record_display(VkCommandBuffer command, VkFramebuffer framebuffer) {
     vkCmdSetScissor(command, 0, 1, &scissor);
     const DisplayFootprint footprint{static_cast<float>(double(scene_extent.width) / extent.width),
                                      static_cast<float>(double(scene_extent.height) / extent.height)};
-    const VkDescriptorSet sets[]{world_target->descriptor, frame().environment_set};
+    std::array<VkDescriptorSet, ANIMA_SET_ENVIRONMENT + 1> sets{};
+    sets[ANIMA_SET_SCENE_INPUT] = world_target->descriptor;
+    sets[ANIMA_SET_ENVIRONMENT] = frame().environment_set;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipeline_layout, 0, 2, sets, 0, nullptr);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipeline_layout, 0,
+                            static_cast<std::uint32_t>(sets.size()), sets.data(), 0, nullptr);
     vkCmdPushConstants(command, post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(footprint),
                        footprint.data());
     vkCmdDraw(command, 3, 1, 0, 0);

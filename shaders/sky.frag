@@ -7,8 +7,9 @@ layout(location = 0) in vec2 screen;
 layout(location = 0) out vec4 outColor;
 #include "environment.glsl"
 #include "atmosphere.glsl"
-layout(set = 1, binding = 3) uniform sampler2D skyViewTable;
-layout(set = 1, binding = 4) uniform sampler2D transmittanceTable;
+#include "shader_interface.h"
+layout(set = ANIMA_SET_ENVIRONMENT, binding = ANIMA_ENVIRONMENT_SKY_VIEW) uniform sampler2D skyViewTable;
+layout(set = ANIMA_SET_ENVIRONMENT, binding = ANIMA_ENVIRONMENT_TRANSMITTANCE) uniform sampler2D transmittanceTable;
 void main() {
     vec3 ray = environment.viewOrigin.w > 0.5 ? normalize((environment.viewRays * vec4(screen, 0.0, 1.0)).xyz)
                                               : -environment.viewOrigin.xyz;

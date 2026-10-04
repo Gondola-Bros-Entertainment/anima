@@ -1,9 +1,11 @@
-layout(set = 0, binding = 0) uniform sampler2D baseColorTexture;
-layout(set = 0, binding = 1) uniform sampler2D normalTexture;
-layout(set = 0, binding = 2) uniform sampler2D metallicRoughnessTexture;
-layout(set = 0, binding = 3) uniform sampler2D emissiveTexture;
-layout(set = 0, binding = 4) uniform sampler2D occlusionTexture;
-layout(set = 0, binding = 5, std140) uniform MaterialData {
+#include "shader_interface.h"
+layout(set = ANIMA_SET_MATERIAL, binding = ANIMA_MATERIAL_BASE_COLOR) uniform sampler2D baseColorTexture;
+layout(set = ANIMA_SET_MATERIAL, binding = ANIMA_MATERIAL_NORMAL) uniform sampler2D normalTexture;
+layout(set = ANIMA_SET_MATERIAL,
+       binding = ANIMA_MATERIAL_METALLIC_ROUGHNESS) uniform sampler2D metallicRoughnessTexture;
+layout(set = ANIMA_SET_MATERIAL, binding = ANIMA_MATERIAL_EMISSIVE) uniform sampler2D emissiveTexture;
+layout(set = ANIMA_SET_MATERIAL, binding = ANIMA_MATERIAL_OCCLUSION) uniform sampler2D occlusionTexture;
+layout(set = ANIMA_SET_MATERIAL, binding = ANIMA_MATERIAL_UNIFORM, std140) uniform MaterialData {
     vec4 emissiveAlpha; // RGB radiance, base alpha
     vec4 detail;        // normal scale, mask cutoff (-1 means opaque), occlusion strength, unlit
     vec4 maps;          // normal map present, double-sided

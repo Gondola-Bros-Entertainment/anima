@@ -2,11 +2,12 @@
 // impostor.glsl: the material's base color is the atlas's color, its normal map the normals and depth, and its
 // metallic-roughness map the surface values. Sampling runs in two steps so that a pixel the dither or the coverage
 // discards pays only for the first: impostorHit() for every pixel, and impostorShade() for the pixels that stay.
+#include "shader_interface.h"
 
 // True in the view's impostor pipelines compiled for RendererOptions::impostor_frames 1
 // (VulkanRenderer::set_impostor_frames), whose pixels then read the heaviest of their three frames alone. The shadow
 // pipeline leaves it false.
-layout(constant_id = 4) const bool singleImpostorFrame = false;
+layout(constant_id = ANIMA_SPEC_SINGLE_IMPOSTOR_FRAME) const bool singleImpostorFrame = false;
 // How many of a pixel's frames impostorHit() and impostorShade() read: the first 1, after impostorHit() moves the
 // heaviest first, or all 3.
 const int impostorFrameCount = singleImpostorFrame ? 1 : 3;

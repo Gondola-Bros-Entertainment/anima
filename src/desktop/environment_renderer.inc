@@ -1,5 +1,5 @@
-// Included inside Impl. Set 1, each frame slot's environment set, is shared by world passes; material set 0 and
-// palette set 2 stay independent.
+// Included inside Impl. ANIMA_SET_ENVIRONMENT, each frame slot's environment set, is shared by world passes; the
+// material and pose sets stay independent.
 Environment environment;
 // The sun at the ground, atmosphere_sunlight() of the environment, which set_environment() keeps with it and
 // integrates again only when an input of it changes (ground_sunlight()).
@@ -28,8 +28,7 @@ struct EnvironmentUniform {
     std::array<float, 4> fog_shape, fog_sun;
     // The atmosphere's ozone with its peak's altitude; the ground's radius, the thickness, the ozone layer's width and
     // the sun's angular radius; the ground's albedo with the altitude that the sky is seen from (sky_altitude()), held
-    // while the eye's stays within a tolerance of it; and the sun above the atmosphere, with 1 while the atmosphere is
-    // enabled.
+    // while the eye's stays within a tolerance of it; and the sun above the atmosphere.
     std::array<float, 4> atmosphere_ozone, atmosphere_shape, atmosphere_ground, atmosphere_sun;
     // EnvironmentSettings::background, which background.frag fogs.
     std::array<float, 4> background;
@@ -79,26 +78,34 @@ VkShaderModule sky_vertex_shader{}, sky_fragment_shader{}, background_fragment_s
 // The sky, and the background fogged at the sky's fog distance, each a triangle over the view at the far plane.
 VkPipeline sky_pipeline{}, background_pipeline{};
 void create_environment_layout() {
-    const VkDescriptorSetLayoutBinding bindings[]{
-        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+    static constexpr VkDescriptorSetLayoutBinding bindings[]{
+        {ANIMA_ENVIRONMENT_UNIFORM, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {ANIMA_ENVIRONMENT_CASCADE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {ANIMA_ENVIRONMENT_DETAIL_SHADOW_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         // The atmosphere's sky view and transmittance tables, which the sky reads.
-        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+        {ANIMA_ENVIRONMENT_SKY_VIEW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {ANIMA_ENVIRONMENT_TRANSMITTANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    layout.bindingCount = 5;
+    layout.bindingCount = static_cast<std::uint32_t>(std::size(bindings));
     layout.pBindings = bindings;
     check(vkCreateDescriptorSetLayout(device, &layout, nullptr, &environment_layout), "Create environment layout");
-    // Each set's four image bindings: the cascades, the detail region and the atmosphere's two tables.
-    constexpr std::uint32_t environment_images = 4;
+    // Each slot's set needs the descriptors of each of its bindings.
     const auto slots = static_cast<std::uint32_t>(frames.size());
-    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, slots},
-                                       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, environment_images * slots}};
+    const auto descriptors = [&](VkDescriptorType type) {
+        return slots * static_cast<std::uint32_t>(
+                           std::ranges::count(bindings, type, &VkDescriptorSetLayoutBinding::descriptorType));
+    };
+    const VkDescriptorPoolSize sizes[]{
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptors(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, descriptors(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)}};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = slots;
-    pool.poolSizeCount = 2;
+    pool.poolSizeCount = static_cast<std::uint32_t>(std::size(sizes));
     pool.pPoolSizes = sizes;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &environment_pool), "Create environment pool");
     for (auto &slot : frames) {
@@ -113,7 +120,7 @@ void create_environment_layout() {
         const VkDescriptorBufferInfo buffer{slot.environment_buffer->buffer, 0, sizeof(EnvironmentUniform)};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = slot.environment_set;
-        write.dstBinding = 0;
+        write.dstBinding = ANIMA_ENVIRONMENT_UNIFORM;
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         write.pBufferInfo = &buffer;
@@ -137,8 +144,8 @@ void record_sky() {
         return;
     const auto command = frame().command;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, sky ? sky_pipeline : background_pipeline);
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, environment_pipeline_layout, 1, 1,
-                            &frame().environment_set, 0, nullptr);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, environment_pipeline_layout,
+                            ANIMA_SET_ENVIRONMENT, 1, &frame().environment_set, 0, nullptr);
     resource_bound = {};
     vkCmdDraw(command, 3, 1, 0, 0);
 }
@@ -221,7 +228,7 @@ void update_environment() {
                             vec(a.ozone_absorption, a.ozone_altitude),
                             {a.planet_radius, a.thickness, a.ozone_width, a.sun_angular_radius},
                             vec(a.ground_albedo, float(sky_altitude())),
-                            vec(e.sun.irradiance, a.enabled ? 1.F : 0.F),
+                            vec(e.sun.irradiance),
                             vec(e.background)};
     const auto &settings = e.shadow_cascades;
     for (std::uint32_t i = 0; i < cascade_fits.count; ++i) {

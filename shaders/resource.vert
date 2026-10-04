@@ -20,7 +20,8 @@ layout(location = 2) out vec2 texcoord;
 layout(location = 3) out vec3 worldPosition;
 layout(location = 6) flat out float orientation;
 layout(location = 7) flat out float visibility;
-layout(set = 2, binding = 0, std430) readonly buffer Poses { mat4 matrices[]; }
+#include "shader_interface.h"
+layout(set = ANIMA_SET_POSES, binding = ANIMA_POSE_MATRICES, std430) readonly buffer Poses { mat4 matrices[]; }
 poses;
 layout(push_constant) uniform Draw {
     layout(offset = 0) mat4 viewProjection;
@@ -39,10 +40,10 @@ vec3 placePoint(vec3 p) {
 void main() {
     // indices: the draw's first palette matrix; whether it is skinned; with placements or a visibility range, the
     // object's world matrix, followed by a matrix whose first column is its range and whose second holds the center
-    // of its mesh's rest bounds; and flags, 1 with placements, when the palette matrix is the node's in the rest pose,
-    // and 2 with a range.
+    // of its mesh's rest bounds; and flags, ANIMA_DRAW_PLACED with placements, when the palette matrix is the node's in
+    // the rest pose, and ANIMA_DRAW_RANGED with a range.
     mat4 transform = poses.matrices[draw.indices.x];
-    bool placed = (draw.indices.w & 1u) != 0u, ranged = (draw.indices.w & 2u) != 0u;
+    bool placed = (draw.indices.w & ANIMA_DRAW_PLACED) != 0u, ranged = (draw.indices.w & ANIMA_DRAW_RANGED) != 0u;
     if (!placed && draw.indices.y != 0) {
         transform = mat4(0.0);
         for (uint i = 0; i < 4; ++i)
@@ -78,7 +79,7 @@ void main() {
     gl_Position = draw.viewProjection * vec4(worldPosition, 1.0);
     visibility = 1.0;
     if (ranged) {
-        mat4 range = poses.matrices[draw.indices.z + 1u];
+        mat4 range = poses.matrices[draw.indices.z + ANIMA_POSE_HEADER_RANGE];
         vec3 center = placed ? placePoint(range[1].xyz) : range[1].xyz;
         visibility = visibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin);
     }

@@ -1,8 +1,9 @@
 #include "environment_data.glsl"
 #include "../include/anima/fog.glsl"
+#include "shader_interface.h"
 // False in the pipelines that draw uniform fog without sunlight, which then compile without the height fog's code:
 // unused, it still costs the registers of its longest path in every fragment.
-layout(constant_id = 1) const bool environmentHeightFog = true;
+layout(constant_id = ANIMA_SPEC_HEIGHT_FOG) const bool environmentHeightFog = true;
 // @p color at @p position as seen from the eye through the fog, in a perspective view with fog; otherwise @p color.
 vec3 environmentFog(vec3 color, vec3 position, vec4 viewOrigin) {
     if (viewOrigin.w > 0.5 && environment.fog.w > 0.0) {
@@ -17,9 +18,10 @@ vec3 environmentFog(vec3 color, vec3 position, vec4 viewOrigin) {
 }
 // True in the pipelines compiled for ShadowFilter::bilinear_2x2 (VulkanRenderer::set_shadow_filter), which then compile
 // the 2x2 filter alone.
-layout(constant_id = 3) const bool bilinearShadowFilter = false;
-layout(set = 1, binding = 1) uniform sampler2DArray cascadeDepth;
-layout(set = 1, binding = 2) uniform sampler2DArray detailShadowDepth;
+layout(constant_id = ANIMA_SPEC_BILINEAR_SHADOW_FILTER) const bool bilinearShadowFilter = false;
+layout(set = ANIMA_SET_ENVIRONMENT, binding = ANIMA_ENVIRONMENT_CASCADE_DEPTH) uniform sampler2DArray cascadeDepth;
+layout(set = ANIMA_SET_ENVIRONMENT,
+       binding = ANIMA_ENVIRONMENT_DETAIL_SHADOW_DEPTH) uniform sampler2DArray detailShadowDepth;
 // What the shadow filter knows about a receiver: the screen-space derivatives of its world position, the variation of
 // its base normal over a world unit, and how its geometric normal faces the sun. An impostor, which has no receiver
 // plane, passes zero derivatives.

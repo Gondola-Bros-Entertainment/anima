@@ -136,8 +136,8 @@ void ensure_shadow_target(std::unique_ptr<ShadowTarget> &target, std::uint32_t s
     release_after_frames(std::move(next));
     ++shadow_generation;
 }
-// Sizes the shadow targets for the environment, then points bindings 1 and 2 of the environment set of the slot that
-// records the next frame at the cascades' and the detail region's 2D array views, unless it already does. The slot's
+// Sizes the shadow targets for the environment, then points the cascades' and the detail region's depth bindings of the
+// environment set of the slot that records the next frame at their 2D array views, unless they already do. The slot's
 // previous frame has finished, so nothing reads that set.
 void ensure_shadow_targets() {
     const auto &cascades = environment.shadow_cascades;
@@ -148,9 +148,9 @@ void ensure_shadow_targets() {
     auto &slot = frame();
     if (slot.shadow_generation == shadow_generation)
         return;
-    // The cascades at binding 1, then the detail region.
     const std::array<const ShadowTarget *, 2> targets{cascade_target.get(), detail_shadow_target.get()};
-    constexpr std::uint32_t first_binding = 1;
+    constexpr std::array<std::uint32_t, 2> bindings{ANIMA_ENVIRONMENT_CASCADE_DEPTH,
+                                                    ANIMA_ENVIRONMENT_DETAIL_SHADOW_DEPTH};
     std::array<VkDescriptorImageInfo, 2> infos{};
     std::array<VkWriteDescriptorSet, 2> writes{};
     for (std::uint32_t i = 0; i < writes.size(); ++i) {
@@ -158,7 +158,7 @@ void ensure_shadow_targets() {
         infos[i] = {texture.sampler, texture.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writes[i].dstSet = slot.environment_set;
-        writes[i].dstBinding = first_binding + i;
+        writes[i].dstBinding = bindings[i];
         writes[i].descriptorCount = 1;
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &infos[i];

@@ -11,6 +11,7 @@ layout(location = 3) flat in uvec3 frames;
 layout(location = 4) flat in float visibility;
 layout(location = 5) flat in mat4 model;
 #include "material.glsl"
+#include "shader_interface.h"
 layout(push_constant) uniform Surface {
     layout(offset = 0) mat4 viewProjection;
     layout(offset = 64) vec4 viewOrigin;
@@ -33,8 +34,9 @@ layout(depth_less) out float gl_FragDepth;
 void main() {
     // impostorHit() chooses its mip level before any pixel of the quad discards, and every sample after reads it
     // explicitly, so the discards leave nothing undefined and the pixels they remove skip the rest.
-    ImpostorHit hit = impostorHit(surface.indices.y & 255u, surface.indices.y >> 8, surface.sphere, rayOrigin,
-                                  rayDirection, frames, frameWeights);
+    ImpostorHit hit =
+        impostorHit(surface.indices.y & ANIMA_IMPOSTOR_COUNT_MASK, surface.indices.y >> ANIMA_IMPOSTOR_LAYOUT_SHIFT,
+                    surface.sphere, rayOrigin, rayDirection, frames, frameWeights);
     if (dissolved(visibility, gl_FragCoord.xy) || hit.color.a < material.detail.y)
         discard;
     vec3 normal, emission;

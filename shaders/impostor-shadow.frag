@@ -9,6 +9,7 @@ layout(location = 3) flat in uvec3 frames;
 layout(location = 4) flat in float visibility;
 layout(location = 5) flat in mat4 model;
 #include "material.glsl"
+#include "shader_interface.h"
 layout(push_constant) uniform Draw {
     layout(offset = 0) mat4 viewProjection;
     layout(offset = 80) vec4 sphere;
@@ -22,8 +23,9 @@ draw;
 // than the quad's, and the depth test may reject hidden pixels before they are shaded.
 layout(depth_greater) out float gl_FragDepth;
 void main() {
-    ImpostorHit hit = impostorHit(draw.indices.y & 255u, draw.indices.y >> 8, draw.sphere, rayOrigin, rayDirection,
-                                  frames, frameWeights);
+    ImpostorHit hit =
+        impostorHit(draw.indices.y & ANIMA_IMPOSTOR_COUNT_MASK, draw.indices.y >> ANIMA_IMPOSTOR_LAYOUT_SHIFT,
+                    draw.sphere, rayOrigin, rayDirection, frames, frameWeights);
     if (hit.color.a < material.detail.y)
         discard;
     vec4 clip = draw.viewProjection * (model * vec4(hit.point, 1.0));

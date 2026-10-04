@@ -9,6 +9,7 @@ layout(location = 5) in float vertexAlpha;
 layout(location = 6) flat in float orientation;
 layout(location = 7) flat in float visibility;
 #include "material.glsl"
+#include "shader_interface.h"
 #include "visibility.glsl"
 layout(push_constant) uniform Surface {
     layout(offset = 64) vec4 viewOrigin;
@@ -19,11 +20,11 @@ surface;
 #include "lighting.glsl"
 layout(location = 0) out vec4 outColor;
 // Set in the blended pipeline, which composites premultiplied color over the target with ONE, ONE_MINUS_SRC_ALPHA.
-layout(constant_id = 0) const bool blended = false;
+layout(constant_id = ANIMA_SPEC_BLENDED) const bool blended = false;
 // False in the pipelines that cull by facing in the rasterizer (MeshPipeline in resource_renderer.inc), which compile
 // without a discard: they draw no masked material, no copy in a visibility range's margin, and no face that a
 // single-sided material turns away.
-layout(constant_id = 2) const bool mayDiscard = true;
+layout(constant_id = ANIMA_SPEC_MAY_DISCARD) const bool mayDiscard = true;
 void main() {
     // Which side of the surface faces the viewer. A mirrored transform winds its outward faces clockwise, so
     // they rasterize as back faces; its negative orientation restores them to the front.

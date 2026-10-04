@@ -18,7 +18,8 @@ layout(location = 3) flat out uvec3 frames;
 layout(location = 4) flat out float visibility;
 // The matrix from the mesh's space to the world.
 layout(location = 5) flat out mat4 model;
-layout(set = 2, binding = 0, std430) readonly buffer Poses { mat4 matrices[]; }
+#include "shader_interface.h"
+layout(set = ANIMA_SET_POSES, binding = ANIMA_POSE_MATRICES, std430) readonly buffer Poses { mat4 matrices[]; }
 poses;
 layout(push_constant) uniform Draw {
     layout(offset = 0) mat4 viewProjection;
@@ -26,17 +27,18 @@ layout(push_constant) uniform Draw {
     layout(offset = 64) vec4 origin;
     // The center and radius of the sphere that the frames cover (ImpostorFrames).
     layout(offset = 80) vec4 sphere;
-    // As in resource.vert, except that y holds the frames per side and, from bit 8, the arrangement.
+    // As in resource.vert, except that y holds the frames per side and the arrangement (ANIMA_IMPOSTOR_COUNT_MASK and
+    // ANIMA_IMPOSTOR_LAYOUT_SHIFT).
     layout(offset = 96) uvec4 indices;
 }
 draw;
 // Set in the shadow pipeline, which views along the sun, whose direction the shadow pass's projection gives.
-layout(constant_id = 0) const bool shadowPass = false;
+layout(constant_id = ANIMA_SPEC_SHADOW_PASS) const bool shadowPass = false;
 #include "visibility.glsl"
 #include "impostor.glsl"
 void main() {
     mat4 transform = poses.matrices[draw.indices.x];
-    bool placed = (draw.indices.w & 1u) != 0u, ranged = (draw.indices.w & 2u) != 0u;
+    bool placed = (draw.indices.w & ANIMA_DRAW_PLACED) != 0u, ranged = (draw.indices.w & ANIMA_DRAW_RANGED) != 0u;
     mat4 object = placed || ranged ? poses.matrices[draw.indices.z] : mat4(1.0);
     if (placed) {
         object = object * transpose(mat4(placement0, placement1, placement2, vec4(0, 0, 0, 1)));
@@ -46,7 +48,8 @@ void main() {
     mat4 inverseModel = inverse(transform);
     vec3 center = draw.sphere.xyz;
     float radius = draw.sphere.w;
-    uint count = draw.indices.y & 255u, arrangement = draw.indices.y >> 8;
+    uint count = draw.indices.y & ANIMA_IMPOSTOR_COUNT_MASK,
+         arrangement = draw.indices.y >> ANIMA_IMPOSTOR_LAYOUT_SHIFT;
     // The direction toward the viewpoint in the mesh's space. A shadow pass's projection is orthographic with forward
     // depth, so its third row points away from the sun.
     vec3 toward;
@@ -77,7 +80,7 @@ void main() {
     gl_Position = draw.viewProjection * (transform * vec4(corner, 1.0));
     visibility = 1.0;
     if (ranged) {
-        mat4 range = poses.matrices[draw.indices.z + 1u];
+        mat4 range = poses.matrices[draw.indices.z + ANIMA_POSE_HEADER_RANGE];
         visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0], draw.origin);
     }
     // A copy that its range hides draws nothing, nor does one seen from inside its sphere; in the shadow pass, a copy
