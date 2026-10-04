@@ -365,6 +365,32 @@ TEST_CASE("An environment in one member follows its lights through a replacement
     CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
 }
 
+TEST_CASE("A null fill gives no fill light, a stale one still throws, and unloading its scene removes it") {
+    ComponentCodecs codecs;
+    add_lighting_component_codecs(codecs);
+    SceneSet scenes;
+    auto settings = scenes.create("settings"), lights = scenes.create("lights");
+    auto sun = light(settings.get());
+    auto selected = environment(settings.get(), sun, {});
+    const auto unlit = lighting_environment(scenes);
+    CHECK(near(unlit.sun.irradiance, {1, 2, 3}));
+    CHECK(near(unlit.fill.direction, {0, 1, 0}));
+    CHECK(near(unlit.fill.irradiance, {}));
+    auto gone = lights->create("gone");
+    gone.add_component<DirectionalLightComponent>(Vec3{1, 1, 1});
+    selected->fill = gone;
+    gone.destroy();
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
+    Scene foreign;
+    selected->fill = light(foreign);
+    CHECK_THROWS_WITH_AS(lighting_environment(scenes), dead_light, std::invalid_argument);
+    selected->fill = light(lights.get(), {.25F, .5F, .75F});
+    CHECK(near(lighting_environment(scenes).fill.irradiance, {.25F, .5F, .75F}));
+    REQUIRE(scenes.unload(lights, codecs).size() == 1);
+    CHECK(selected->fill.id() == Scene::Id{});
+    CHECK(same(unlit, lighting_environment(scenes)));
+}
+
 TEST_CASE("Lighting does not resolve from component hooks or construction") {
     SceneSet scenes;
     auto scene = scenes.create("level");
