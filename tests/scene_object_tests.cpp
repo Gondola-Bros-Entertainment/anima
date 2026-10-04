@@ -1,7 +1,9 @@
 #include "consumer/scene_objects.hpp"
+#include <anima/camera.hpp>
 #include <doctest/doctest.h>
 
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -9,6 +11,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -44,11 +47,33 @@ struct CreateOnDisable {
 };
 struct Tag {};
 struct Spawner {
-    explicit Spawner(GameObject object) : owner(object) {}
+    explicit Spawner(ComponentOwner attached) : owner(attached.object) {}
     GameObject owner;
     std::vector<GameObject> spawned;
     void on_update(double) { spawned.push_back(owner.scene().create("Spawned")); }
 };
+// An aggregate whose first member is a link, not its owner.
+struct Pair {
+    GameObject a;
+    int n;
+};
+// A component constructed from the object it follows, which is not its owner.
+struct Follow {
+    explicit Follow(GameObject linked) : target(linked) {}
+    GameObject target;
+};
+// An aggregate that receives its owner, then data.
+struct Owned {
+    ComponentOwner owner;
+    int n;
+};
+// A component constructed from its owner and a link.
+struct Tether {
+    Tether(ComponentOwner attached, GameObject linked) : owner(attached.object), target(linked) {}
+    GameObject owner, target;
+};
+template <class T, class... Args>
+concept list_initializable = requires(Args &&...args) { T{std::forward<Args>(args)...}; };
 } // namespace
 
 TEST_CASE("A component reaches its scene through its object, and a stale handle has no scene") {
@@ -72,6 +97,37 @@ TEST_CASE("A component reaches its scene through its object, and a stale handle 
     const auto left = orphan->create();
     orphan.reset();
     CHECK_THROWS_WITH_AS((void)left.scene(), "Expired GameObject handle", std::out_of_range);
+}
+
+TEST_CASE("add_component passes the owner only as a ComponentOwner, never to a GameObject parameter or member") {
+    // Neither type converts to the other, even by brace elision into an aggregate member.
+    static_assert(!std::convertible_to<GameObject, ComponentOwner>);
+    static_assert(!std::constructible_from<GameObject, ComponentOwner>);
+    static_assert(!list_initializable<Owned, GameObject, int>);
+    static_assert(!list_initializable<Pair, ComponentOwner, int>);
+    static_assert(!std::constructible_from<Follow, ComponentOwner>);
+
+    Scene scene;
+    auto object = scene.create("owner");
+    auto other = scene.create("other");
+    const auto pair = object.add_component<Pair>(other, 1);
+    CHECK(pair->a == other);
+    CHECK(pair->n == 1);
+    const auto unlinked = other.add_component<Pair>();
+    CHECK(unlinked->a == GameObject{});
+    CHECK(unlinked->n == 0);
+    const auto follow = object.add_component<Follow>(other);
+    CHECK(follow->target == other);
+
+    const auto owned = object.add_component<Owned>(2);
+    CHECK(owned->owner.object == object);
+    CHECK(owned->n == 2);
+    const auto tether = object.add_component<Tether>(other);
+    CHECK(tether->owner == object);
+    CHECK(tether->target == other);
+    const auto view = object.add_component<CameraView>(other);
+    CHECK(view->camera == other);
+    CHECK(other.add_component<CameraView>()->camera == GameObject{});
 }
 
 TEST_CASE("Object handles compare and hash by identity, and a root's parent is an invalid handle") {

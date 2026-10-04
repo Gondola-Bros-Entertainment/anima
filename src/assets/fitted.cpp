@@ -150,8 +150,8 @@ std::vector<std::shared_ptr<const anima::Mesh>> FittedLibrary::resident_meshes()
     return state_->models.resident_meshes();
 }
 
-FittedSet::FittedSet(GameObject owner, FittedLibrary library)
-    : owner_(std::move(owner)), mesh_(owner_.renderer().mesh()), library_(std::move(library)) {
+FittedSet::FittedSet(ComponentOwner owner, FittedLibrary library)
+    : owner_(std::move(owner.object)), mesh_(owner_.renderer().mesh()), library_(std::move(library)) {
     if (library_.state_ && !mesh_->accepts_animation_source(*library_.state_->body))
         throw std::invalid_argument("Fitted library does not match the body mesh");
 }

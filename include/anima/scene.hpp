@@ -517,10 +517,14 @@ class GameObject {
     /// Constructs a component of type `T`, an unqualified value type, attaches it and returns its
     /// handle.
     ///
-    /// This object is passed first when that compiles: an aggregate is initialized as
-    /// `T{object, args...}` when valid and `T{args...}` otherwise; another type is constructed as
-    /// `T(object, args...)` when possible and `T(args...)` otherwise. The component starts enabled,
-    /// and its first `on_enable()` waits for a lifecycle reconciliation.
+    /// This object is passed first, as a ComponentOwner, to a type that accepts one: an aggregate is
+    /// initialized as `T{ComponentOwner{*this}, args...}` when valid and `T{args...}` otherwise;
+    /// another type is constructed as `T(ComponentOwner{*this}, args...)` when
+    /// `std::constructible_from` allows it and `T(args...)` otherwise. A GameObject parameter or member
+    /// never receives this object: `add_component<T>()` leaves an aggregate's first GameObject member
+    /// null and does not compile for a constructor that requires a GameObject. Passing a
+    /// ComponentOwner in @p args does not compile. The component starts enabled, and its first
+    /// `on_enable()` waits for a lifecycle reconciliation.
     ///
     /// Throws `std::logic_error` when the object already has a `T`, including a recursive add from
     /// the constructor, or when construction removed the object or the attachment. A failed

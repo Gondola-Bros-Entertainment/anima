@@ -59,9 +59,8 @@ class Camera {
 /// add_camera_component_codecs; otherwise the link expires with the scene. A null link can be
 /// persisted but cannot produce a view.
 struct CameraView {
-    /// Null link; GameObject::add_component does not pass the owning object here.
-    CameraView() = default;
-    /// Object whose Camera is used.
+    /// Object whose Camera is used. `add_component<CameraView>(camera)` sets it; without an argument
+    /// it is null.
     GameObject camera;
 };
 

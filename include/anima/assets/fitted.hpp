@@ -145,10 +145,10 @@ class FittedSet {
         /// Child object of the body that renders the item.
         GameObject object;
     };
-    /// Throws when @p library has a body that @p owner's mesh does not accept as an animation
-    /// source (same node names, parents and rest pose); fails as GameObject::renderer does when
-    /// @p owner has no mesh.
-    FittedSet(GameObject owner, FittedLibrary library);
+    /// Follows the object of @p owner, the body. Throws when @p library has a body that the body's
+    /// mesh does not accept as an animation source (same node names, parents and rest pose); fails
+    /// as GameObject::renderer does when the body has no mesh.
+    FittedSet(ComponentOwner owner, FittedLibrary library);
     /// Destroys the item objects that still exist.
     ~FittedSet();
     FittedSet(const FittedSet &) = delete;

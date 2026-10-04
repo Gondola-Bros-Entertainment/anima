@@ -47,7 +47,7 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
     require(child.position().x == 8 && child.local_position().x == 2 && child.local_position().y == 1 &&
                 child.parent() == root && root.children().front().id() == child.id() && scene.roots().size() == 1,
             "Parenting did not preserve world placement or expose hierarchy membership");
-    Animator animator(child, asset);
+    Animator animator(ComponentOwner{child}, asset);
     animator.play("Move");
     (void)animator.update(.5);
     auto tip = scene.create("Tip", mesh);
@@ -153,7 +153,7 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
     auto child = source.create("Part", mesh);
     child.set_parent(root, ReparentMode::keep_local);
     child.set_local_position({2, 0, 0});
-    Animator animator(child, asset);
+    Animator animator(ComponentOwner{child}, asset);
     animator.play("Move");
     (void)animator.update(.5);
     child.renderer().set_material_factor(0, {.2F, .3F, .4F});
@@ -347,7 +347,7 @@ inline void run() {
     rejects<std::invalid_argument>([&] { empty.set_world_matrix(broken); }, "Non-finite instance transform");
     require(scene.instance(empty.id()).palette == accepted && empty.position().x == 4,
             "Rejected transform changed accepted object state");
-    Animator animator(empty, asset), independent(other, asset);
+    Animator animator(ComponentOwner{empty}, asset), independent(ComponentOwner{other}, asset);
     animator.play("Move", false);
     independent.play("Move");
     (void)animator.update(.5);
@@ -360,7 +360,7 @@ inline void run() {
     require(animator.playback().time() == .5, "Rejected clip changed playback");
     auto wrong_rig = std::make_shared<Asset>(*asset);
     wrong_rig->nodes[0].name = "Other rig";
-    rejects<std::invalid_argument>([&] { Animator invalid_animator(empty, wrong_rig); },
+    rejects<std::invalid_argument>([&] { Animator invalid_animator(ComponentOwner{empty}, wrong_rig); },
                                    "Animator source does not match the object's mesh hierarchy and bind");
     const auto copy = empty;
     empty.remove_mesh();

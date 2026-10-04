@@ -21,8 +21,8 @@ constexpr auto vector_range = "Physics vector outside finite supported range";
 constexpr auto compound_child = "Compound child must be a primitive or hull";
 constexpr auto three_numbers = "Physics vector requires three numbers";
 struct Remove {
-    GameObject owner;
-    void on_fixed_update(double) { owner.remove_component<p::RigidBody>(); }
+    ComponentOwner owner;
+    void on_fixed_update(double) { owner.object.remove_component<p::RigidBody>(); }
 };
 // A dynamic compound whose one hull child is offset from the body origin and turned a quarter about +Z.
 p::BodySettings offset_hull_assembly() {

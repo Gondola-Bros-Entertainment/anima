@@ -22,10 +22,10 @@ namespace anima::physics2d {
 /// in queries and contacts.
 class RigidBody {
   public:
-    /// Creates the body in @p world. Throws `std::invalid_argument` for a dynamic child object, a
-    /// transform that is not planar and rigid or has an out-of-range XY position, or invalid
-    /// settings (see World::create).
-    RigidBody(GameObject object, World &world, BodySettings settings = {});
+    /// Creates the body in @p world at the world pose of @p owner's object. Throws
+    /// `std::invalid_argument` for a dynamic child object, a transform that is not planar and rigid
+    /// or has an out-of-range XY position, or invalid settings (see World::create).
+    RigidBody(ComponentOwner owner, World &world, BodySettings settings = {});
     ~RigidBody();
     RigidBody(const RigidBody &) = delete;
     RigidBody &operator=(const RigidBody &) = delete;

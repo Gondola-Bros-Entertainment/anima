@@ -31,8 +31,8 @@ Vec2 vec(const Json &j) {
     return {anima::detail::json_float(j[0]), anima::detail::json_float(j[1])};
 }
 } // namespace
-RigidBody::RigidBody(GameObject object, World &world, BodySettings settings) : settings_(std::move(settings)) {
-    settings_.pose = planar_pose(object, settings_.motion);
+RigidBody::RigidBody(ComponentOwner owner, World &world, BodySettings settings) : settings_(std::move(settings)) {
+    settings_.pose = planar_pose(owner.object, settings_.motion);
     body_ = world.create(settings_);
 }
 RigidBody::~RigidBody() { body_.remove(); }

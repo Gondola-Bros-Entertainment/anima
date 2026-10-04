@@ -15,8 +15,8 @@ namespace {
 constexpr auto planar_transform = "2D physics requires unit scale, XY translation and Z rotation without tilt/shear";
 constexpr auto duplicate_field = "Duplicate JSON document field";
 struct Remove {
-    GameObject owner;
-    void on_fixed_update(double) { owner.remove_component<p::RigidBody>(); }
+    ComponentOwner owner;
+    void on_fixed_update(double) { owner.object.remove_component<p::RigidBody>(); }
 };
 struct Counter {
     int *count;
