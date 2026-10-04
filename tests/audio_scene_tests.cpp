@@ -5,6 +5,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -153,6 +154,48 @@ TEST_CASE("Sources follow the listener's world pose, their enablement and playba
     CHECK_FALSE(ears);
     CHECK(frame(audio)[1] == 0);
     CHECK(audio.voice_count() == 0u);
+}
+
+TEST_CASE("Swapping a source's clip keeps its settings and bus and leaves it stopped") {
+    Audio audio(8000);
+    auto bus = audio.bus();
+    Scene scene;
+    AudioSourceSettings settings;
+    settings.volume = .5F;
+    settings.looping = true;
+    auto source = scene.create().add_component<AudioSource>(audio, clip(), settings, bus);
+    const auto first = source->clip();
+    source->play();
+    synchronize_audio(scene, audio);
+    REQUIRE(source->playing());
+    CHECK_THROWS_WITH_AS(source->set_clip(nullptr), missing_or_foreign, std::invalid_argument);
+    CHECK(source->clip() == first); // A failed swap keeps the clip and its voice.
+    CHECK(source->playing());
+    CHECK(audio.voice_count() == 1u);
+
+    const std::shared_ptr<const AudioClip> louder = AudioClip::pcm(std::vector<float>(16, .5F), 1, 8000);
+    source->pause();
+    source.set_enabled(false);
+    source->play();
+    source->set_clip(louder);
+    CHECK(source->clip() == louder);
+    CHECK_FALSE(source->playing());
+    CHECK(source->cursor() == 0);
+    CHECK(audio.voice_count() == 1u); // The old voice was released.
+    CHECK(source->settings().volume == .5F);
+    source.set_enabled(true);
+    synchronize_audio(scene, audio);
+    CHECK_FALSE(source->playing()); // The swap cancelled the pending play.
+
+    source->play();
+    synchronize_audio(scene, audio);
+    REQUIRE(source->playing());
+    // Gain 0.5 on a mono clip of 0.5 at center pan, -3 dB on each channel.
+    const auto sample = settle(audio);
+    CHECK(sample[0] == Near{.25 * std::sqrt(.5), tolerance});
+    CHECK(sample[1] == Near{.25 * std::sqrt(.5), tolerance});
+    bus.set_muted(true); // The new voice is routed to the source's bus.
+    CHECK(settle(audio)[1] == Near{0, tolerance});
 }
 
 TEST_CASE("A source's priority decides which source the voice limit stops") {

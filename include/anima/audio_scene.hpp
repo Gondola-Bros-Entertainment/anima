@@ -39,13 +39,12 @@ struct AudioSourceSettings {
     int priority = default_audio_priority;
 };
 
-/// Component that owns one voice for an immutable clip, like Unity's AudioSource or Unreal's audio
-/// component.
+/// Component that owns one voice for a clip, like Unity's AudioSource or Unreal's audio component.
 ///
 /// A source starts stopped. Playback requests take effect at the next synchronize_audio() in which
 /// the component is active. An inactive source pauses there, keeping its cursor, and resumes when
-/// active again unless it was paused or stopped meanwhile. The source retains its clip and engine;
-/// removing the component or destroying its object or scene releases the voice. Neither
+/// active again unless it was paused or stopped meanwhile. The source retains its clip, engine and
+/// bus; removing the component or destroying its object or scene releases the voice. Neither
 /// construction nor persistence starts a device, callback or update loop.
 class AudioSource {
   public:
@@ -58,8 +57,18 @@ class AudioSource {
     AudioSource &operator=(const AudioSource &) = delete;
     /// The applied configuration.
     [[nodiscard]] const AudioSourceSettings &settings() const { return settings_; }
-    /// The clip, fixed at construction.
+    /// The current clip; see set_clip().
     [[nodiscard]] const std::shared_ptr<const AudioClip> &clip() const { return clip_; }
+    /// Replaces the clip, as Unity's `AudioSource.clip` does.
+    ///
+    /// Creates a stopped voice for @p clip on the engine and bus of construction, configured by
+    /// settings(), and only then releases the old voice, so a throw leaves the source unchanged. The
+    /// new voice starts at the beginning of @p clip, and pending or interrupted playback is cancelled,
+    /// as stop() cancels it; a spatial source takes its object's position at the next
+    /// synchronization. The engine's voice count is unchanged afterwards. Throws
+    /// `std::invalid_argument` with "Missing audio clip or foreign bus" for a null clip, and
+    /// `std::runtime_error` when miniaudio cannot create the voice, such as a streamed clip's decoder.
+    void set_clip(std::shared_ptr<const AudioClip> clip);
     /// Validates all of @p settings, then applies them to the voice at once.
     ///
     /// AudioSourceSettings::play_on_start affects only copies persisted afterwards; use play() for
@@ -85,6 +94,9 @@ class AudioSource {
   private:
     friend struct detail::AudioSceneAccess;
     AudioSourceSettings settings_;
+    // The engine and bus that set_clip() creates voices in; the bus is released before the engine.
+    Audio audio_;
+    AudioBus bus_;
     std::shared_ptr<const AudioClip> clip_;
     Sound sound_;
     bool play_pending_{}, resume_{};

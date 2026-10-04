@@ -23,27 +23,38 @@ void validate(const AudioSourceSettings &s) {
     detail::audio_attenuation(s.attenuation);
     detail::audio_priority(s.priority);
 }
+void apply(Sound &sound, const AudioSourceSettings &s) {
+    sound.set_volume(s.volume);
+    sound.set_pitch(s.pitch);
+    sound.set_pan(s.pan);
+    sound.set_attenuation(s.attenuation);
+    sound.set_looping(s.looping);
+    sound.set_spatial(s.spatial);
+    sound.set_priority(s.priority);
+}
 constexpr std::string_view linear_rolloff = "linear", inverse_rolloff = "inverse";
 void key(std::string_view value) { detail::validate_resource_key(value, "Invalid audio clip key"); }
 } // namespace
 AudioSource::AudioSource(Audio &audio, std::shared_ptr<const AudioClip> clip, AudioSourceSettings settings,
                          const AudioBus &bus)
-    : clip_(std::move(clip)) {
+    : audio_(detail::AudioSceneAccess::retain(audio)), bus_(bus), clip_(std::move(clip)) {
     validate(settings);
-    sound_ = audio.sound(clip_, bus);
+    sound_ = audio_.sound(clip_, bus_);
     configure(settings);
     play_pending_ = settings.play_on_start;
 }
 void AudioSource::configure(AudioSourceSettings settings) {
     validate(settings);
-    sound_.set_volume(settings.volume);
-    sound_.set_pitch(settings.pitch);
-    sound_.set_pan(settings.pan);
-    sound_.set_attenuation(settings.attenuation);
-    sound_.set_looping(settings.looping);
-    sound_.set_spatial(settings.spatial);
-    sound_.set_priority(settings.priority);
+    apply(sound_, settings);
     settings_ = settings;
+}
+void AudioSource::set_clip(std::shared_ptr<const AudioClip> clip) {
+    auto sound = audio_.sound(clip, bus_);
+    apply(sound, settings_);
+    // Nothing below throws: the old voice is released only once the new one is ready.
+    clip_ = std::move(clip);
+    sound_ = std::move(sound);
+    play_pending_ = resume_ = false;
 }
 void AudioSource::play() { play_pending_ = true; }
 void AudioSource::pause() {
