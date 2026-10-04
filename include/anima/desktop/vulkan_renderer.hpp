@@ -115,11 +115,12 @@ struct RendererOptions {
     /// so that the CPU's work overlaps the GPU's, at the cost of a second copy of the per-frame buffers (palettes, the
     /// environment and custom material frame blocks, UI vertices) and of up to a frame more between the inputs that a
     /// frame shows and its display. With 1, each draw() waits for the previous frame before preparing the next. Where
-    /// VulkanRenderer::waits_for_presents() is true, each draw() also waits for the present of the frame submitted one
-    /// submission before the frame that it waits for, as VulkanRenderer::wait_for_frame() describes, which on a driver
-    /// that reports presents at display bounds the presented frames that wait for display ahead of the next at this
-    /// count. Either way, a draw() that uploads, as when a mesh first becomes visible, waits for the frames already in
-    /// flight, since the fence that an upload waits for signals only after every earlier submission.
+    /// VulkanRenderer::waits_for_presents() is true and frames present in PresentMode::fifo or
+    /// PresentMode::fifo_relaxed, each draw() also waits for the present of the frame submitted one submission before
+    /// the frame that it waits for, as VulkanRenderer::wait_for_frame() describes, which on a driver that reports
+    /// presents at display bounds the presented frames that wait for display ahead of the next at this count. Either
+    /// way, a draw() that uploads, as when a mesh first becomes visible, waits for the frames already in flight, since
+    /// the fence that an upload waits for signals only after every earlier submission.
     std::uint32_t frames_in_flight = 2;
     /// Initial present mode request, under the rules of VulkanRenderer::set_present_mode. A value that is not a
     /// PresentMode enumerator makes construction throw `std::invalid_argument`.
@@ -182,7 +183,8 @@ struct CapturedImage {
     std::vector<std::uint8_t> rgb;
 };
 
-/// Cumulative counters returned by VulkanRenderer::shutdown.
+/// Cumulative counters of a VulkanRenderer, which VulkanRenderer::stats() reads so far and VulkanRenderer::shutdown()
+/// returns once they are final.
 struct RenderStats {
     /// Frames presented. A frame whose presentation reports the swapchain out of date is not counted; a capture
     /// that could not be written does not change whether its frame is counted.
@@ -391,9 +393,10 @@ struct ResourceStats {
     /// with the renderer whether the atmosphere is enabled or not.
     std::uint64_t atmosphere_bytes{};
     /// Allocation bytes of the scene color and depth targets, which the render scale sizes (see
-    /// VulkanRenderer::set_render_scale), and 0 while there are none: before the first draw() and after a draw() that
-    /// failed to create them. Excludes the swapchain and shadow images, the opaque input copies, and targets that a
-    /// resize replaced but a frame in flight still uses.
+    /// VulkanRenderer::set_render_scale), and 0 while there are none: until a draw() first creates them, after a
+    /// swapchain recreation, which releases them, until a draw() creates them again, and after shutdown(). A draw()
+    /// that fails to resize them keeps the previous targets, which this counts. Excludes the swapchain and shadow
+    /// images, the opaque input copies, and targets that a resize replaced but a frame in flight still uses.
     std::uint64_t world_target_bytes{};
 };
 
@@ -684,8 +687,10 @@ class VulkanRenderer {
     /// Requests @p mode for presentation; it starts as RendererOptions::present_mode. When @p mode differs from the
     /// current request, the next draw() recreates the swapchain, as after request_resize(), in @p mode where the
     /// surface offers it and otherwise in PresentMode::fifo, which Vulkan requires every surface to offer;
-    /// present_mode() reports which. Requesting the current mode again changes nothing. Throws `std::invalid_argument`
-    /// for a value that is not a PresentMode enumerator ("Unknown present mode"), keeping the previous request.
+    /// present_mode() reports which. Repeating the current request changes nothing, but a request that differs from it
+    /// recreates the swapchain even where present_mode() already reports @p mode, as after a fallback to
+    /// PresentMode::fifo. Throws `std::invalid_argument` for a value that is not a PresentMode enumerator ("Unknown
+    /// present mode"), keeping the previous request.
     void set_present_mode(PresentMode mode);
     /// The present mode of the latest swapchain that draw() created, or empty before the first. After
     /// set_present_mode() it changes with the next swapchain.

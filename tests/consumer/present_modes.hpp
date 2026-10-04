@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -67,7 +68,8 @@ inline const char *name(PresentMode mode) {
 }
 inline std::string name(const std::optional<PresentMode> &mode) { return mode ? name(*mode) : "none"; }
 
-/// Construction rejects a present mode that is not an enumerator, after the frames in flight and before the window.
+/// Construction rejects a present mode that is not an enumerator, after the frames in flight and before the render
+/// scale and the window.
 inline void reject_unknown_mode() {
     const auto construct = [](PresentMode mode, std::uint32_t frames) {
         anima::RendererOptions options;
@@ -79,6 +81,14 @@ inline void reject_unknown_mode() {
     for (const auto mode : all_modes)
         rejects<std::invalid_argument>([&] { construct(mode, 1); }, "Renderer requires an SDL window");
     rejects<std::invalid_argument>([&] { construct(unknown_mode, 3); }, "Frames in flight must be 1 or 2");
+    rejects<std::invalid_argument>(
+        [] {
+            anima::RendererOptions options;
+            options.present_mode = unknown_mode;
+            options.render_scale = std::numeric_limits<float>::quiet_NaN();
+            anima::VulkanRenderer renderer(nullptr, options);
+        },
+        unknown_message);
 }
 
 // The renderer's counters and the check's own at the start of a span of draws, which Run::since() measures.
