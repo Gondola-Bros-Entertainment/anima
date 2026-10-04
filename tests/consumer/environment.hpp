@@ -175,13 +175,13 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, 
     const auto tile = anima::Mesh::compile(*box_fixture(tile_half, true));
     auto ground = scene->create("ground", tile);
     auto mirrored_ground = scene->create("mirrored ground", tile);
-    ground.set_transform({{-offset, 0, tile_z}, unrotated, {1, 1, 1}});
-    mirrored_ground.set_transform({{offset, 0, tile_z}, unrotated, {-1, 1, 1}});
+    ground.set_world_transform({{-offset, 0, tile_z}, unrotated, {1, 1, 1}});
+    mirrored_ground.set_world_transform({{offset, 0, tile_z}, unrotated, {-1, 1, 1}});
     const auto cube = anima::Mesh::compile(*box_fixture({half, half, half}));
     auto original = scene->create("original", cube);
     auto mirrored = scene->create("mirrored", cube);
-    original.set_transform({{-offset, half, 0}, {0, std::sin(turn / 2), 0, std::cos(turn / 2)}, {1, 1, 1}});
-    mirrored.set_transform({{offset, half, 0}, {0, -std::sin(turn / 2), 0, std::cos(turn / 2)}, {-1, 1, 1}});
+    original.set_world_transform({{-offset, half, 0}, {0, std::sin(turn / 2), 0, std::cos(turn / 2)}, {1, 1, 1}});
+    mirrored.set_world_transform({{offset, half, 0}, {0, -std::sin(turn / 2), 0, std::cos(turn / 2)}, {-1, 1, 1}});
     const anima::Mat4 reflection{-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     for (const auto &[left, right] : {std::pair{ground, mirrored_ground}, std::pair{original, mirrored}}) {
         const auto expected = reflection * left.world_matrix(), actual = right.world_matrix();
@@ -297,13 +297,13 @@ void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture,
     constexpr double normal_margin = 20; // Channel levels by which the upward square differs from the ordinary one.
     auto scene = std::make_shared<anima::Scene>();
     auto collapsed = scene->create("collapsed", anima::Mesh::compile(*box_fixture({half, half, half})));
-    collapsed.set_transform({{-offset, half, 0}, unrotated, {1, 1, 0}});
+    collapsed.set_world_transform({{-offset, half, 0}, unrotated, {1, 1, 0}});
     const auto square = anima::Mesh::compile(*box_fixture({half, 0, half}, true)); // Faces +Y.
     auto facing = scene->create("facing", square);
-    facing.set_transform(
+    facing.set_world_transform(
         {{offset, half, 0}, {std::sin(quarter_turn / 2), 0, 0, std::cos(quarter_turn / 2)}, {1, 1, 1}});
     auto upward = scene->create("upward", square);
-    upward.set_transform({{0, 0, 1}, unrotated, {1, 1, 1}});
+    upward.set_world_transform({{0, 0, 1}, unrotated, {1, 1, 1}});
     anima::Environment lighting;
     lighting.sun.direction = {0, .342F, .94F}; // 20 degrees above the horizon, behind the camera.
     lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
@@ -533,7 +533,7 @@ inline int run(int argc, char **argv) {
     const auto asset = fixture();
     const auto compiled = anima::Mesh::compile(*asset);
     auto scene = std::make_shared<anima::Scene>();
-    const auto id = scene->add(compiled);
+    auto drawn = scene->create({}, compiled).renderer();
     const auto view =
         anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .05F, 100) * anima::look_at({0, 6, 10}, {0, 0, 0});
     renderer.set_view(view);
@@ -579,11 +579,11 @@ inline int run(int argc, char **argv) {
     require(renderer.resource_stats().shadow_bytes > 1024, "Shadow allocation missing");
     const auto main_draws = renderer.resource_stats().draw_calls;
     // The caster stays visible but draws nothing into the shadow maps; the ground checks below compare it.
-    scene->set_casts_shadows(id, false);
+    drawn.set_casts_shadows(false);
     capture("non-casting");
     require(renderer.resource_stats().shadow_draw_calls == 0, "A renderer that casts no shadows drew into them");
     require(renderer.resource_stats().draw_calls == main_draws, "A renderer that casts no shadows stopped drawing");
-    scene->set_casts_shadows(id, true);
+    drawn.set_casts_shadows(true);
     // Resolve authored lighting through the production component graph. Geometry
     // remains independently selected above; these scenes contain only light data.
     anima::SceneSet lighting;
@@ -636,18 +636,17 @@ inline int run(int argc, char **argv) {
     const auto uploads = renderer.resource_stats().mesh_uploads;
     anima::SceneSet layers;
     auto caster = layers.create("caster");
-    const auto caster_id = caster->add(compiled);
-    scene->set_primitive_visible(id, 1, false);
-    caster->set_primitive_visible(caster_id, 0, false);
+    caster->create({}, compiled).renderer().set_primitive_visible(0, false);
+    drawn.set_primitive_visible(1, false);
     renderer.set_scenes({scene, caster.render_scene()});
     capture("multi-scene-shadowed");
     require(renderer.resource_stats().mesh_uploads == uploads && renderer.resource_stats().shadow_draw_calls == 2,
             "Cross-scene shadows lost a caster or duplicated resource uploads");
     // The ground stops casting and still receives the other scene's caster; the ground checks compare it.
-    scene->set_casts_shadows(id, false);
+    drawn.set_casts_shadows(false);
     capture("non-casting-receiver");
     require(renderer.resource_stats().shadow_draw_calls == 1, "A non-casting receiver still drew into the shadows");
-    scene->set_casts_shadows(id, true);
+    drawn.set_casts_shadows(true);
     renderer.set_frustum_culling(false);
     capture("multi-scene-unculled");
     renderer.set_frustum_culling(true);
@@ -662,7 +661,7 @@ inline int run(int argc, char **argv) {
     layers.unload(caster);
     capture("multi-scene-unloaded");
     require(renderer.resource_stats().shadow_draw_calls == 1, "Unloaded scene retained shadow draws");
-    scene->set_primitive_visible(id, 1, true);
+    drawn.set_primitive_visible(1, true);
     renderer.set_scenes({scene});
     renderer.set_frustum_culling(false);
     capture("shadowed-unculled");
@@ -675,9 +674,9 @@ inline int run(int argc, char **argv) {
     renderer.set_scenes({reference_test::scene(anima::make_mesh_snapshot(*asset, anima::sample_pose(*asset)))});
     capture("reference-shadowed");
     renderer.set_scenes({scene});
-    scene->set_primitive_visible(id, 1, false);
+    drawn.set_primitive_visible(1, false);
     capture("caster-hidden");
-    scene->set_primitive_visible(id, 1, true);
+    drawn.set_primitive_visible(1, true);
     environment.shadow_cascades.resolution = 1024;
     renderer.set_environment(environment);
     capture("");
@@ -735,7 +734,7 @@ inline int run(int argc, char **argv) {
             "Main camera removed a detail-region caster");
     auto translated = anima::identity();
     translated[12] = 40;
-    scene->set_pose(id, anima::sample_pose(*asset), translated);
+    drawn.set_pose(anima::sample_pose(*asset), translated);
     // Cascades that end a metre from the eye hold neither the translated caster nor its ground.
     environment.shadow_cascades.enabled = true;
     environment.shadow_cascades.distance = 1;
@@ -746,7 +745,7 @@ inline int run(int argc, char **argv) {
     capture("detail-outside-world");
     require(renderer.resource_stats().shadow_draw_calls == 2, "Detail casters depended on cascade coverage");
     environment.shadow_cascades.distance = 25;
-    scene->set_pose(id, anima::sample_pose(*asset));
+    drawn.set_pose(anima::sample_pose(*asset), anima::identity());
     renderer.set_view(view);
     environment.detail_shadow.enabled = false;
     renderer.set_environment(environment);
@@ -774,7 +773,7 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
     const auto slope = fixture(true);
     auto slope_scene = std::make_shared<anima::Scene>();
-    (void)slope_scene->add(anima::Mesh::compile(*slope));
+    (void)slope_scene->create({}, anima::Mesh::compile(*slope));
     renderer.set_scenes({slope_scene});
     environment.sun.direction = {1, .6F, .1F};
     environment.shadow_cascades.enabled = false;
@@ -806,7 +805,7 @@ inline int run(int argc, char **argv) {
     // single sloped plane cannot exercise.
     const auto curved = curved_fixture();
     auto curved_scene = std::make_shared<anima::Scene>();
-    (void)curved_scene->add(anima::Mesh::compile(*curved));
+    (void)curved_scene->create({}, anima::Mesh::compile(*curved));
     renderer.set_scenes({curved_scene});
     renderer.set_view(curved_view());
     renderer.set_environment(curved_environment(false));

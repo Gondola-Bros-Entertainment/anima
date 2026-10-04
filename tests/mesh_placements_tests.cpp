@@ -233,9 +233,8 @@ TEST_CASE("Placements keep the rest pose and copy only their own mesh") {
     CHECK_THROWS_WITH_AS(renderer.set_placements(placements), "A renderer with a pose cannot draw placements",
                          std::logic_error);
     CHECK_FALSE(renderer.placements());
-    auto bare = scene.create("bare");
-    CHECK_THROWS_WITH_AS(scene.set_placements(bare.id(), placements), "GameObject has no MeshRenderer",
-                         std::logic_error);
+    object.remove_mesh();
+    CHECK_THROWS_WITH_AS(renderer.set_placements(placements), "GameObject has no MeshRenderer", std::logic_error);
 }
 
 TEST_CASE("Snapshots expand every copy") {

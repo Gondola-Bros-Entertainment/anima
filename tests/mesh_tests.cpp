@@ -510,7 +510,7 @@ TEST_CASE("Moving a mesh copies it, so the mesh moved from keeps its content") {
         REQUIRE(mesh->materials() == compiled->materials());
         CHECK(mesh->vertices().size() == compiled->vertices().size());
         CHECK(mesh->draws().size() == compiled->draws().size());
-        CHECK_NOTHROW((void)scene.add(std::make_shared<const Mesh>(*mesh)));
+        CHECK_NOTHROW((void)scene.create({}, std::make_shared<const Mesh>(*mesh)));
     }
 }
 

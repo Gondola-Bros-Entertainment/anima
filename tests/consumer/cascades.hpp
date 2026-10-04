@@ -150,16 +150,15 @@ inline int run(int argc, char **argv) {
     // A square plate @p half wide each way and 4 cm thick, @p height above the ground at @p z.
     const auto plate = [&](anima::Scene &scene, float half, float height, float z) {
         const auto mesh = anima::Mesh::compile(*environment_test::box_fixture({half, .02F, half}));
-        const auto id = scene.add(mesh);
         auto world = anima::identity();
         anima::set_translation(world, {0, height, z});
-        scene.set_pose(id, mesh->rest_pose(), world);
+        scene.create({}, mesh).renderer().set_pose(mesh->rest_pose(), world);
     };
 
     // The same plate near the camera and far from it.
     constexpr float near_half = .6F, near_height = .4F, near_z = -4, far_half = 6, far_height = 2, far_z = -60;
     auto plates = std::make_shared<anima::Scene>();
-    (void)plates->add(ground);
+    (void)plates->create({}, ground);
     plate(*plates, near_half, near_height, near_z);
     plate(*plates, far_half, far_height, far_z);
     renderer.set_scenes({plates});
@@ -226,13 +225,12 @@ inline int run(int argc, char **argv) {
     const auto wall_lighting = lighting(4, 2048);
     const auto wall_cascades = anima::fit_shadow_cascades(wall_lighting, view());
     auto wall = std::make_shared<anima::Scene>();
-    (void)wall->add(ground);
+    (void)wall->create({}, ground);
     {
         const auto mesh = anima::Mesh::compile(*environment_test::box_fixture({.05F, .5F, 44}));
-        const auto id = wall->add(mesh);
         auto world = anima::identity();
         anima::set_translation(world, {0, .5F, -46});
-        wall->set_pose(id, mesh->rest_pose(), world);
+        wall->create({}, mesh).renderer().set_pose(mesh->rest_pose(), world);
     }
     renderer.set_scenes({wall});
     renderer.set_environment(wall_lighting);
@@ -270,12 +268,11 @@ inline int run(int argc, char **argv) {
         constexpr anima::Vec3 shaded{0, 0, -4.5F}, lit{-2, 0, -4.5F};
         const auto toward_sun = anima::normalized(sun);
         auto overhead = std::make_shared<anima::Scene>();
-        (void)overhead->add(ground);
+        (void)overhead->create({}, ground);
         const auto mesh = anima::Mesh::compile(*environment_test::box_fixture({.5F, .02F, .5F}));
-        const auto id = overhead->add(mesh);
         auto world = anima::identity();
         anima::set_translation(world, shaded + toward_sun * 40.F);
-        overhead->set_pose(id, mesh->rest_pose(), world);
+        overhead->create({}, mesh).renderer().set_pose(mesh->rest_pose(), world);
         renderer.set_scenes({overhead});
         renderer.set_environment(lighting());
         renderer.set_view(view());
@@ -300,7 +297,7 @@ inline int run(int argc, char **argv) {
     const auto copies = placements_test::field(100);
     const auto shape = placements_test::pyramid();
     auto field = std::make_shared<anima::Scene>();
-    (void)field->add(anima::Mesh::compile(*environment_test::box_fixture({200, 0, 200}, true)));
+    (void)field->create({}, anima::Mesh::compile(*environment_test::box_fixture({200, 0, 200}, true)));
     field->create("field", shape).renderer().set_placements(anima::MeshPlacements::create(shape, copies));
     renderer.set_scenes({field});
     renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 16.F / 9, .1F, 400) *

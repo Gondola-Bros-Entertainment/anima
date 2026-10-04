@@ -366,8 +366,7 @@ TEST_CASE("Compiling keeps tangent and alpha seams, and mirroring flips tangent 
     CHECK(t[3] == Near{-1, tolerance});
     CHECK(tangent(mirror(), {}) == std::array<float, 4>{}); // A missing tangent gains no frame.
     Scene resources;
-    const auto id = resources.add(compiled);
-    resources.set_pose(id, sample_pose(*source), mirror());
+    resources.create({}, compiled).renderer().set_pose(sample_pose(*source), mirror());
     const auto snapshot = resources.snapshot();
     CHECK(snapshot.vertices[3].alpha == Near{.25F, tolerance});
     CHECK(snapshot.vertices[3].tangent[3] == Near{1, tolerance});
@@ -377,9 +376,8 @@ TEST_CASE("Snapshots offset each instance's texture references, and compiled mat
     const auto source = seams();
     const auto compiled = Mesh::compile(*source);
     Scene resources;
-    const auto id = resources.add(compiled);
-    resources.set_pose(id, sample_pose(*source), mirror());
-    (void)resources.add(compiled);
+    resources.create({}, compiled).renderer().set_pose(sample_pose(*source), mirror());
+    (void)resources.create({}, compiled);
     const auto composed = resources.snapshot();
     CHECK(composed.material_data[1].normal_texture == 2);
     CHECK(composed.material_data[1].emissive_texture == 3);

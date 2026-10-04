@@ -12,8 +12,9 @@
 /// material pairs SPIR-V vertex and fragment shaders that the application compiles, for example with the Vulkan
 /// SDK's glslc, with a bounded parameter block, textures and a blend mode, as a ShaderMaterial does in Godot or a
 /// material with a custom shader does in Unity. The application supplies only shading: the renderer creates the
-/// pipelines and owns pass order, depth, sorting, synchronization and every Vulkan object. Scene::set_custom_material
-/// assigns a custom material to one material slot of one object, and scene and prefab documents store its name.
+/// pipelines and owns pass order, depth, sorting, synchronization and every Vulkan object.
+/// MeshRenderer::set_custom_material assigns a custom material to one material slot of one object, and scene and prefab
+/// documents store its name.
 ///
 /// ## Shader interface
 ///
@@ -24,8 +25,8 @@
 /// Vertex attributes, read only by vertex shaders, are the mesh's SourceVertex fields in mesh space: location 0
 /// `vec3` position, 1 `vec3` normal, 2 `vec3` color, 3 `vec2` uv, 4 `uvec4` joints, 5 `vec4` weights, 6 `vec4`
 /// tangent and 7 `float` alpha; then per instance, 8 to 10 `vec4`, rows 0 to 2 of the affine matrix of the
-/// placement being drawn (Scene::set_placements), whose last row is (0, 0, 0, 1), or of an identity for an object
-/// without placements. A shader may read any subset, but only one that reads all three placement rows, in every
+/// placement being drawn (MeshRenderer::set_placements), whose last row is (0, 0, 0, 1), or of an identity for an
+/// object without placements. A shader may read any subset, but only one that reads all three placement rows, in every
 /// vertex shader it has, can draw placements (reads_placements()).
 ///
 /// Descriptors:
@@ -71,7 +72,7 @@
 /// IndexedDraw::palette_offset within the instance's palette; 68 `uint skinned`, 1 for a skinned draw and
 /// otherwise 0; 72 `uint objectOffset`, the index in `AnimaPoses` of the object's world matrix when it has
 /// placements or a visibility range; 76 `uint placed`, 1 when it has placements and otherwise 0; 80 `vec4 factor`,
-/// the object's linear RGB factor for the material slot (Scene::set_material_factor) with alpha 1; and 96 `uint
+/// the object's linear RGB factor for the material slot (MeshRenderer::set_material_factor) with alpha 1; and 96 `uint
 /// ranged`, 1 when it has a visibility range other than the default and otherwise 0. `animaModelMatrix()` in
 /// `anima/custom_material.glsl` composes these as the standard material does.
 ///
@@ -209,7 +210,7 @@ class CustomMaterial {
     /// Vertex attributes that the shadow vertex shader declares, or 0 without one.
     [[nodiscard]] std::uint32_t shadow_vertex_attributes() const noexcept { return shadow_vertex_attributes_; }
     /// Whether the vertex shader, and the depth-only variant's if there is one, read all three placement rows
-    /// (locations 8 to 10), which drawing an object's placements requires (Scene::set_placements).
+    /// (locations 8 to 10), which drawing an object's placements requires (MeshRenderer::set_placements).
     [[nodiscard]] bool reads_placements() const noexcept {
         constexpr std::uint32_t rows = 0x700;
         return (vertex_attributes_ & rows) == rows && (!casts_shadows() || (shadow_vertex_attributes_ & rows) == rows);

@@ -97,7 +97,7 @@ std::shared_ptr<anima::Asset> asset() {
 void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     const auto compiled = anima::Mesh::compile(*source);
     anima::Scene instances;
-    const auto a = instances.add(compiled), b = instances.add(compiled);
+    auto a = instances.create({}, compiled), b = instances.create({}, compiled);
     const auto reference = anima::make_mesh_snapshot(*source, anima::sample_pose(*source));
     const auto count = reference.vertices.size();
     const auto initial = instances.snapshot();
@@ -116,7 +116,7 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     auto pose = anima::sample_pose(*source);
     if (!source->animations.empty())
         pose = anima::sample_pose(*source, &source->animations.front(), .5);
-    instances.set_pose(a, pose, world);
+    a.renderer().set_pose(pose, world);
     auto expected = reference;
     anima::pose_mesh_snapshot(*source, pose, expected, 0, world);
     const auto posed = instances.snapshot();
@@ -131,19 +131,19 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     }
     const auto bytes = posed.vertices.size() * sizeof(anima::MeshVertex);
     CHECK(instances.snapshot({bytes}).vertices.size() == count * 2);
-    const auto accepted = instances.instance(a).palette;
+    const auto accepted = instances.instance(a.id()).palette;
     const auto budget = "MeshSnapshot geometry needs " + std::to_string(bytes) + " bytes; budget is " +
                         std::to_string(bytes - 1) + " bytes";
     CHECK_THROWS_WITH_AS(instances.snapshot({bytes - 1}), budget.c_str(), anima::SceneCapacityError);
-    CHECK(instances.instance(a).palette == accepted);
-    instances.set_visible(a, false);
-    instances.set_primitive_visible(b, 0, false);
+    CHECK(instances.instance(a.id()).palette == accepted);
+    a.renderer().set_visible(false);
+    b.renderer().set_primitive_visible(0, false);
     const auto hidden = instances.snapshot();
     CHECK_FALSE(hidden.primitives.front().visible);
     CHECK_FALSE(hidden.primitives[source->primitives.size()].visible);
-    instances.set_visible(a, true);
+    a.renderer().set_visible(true);
     if (!source->materials.empty()) {
-        instances.set_material_factor(a, 0, {.2F, .4F, .8F});
+        a.renderer().set_material_factor(0, {.2F, .4F, .8F});
         const auto colored = instances.snapshot();
         CHECK(colored.material_data[0].factor.x == Near{.2F, tolerance});
         // The other instance keeps the source factor.
@@ -157,11 +157,11 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
                 CHECK(colored.vertices[offset].color.x ==
                       Near{source->primitives[p].vertices[0].color.x * .2F, tolerance});
             }
-        instances.clear_material_factor(a, 0);
+        a.renderer().clear_material_factor(0);
         CHECK(instances.snapshot().material_data[0].factor.x == Near{source->materials[0].factor.x, tolerance});
     }
-    instances.remove(a);
-    instances.remove(b);
+    a.destroy();
+    b.destroy();
     CHECK(instances.snapshot({0}).vertices.empty()); // A zero budget admits an empty scene.
     CHECK(initial.vertices.size() == count * 2);     // The first snapshot owns its storage.
 }
@@ -185,7 +185,7 @@ TEST_CASE("Snapshots keep seams, skin influences, colors and rigid transforms") 
     rigid.skin = -1;
     source->primitives.push_back(rigid);
     anima::Scene instances;
-    const auto id = instances.add(anima::Mesh::compile(*source));
+    auto renderer = instances.create({}, anima::Mesh::compile(*source)).renderer();
     auto reference = anima::make_mesh_snapshot(*source, anima::sample_pose(*source));
     for (double t : {.0, .17, .31, .8, 1.}) {
         CAPTURE(t);
@@ -196,7 +196,7 @@ TEST_CASE("Snapshots keep seams, skin influences, colors and rigid transforms") 
         transform.scale = {1, 1.1F, .9F};
         const auto world = anima::matrix(transform);
         anima::pose_mesh_snapshot(*source, pose, reference, 0, world);
-        instances.set_pose(id, pose, world);
+        renderer.set_pose(pose, world);
         const auto actual = instances.snapshot();
         REQUIRE(actual.vertices.size() == reference.vertices.size());
         for (std::size_t i = 0; i < reference.vertices.size(); ++i) {
@@ -240,8 +240,7 @@ TEST_CASE("Snapshots keep each triangle's source winding against its normals und
     anima::pose_mesh_snapshot(*source, rest, attached, 0, scaling(-1, 1, 1));
     CHECK(same_corners(attached, mirrored));
     anima::Scene scene;
-    const auto id = scene.add(anima::Mesh::compile(*source));
-    scene.set_pose(id, rest, scaling(-1, 1, 1));
+    scene.create({}, anima::Mesh::compile(*source)).renderer().set_pose(rest, scaling(-1, 1, 1));
     CHECK(same_corners(scene.snapshot(), mirrored));
 
     // A collapsed axis has a zero determinant and keeps the source order.
@@ -257,23 +256,23 @@ TEST_CASE("Snapshots keep each triangle's source winding against its normals und
 TEST_CASE("A renderer casts shadows until it is told not to, and a new mesh restores casting") {
     const auto mesh = anima::Mesh::compile(*asset());
     anima::Scene scene;
-    const auto id = scene.add(mesh);
+    auto object = scene.create({}, mesh);
+    const auto id = object.id();
+    auto renderer = object.renderer();
     CHECK(scene.instance(id).casts_shadows);
-    scene.set_casts_shadows(id, false);
+    renderer.set_casts_shadows(false);
     CHECK_FALSE(scene.instance(id).casts_shadows);
     // Hiding and showing the renderer leaves the setting alone.
-    scene.set_visible(id, false);
-    scene.set_visible(id, true);
+    renderer.set_visible(false);
+    renderer.set_visible(true);
     CHECK_FALSE(scene.instance(id).casts_shadows);
-    auto renderer = scene.object(id).renderer();
     renderer.set_casts_shadows(true);
     CHECK(scene.instance(id).casts_shadows);
     renderer.set_casts_shadows(false);
     renderer.set_mesh(mesh);
     CHECK(scene.instance(id).casts_shadows);
-    const auto empty = scene.create("empty");
-    CHECK_THROWS_WITH_AS(scene.set_casts_shadows(empty.id(), false), "GameObject has no MeshRenderer",
-                         std::logic_error);
+    object.remove_mesh();
+    CHECK_THROWS_WITH_AS(renderer.set_casts_shadows(false), "GameObject has no MeshRenderer", std::logic_error);
 }
 
 TEST_CASE("Shadow casting persists through scene documents and prefabs") {

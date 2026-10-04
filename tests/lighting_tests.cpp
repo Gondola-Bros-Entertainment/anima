@@ -163,7 +163,7 @@ struct Rig {
         add_lighting_component_codecs(codecs);
         sun.set_parent(root, ReparentMode::keep_local);
         fill.set_parent(root, ReparentMode::keep_local);
-        sun.set_transform({.rotation = {0, 1, 0, 0}, .scale = {3, 4, 5}});
+        sun.set_world_transform({.rotation = {0, 1, 0, 0}, .scale = {3, 4, 5}});
         selected->sun = sun;
         selected->fill = fill;
         selected->configure(settings);
@@ -180,14 +180,14 @@ TEST_CASE("A light shines along its world -Z axis, whatever its translation and 
     CHECK(near(result.sun.radiance, {1, 2, 3}));
     CHECK(near(result.fill.radiance, {}));
     auto parent = scene.create();
-    parent.set_transform({.translation = {8, 5, 3}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
+    parent.set_world_transform({.translation = {8, 5, 3}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     sun.set_parent(parent, ReparentMode::keep_local);
     sun.set_local_position({300, 200, 100});
     CHECK(near(lighting_environment(scene).sun.direction, {0, 0, -1}));
     sun.clear_parent();
-    sun.set_transform({.rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
+    sun.set_world_transform({.rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     const auto accepted = lighting_environment(scene);
-    sun.set_transform({.rotation = {0, 1, 0, 0}});
+    sun.set_world_transform({.rotation = {0, 1, 0, 0}});
     CHECK(same(accepted, lighting_environment(scene)));
 }
 
@@ -195,11 +195,11 @@ TEST_CASE("Collapsed, mirrored and sheared light axes are rejected") {
     Scene scene;
     auto sun = light(scene);
     (void)environment(scene, sun, light(scene, {}));
-    sun.set_transform({.scale = {1, 0, 1}});
+    sun.set_world_transform({.scale = {1, 0, 1}});
     CHECK_THROWS_WITH_AS(lighting_environment(scene), collapsed_axes, std::invalid_argument);
-    sun.set_transform({.scale = {1, -1, 1}});
+    sun.set_world_transform({.scale = {1, -1, 1}});
     CHECK_THROWS_WITH_AS(lighting_environment(scene), skewed_axes, std::invalid_argument);
-    sun.set_transform({.scale = {1, 1e-5F, 1}}); // Shorter than the 1e-4 minimum axis.
+    sun.set_world_transform({.scale = {1, 1e-5F, 1}}); // Shorter than the 1e-4 minimum axis.
     CHECK_THROWS_WITH_AS(lighting_environment(scene), collapsed_axes, std::invalid_argument);
     auto shear = identity();
     shear[4] = .3F;

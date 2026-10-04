@@ -208,7 +208,7 @@ inline std::optional<double> check_lag(anima::VulkanRenderer &renderer, Check &c
 inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     const auto asset = resource_test::fixture();
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(anima::Mesh::compile(*asset));
+    (void)scene->create({}, anima::Mesh::compile(*asset));
     anima::RendererOptions options;
     options.validation = true;
     options.profile = true;

@@ -159,11 +159,11 @@ inline std::shared_ptr<const anima::Mesh> surface(anima::Vec3 center, float half
     return blending_test::facing(blending_test::opaque({1, 1, 1}), center, half_width, half_height);
 }
 // Adds an object that draws @p mesh with @p material.
-inline anima::Scene::Id add(anima::Scene &scene, std::shared_ptr<const anima::Mesh> mesh,
-                            std::shared_ptr<const anima::CustomMaterial> material) {
-    const auto id = scene.add(std::move(mesh));
-    scene.set_custom_material(id, 0, std::move(material));
-    return id;
+inline anima::GameObject add(anima::Scene &scene, std::shared_ptr<const anima::Mesh> mesh,
+                             std::shared_ptr<const anima::CustomMaterial> material) {
+    auto object = scene.create({}, std::move(mesh));
+    object.renderer().set_custom_material(0, std::move(material));
+    return object;
 }
 
 // Draws selections in one window and keeps each frame read back by name.
@@ -341,16 +341,16 @@ inline void check_opaque(Harness &harness) {
     const Effect effect{.color = {.8, .9, .7}};
     const auto material = effect_material("opaque effect", anima::CustomBlend::opaque, effect);
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(black), {0, 0, -8}, 4, 3));
-    (void)scene->add(blending_test::facing(blending_test::blended(red, .5F), {-1.2F, 0, -4}, .6F, .6F));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(black), {0, 0, -8}, 4, 3));
+    (void)scene->create({}, blending_test::facing(blending_test::blended(red, .5F), {-1.2F, 0, -4}, .6F, .6F));
     const auto tinted = add(*scene, surface({-.9F, 0, -3}, .2F, .2F), material);
     const Color factor{.5, 1, .25};
-    scene->set_material_factor(tinted, 0, {float(factor[0]), float(factor[1]), float(factor[2])});
+    tinted.renderer().set_material_factor(0, {float(factor[0]), float(factor[1]), float(factor[2])});
     (void)add(*scene, surface({.9F, 0, -3}, .4F, .4F), material);
     const Color cover{.2, .6, .3};
-    (void)scene->add(blending_test::facing(blending_test::opaque(cover), {.6F, 0, -2}, .1F, .1F));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(cover), {.6F, 0, -2}, .1F, .1F));
     // Created before the custom quad it covers, so only the pass order puts it in front.
-    (void)scene->add(blending_test::facing(blending_test::blended(blue, .5F), {.6F, .2F, -2}, .04F, .04F));
+    (void)scene->create({}, blending_test::facing(blending_test::blended(blue, .5F), {.6F, .2F, -2}, .04F, .04F));
     harness.render("opaque", {scene}, view);
     require(harness.stats.draw_calls == 6, "The opaque custom material scene did not draw every quad");
     require(!harness.stats.opaque_inputs, "A frame without a material that reads opaque inputs copied them");
@@ -391,33 +391,33 @@ inline void check_sorting(Harness &harness) {
     // Each custom quad is created before the blended mesh it sorts against, so only its distance orders them.
     {
         auto scene = std::make_shared<anima::Scene>();
-        (void)scene->add(backdrop);
+        (void)scene->create({}, backdrop);
         (void)add(*scene, far_mesh(), glaze_material);
-        (void)scene->add(near_blended(red));
+        (void)scene->create({}, near_blended(red));
         cases.push_back({"sort-blended-over-custom", "A blended quad over a farther blended custom one", scene,
                          over(.5, red, over(glaze.coverage, glaze.shaded(), gray))});
     }
     {
         auto scene = std::make_shared<anima::Scene>();
-        (void)scene->add(backdrop);
-        (void)scene->add(far_blended(blue));
+        (void)scene->create({}, backdrop);
+        (void)scene->create({}, far_blended(blue));
         (void)add(*scene, near_mesh(), glaze_material);
         cases.push_back({"sort-custom-over-blended", "A blended custom quad over a farther blended one", scene,
                          over(glaze.coverage, glaze.shaded(), over(.5, blue, gray))});
     }
     {
         auto scene = std::make_shared<anima::Scene>();
-        (void)scene->add(backdrop);
+        (void)scene->create({}, backdrop);
         (void)add(*scene, far_mesh(), glow_material);
-        (void)scene->add(near_blended(blue));
+        (void)scene->create({}, near_blended(blue));
         cases.push_back({"sort-blended-over-additive", "A blended quad over a farther additive custom one", scene,
                          over(.5, blue, add_color(gray, glow.shaded()))});
     }
     {
         auto scene = std::make_shared<anima::Scene>();
-        (void)scene->add(backdrop);
+        (void)scene->create({}, backdrop);
         (void)add(*scene, near_mesh(), glow_material);
-        (void)scene->add(far_blended(blue));
+        (void)scene->create({}, far_blended(blue));
         cases.push_back({"sort-additive-over-blended", "An additive custom quad over a farther blended one", scene,
                          add_color(over(.5, blue, gray), glow.shaded())});
     }
@@ -435,7 +435,7 @@ inline void check_time(Harness &harness) {
     const auto view = blending_test::perspective_view(harness.aspect());
     const Effect pulse{.color = {.9, .8, .7}, .base = .5, .amplitude = .4, .frequency = 2};
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(black), {0, 0, -8}, 4, 3));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(black), {0, 0, -8}, 4, 3));
     (void)add(*scene, surface({0, 0, -3}, .5F, .5F), effect_material("pulse", anima::CustomBlend::opaque, pulse));
     constexpr auto pi = std::numbers::pi_v<float>;
     for (const auto time : {0.F, pi / 4, 3 * pi / 4}) {
@@ -454,10 +454,10 @@ inline void check_water(Harness &harness) {
     const Color near_color{.9, .5, .1}, far_color{.1, .6, .9};
     const Water water{{.02, .15, .2}, .35};
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(near_color), {-1.5F, 0, -4}, 1.5F, 2));
-    (void)scene->add(blending_test::facing(blending_test::opaque(far_color), {3, 0, -9}, 3, 4));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(near_color), {-1.5F, 0, -4}, 1.5F, 2));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(far_color), {3, 0, -9}, 3, 4));
     const anima::Vec3 surface_center{0, 0, -2};
-    const auto pool = add(*scene, surface(surface_center, 1, .6F), water_material(water));
+    auto pool = add(*scene, surface(surface_center, 1, .6F), water_material(water));
     harness.render("water", {scene}, view);
     require(harness.stats.opaque_inputs && harness.stats.opaque_input_bytes > 0,
             "A frame that draws water did not copy opaque depth and color");
@@ -482,15 +482,15 @@ inline void check_water(Harness &harness) {
     harness.images.require_same("water", "water-recreated", "Water after swapchain recreation");
     harness.images.discard({"water", "water-recreated"});
 
-    scene->set_visible(pool, false);
+    pool.renderer().set_visible(false);
     harness.render("water-hidden", {scene}, view);
     require(!harness.stats.opaque_inputs, "A frame whose water is hidden copied opaque inputs");
     harness.expect("water-hidden", view, {-.4F, 0, -2}, near_color, "The near backdrop without the water");
-    scene->set_visible(pool, true);
+    pool.renderer().set_visible(true);
     // Behind the camera, the water is culled.
     auto behind = anima::identity();
     behind[14] = 8;
-    scene->set_transform(pool, behind);
+    pool.set_world_matrix(behind);
     harness.render("water-culled", {scene}, view);
     require(!harness.stats.opaque_inputs && harness.stats.culled_draws == 1,
             "A frame whose water is culled copied opaque inputs");
@@ -522,11 +522,11 @@ inline void check_skinning(Harness &harness) {
     const auto mesh = anima::Mesh::compile(asset);
     const Effect effect{.color = {.6, .8, .9}};
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(black), {0, 0, -8}, 4, 3));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(black), {0, 0, -8}, 4, 3));
     const auto skinned = add(*scene, mesh, effect_material("skinned effect", anima::CustomBlend::opaque, effect));
     auto pose = anima::sample_pose(asset);
     pose.world[1][12] = .8F;
-    scene->set_pose(skinned, pose);
+    skinned.renderer().set_pose(pose);
     harness.render("skinned", {scene}, view);
     harness.expect("skinned", view, {.8F, 0, -3}, effect.shaded(), "A skinned custom quad at its joint");
     harness.expect("skinned", view, {-.2F, 0, -3}, black, "The skinned quad's rest position");
@@ -553,14 +553,14 @@ inline void check_shadows(Harness &harness) {
     const Effect effect{.color = {.5, .7, .9}};
     const auto white = blending_test::opaque({1, 1, 1});
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, 0}, 4, 3));
+    (void)scene->create({}, blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, 0}, 4, 3));
     (void)add(*scene, blending_test::horizontal(white, {-1.5F, 1, 0}, .5F, .5F),
               effect_material("casting effect", anima::CustomBlend::opaque, effect, true));
     const auto silent = add(*scene, blending_test::horizontal(white, {1.5F, 1, 0}, .5F, .5F),
                             effect_material("effect", anima::CustomBlend::opaque, effect));
     harness.render("shadows", {scene}, view, lighting);
     const auto casters = harness.stats.shadow_draw_calls;
-    scene->set_visible(silent, false);
+    silent.renderer().set_visible(false);
     harness.render("shadows-without", {scene}, view, lighting);
     require(casters == 2U && harness.stats.shadow_draw_calls == casters,
             "The ground and the depth-only variant did not both draw into the shadow map, or a custom material "
@@ -616,12 +616,12 @@ inline void check_placements(Harness &harness) {
             placed.push_back(m);
         }
     auto separate = std::make_shared<anima::Scene>(), together = std::make_shared<anima::Scene>();
-    (void)separate->add(ground);
-    (void)together->add(ground);
+    (void)separate->create({}, ground);
+    (void)together->create({}, ground);
     for (const auto &m : placed)
-        separate->set_transform(add(*separate, quad, material), m);
+        add(*separate, quad, material).set_world_matrix(m);
     const auto field = add(*together, quad, material);
-    together->set_placements(field, anima::MeshPlacements::create(quad, placed));
+    field.renderer().set_placements(anima::MeshPlacements::create(quad, placed));
     harness.render("placed-separate", {separate}, view, lighting);
     const auto apart = harness.stats;
     harness.render("placed-together", {together}, view, lighting);
@@ -706,24 +706,24 @@ inline void check_fading(Harness &harness) {
          separate = std::make_shared<anima::Scene>(), together = std::make_shared<anima::Scene>(),
          casters = std::make_shared<anima::Scene>();
     for (const auto &scene : {empty, standard, separate, together, casters})
-        (void)scene->add(ground);
-    std::vector<anima::Scene::Id> plain;
+        (void)scene->create({}, ground);
+    std::vector<anima::GameObject> plain;
     for (std::size_t i = 0; i < placed.size(); ++i) {
-        plain.push_back(standard->add(quad));
-        standard->set_transform(plain.back(), placed[i]);
-        standard->set_visibility_range(plain.back(), range);
-        const auto custom = add(*separate, quad, fade);
-        separate->set_transform(custom, placed[i]);
-        separate->set_visibility_range(custom, range);
+        plain.push_back(standard->create({}, quad));
+        plain.back().set_world_matrix(placed[i]);
+        plain.back().renderer().set_visibility_range(range);
+        auto custom = add(*separate, quad, fade);
+        custom.set_world_matrix(placed[i]);
+        custom.renderer().set_visibility_range(range);
         // The quads that cast, drawn whole.
         if (share(distances[i]) > .5)
-            casters->set_transform(casters->add(quad), placed[i]);
+            casters->create({}, quad).set_world_matrix(placed[i]);
     }
     const auto field = add(*together, quad, fade);
     const auto placements = anima::MeshPlacements::create(quad, placed);
     require(placements->clusters().size() == 1, "The faded copies do not form one cluster");
-    together->set_placements(field, placements);
-    together->set_visibility_range(field, range);
+    field.renderer().set_placements(placements);
+    field.renderer().set_visibility_range(range);
 
     // Without shadows, a capture differs from the frame without quads only where a quad draws.
     harness.render("fade-empty", {empty}, view, unshadowed);
@@ -735,12 +735,12 @@ inline void check_fading(Harness &harness) {
                 mask[y * image.width + x] = gpu_check::pixel(image, x, y) != gpu_check::pixel(nothing, x, y);
         return mask;
     };
-    for (const auto id : plain)
-        standard->set_visibility_range(id, {});
+    for (const auto &object : plain)
+        object.renderer().set_visibility_range({});
     harness.render("fade-whole", {standard}, view, unshadowed);
     const auto whole = covered("fade-whole");
-    for (const auto id : plain)
-        standard->set_visibility_range(id, range);
+    for (const auto &object : plain)
+        object.renderer().set_visibility_range(range);
     harness.render("fade-standard", {standard}, view, unshadowed);
     const auto culled = harness.stats.range_culled;
     const auto quads = covered("fade-standard");
@@ -823,11 +823,11 @@ inline void check_crossfade(Harness &harness) {
         const std::string path = custom ? "custom" : "standard";
         // Adds the quad with @p factor and @p range, drawn by the fade material on the custom path.
         const auto add_quad = [&](anima::Scene &scene, anima::Vec3 factor, const anima::VisibilityRange &range) {
-            const auto id = scene.add(quad);
-            scene.set_material_factor(id, 0, factor);
+            auto renderer = scene.create({}, quad).renderer();
+            renderer.set_material_factor(0, factor);
             if (custom)
-                scene.set_custom_material(id, 0, fade);
-            scene.set_visibility_range(id, range);
+                renderer.set_custom_material(0, fade);
+            renderer.set_visibility_range(range);
         };
         auto empty = std::make_shared<anima::Scene>(), whole = std::make_shared<anima::Scene>(),
              out = std::make_shared<anima::Scene>(), in = std::make_shared<anima::Scene>(),
@@ -921,8 +921,8 @@ inline void check_opaque_depth(Harness &harness) {
     const auto probe = std::make_shared<const anima::CustomMaterial>(std::move(definition));
     require(probe->reads_opaque_depth(), "The depth probe does not read opaque depth");
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque({.9, .5, .1}), {-1.5F, 0, -4}, 1, 2));
-    (void)scene->add(blending_test::facing(blending_test::opaque({.1, .6, .9}), {1.5F, 0, -9}, 1, 2));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque({.9, .5, .1}), {-1.5F, 0, -4}, 1, 2));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque({.1, .6, .9}), {1.5F, 0, -9}, 1, 2));
     (void)add(*scene, surface({0, 0, -2}, 1.2F, .6F), probe);
     harness.render("opaque-depth", {scene}, view);
     require(harness.stats.opaque_inputs, "A frame that draws the depth probe did not copy opaque depth");

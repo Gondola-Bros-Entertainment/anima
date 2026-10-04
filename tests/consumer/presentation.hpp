@@ -344,25 +344,25 @@ inline void run() {
         }
         {
             Scene scene;
-            const auto body = scene.create("Owner", actor.render);
+            auto body = scene.create("Owner", actor.render);
             auto world = identity();
             world[12] = 4;
-            scene.set_pose(body.id(), baseline, world);
+            body.renderer().set_pose(baseline, world);
             auto set = std::make_unique<FittedSet>(body, fitted);
             set->replace({"shell"});
             const auto object = set->instances().front().object;
             Scene reference;
-            const auto expected = reference.add(shell->render);
-            reference.set_pose(expected, shell->pose(baseline), world);
+            const auto expected = reference.create({}, shell->render);
+            expected.renderer().set_pose(shell->pose(baseline), world);
             check(scene.size() == 2 && object.world_matrix() == world &&
-                      scene.instance(object.id()).palette == reference.instance(expected).palette,
+                      scene.instance(object.id()).palette == reference.instance(expected.id()).palette,
                   "A new fitted object did not immediately inherit the current body pose and placement");
             set->replace({"shell"});
             check(set->instances().front().object.id() == object.id() && scene.size() == 2,
                   "Unchanged fitted membership recreated its object");
             rejects<std::runtime_error>([&] { set->replace({"shell.alt", "shell.broken"}); }, "Cannot open GLB file");
             check(scene.size() == 2 && set->instances().front().object.id() == object.id() &&
-                      scene.instance(object.id()).palette == reference.instance(expected).palette,
+                      scene.instance(object.id()).palette == reference.instance(expected.id()).palette,
                   "Failed replacement changed the accepted fitted set");
 
             auto second = scene.create("Independent owner", actor.render);
@@ -373,34 +373,34 @@ inline void run() {
             check(second_object.renderer().mesh() == object.renderer().mesh(), "Fitted sets duplicated shared meshes");
             world[14] = 3;
             const auto later = motion->sample("drift", .75);
-            scene.set_pose(body.id(), later, world);
+            body.renderer().set_pose(later, world);
             set->sync();
-            reference.set_pose(expected, shell->pose(later), world);
-            check(scene.instance(object.id()).palette == reference.instance(expected).palette &&
+            expected.renderer().set_pose(shell->pose(later), world);
+            check(scene.instance(object.id()).palette == reference.instance(expected.id()).palette &&
                       scene.instance(second_object.id()).palette == second_palette,
                   "Fitted pose synchronization lost placement or changed another owner");
-            scene.set_visible(body.id(), false);
+            body.renderer().set_visible(false);
             set->sync();
             check(!scene.instance(object.id()).visible && scene.instance(second_object.id()).visible,
                   "Fitted visibility escaped its owner");
             set->replace({"shell.alt"});
             const auto replacement = set->instances().front().object;
             check(!object.valid() && !scene.instance(replacement.id()).visible &&
-                      scene.instance(replacement.id()).palette == reference.instance(expected).palette,
+                      scene.instance(replacement.id()).palette == reference.instance(expected.id()).palette,
                   "Replacing items on a hidden body exposed a fitted mesh or reset its pose");
             world[12] = -2;
-            scene.set_transform(body.id(), world);
-            scene.set_visible(body.id(), true);
+            body.set_world_matrix(world);
+            body.renderer().set_visible(true);
             set->sync();
-            reference.set_pose(expected, shell->pose(later), world);
+            expected.renderer().set_pose(shell->pose(later), world);
             check(scene.instance(replacement.id()).visible &&
-                      scene.instance(replacement.id()).palette == reference.instance(expected).palette,
+                      scene.instance(replacement.id()).palette == reference.instance(expected.id()).palette,
                   "Showing a fitted set failed to catch up to the current body transform");
             set->replace({});
             check(!replacement.valid() && scene.size() == 3, "Clearing the fitted set leaked fitted objects");
             set->replace({"shell"});
             const auto last_fit = set->instances().front().object;
-            scene.remove(body.id());
+            body.destroy();
             const auto reused = scene.create("Reused body slot", actor.render);
             rejects<std::out_of_range>([&] { set->sync(); }, "Expired GameObject handle");
             rejects<std::out_of_range>([&] { set->replace({}); }, "Expired GameObject handle");

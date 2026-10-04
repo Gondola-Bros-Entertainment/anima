@@ -166,8 +166,9 @@ inline int run(int argc, char **argv) {
         texture.encoding = anima::TextureEncoding::linear;
         texture.sampler = close->textures.at(0).sampler;
         auto scene = texture_memory_test::scene_of(close_rgba);
-        scene->set_custom_material(scene->instances().front(), 0,
-                                   std::make_shared<const anima::CustomMaterial>(std::move(definition)));
+        scene->object(scene->instances().front())
+            .renderer()
+            .set_custom_material(0, std::make_shared<const anima::CustomMaterial>(std::move(definition)));
         return scene;
     };
     auto linear_source = std::make_shared<anima::Image>(source);

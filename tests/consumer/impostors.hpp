@@ -295,11 +295,11 @@ inline int run(int argc, char **argv) {
     }
     const auto with_ground = [&](std::shared_ptr<const anima::Mesh> mesh) {
         auto scene = alone(std::move(mesh));
-        (void)scene->add(ground());
+        (void)scene->create({}, ground());
         return scene;
     };
     auto bare = std::make_shared<anima::Scene>();
-    (void)bare->add(ground());
+    (void)bare->create({}, ground());
     renderer.set_scenes({bare});
     (void)draw("ground");
     renderer.set_scenes({with_ground(tree)});

@@ -391,7 +391,7 @@ TEST_CASE("Snapshots budget each draw's own triangles, not its levels") {
     const auto corners = mesh->draws()[0].index_count;
     REQUIRE(mesh->indices().size() > corners);
     Scene scene;
-    (void)scene.add(mesh);
+    (void)scene.create({}, mesh);
     const auto bytes = validate_scene_geometry(corners);
     CHECK(scene.snapshot({bytes}).vertices.size() == corners);
     const auto budget = "MeshSnapshot geometry needs " + std::to_string(bytes) + " bytes; budget is " +

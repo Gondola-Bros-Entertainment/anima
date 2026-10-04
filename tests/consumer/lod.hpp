@@ -153,7 +153,7 @@ inline int run(int argc, char **argv) {
             field.push_back(m);
         }
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(ground());
+    (void)scene->create({}, ground());
     scene->create("field", sphere).renderer().set_placements(anima::MeshPlacements::create(sphere, field));
     auto single = scene->create("single", sphere);
     single.set_world_matrix([] {

@@ -101,6 +101,10 @@ struct SceneLifetime {
 } // namespace detail
 /// Owner of a hierarchy of GameObjects and their components.
 ///
+/// Objects are created with create() and changed through their GameObject, MeshRenderer and ObjectTransform
+/// handles. Renderers read the scene through instances(), instance() and bounds(); a Scene::Id, which
+/// GameObject::id() returns, names an object to instance(), object() and contains().
+///
 /// Scenes cannot be copied or moved. Mutations validate only the instance data they change, never
 /// whole vertex arrays, and hierarchy traversal is iterative, so depth does not consume the call
 /// stack. Creating an object takes amortized time independent of the scene's other objects, and
@@ -160,11 +164,12 @@ class Scene {
         /// Whether the renderer's primitives cast shadows. They receive shadows either way.
         bool casts_shadows = true;
         /// Copies drawn in place of the one at the object, relative to it, or null to draw that one; see
-        /// set_placements(). Visibility, factors, custom materials and shadow casting apply to every copy.
+        /// MeshRenderer::set_placements(). Visibility, factors, custom materials and shadow casting apply to
+        /// every copy.
         std::shared_ptr<const MeshPlacements> placements;
         /// The object's world matrix, which places #placements.
         Mat4 world = identity();
-        /// Distances at which the object, or each of its copies, draws; see set_visibility_range().
+        /// Distances at which the object, or each of its copies, draws; see MeshRenderer::set_visibility_range().
         VisibilityRange visibility_range;
     };
     Scene();
@@ -231,58 +236,6 @@ class Scene {
     [[nodiscard]] bool contains(Id id) const noexcept;
     /// Number of live objects, including those without renderers.
     [[nodiscard]] std::size_t size() const noexcept { return object_count_; }
-    /// Creates an unnamed root object rendering @p asset, as create() does, and returns its Id.
-    /// Throws `std::invalid_argument` for a null mesh.
-    [[nodiscard]] Id add(std::shared_ptr<const Mesh> asset);
-    /// Destroys object @p id and its descendants, as GameObject::destroy does.
-    void remove(Id id);
-    /// Sets the animation pose of @p id's renderer together with its world matrix, as
-    /// GameObject::set_world_matrix does; @p world defaults to identity, not the current placement.
-    ///
-    /// Only Pose::world is used: one affine matrix per mesh node, matching the mesh's node count.
-    /// Compute it with sample_pose or pose_from_local; changing Pose::local alone has no effect.
-    /// The renderer keeps a copy of @p pose in storage it reuses: once it has held a pose with at
-    /// least as many Pose::local and Pose::world entries since its mesh was set, the call allocates
-    /// only as a transform change does (see GameObject). Throws `std::logic_error` when the object
-    /// has no renderer or its renderer draws placements, whose copies keep the rest pose.
-    void set_pose(Id id, const Pose &pose, const Mat4 &world = identity());
-    /// Sets @p id's world matrix, as GameObject::set_world_matrix does.
-    void set_transform(Id id, const Mat4 &world);
-    /// Replaces the authored linear RGB factor of mesh material @p material for this object only.
-    /// Each channel must be finite and in [0, 1]. Throws `std::out_of_range` for an index outside
-    /// the mesh's materials and `std::logic_error` when the object has no renderer.
-    void set_material_factor(Id id, std::size_t material, Vec3 factor);
-    /// Restores the mesh's authored factor for material @p material. Throws as
-    /// set_material_factor() does.
-    void clear_material_factor(Id id, std::size_t material);
-    /// Draws the primitives of mesh material @p material of this object with @p custom, or with the
-    /// mesh's Material again when @p custom is null (Instance::custom_materials). The object's factor
-    /// for that material still reaches the custom shaders. Throws `std::out_of_range` for an index
-    /// outside the mesh's materials, `std::logic_error` when the object has no renderer, and
-    /// `std::invalid_argument` when the renderer draws placements that @p custom does not read
-    /// (CustomMaterial::reads_placements(): "A custom material that draws placements must read them").
-    void set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom);
-    /// Shows or hides @p id's renderer and sets its MeshRenderer component's enabled flag to match.
-    /// Per-primitive choices are kept. Throws `std::logic_error` when the object has no renderer.
-    void set_visible(Id id, bool visible);
-    /// Shows or hides one primitive of @p id's mesh. Throws `std::out_of_range` for an index
-    /// outside the mesh's primitives and `std::logic_error` when the object has no renderer.
-    void set_primitive_visible(Id id, std::size_t primitive, bool visible);
-    /// Sets whether @p id's renderer casts shadows (Instance::casts_shadows). Throws
-    /// `std::logic_error` when the object has no renderer.
-    void set_casts_shadows(Id id, bool casts);
-    /// Draws one copy of @p id's mesh per placement of @p placements, as MeshPlacements describes, instead of one
-    /// copy at the object, or that one copy again when @p placements is null (Instance::placements). The copies
-    /// draw the mesh's rest pose, and the renderer's bounds cover all of them. Moving the object then takes time
-    /// proportional to the mesh's primitives, as before, not to the placements. Throws `std::logic_error` when the
-    /// object has no renderer or its renderer has a pose (set_pose(), or one that a document or prefab supplied),
-    /// and `std::invalid_argument` when @p placements copy another mesh ("Placements copy another mesh") or a custom
-    /// material of the renderer does not read them (CustomMaterial::reads_placements(): "A custom material that
-    /// draws placements must read them").
-    void set_placements(Id id, std::shared_ptr<const MeshPlacements> placements);
-    /// Draws @p id's renderer only at the distances @p range allows, as VisibilityRange describes. Throws
-    /// `std::logic_error` when the object has no renderer and what validate_visibility_range() throws.
-    void set_visibility_range(Id id, const VisibilityRange &range);
     /// Render state of @p id's renderer, borrowed until the scene next changes. Throws
     /// `std::logic_error` when the object has no renderer.
     [[nodiscard]] const Instance &instance(Id id) const;
@@ -299,7 +252,7 @@ class Scene {
     ///
     /// Each draw contributes its own triangles, never its levels of detail (IndexedDraw::levels), once per
     /// copy: a renderer with placements gives one primitive per placement and draw, in
-    /// MeshPlacements::transforms() order, placed as set_placements() describes, and visibility ranges
+    /// MeshPlacements::transforms() order, placed as MeshRenderer::set_placements() describes, and visibility ranges
     /// leave every copy in. Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
     /// included but marked invisible and left out of the snapshot bounds. Normals follow normal(), and
     /// corners follow MeshSnapshot::vertices. Throws SceneCapacityError when the expanded vertices
@@ -312,10 +265,28 @@ class Scene {
     friend class MeshRenderer;
     friend class FittedSet;
     friend class Prefab;
+    friend struct AttachmentInstance;
     friend struct AttachmentSet;
     friend struct detail::ScenePersistence;
     friend class SceneSet;
     friend struct detail::SceneDriver;
+    // Id forms of the GameObject and MeshRenderer mutators, which forward to them, for friends that keep objects by
+    // Id. Each validates and throws as its public form states; one that needs a renderer throws std::logic_error
+    // without one. add() creates an unnamed root object as create() does, but throws std::invalid_argument for a
+    // null mesh.
+    [[nodiscard]] Id add(std::shared_ptr<const Mesh> asset);
+    void remove(Id id);
+    // Sets the pose and the world matrix in one update, validating both before publishing either.
+    void set_pose(Id id, const Pose &pose, const Mat4 &world);
+    void set_transform(Id id, const Mat4 &world);
+    void set_material_factor(Id id, std::size_t material, Vec3 factor);
+    void clear_material_factor(Id id, std::size_t material);
+    void set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom);
+    void set_visible(Id id, bool visible);
+    void set_primitive_visible(Id id, std::size_t primitive, bool visible);
+    void set_casts_shadows(Id id, bool casts);
+    void set_placements(Id id, std::shared_ptr<const MeshPlacements> placements);
+    void set_visibility_range(Id id, const VisibilityRange &range);
     void invalidate() noexcept;
     void release() noexcept;
     static constexpr std::size_t no_slot = SIZE_MAX;
@@ -472,7 +443,7 @@ class GameObject {
     /// Replaces the translation of the world matrix, keeping its other columns.
     void set_position(Vec3 position);
     /// Sets the world matrix to anima::matrix(@p transform).
-    void set_transform(const Transform &transform);
+    void set_world_transform(const Transform &transform);
     /// Sets the world matrix; the local matrix becomes the inverse parent world matrix times
     /// @p world.
     void set_world_matrix(const Mat4 &world);
@@ -550,28 +521,60 @@ class MeshRenderer {
     /// every distance, the renderer and every primitive to visible, and shadow casting on. Throws
     /// `std::invalid_argument` for a null mesh.
     void set_mesh(std::shared_ptr<const Mesh> mesh);
-    /// Sets the animation pose, keeping the object's placement; see Scene::set_pose.
+    /// Sets the animation pose, keeping the object's world matrix.
+    ///
+    /// Only Pose::world is used: one affine matrix per mesh node, matching the mesh's node count.
+    /// Compute it with sample_pose or pose_from_local; changing Pose::local alone has no effect.
+    /// The renderer keeps a copy of @p pose in storage it reuses: once it has held a pose with at
+    /// least as many Pose::local and Pose::world entries since its mesh was set, the call allocates
+    /// only as a transform change does (see GameObject). Throws `std::logic_error` when the renderer
+    /// draws placements, whose copies keep the rest pose ("A renderer that draws placements keeps the
+    /// rest pose"), and `std::invalid_argument` when @p pose has another node count ("Pose does not
+    /// match render asset") or a matrix of @p pose, or of the palette it gives, is not finite and
+    /// affine.
     void set_pose(const Pose &pose);
-    /// Shows or hides the renderer; see Scene::set_visible.
+    /// Sets the animation pose and the object's world matrix in one update, as set_pose(const Pose &)
+    /// and GameObject::set_world_matrix do, but validating both before publishing either, so a
+    /// failure changes neither. It throws as both of them do, including MathError under a singular
+    /// parent.
+    void set_pose(const Pose &pose, const Mat4 &world);
+    /// Shows or hides the renderer and sets its MeshRenderer component's enabled flag to match.
+    /// Per-primitive choices are kept.
     void set_visible(bool visible);
-    /// Overrides one material factor for this object; see Scene::set_material_factor.
+    /// Replaces the authored linear RGB factor of mesh material @p material for this object only.
+    /// Each channel must be finite and in [0, 1] (`std::invalid_argument`: "Invalid render material
+    /// factor"). Throws `std::out_of_range` for an index outside the mesh's materials.
     void set_material_factor(std::size_t material, Vec3 factor);
-    /// Restores one authored material factor; see Scene::clear_material_factor.
+    /// Restores the mesh's authored factor for material @p material. Throws `std::out_of_range` for
+    /// an index outside the mesh's materials.
     void clear_material_factor(std::size_t material);
-    /// Draws one mesh material's primitives with a custom material, or null for the mesh's own; see
-    /// Scene::set_custom_material.
+    /// Draws the primitives of mesh material @p material of this object with @p custom, or with the
+    /// mesh's Material again when @p custom is null (Scene::Instance::custom_materials). The object's
+    /// factor for that material still reaches the custom shaders. Throws `std::out_of_range` for an
+    /// index outside the mesh's materials, and `std::invalid_argument` when the renderer draws
+    /// placements that @p custom does not read (CustomMaterial::reads_placements(): "A custom material
+    /// that draws placements must read them").
     void set_custom_material(std::size_t material, std::shared_ptr<const CustomMaterial> custom);
-    /// Shows or hides one primitive; see Scene::set_primitive_visible.
+    /// Shows or hides one primitive of the mesh. Throws `std::out_of_range` for an index outside the
+    /// mesh's primitives.
     void set_primitive_visible(std::size_t primitive, bool visible);
-    /// Sets whether the renderer casts shadows; see Scene::set_casts_shadows.
+    /// Sets whether the renderer casts shadows (Scene::Instance::casts_shadows).
     void set_casts_shadows(bool casts);
-    /// Copies drawn in place of the one at the object, or null; see Scene::set_placements.
+    /// Copies drawn in place of the one at the object, or null; see set_placements().
     [[nodiscard]] std::shared_ptr<const MeshPlacements> placements() const;
-    /// Draws a copy at each placement, or one copy at the object for null; see Scene::set_placements.
+    /// Draws one copy of the mesh per placement of @p placements, as MeshPlacements describes, instead of one
+    /// copy at the object, or that one copy again when @p placements is null (Scene::Instance::placements). The
+    /// copies draw the mesh's rest pose, and the renderer's bounds cover all of them. Moving the object then takes
+    /// time proportional to the mesh's primitives, as before, not to the placements. Throws `std::logic_error` when
+    /// the renderer has a pose (set_pose(), or one that a document or prefab supplied): "A renderer with a pose
+    /// cannot draw placements", and `std::invalid_argument` when @p placements copy another mesh ("Placements copy
+    /// another mesh") or a custom material of the renderer does not read them (CustomMaterial::reads_placements():
+    /// "A custom material that draws placements must read them").
     void set_placements(std::shared_ptr<const MeshPlacements> placements);
-    /// Distances at which the renderer draws; see Scene::set_visibility_range.
+    /// Distances at which the renderer draws; see set_visibility_range().
     [[nodiscard]] VisibilityRange visibility_range() const;
-    /// Draws only at the distances @p range allows; see Scene::set_visibility_range.
+    /// Draws the renderer only at the distances @p range allows, as VisibilityRange describes. Throws what
+    /// validate_visibility_range() throws.
     void set_visibility_range(const VisibilityRange &range);
     /// Union of all primitive bounds in world space, including hidden primitives and every copy.
     [[nodiscard]] RenderBounds bounds() const;
@@ -592,21 +595,21 @@ class ObjectTransform {
     /// World translation.
     [[nodiscard]] Vec3 position() const { return object_.position(); }
     /// World matrix.
-    [[nodiscard]] Mat4 matrix() const { return object_.world_matrix(); }
+    [[nodiscard]] Mat4 world_matrix() const { return object_.world_matrix(); }
     /// Translation relative to the parent.
     [[nodiscard]] Vec3 local_position() const { return object_.local_position(); }
     /// Matrix relative to the parent.
     [[nodiscard]] Mat4 local_matrix() const { return object_.local_matrix(); }
     /// Replaces the world translation; see GameObject::set_position.
     void set_position(Vec3 position) { object_.set_position(position); }
-    /// Sets the world transform; see GameObject::set_transform.
-    void set(const Transform &value) { object_.set_transform(value); }
+    /// Sets the world transform; see GameObject::set_world_transform.
+    void set_world_transform(const Transform &value) { object_.set_world_transform(value); }
     /// Sets the world matrix; see GameObject::set_world_matrix.
-    void set_matrix(const Mat4 &value) { object_.set_world_matrix(value); }
+    void set_world_matrix(const Mat4 &value) { object_.set_world_matrix(value); }
     /// Replaces the local translation; see GameObject::set_local_position.
     void set_local_position(Vec3 position) { object_.set_local_position(position); }
     /// Sets the local transform; see GameObject::set_local_transform.
-    void set_local(const Transform &value) { object_.set_local_transform(value); }
+    void set_local_transform(const Transform &value) { object_.set_local_transform(value); }
     /// Sets the local matrix; see GameObject::set_local_matrix.
     void set_local_matrix(const Mat4 &value) { object_.set_local_matrix(value); }
 

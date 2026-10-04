@@ -32,7 +32,7 @@ struct DrawLevel {
     float error{};
 };
 /// One indexed triangle-list draw of a Mesh, compiled from one source primitive. Its position in
-/// Mesh::draws() is the primitive index that Scene::set_primitive_visible takes.
+/// Mesh::draws() is the primitive index that MeshRenderer::set_primitive_visible takes.
 struct IndexedDraw {
     /// Offset of the draw's first index in Mesh::indices().
     std::uint32_t first_index{};
@@ -66,8 +66,8 @@ struct IndexedDraw {
 /// faceted models simplify too, but never across a split in the attributes it does not weigh: texture coordinates,
 /// tangent handedness, vertex alpha, and in a skinned draw joints and weights. A level's triangles are ordered for the
 /// vertex cache, except those of a draw whose own material is AlphaMode::blend, which keep their source order, since
-/// they composite in it; a blended custom material (Scene::set_custom_material) composites any other draw's levels in
-/// their cache order. Every level keeps the draw's open border whole, so draws that meet
+/// they composite in it; a blended custom material (MeshRenderer::set_custom_material) composites any other draw's
+/// levels in their cache order. Every level keeps the draw's open border whole, so draws that meet
 /// along it, such as the material subsets of one mesh or the pieces of Mesh::compile_static, meet without cracks
 /// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices
 /// of the one before it or when a step's error would exceed the draw's extent. Draws with a masked material

@@ -83,17 +83,17 @@ class Prefab {
         /// One factor per mesh material, each channel in [0, 1]; empty keeps the authored factors.
         std::vector<Vec3> material_factors;
         /// One custom material per mesh material, each null to keep the mesh's Material
-        /// (Scene::set_custom_material); empty keeps every Material. Capture leaves it empty when no
+        /// (MeshRenderer::set_custom_material); empty keeps every Material. Capture leaves it empty when no
         /// slot has a custom material.
         std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
         /// One flag per mesh primitive; empty shows every primitive.
         std::vector<bool> primitive_visible;
         /// Whether the renderer casts shadows (Scene::Instance::casts_shadows).
         bool casts_shadows = true;
-        /// Copies drawn in place of the one at the object (Scene::set_placements), or null; they must copy
+        /// Copies drawn in place of the one at the object (MeshRenderer::set_placements), or null; they must copy
         /// #mesh, and #pose must be empty.
         std::shared_ptr<const MeshPlacements> placements;
-        /// Distances at which the renderer draws (Scene::set_visibility_range).
+        /// Distances at which the renderer draws (MeshRenderer::set_visibility_range).
         VisibilityRange visibility_range;
         /// Encoded components, at most 1,024, each type at most once.
         std::vector<ComponentData> components;

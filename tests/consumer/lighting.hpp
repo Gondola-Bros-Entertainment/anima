@@ -19,7 +19,7 @@ inline void run() {
     auto sun = authored.create("sun"), fill = authored.create("fill");
     sun.set_parent(rig, anima::ReparentMode::keep_local);
     fill.set_parent(rig, anima::ReparentMode::keep_local);
-    sun.set_transform({.rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
+    sun.set_world_transform({.rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     sun.add_component<anima::DirectionalLightComponent>(anima::Vec3{2, 1, .5F});
     fill.add_component<anima::DirectionalLightComponent>(anima::Vec3{});
     environment->sun = sun;

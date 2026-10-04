@@ -13,13 +13,13 @@
 namespace anima {
 /// Copies of one rigid Mesh, each placed by an affine matrix relative to the object that draws them.
 ///
-/// Scene::set_placements makes a renderer draw its mesh once per placement instead of once at its object: copy `p`
-/// draws node `n` at `world * p * rest[n]`, where `world` is the object's world matrix and `rest` is the mesh's
+/// MeshRenderer::set_placements makes a renderer draw its mesh once per placement instead of once at its object: copy
+/// `p` draws node `n` at `world * p * rest[n]`, where `world` is the object's world matrix and `rest` is the mesh's
 /// rest pose (Mesh::rest_pose()). Such a renderer always draws the rest pose. Creation groups the placements into
-/// clusters of at most #cluster_size near one another, ordered along a space-filling curve through their
-/// translations, and records the bounds of each cluster's copies, so a renderer can skip the clusters that a view
-/// or shadow pass cannot see. transforms() lists the placements in that order, not in the order given; the
-/// copies are interchangeable, so only blended materials, whose copies blend in that order, can tell.
+/// clusters of at most #cluster_size near one another, ordered along a space-filling curve through their translations,
+/// and records the bounds of each cluster's copies, so a renderer can skip the clusters that a view or shadow pass
+/// cannot see. transforms() lists the placements in that order, not in the order given; the copies are interchangeable,
+/// so only blended materials, whose copies blend in that order, can tell.
 ///
 /// Immutable after creation and safe to read from several threads; scenes and renderers share it. VulkanRenderer
 /// uploads its transforms once, 48 bytes per placement, and keeps them on the GPU until only the renderer holds

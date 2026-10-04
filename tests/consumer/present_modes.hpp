@@ -101,7 +101,7 @@ class Run {
     Run(SDL_Window *window, anima::RendererOptions options)
         : window_(window), scene_(std::make_shared<anima::Scene>()), started_(std::chrono::steady_clock::now()),
           frames_in_flight_(options.frames_in_flight) {
-        (void)scene_->add(anima::Mesh::compile(*resource_test::fixture()));
+        (void)scene_->create({}, anima::Mesh::compile(*resource_test::fixture()));
         options.validation = true;
         options.scenes = {scene_};
         renderer_.emplace(window, options);

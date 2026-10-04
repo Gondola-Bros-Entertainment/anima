@@ -117,14 +117,14 @@ TEST_CASE("Posed instances share one indexed mesh and match the reference deform
     CHECK(asset->indices().size() == 12);
     CHECK(asset->vertices().size() == 6); // Exact duplicates share one vertex.
     anima::Scene scene;
-    const auto a = scene.add(asset), b = scene.add(asset);
-    CHECK(scene.instance(a).asset == scene.instance(b).asset);
+    const auto a = scene.create({}, asset), b = scene.create({}, asset);
+    CHECK(scene.instance(a.id()).asset == scene.instance(b.id()).asset);
     for (float time : {0.F, .2F, .7F, 1.F}) {
         CAPTURE(time);
         const auto pose = pose_at(source, time);
-        scene.set_pose(a, pose, instance_world());
-        parity(source, scene.instance(a), pose, instance_world());
-        parity(source, scene.instance(b), asset->rest_pose(), anima::identity());
+        a.renderer().set_pose(pose, instance_world());
+        parity(source, scene.instance(a.id()), pose, instance_world());
+        parity(source, scene.instance(b.id()), asset->rest_pose(), anima::identity());
     }
 }
 
@@ -132,17 +132,25 @@ TEST_CASE("A rejected pose or snapshot budget leaves the accepted palette") {
     const auto source = fixture();
     const auto asset = anima::Mesh::compile(source);
     anima::Scene scene;
-    const auto a = scene.add(asset);
-    (void)scene.add(asset);
+    const auto object = scene.create({}, asset);
+    const auto a = object.id();
+    auto renderer = object.renderer();
+    (void)scene.create({}, asset);
     const auto pose = pose_at(source, 1);
-    scene.set_pose(a, pose, instance_world());
+    renderer.set_pose(pose, instance_world());
     const auto accepted = scene.instance(a).palette;
     auto invalid = pose;
     invalid.world.pop_back();
-    CHECK_THROWS_WITH_AS(scene.set_pose(a, invalid), "Pose does not match render asset", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(renderer.set_pose(invalid), "Pose does not match render asset", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(renderer.set_pose(invalid, anima::identity()), "Pose does not match render asset",
+                         std::invalid_argument);
     invalid = pose;
     invalid.world[0][0] = std::numeric_limits<float>::quiet_NaN();
-    CHECK_THROWS_WITH_AS(scene.set_pose(a, invalid), "Non-finite instance transform", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(renderer.set_pose(invalid), "Non-finite instance transform", std::invalid_argument);
+    // A pose rejected with a world matrix leaves the object where it was.
+    CHECK_THROWS_WITH_AS(renderer.set_pose(invalid, anima::identity()), "Non-finite instance transform",
+                         std::invalid_argument);
+    CHECK(object.world_matrix() == instance_world());
     CHECK(scene.instance(a).palette == accepted);
     const auto snapshot = scene.snapshot();
     CHECK(snapshot.vertices.size() == 24);
@@ -157,29 +165,31 @@ TEST_CASE("A rejected pose or snapshot budget leaves the accepted palette") {
 TEST_CASE("Material and visibility edits stay with their instance") {
     const auto asset = anima::Mesh::compile(fixture());
     anima::Scene scene;
-    const auto a = scene.add(asset), b = scene.add(asset);
-    scene.set_material_factor(a, 0, {1, 0, 0});
+    auto a = scene.create({}, asset).renderer();
+    const auto b = scene.create({}, asset).id();
+    a.set_material_factor(0, {1, 0, 0});
     CHECK(scene.instance(b).factors[0].y == .6F);
     CHECK(asset->materials()->material_data[0].factor.y == .6F);
-    CHECK_THROWS_WITH_AS(scene.set_material_factor(a, 0, {2, 0, 0}), "Invalid render material factor",
-                         std::invalid_argument);
-    scene.clear_material_factor(a, 0);
-    scene.set_primitive_visible(a, 0, false);
+    CHECK_THROWS_WITH_AS(a.set_material_factor(0, {2, 0, 0}), "Invalid render material factor", std::invalid_argument);
+    a.clear_material_factor(0);
+    a.set_primitive_visible(0, false);
     CHECK(scene.instance(b).primitive_visible[0]);
 }
 
 TEST_CASE("Stale and foreign handles are rejected, and a reused slot has a new generation") {
     const auto asset = anima::Mesh::compile(fixture());
     anima::Scene scene, other;
-    const auto a = scene.add(asset);
-    (void)scene.add(asset); // Occupies the next slot, so the reused one is a's.
-    CHECK_THROWS_WITH_AS(other.set_visible(a, false), stale_handle, std::out_of_range);
-    scene.remove(a);
-    CHECK_THROWS_WITH_AS(scene.set_visible(a, false), stale_handle, std::out_of_range);
-    const auto c = scene.add(asset);
+    auto object = scene.create({}, asset);
+    const auto a = object.id();
+    (void)scene.create({}, asset); // Occupies the next slot, so the reused one is a's.
+    CHECK_THROWS_WITH_AS(other.instance(a), stale_handle, std::out_of_range);
+    CHECK_THROWS_WITH_AS(other.object(a), stale_handle, std::out_of_range);
+    object.destroy();
+    CHECK_THROWS_WITH_AS(scene.instance(a), stale_handle, std::out_of_range);
+    const auto c = scene.create({}, asset).id();
     CHECK(c.slot == a.slot);
     CHECK(c.generation != a.generation);
-    CHECK_THROWS_WITH_AS(scene.remove(a), stale_handle, std::out_of_range);
+    CHECK_THROWS_WITH_AS(scene.object(a), stale_handle, std::out_of_range);
 }
 
 TEST_CASE("Compiled meshes do not depend on mutable source storage") {
@@ -206,11 +216,11 @@ TEST_CASE("Rounded skin weights far from the origin keep reference parity and bo
         v.weights = {.25008F, .75F, 0, 0};
     const auto asset = anima::Mesh::compile(rounded);
     anima::Scene scene;
-    const auto id = scene.add(asset);
+    const auto object = scene.create({}, asset);
     auto distant = anima::identity();
     distant[12] = 100000;
-    scene.set_pose(id, asset->rest_pose(), distant);
-    parity(rounded, scene.instance(id), asset->rest_pose(), distant);
+    object.renderer().set_pose(asset->rest_pose(), distant);
+    parity(rounded, scene.instance(object.id()), asset->rest_pose(), distant);
 }
 
 TEST_CASE("Invalid skins, primitives and influences are rejected when compiling") {

@@ -95,7 +95,7 @@ inline anima::Material masked(const Color &color) { return blending_test::materi
 inline std::shared_ptr<const anima::Scene> scene_of(std::initializer_list<std::shared_ptr<const anima::Mesh>> meshes) {
     auto scene = std::make_shared<anima::Scene>();
     for (const auto &mesh : meshes)
-        (void)scene->add(mesh);
+        (void)scene->create({}, mesh);
     return scene;
 }
 // A scene of @p mesh placed once, in place, in a margin of its visibility range, then @p others. The copy's range is
@@ -107,11 +107,11 @@ dissolving(const std::shared_ptr<const anima::Mesh> &mesh,
     constexpr anima::VisibilityRange fading{0, 6, 0, 4};
     const std::array<anima::Mat4, 1> in_place{anima::identity()};
     auto scene = std::make_shared<anima::Scene>();
-    const auto id = scene->add(mesh);
-    scene->set_placements(id, anima::MeshPlacements::create(mesh, in_place));
-    scene->set_visibility_range(id, fading);
+    auto renderer = scene->create({}, mesh).renderer();
+    renderer.set_placements(anima::MeshPlacements::create(mesh, in_place));
+    renderer.set_visibility_range(fading);
     for (const auto &other : others)
-        (void)scene->add(other);
+        (void)scene->create({}, other);
     return scene;
 }
 // Draws @p scenes through @p view as @p name, requiring @p calls main-view draw calls, @p discarding of them through

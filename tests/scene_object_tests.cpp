@@ -41,6 +41,30 @@ struct CreateOnDisable {
         }
     }
 };
+
+// Whether any of Scene's Id mutators can be called here, outside the scene and its friends. Each call matches its
+// member's parameters, so only access can reject it.
+template <class S>
+concept mutates_by_id =
+    requires(S &scene, std::shared_ptr<const Mesh> mesh) { scene.add(mesh); } ||
+    requires(S &scene, Scene::Id id) { scene.remove(id); } ||
+    requires(S &scene, Scene::Id id, const Pose &pose, const Mat4 &world) { scene.set_pose(id, pose, world); } ||
+    requires(S &scene, Scene::Id id, const Mat4 &world) { scene.set_transform(id, world); } ||
+    requires(S &scene, Scene::Id id, Vec3 factor) { scene.set_material_factor(id, 0, factor); } ||
+    requires(S &scene, Scene::Id id) { scene.clear_material_factor(id, 0); } ||
+    requires(S &scene, Scene::Id id, std::shared_ptr<const CustomMaterial> custom) {
+        scene.set_custom_material(id, 0, custom);
+    } || requires(S &scene, Scene::Id id) { scene.set_visible(id, false); } ||
+    requires(S &scene, Scene::Id id) { scene.set_primitive_visible(id, 0, false); } ||
+    requires(S &scene, Scene::Id id) { scene.set_casts_shadows(id, false); } ||
+    requires(S &scene, Scene::Id id, std::shared_ptr<const MeshPlacements> placements) {
+        scene.set_placements(id, placements);
+    } || requires(S &scene, Scene::Id id, const VisibilityRange &range) { scene.set_visibility_range(id, range); };
+// The same check accepts the public read by Id, so a rejection above comes from access alone.
+template <class S>
+concept reads_by_id = requires(const S &scene, Scene::Id id) { scene.instance(id); };
+static_assert(reads_by_id<Scene>);
+static_assert(!mutates_by_id<Scene>);
 } // namespace
 
 TEST_CASE("Objects append in slot order, and recreated objects fill holes first-free with new generations") {
@@ -263,6 +287,50 @@ TEST_CASE("Instances and snapshots keep the order renderers were added through r
     objects.push_back(scene.create({}, mesh)); // Reuses a slot but is added last.
     objects.back().set_position({12, 0, 0});
     expect({0, 8, 11, 4, 12});
+}
+
+TEST_CASE("A renderer's pose keeps the object's world matrix unless the call also sets it") {
+    const auto source = scene_objects_test::source();
+    const auto mesh = Mesh::compile(*source);
+    const auto pose = sample_pose(*source, &source->animations[0], .5);
+    const auto &rest = mesh->rest_pose();
+    Scene scene;
+    auto object = scene.create("Posed", mesh);
+    auto renderer = object.renderer();
+    const auto moved = matrix(Transform{.translation = {3, 4, 5}, .scale = {2, 2, 2}});
+    object.set_world_matrix(moved);
+    // The pose alone poses the object where it is.
+    renderer.set_pose(pose);
+    CHECK(object.world_matrix() == moved);
+    CHECK(scene.instance(object.id()).world == moved);
+    CHECK(scene.instance(object.id()).palette[0] == moved * pose.world[0]);
+
+    // With a world matrix the call sets both, and the local matrix follows the parent.
+    auto parent = scene.create("Parent");
+    parent.set_world_matrix(matrix(Transform{.translation = {1, 0, 0}}));
+    object.set_parent(parent);
+    const auto placed = matrix(Transform{.translation = {-2, 1, 0}, .scale = {1, 3, 1}});
+    renderer.set_pose(rest, placed);
+    CHECK(object.world_matrix() == placed);
+    CHECK(object.local_matrix() == inverse(parent.world_matrix()) * placed);
+    CHECK(scene.instance(object.id()).palette[0] == placed * rest.world[0]);
+
+    // A pose rejected with a world matrix leaves the object where it was.
+    auto mismatched = pose;
+    mismatched.world.pop_back();
+    CHECK_THROWS_WITH_AS(renderer.set_pose(mismatched, moved), "Pose does not match render asset",
+                         std::invalid_argument);
+    CHECK(object.world_matrix() == placed);
+
+    // Under a collapsed parent only the call that sets a world matrix needs the parent's inverse.
+    parent.set_local_matrix(matrix(Transform{.scale = {1, 0, 1}}));
+    const auto collapsed = object.world_matrix();
+    CHECK_THROWS_WITH_AS(renderer.set_pose(pose, moved), math_error_message(MathErrorCode::singular_matrix), MathError);
+    CHECK(object.world_matrix() == collapsed);
+    CHECK(scene.instance(object.id()).palette[0] == collapsed * rest.world[0]);
+    renderer.set_pose(pose);
+    CHECK(object.world_matrix() == collapsed);
+    CHECK(scene.instance(object.id()).palette[0] == collapsed * pose.world[0]);
 }
 
 TEST_CASE("The shared consumer scenario for objects, lifetime, terrain, mesh preparation and animation passes") {

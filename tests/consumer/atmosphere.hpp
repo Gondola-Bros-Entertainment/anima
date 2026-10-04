@@ -296,7 +296,7 @@ inline void check_haze(Rig &rig) {
 inline void check_sunlight(Rig &rig) {
     const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 0, 0);
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque({.8, .8, .8}, true), {0, 1.7F, -5}, 1, 1));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque({.8, .8, .8}, true), {0, 1.7F, -5}, 1, 1));
     const anima::Vec3 center{0, 1.7F, -5};
     for (const double sun : {10.0, 2.0}) {
         auto enabled = earth();
@@ -339,7 +339,7 @@ inline void check_sunlight_updates(Rig &rig) {
     const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 0, 0);
     auto scene = std::make_shared<anima::Scene>();
     const anima::Vec3 center{0, 1.7F, -5};
-    (void)scene->add(blending_test::facing(blending_test::opaque({.8, .8, .8}, true), center, 1, 1));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque({.8, .8, .8}, true), center, 1, 1));
     // Behind the eye, so that the quad faces it.
     const auto behind = [](double elevation) { return vec(atmosphere_reference::direction(elevation, 180)); };
     auto high = earth();

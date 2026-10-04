@@ -543,14 +543,14 @@ TEST_CASE("Scene objects assign custom materials per mesh material") {
     CHECK(scene.instance(object.id()).custom_materials[1] == water);
     CHECK_THROWS_WITH_AS(object.renderer().set_custom_material(2, water),
                          "Custom material slot is outside the mesh's materials", std::out_of_range);
-    scene.set_custom_material(object.id(), 1, nullptr);
+    object.renderer().set_custom_material(1, nullptr);
     CHECK_FALSE(scene.instance(object.id()).custom_materials[1]);
     object.renderer().set_custom_material(0, water);
     object.renderer().set_mesh(mesh(3));
     CHECK(scene.instance(object.id()).custom_materials == std::vector<std::shared_ptr<const CustomMaterial>>(3));
-    auto empty = scene.create("empty");
-    CHECK_THROWS_WITH_AS(scene.set_custom_material(empty.id(), 0, water), "GameObject has no MeshRenderer",
-                         std::logic_error);
+    auto renderer = object.renderer();
+    object.remove_mesh();
+    CHECK_THROWS_WITH_AS(renderer.set_custom_material(0, water), "GameObject has no MeshRenderer", std::logic_error);
 }
 
 TEST_CASE("Only custom materials that read placements draw them") {

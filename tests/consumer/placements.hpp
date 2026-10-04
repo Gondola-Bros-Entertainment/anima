@@ -101,14 +101,14 @@ inline int run(int argc, char **argv) {
     auto separate = std::make_shared<anima::Scene>(), placed = std::make_shared<anima::Scene>(),
          bare = std::make_shared<anima::Scene>();
     for (const auto &scene : {separate, placed, bare})
-        (void)scene->add(floor);
-    std::vector<anima::Scene::Id> copies;
+        (void)scene->create({}, floor);
+    std::vector<anima::GameObject> copies;
     const auto place_separately = [&](const anima::Mat4 &world, const std::vector<anima::Mat4> &copy_placements) {
         for (std::size_t i = 0; i < copy_placements.size(); ++i)
-            separate->set_transform(copies[i], world * copy_placements[i]);
+            copies[i].set_world_matrix(world * copy_placements[i]);
     };
     for (std::size_t i = 0; i < placed_copies.size(); ++i)
-        copies.push_back(separate->add(shape));
+        copies.push_back(separate->create({}, shape));
     auto field_object = placed->create("field", shape);
     field_object.renderer().set_placements(placements);
     const auto world = translation({2, 0, -3});
@@ -211,8 +211,8 @@ inline int run(int argc, char **argv) {
     // far rows lie beyond its end and are hidden, the rows within its 15 m margin dissolve by the same dither, and the
     // rest draw whole. Separate objects outside the range are culled whole on the CPU.
     const anima::VisibilityRange range{0, 95, 0, 15};
-    for (const auto id : copies)
-        separate->set_visibility_range(id, range);
+    for (const auto &copy : copies)
+        copy.renderer().set_visibility_range(range);
     field_object.renderer().set_visibility_range(range);
     const auto [ranged_apart, ranged] = compare("ranged");
     require(ranged_apart.range_culled > 0, "No separate object fell outside the visibility range");
@@ -222,8 +222,8 @@ inline int run(int argc, char **argv) {
     // Nor after a frame that culls objects by their visibility range.
     require(draw_then_clear(separate).range_culled > 0,
             "No separate object fell outside the visibility range before the selection was cleared");
-    for (const auto id : copies)
-        separate->set_visibility_range(id, {});
+    for (const auto &copy : copies)
+        copy.renderer().set_visibility_range({});
     field_object.renderer().set_visibility_range({});
 
     // Every other copy mirrored: its placement negates the X axis, so its determinant is negative and its triangles'
@@ -248,7 +248,7 @@ inline int run(int argc, char **argv) {
     const auto many = field(100);
     auto separate_many = std::make_shared<anima::Scene>(), placed_many = std::make_shared<anima::Scene>();
     for (const auto &placement : many)
-        separate_many->set_transform(separate_many->add(shape), placement);
+        separate_many->create({}, shape).set_world_matrix(placement);
     placed_many->create("field", shape).renderer().set_placements(anima::MeshPlacements::create(shape, many));
     anima::OrbitCamera camera;
     const auto extent = separate_many->bounds();

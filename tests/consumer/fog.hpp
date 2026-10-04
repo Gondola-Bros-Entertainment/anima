@@ -103,7 +103,7 @@ inline const std::vector<Plate> &plates() {
 inline std::shared_ptr<anima::Scene> plate_scene() {
     auto scene = std::make_shared<anima::Scene>();
     for (const auto &plate : plates())
-        (void)scene->add(blending_test::facing(blending_test::opaque(plate.color), plate.center, .4F, .4F));
+        (void)scene->create({}, blending_test::facing(blending_test::opaque(plate.color), plate.center, .4F, .4F));
     return scene;
 }
 // Fog that thickens toward the ground below a base height above it.
@@ -138,7 +138,8 @@ inline anima::Vec3 glaze_center() { return eye + (glaze_target() - eye) * (10.F 
 inline void check_height_fog(blending_test::Harness &harness) {
     const auto view_projection = view(harness.aspect());
     auto scene = plate_scene();
-    (void)scene->add(blending_test::facing(blending_test::blended(glaze, glaze_alpha), glaze_center(), .08F, .08F));
+    (void)scene->create({},
+                        blending_test::facing(blending_test::blended(glaze, glaze_alpha), glaze_center(), .08F, .08F));
     const auto expect_all = [&](const std::string &name, const anima::Environment &environment,
                                 const std::string &what) {
         expect_plates(harness, name, view_projection, environment, what);
@@ -212,7 +213,8 @@ inline void check_sky(blending_test::Harness &harness) {
     environment.fog_falloff = .02F;
     environment.fog_sky_distance = distance;
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(blending_test::black), {0, eye.y, -distance}, 6, 6));
+    (void)scene->create(
+        {}, blending_test::facing(blending_test::opaque(blending_test::black), {0, eye.y, -distance}, 6, 6));
     const anima::Vec3 on_quad{4, eye.y, -distance}, on_sky{8, eye.y, -distance};
     harness.render("horizon", {scene}, view_projection, environment);
     const auto &image = harness.images["horizon"];
@@ -286,7 +288,7 @@ inline void check_custom(blending_test::Harness &harness) {
     environment.fog_sun_scattering = {.3F, .25F, .2F};
     const anima::Vec3 standard{-1.2F, .8F, -8}, custom{1.2F, .8F, -8};
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(probe_color), standard, .4F, .4F));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(probe_color), standard, .4F, .4F));
     (void)custom_material_test::add(*scene, custom_material_test::surface(custom, .4F, .4F), fogged_probe());
     harness.render("custom", {scene}, view_projection, environment);
     const auto &image = harness.images["custom"];

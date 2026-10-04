@@ -104,7 +104,7 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     const auto bounds = instances->bounds();
     auto overlay = scenes.create("overlay");
     auto right_object = overlay->create("Right", instances->object(right).renderer().mesh());
-    right_object.transform().set_matrix(instances->object(right).world_matrix());
+    right_object.transform().set_world_matrix(instances->object(right).world_matrix());
     instances->object(right).destroy();
     auto cameras = scenes.create("cameras");
     auto eye = cameras->create("eye");
@@ -398,14 +398,14 @@ int main(int argc, char **argv) {
         // a desktop backend or engine tools in a downstream application.
         const auto compiled = anima::Mesh::compile(*asset);
         anima::Scene resource_scene;
-        const auto instance = resource_scene.add(compiled);
+        const auto instance = resource_scene.create({}, compiled);
         const anima::RenderFrustum frustum(anima::identity());
-        require(frustum.intersects(resource_scene.instance(instance).bounds),
+        require(frustum.intersects(resource_scene.instance(instance.id()).bounds),
                 "Public frustum rejected the visible resource");
         auto outside = anima::identity();
         outside[12] = 4;
-        resource_scene.set_pose(instance, compiled->rest_pose(), outside);
-        require(!frustum.intersects(resource_scene.instance(instance).bounds),
+        instance.renderer().set_pose(compiled->rest_pose(), outside);
+        require(!frustum.intersects(resource_scene.instance(instance.id()).bounds),
                 "Public frustum missed changed instance bounds");
 #ifdef CONSUMER_DESKTOP
         if (argc > 2)

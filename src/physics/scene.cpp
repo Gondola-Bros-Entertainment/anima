@@ -123,7 +123,7 @@ template <class Scenes> void step_scenes(Scenes &scenes, World &world, double se
     for (auto &component : components) {
         if (component.active() && component->settings().motion == Motion::dynamic) {
             const auto pose = component->body().pose();
-            component.object().set_transform({pose.position, pose.rotation, {1, 1, 1}});
+            component.object().set_world_transform({pose.position, pose.rotation, {1, 1, 1}});
         }
     }
 }

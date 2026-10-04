@@ -79,7 +79,7 @@ class Harness {
                 const anima::Mat4 &world = anima::identity(), const std::optional<Eye> &eye = std::nullopt) {
         const auto asset = anima::load_asset(std::span<const std::byte>(glb));
         auto scene = std::make_shared<anima::Scene>();
-        scene->set_transform(scene->add(anima::Mesh::compile(*asset)), world);
+        scene->create({}, anima::Mesh::compile(*asset)).set_world_matrix(world);
         render(name, scene, eye);
     }
     /// Views @p scene from @p eye or else frames it with an OrbitCamera, reads back its first frame as @p name, and
@@ -653,13 +653,13 @@ inline int run_sidedness(int argc, char **argv) {
     const auto object = [](const std::shared_ptr<const anima::Mesh> &mesh, const std::vector<anima::Mat4> &placements,
                            const anima::VisibilityRange &range) {
         auto scene = std::make_shared<anima::Scene>();
-        const auto id = scene->add(mesh);
+        auto renderer = scene->create({}, mesh).renderer();
         if (!placements.empty()) {
             const auto copies = anima::MeshPlacements::create(mesh, placements);
             require(copies->clusters().size() == 1, "The sidedness placements do not form one cluster");
-            scene->set_placements(id, copies);
+            renderer.set_placements(copies);
         }
-        scene->set_visibility_range(id, range);
+        renderer.set_visibility_range(range);
         return std::shared_ptr<const anima::Scene>(std::move(scene));
     };
     // Mirroring X winds the quad's outward faces clockwise; its normal still points to +Z.
