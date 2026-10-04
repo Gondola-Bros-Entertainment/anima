@@ -16,7 +16,8 @@
 /// are rejected. Invalid documents and arguments, including JSON syntax errors and values of the
 /// wrong JSON type, throw `std::invalid_argument` unless stated, as do documents that name a node,
 /// clip, item, visual, handling, socket or marker that does not exist. An argument naming one that
-/// does not exist throws `std::out_of_range`, and model load failures throw `std::runtime_error`.
+/// does not exist throws `std::out_of_range`, and model load failures throw as load_asset and
+/// Mesh::compile do (see AttachmentLibrary::load).
 /// Which items are held and by which roles, which handling profile performs an action, item
 /// metadata such as categories, and gameplay rules belong to the caller.
 
@@ -67,8 +68,8 @@ struct AttachmentVisual {
     /// Named rigid, right-handed frames in prop model space, or relative to their node when listed
     /// in #marker_nodes. The name `primary` is reserved.
     std::map<std::string, anima::Mat4, std::less<>> markers;
-    /// Prop node whose animation moves the grip, or empty for none; see
-    /// animated_attachment_binding.
+    /// Prop node whose animation moves the grip from its rest placement, or empty for none;
+    /// #primary_grip stays in prop model space. See animated_attachment_binding.
     std::string primary_node;
     /// Marker name to the prop node it follows.
     std::map<std::string, std::string, std::less<>> marker_nodes;
@@ -161,8 +162,9 @@ class AttachmentLibrary {
     /// while they are alive.
     ///
     /// Throws `std::out_of_range` for an unknown visual, `std::invalid_argument` for an animated
-    /// model without AttachmentVisual::animation_tracks, and `std::runtime_error` when the model
-    /// fails to load or does not have exactly one node or clip of each name that the visual uses.
+    /// model without AttachmentVisual::animation_tracks, `std::runtime_error` when the model does
+    /// not have exactly one node or clip of each name that the visual uses, and as load_asset and
+    /// Mesh::compile do.
     [[nodiscard]] std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id) const;
     /// Meshes of loaded models that are still alive.
     [[nodiscard]] std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
@@ -190,12 +192,21 @@ using AttachmentBinding = AttachmentSocket;
                                         const Mat4 &actor = identity());
 /// Prop pose for semantic @p track at normalized @p progress in [0, 1]: its clip sampled at
 /// `progress * duration`. An empty track, or a track the visual lacks when @p required is false,
-/// gives the rest pose. Throws for invalid progress or a missing required track.
+/// gives the rest pose. Throws `std::invalid_argument` for @p progress that is not finite or lies
+/// outside [0, 1] and for a missing required track, and as find_animation and sample_pose do.
 [[nodiscard]] Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual,
                                           std::string_view track = {}, double progress = 0, bool required = true);
-/// @p binding adjusted so that the grip as moved by AttachmentVisual::primary_node in @p pose,
-/// rather than the static grip, meets the socket. Returns @p binding unchanged when the visual has
-/// no primary node.
+/// @p binding, made by bind_attachment for @p visual, adjusted so that the grip as
+/// AttachmentVisual::primary_node moves it in @p pose meets the socket.
+///
+/// The node carries AttachmentVisual::primary_grip, a frame in prop model space, by its motion from
+/// its rest placement: the moved grip is `pose.world[node] * inverse(rest) * primary_grip`, where
+/// `rest` is the node's model-space matrix in the rest pose of @p asset. At that rest pose the result
+/// equals @p binding, up to rounding. Returns @p binding unchanged when the visual has no primary
+/// node. Throws `std::out_of_range` when @p asset has no node of that name or @p pose has no world
+/// matrix for it, `std::invalid_argument` when several nodes have the name, `std::runtime_error`
+/// for an invalid or cyclic node hierarchy, and anima::MathError when a frame cannot be inverted or
+/// a rest rotation normalized.
 [[nodiscard]] AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding,
                                                             const AttachmentVisual &visual, const Asset &asset,
                                                             const Pose &pose);
@@ -216,9 +227,13 @@ struct AttachmentInstance {
     /// Replaces the attached item with item @p id, or removes it for an empty id.
     ///
     /// The new item is added to @p scene as a root instance with an identity transform; place it
-    /// with attachment_placement. Returns false and changes nothing when @p id is already
-    /// attached. Throws `std::out_of_range` for an unknown item or socket, and as
-    /// AttachmentLibrary::load does; the old item stays attached when loading fails.
+    /// with attachment_placement. The old instance is then removed from @p scene; one that no
+    /// longer exists there, because it was removed directly or with its parent, counts as already
+    /// removed. Returns false and changes nothing when @p id is already attached. Throws
+    /// `std::invalid_argument` ("Attachment instance belongs to another scene") when the old
+    /// instance belongs to a scene other than @p scene, `std::out_of_range` for an unknown item or
+    /// socket, and as AttachmentLibrary::load and Scene::add do; on failure the old item stays
+    /// attached and @p scene is unchanged.
     bool replace(Scene &scene, const AttachmentLibrary &library,
                  const std::map<std::string, AttachmentSocket, std::less<>> &sockets, std::string_view id);
 };
