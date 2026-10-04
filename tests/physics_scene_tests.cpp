@@ -342,7 +342,7 @@ TEST_CASE("Only an active rigid body's object must meet the transform rules") {
     p::World world({{0, 0, 0}, 4});
     Scene scene;
     auto hand = scene.create("hand");
-    hand.set_transform({{0, 1, 0}, {0, 0, 0, 1}, {2, 2, 2}});
+    hand.set_world_transform({{0, 1, 0}, {0, 0, 0, 1}, {2, 2, 2}});
     p::BodySettings settings;
     settings.collider.shape = p::Shape::sphere;
     settings.motion = p::Motion::dynamic;
@@ -357,7 +357,7 @@ TEST_CASE("Only an active rigid body's object must meet the transform rules") {
                          std::invalid_argument);
     // Released as a root, its body moves to where the object was let go.
     item.clear_parent();
-    item.set_transform({{3, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}});
+    item.set_world_transform({{3, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}});
     p::step(scene, world, tick);
     CHECK(held->body().enabled());
     CHECK(held->body().pose().position.x == 3);
