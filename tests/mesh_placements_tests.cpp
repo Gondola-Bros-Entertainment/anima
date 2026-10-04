@@ -10,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace anima;
@@ -235,6 +236,51 @@ TEST_CASE("Placements keep the rest pose and copy only their own mesh") {
     CHECK_FALSE(renderer.placements());
     object.remove_mesh();
     CHECK_THROWS_WITH_AS(renderer.set_placements(placements), "GameObject has no MeshRenderer", std::logic_error);
+}
+
+TEST_CASE("A renderer places copies of its own mesh from transforms") {
+    const auto mesh = triangle({0, .5F, 0});
+    const auto given = grid(4, 3);
+    const auto explicit_set = MeshPlacements::create(mesh, given);
+    Scene scene;
+    auto object = scene.create("grove", mesh);
+    object.set_world_matrix(translation({100, 0, -50}));
+    auto renderer = object.renderer();
+    renderer.set_placement_transforms(given);
+    const auto placed = renderer.placements();
+    REQUIRE(placed);
+    CHECK(placed->mesh() == mesh);
+    CHECK(std::equal(placed->transforms().begin(), placed->transforms().end(), explicit_set->transforms().begin(),
+                     explicit_set->transforms().end(), same));
+    const auto from_transforms = renderer.bounds();
+    renderer.set_placements(explicit_set);
+    const auto from_set = renderer.bounds();
+    CHECK(from_transforms.valid);
+    for (const auto &[a, b] :
+         {std::pair{from_transforms.minimum, from_set.minimum}, std::pair{from_transforms.maximum, from_set.maximum}}) {
+        CHECK(a.x == b.x);
+        CHECK(a.y == b.y);
+        CHECK(a.z == b.z);
+    }
+
+    // Rejections leave the placements as they were.
+    CHECK_THROWS_WITH_AS(renderer.set_placement_transforms({}), "Placement count must be from 1 to 1048576",
+                         std::invalid_argument);
+    auto nonfinite = identity();
+    nonfinite[12] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_THROWS_WITH_AS(renderer.set_placement_transforms(std::vector<Mat4>{nonfinite}),
+                         "Placement transforms must be finite and affine", std::invalid_argument);
+    CHECK(renderer.placements() == explicit_set);
+    renderer.set_placements(nullptr);
+    renderer.set_pose(mesh->rest_pose());
+    CHECK_THROWS_WITH_AS(renderer.set_placement_transforms(given), "A renderer with a pose cannot draw placements",
+                         std::logic_error);
+    CHECK_FALSE(renderer.placements());
+    renderer.set_mesh(skinned());
+    CHECK_THROWS_WITH_AS(renderer.set_placement_transforms(given), "Placements draw only rigid meshes",
+                         std::invalid_argument);
+    object.remove_mesh();
+    CHECK_THROWS_WITH_AS(renderer.set_placement_transforms(given), "GameObject has no MeshRenderer", std::logic_error);
 }
 
 TEST_CASE("Snapshots expand every copy") {
