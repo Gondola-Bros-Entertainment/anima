@@ -45,6 +45,18 @@ struct UiEventState;
 /// UiDocuments::check_events rethrows it and drops later ones, and an interruptible event stops
 /// propagating at once.
 using UiCallback = std::function<void(const UiEvent &)>;
+/// Dispatch phase in which a UiElement::on listener runs.
+///
+/// RmlUi dispatches an event from the document root down to its target, then, if the event
+/// bubbles, back up to the root. A listener on an ancestor of the target runs in its phase. On the
+/// target itself, listeners of both phases run, bubble listeners first, each in the order they
+/// were attached.
+enum class UiEventPhase {
+    /// On the way back up, after listeners nearer the target; events that do not bubble skip it.
+    bubble,
+    /// On the way down, before listeners nearer the target.
+    capture,
+};
 /// One option of a `select` element; see UiElement::set_options.
 struct UiOption {
     /// Value that selecting the option gives its select, as UiElement::value() reports it.
@@ -94,10 +106,11 @@ class UiElement {
     /// option.
     void set_options(std::span<const UiOption> options);
     /// Calls @p callback for each @p type event, such as `click`, that reaches this element,
-    /// until the returned subscription disconnects. With @p capture, the listener runs in the
-    /// capture phase instead of the bubble phase; either way it runs when this element is the
+    /// until the returned subscription disconnects. The listener runs in @p phase when the event
+    /// reaches this element from a descendant, and in either phase when this element is the
     /// target. Throws `std::invalid_argument` for an empty @p type or @p callback.
-    [[nodiscard]] UiSubscription on(std::string type, UiCallback callback, bool capture = false) const;
+    [[nodiscard]] UiSubscription on(std::string type, UiCallback callback,
+                                    UiEventPhase phase = UiEventPhase::bubble) const;
     /// The borrowed RmlUi element, for features without an Anima wrapper.
     [[nodiscard]] Rml::Element &native() const;
 
@@ -119,7 +132,12 @@ class UiEvent {
     /// element. Throws `std::out_of_range` once its document has closed.
     [[nodiscard]] UiElement target() const;
     /// Event parameter @p name as an `int`, or @p fallback when the event has no such parameter.
+    /// A fractional parameter truncates toward zero; read it with number().
     [[nodiscard]] int integer(std::string_view name, int fallback = 0) const;
+    /// Event parameter @p name as a `float`, or @p fallback when the event has no such parameter.
+    /// Reads fractional parameters, such as the `wheel_delta_x` and `wheel_delta_y` of
+    /// `mousescroll`, which precise scrolling sets to fractions.
+    [[nodiscard]] float number(std::string_view name, float fallback = 0) const;
     /// Event parameter @p name as a string, or @p fallback when the event has no such parameter.
     [[nodiscard]] std::string string(std::string_view name, std::string_view fallback = {}) const;
     /// Stops the event after the listeners of the current element, skipping later elements and

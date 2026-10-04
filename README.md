@@ -131,7 +131,7 @@ for (std::uint32_t step = 0; step < batch.steps; ++step) {
 }
 scenes.update(std::chrono::duration<double>(elapsed).count());
 anima::synchronize_audio(scenes, audio);
-anima::sync_ui_panels(scenes);
+anima::synchronize_ui_panels(scenes);
 // Then draw. An Audio with a device mixes on its own thread; render one without here.
 ```
 

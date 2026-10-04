@@ -80,6 +80,13 @@ class UiUnsupportedFeature : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
 };
+/// Role of a font face that UiContext::load_font loads.
+enum class UiFontRole {
+    /// Renders text whose family, style and weight match the face.
+    primary,
+    /// Also supplies the glyphs that the face matching the text lacks.
+    fallback,
+};
 
 /// Desktop UI runtime that owns RmlUi's process-wide state and one RmlUi context.
 ///
@@ -136,9 +143,9 @@ class UiContext {
     /// Loads a hidden document from @p path through documents(); see UiDocuments::load.
     [[nodiscard]] UiDocument open_document(const std::filesystem::path &path);
     /// Loads a font face for documents; RmlUi reads its family, style and weight from the file.
-    /// A @p fallback face also supplies glyphs that other faces lack. Text renders only in loaded
-    /// faces. Throws `std::runtime_error` when RmlUi cannot load the face.
-    void load_font(const std::filesystem::path &path, bool fallback = false);
+    /// A UiFontRole::fallback face also supplies glyphs that other faces lack. Text renders only
+    /// in loaded faces. Throws `std::runtime_error` when RmlUi cannot load the face.
+    void load_font(const std::filesystem::path &path, UiFontRole role = UiFontRole::primary);
 
     /// Routes one SDL event to the UI. Call it for every event before gameplay sees it.
     ///

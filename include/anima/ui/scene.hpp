@@ -14,25 +14,26 @@ using UiDocumentResolver = std::function<std::filesystem::path(std::string_view)
 /// Component that owns one document for its GameObject.
 ///
 /// Every panel loads its own document, so prefab instances never share one. The document is laid
-/// out in screen space; the object's transform does not affect it. sync_ui_panels shows it while
-/// the component is enabled on an active object and the panel is set visible, and hides it
+/// out in screen space; the object's transform does not affect it. synchronize_ui_panels shows it
+/// while the component is enabled on an active object and the panel is set visible, and hides it
 /// otherwise. Removing the component, destroying its object or scene, or rolling back a failed
 /// prefab instantiation closes the document.
 class UiPanel {
   public:
     /// Loads @p path through @p host and, if @p visible, shows the document at once, whatever the
-    /// component's or object's state; the next sync_ui_panels reconciles it. The codec stores
-    /// @p asset_key in place of the path, which must be nonempty, at most 4,096 bytes and
+    /// component's or object's state; the next synchronize_ui_panels reconciles it. The codec
+    /// stores @p asset_key in place of the path, which must be nonempty, at most 4,096 bytes and
     /// well-formed UTF-8 without NUL (no overlong forms or surrogates). Throws
     /// `std::invalid_argument` with "Invalid UI asset key" for another key before loading, and
     /// fails as UiDocuments::load does.
     UiPanel(UiDocuments &host, std::string asset_key, const std::filesystem::path &path, bool visible = true);
-    /// The owned document. Showing or hiding it directly lasts until the next sync_ui_panels.
+    /// The owned document. Showing or hiding it directly lasts until the next
+    /// synchronize_ui_panels.
     [[nodiscard]] UiDocument &document() { return document_; }
     [[nodiscard]] const UiDocument &document() const { return document_; }
     /// Application-defined key that the codec stores in place of the document path.
     [[nodiscard]] const std::string &asset_key() const { return asset_key_; }
-    /// Sets the authored visibility, which takes effect at the next sync_ui_panels.
+    /// Sets the authored visibility, which takes effect at the next synchronize_ui_panels.
     void set_visible(bool visible);
     /// Authored visibility, which the codec stores; not the document's current state.
     [[nodiscard]] bool visible() const { return visible_; }
@@ -54,11 +55,11 @@ class UiPanel {
 /// throw `std::logic_error`, and callback exceptions are captured by the document host; report
 /// them with UiDocuments::check_events. Throws `std::logic_error` while the scene is updating,
 /// under construction or destroyed.
-void sync_ui_panels(Scene &scene);
-/// Synchronizes every scene of @p scenes as sync_ui_panels(Scene &) does, validating all of them
-/// before any change. The call holds the set as a scene driver, so the set is busy inside the
+void synchronize_ui_panels(Scene &scene);
+/// Synchronizes every scene of @p scenes as synchronize_ui_panels(Scene &) does, validating all of
+/// them before any change. The call holds the set as a scene driver, so the set is busy inside the
 /// callbacks, and throws `std::logic_error` while the set is busy, as SceneSet describes.
-void sync_ui_panels(SceneSet &scenes);
+void synchronize_ui_panels(SceneSet &scenes);
 /// Registers the `anima.ui-panel.v1` component codec, bound to @p host without keeping it alive:
 /// restoring after the host is destroyed or shut down throws `std::out_of_range`.
 ///
