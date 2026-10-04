@@ -35,13 +35,13 @@ struct ActionRuntime::Impl {
         using namespace presentation_data;
         if (!motion_)
             throw std::invalid_argument("Actions require a bound motion resource");
-        anima::detail::json_version(document, "schema_version", 1, "Unsupported action catalog version");
-        anima::detail::json_fields(document, {"schema_version", "actions"});
+        anima::detail::json_version(document, "version", action_catalog_version, "Unsupported action catalog version");
+        anima::detail::json_fields(document, {"version", "actions"});
         if (!document.at("actions").is_array() || document.at("actions").empty() ||
             document.at("actions").size() > maximum_actions)
             throw std::invalid_argument("Invalid action catalog");
         for (const auto &value : document.at("actions")) {
-            anima::detail::json_fields(value, {"id", "handling", "phases"}, {"roles"});
+            anima::detail::json_fields(value, {"id", "handling", "roles", "phases"});
             std::set<std::string, std::less<>> handling;
             if (!value.at("handling").is_array() || value.at("handling").empty())
                 throw std::invalid_argument("Action needs explicit compatible handling");
@@ -53,15 +53,14 @@ struct ActionRuntime::Impl {
             if (!value.at("phases").is_array())
                 throw std::invalid_argument("Action phases must be an array");
             for (const auto &p : value.at("phases")) {
-                anima::detail::json_fields(p, {"id", "duration", "layers"}, {"held", "cues", "props", "contacts"});
-                anima::ActionPhase phase{text(p.at("id")), p.at("duration").get<double>(), p.value("held", false), {}};
-                if (p.contains("cues")) {
-                    if (!p.at("cues").is_array())
-                        throw std::invalid_argument("Action cues must be an array");
-                    for (const auto &cue : p.at("cues")) {
-                        anima::detail::json_fields(cue, {"id", "at"});
-                        phase.cues.push_back({text(cue.at("id")), cue.at("at").get<double>()});
-                    }
+                anima::detail::json_fields(p, {"id", "duration", "held", "layers", "cues", "props", "contacts"});
+                anima::ActionPhase phase{
+                    text(p.at("id")), p.at("duration").get<double>(), p.at("held").get<bool>(), {}};
+                if (!p.at("cues").is_array())
+                    throw std::invalid_argument("Action cues must be an array");
+                for (const auto &cue : p.at("cues")) {
+                    anima::detail::json_fields(cue, {"id", "at"});
+                    phase.cues.push_back({text(cue.at("id")), cue.at("at").get<double>()});
                 }
                 ActionPhaseBinding binding;
                 if (!p.at("layers").is_array() || p.at("layers").empty() ||
@@ -69,12 +68,13 @@ struct ActionRuntime::Impl {
                     throw std::invalid_argument("Action needs 1..8 pose layers per phase");
                 bool full = false;
                 for (const auto &l : p.at("layers")) {
-                    anima::detail::json_fields(l, {"clip", "interval"}, {"mask", "mode", "weight", "reference"});
+                    anima::detail::json_fields(l, {"clip", "mask", "interval", "mode", "weight", "reference"});
                     ActionLayer layer;
                     layer.clip = text(l.at("clip"));
                     layer.interval = interval(l.at("interval"));
-                    layer.mask = l.value("mask", std::string{});
-                    const auto mode = l.value("mode", std::string("override"));
+                    if (const auto &mask = l.at("mask"); !mask.is_null())
+                        layer.mask = text(mask);
+                    const auto mode = l.at("mode").get<std::string>();
                     if (mode != "override" && mode != "additive")
                         throw std::invalid_argument("Unknown action layer mode");
                     layer.mode = mode == "additive" ? anima::LayerMode::additive : anima::LayerMode::override_pose;
@@ -84,43 +84,38 @@ struct ActionRuntime::Impl {
                         full = true;
                     } else if (!motion_ || !motion_->has_mask(layer.mask))
                         throw std::invalid_argument("Unknown action layer mask");
-                    if (l.contains("weight"))
-                        layer.weight = weight(l.at("weight"));
+                    layer.weight = weight(l.at("weight"));
                     (void)clip(layer.clip);
                     if (motion_->is_layer(layer.clip) && layer.mask != motion_->layer_mask(layer.clip))
                         throw std::invalid_argument("Action layer must use its layer clip's mask");
-                    if (l.contains("reference")) {
-                        anima::detail::json_fields(l.at("reference"), {"clip", "at"});
-                        layer.reference = text(l.at("reference").at("clip"));
-                        layer.reference_at = unit(l.at("reference").at("at"));
+                    if (const auto &reference = l.at("reference"); !reference.is_null()) {
+                        anima::detail::json_fields(reference, {"clip", "at"});
+                        layer.reference = text(reference.at("clip"));
+                        layer.reference_at = unit(reference.at("at"));
                         (void)clip(layer.reference);
                     }
                     if ((mode == "additive") != !layer.reference.empty())
                         throw std::invalid_argument("Additive action layer needs exactly one reference pose");
                     binding.layers.push_back(std::move(layer));
                 }
-                if (p.contains("props")) {
-                    if (!p.at("props").is_array() || p.at("props").size() > maximum_phase_props)
-                        throw std::invalid_argument("Invalid action prop tracks");
-                    std::set<std::string> roles;
-                    for (const auto &prop : p.at("props")) {
-                        anima::detail::json_fields(prop, {"role", "track", "interval"}, {"required"});
-                        ActionPropTrack track{text(prop.at("role")), text(prop.at("track")),
-                                              interval(prop.at("interval")), prop.value("required", true)};
-                        if (!roles.insert(track.role).second)
-                            throw std::invalid_argument("Duplicate action prop role");
-                        binding.props.push_back(std::move(track));
-                    }
+                if (!p.at("props").is_array() || p.at("props").size() > maximum_phase_props)
+                    throw std::invalid_argument("Invalid action prop tracks");
+                std::set<std::string> roles;
+                for (const auto &prop : p.at("props")) {
+                    anima::detail::json_fields(prop, {"role", "track", "interval", "required"});
+                    ActionPropTrack track{text(prop.at("role")), text(prop.at("track")), interval(prop.at("interval")),
+                                          prop.at("required").get<bool>()};
+                    if (!roles.insert(track.role).second)
+                        throw std::invalid_argument("Duplicate action prop role");
+                    binding.props.push_back(std::move(track));
                 }
-                if (p.contains("contacts")) {
-                    if (!p.at("contacts").is_object())
-                        throw std::invalid_argument("Action contacts must be named weight curves");
-                    for (const auto &[chain, curve] : p.at("contacts").items()) {
-                        if (!motion_)
-                            throw std::invalid_argument("Action contacts need a motion rig");
-                        (void)motion_->contact_end_node(chain);
-                        binding.contacts.emplace(chain, weight(curve));
-                    }
+                if (!p.at("contacts").is_object())
+                    throw std::invalid_argument("Action contacts must be named weight curves");
+                for (const auto &[chain, curve] : p.at("contacts").items()) {
+                    if (!motion_)
+                        throw std::invalid_argument("Action contacts need a motion rig");
+                    (void)motion_->contact_end_node(chain);
+                    binding.contacts.emplace(chain, weight(curve));
                 }
                 phases.push_back(std::move(phase));
                 bindings.push_back(std::move(binding));
@@ -130,16 +125,14 @@ struct ActionRuntime::Impl {
                                     std::move(bindings),
                                     std::move(handling),
                                     {}};
-            if (value.contains("roles")) {
-                if (!value.at("roles").is_object() || value.at("roles").size() > maximum_action_roles)
-                    throw std::invalid_argument("Invalid required action roles");
-                for (const auto &[role, profiles] : value.at("roles").items()) {
-                    if (role.empty() || !profiles.is_array() || profiles.empty())
-                        throw std::invalid_argument("Action role requires handling profiles");
-                    for (const auto &profile : profiles)
-                        if (!action.required_roles[role].insert(text(profile)).second)
-                            throw std::invalid_argument("Duplicate role handling profile");
-                }
+            if (!value.at("roles").is_object() || value.at("roles").size() > maximum_action_roles)
+                throw std::invalid_argument("Invalid required action roles");
+            for (const auto &[role, profiles] : value.at("roles").items()) {
+                if (role.empty() || !profiles.is_array() || profiles.empty())
+                    throw std::invalid_argument("Action role requires handling profiles");
+                for (const auto &profile : profiles)
+                    if (!action.required_roles[role].insert(text(profile)).second)
+                        throw std::invalid_argument("Duplicate role handling profile");
             }
             const auto id = action.id;
             if (!actions_.emplace(id, std::move(action)).second)

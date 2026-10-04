@@ -21,18 +21,19 @@ struct Manifest {
     std::size_t joint_count{};
     /// Playback metadata for the model's clips; validate_manifest requires one per clip.
     std::vector<ClipMetadata> clips;
-    /// Optional motion contract filename, read by MotionRuntime::load.
+    /// Motion contract filename, read by MotionRuntime::load; empty when the manifest's
+    /// `motion_contract` is null.
     std::string motion_contract;
 };
 /// Reads the manifest file at @p path: JSON of 1 byte to 1 MiB with at most 32 nesting levels.
 ///
-/// Requires the integer `schema_version` 3, checked before any other field, then `units`
-/// `"meters"`, `asset_id`, `model`, `skeleton` (`id`, `bind_signature` and an integer
-/// `joint_count`) and `clips`, and accepts a `motion_contract`. Filenames must name files beside
-/// the manifest, without directories. Each clip has a unique `name`, `loop`, an optional positive
-/// finite `reference_speed` and optional `events`, each a `time` of at least 0 seconds and a
-/// nonempty `name`, as ClipEvent has them; the result lists them by time. Unknown and repeated
-/// fields are rejected.
+/// Requires the integer `version` 4, checked before any other field, then `units` `"meters"`,
+/// `asset_id`, `model`, `motion_contract` (a filename, or null for none), `skeleton` (`id`,
+/// `bind_signature` and an integer `joint_count`) and `clips`. Filenames must name files beside
+/// the manifest, without directories. Each clip has a unique `name`, `loop`, `reference_speed`
+/// (positive and finite, or null for none) and `events`, each a `time` of at least 0 seconds and
+/// a nonempty `name`, as ClipEvent has them; the result lists them by time. Every field is
+/// required, and unknown and repeated fields are rejected.
 ///
 /// Throws `std::invalid_argument` for a missing, empty or oversized file and for invalid content,
 /// including missing, unknown and mistyped fields, and `std::runtime_error` when an opened file

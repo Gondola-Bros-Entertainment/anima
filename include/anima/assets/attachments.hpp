@@ -49,7 +49,7 @@ struct AttachmentHandling {
     std::string layer{};
     /// Layer clip per base clip name, replacing #layer for that clip.
     std::map<std::string, std::string, std::less<>> layer_overrides{};
-    /// Support contacts with distinct chains; 1 to 4 when the catalog declares any.
+    /// At most 4 support contacts, with distinct chains; empty for none.
     std::vector<AttachmentContact> support_contacts{};
     /// Layer clip for base clip @p clip: its override, else #layer.
     std::string_view layer_for(std::string_view clip) const {
@@ -67,7 +67,8 @@ struct AttachmentVisual {
     /// Named rigid, right-handed frames in prop model space, or relative to their node when listed
     /// in #marker_nodes. The name `primary` is reserved.
     std::map<std::string, anima::Mat4, std::less<>> markers;
-    /// Optional prop node whose animation moves the grip; see animated_attachment_binding.
+    /// Prop node whose animation moves the grip, or empty for none; see
+    /// animated_attachment_binding.
     std::string primary_node;
     /// Marker name to the prop node it follows.
     std::map<std::string, std::string, std::less<>> marker_nodes;
@@ -104,25 +105,30 @@ struct AttachmentSocket {
     anima::Mat4 local = anima::identity();
 };
 
-/// Decodes a catalog document (`schema_version` 3, `units` `"meters"`) whose models resolve
-/// against @p directory.
+/// Decodes a catalog document (`version` 4, `units` `"meters"`) whose models resolve against
+/// @p directory.
 ///
-/// The document has `empty_handling` and nonempty `handling`, `visuals` and `items` arrays. A
-/// handling entry has `id`, `socket`, `layer` (a layer clip name, or empty) and optional
-/// `layer_overrides` (base clip name to nonempty layer clip name) and `support_contacts`: 1 to 4
-/// entries of `chain`, `socket`, `marker`, `pole` (three numbers in body model space), `clips` and
-/// optional `actions`, each active for at least one clip or action. A visual has `id`, `model`,
-/// `primary_grip`, `markers` and optional `primary_node`, `marker_nodes` and `animation_tracks`. An
-/// item has `id`, `visual` and `handling`; its visual must have every marker that its handling's
-/// contacts use. Frames are 16 column-major numbers. Layer clips and chains are checked against a
+/// The integer `version` is checked before any other field; another version throws "Unsupported
+/// attachment catalog version". The document has `empty_handling` and nonempty `handling`,
+/// `visuals` and `items` arrays. A handling entry has `id`, `socket`, `layer` (a layer clip name,
+/// or empty), `layer_overrides` (base clip name to nonempty layer clip name, `{}` for none) and
+/// `support_contacts`: an array of at most 4 entries, `[]` for none, of `chain`, `socket`,
+/// `marker`, `pole` (three numbers in body model space), `clips` and `actions`, each active for at
+/// least one clip or action. A visual has `id`, `model`, `primary_grip`, `markers`,
+/// `primary_node` (a nonempty node name, or null for none), `marker_nodes` (marker name to node
+/// name) and `animation_tracks` (track name to clip name). An item has `id`, `visual` and
+/// `handling`; its visual must have every marker that its handling's contacts use. Every field is
+/// required. Frames are 16 column-major numbers. Layer clips and chains are checked against a
 /// MotionRuntime by validate_attachment_ownership, not here.
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory);
 /// Decodes the body sockets of @p body, the model of @p manifest.
 ///
-/// The document has `skeleton` and `bind_signature` equal to the manifest's; `rest_joints`,
-/// mapping node names to their expected model-space rest matrices, each within `1e-5` of
-/// @p body's; and `sockets`, mapping nonempty names to `node`, one of the rest joints, and
-/// `local`, an affine frame relative to it. Frames are 16 column-major numbers.
+/// The document has the integer `version` 1, checked before any other field; `skeleton` and
+/// `bind_signature` equal to the manifest's; `rest_joints`, mapping node names to their expected
+/// model-space rest matrices, each within `1e-5` of @p body's; and `sockets`, mapping nonempty
+/// names to `node`, one of the rest joints, and `local`, an affine frame relative to it. Frames are
+/// 16 column-major numbers. Another version throws "Unsupported attachment socket document
+/// version".
 std::map<std::string, AttachmentSocket, std::less<>>
 decode_attachment_sockets(std::string_view document, const Manifest &manifest, const Asset &body);
 /// A loaded prop model.

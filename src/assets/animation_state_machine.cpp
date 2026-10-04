@@ -82,7 +82,7 @@ constexpr double maximum_state_loops = 10'000;
 constexpr double pose_pass_seconds = 1;
 constexpr std::size_t maximum_machine_document_bytes = 4 * 1024 * 1024;
 constexpr int maximum_machine_document_depth = 16;
-constexpr std::int64_t machine_document_version = 1;
+constexpr std::int64_t machine_document_version = 2;
 constexpr std::string_view machine_document_kind = "anima.animation-state-machine";
 constexpr std::size_t maximum_animator_payload_bytes = 16 * 1024 * 1024;
 constexpr std::size_t maximum_machine_key_bytes = 4096;
@@ -155,28 +155,25 @@ Machine::Definition decode_definition(std::string_view document) {
     detail::json_fields(parsed, {"version", "kind", "parameters", "states", "transitions"});
     Machine::Definition definition;
     for (const auto &entry : array_field(parsed, "parameters")) {
-        detail::json_fields(entry, {"name", "type"}, {"initial"});
+        detail::json_fields(entry, {"name", "type", "initial"});
         Machine::Parameter parameter;
         parameter.name = entry.at("name").get<std::string>();
         parameter.type = enumerator(parameter_type_names, entry.at("type"), "Unknown animation parameter type: ");
-        if (parameter.type == Machine::ParameterType::trigger)
-            detail::json_fields(entry, {"name", "type"});
-        if (entry.contains("initial")) {
-            const auto &initial = entry.at("initial");
-            if (parameter.type == Machine::ParameterType::boolean)
-                parameter.initial = initial.get<bool>() ? 1 : 0;
-            else
-                parameter.initial = json_number(initial);
-        }
+        // Bools and triggers are flags, written as booleans.
+        const auto &initial = entry.at("initial");
+        if (parameter.type == Machine::ParameterType::boolean || parameter.type == Machine::ParameterType::trigger)
+            parameter.initial = initial.get<bool>() ? 1 : 0;
+        else
+            parameter.initial = json_number(initial);
         definition.parameters.push_back(std::move(parameter));
     }
     for (const auto &entry : array_field(parsed, "states")) {
-        detail::json_fields(entry, {"name"}, {"clip", "blend", "speed", "speed_parameter"});
+        detail::json_fields(entry, {"name", "clip", "blend", "speed", "speed_parameter"});
         Machine::State state;
         state.name = entry.at("name").get<std::string>();
-        require(entry.contains("clip") != entry.contains("blend"),
+        require(entry.at("clip").is_null() != entry.at("blend").is_null(),
                 "Animation state needs exactly one of a clip and a blend: " + state.name);
-        if (entry.contains("clip"))
+        if (!entry.at("clip").is_null())
             state.motion = entry.at("clip").get<std::string>();
         else {
             const auto &blend = entry.at("blend");
@@ -190,41 +187,36 @@ Machine::Definition decode_definition(std::string_view document) {
             }
             state.motion = std::move(decoded);
         }
-        if (entry.contains("speed"))
-            state.speed = json_number(entry.at("speed"));
-        if (entry.contains("speed_parameter"))
-            state.speed_parameter = entry.at("speed_parameter").get<std::string>();
+        state.speed = json_number(entry.at("speed"));
+        // null is the one spelling of no speed parameter; State would read an empty name as none too.
+        if (const auto &speed = entry.at("speed_parameter"); !speed.is_null()) {
+            state.speed_parameter = speed.get<std::string>();
+            require(!state.speed_parameter.empty(), "Unknown animation parameter: ");
+        }
         definition.states.push_back(std::move(state));
     }
     for (const auto &entry : array_field(parsed, "transitions")) {
-        detail::json_fields(entry, {"from", "to"},
-                            {"conditions", "exit_time", "duration", "offset", "interruption", "to_self"});
+        detail::json_fields(entry,
+                            {"from", "to", "conditions", "exit_time", "duration", "offset", "interruption", "to_self"});
         Machine::Transition transition;
         if (!entry.at("from").is_null())
             transition.from = entry.at("from").get<std::string>();
         transition.to = entry.at("to").get<std::string>();
-        if (entry.contains("conditions"))
-            for (const auto &test : array_field(entry, "conditions")) {
-                detail::json_fields(test, {"parameter", "mode"}, {"threshold"});
-                Machine::Condition condition;
-                condition.parameter = test.at("parameter").get<std::string>();
-                condition.mode =
-                    enumerator(condition_mode_names, test.at("mode"), "Unknown animation condition mode: ");
-                if (test.contains("threshold"))
-                    condition.threshold = json_number(test.at("threshold"));
-                transition.conditions.push_back(std::move(condition));
-            }
-        if (entry.contains("exit_time"))
+        for (const auto &test : array_field(entry, "conditions")) {
+            detail::json_fields(test, {"parameter", "mode", "threshold"});
+            Machine::Condition condition;
+            condition.parameter = test.at("parameter").get<std::string>();
+            condition.mode = enumerator(condition_mode_names, test.at("mode"), "Unknown animation condition mode: ");
+            condition.threshold = json_number(test.at("threshold"));
+            transition.conditions.push_back(std::move(condition));
+        }
+        if (!entry.at("exit_time").is_null())
             transition.exit_time = json_number(entry.at("exit_time"));
-        if (entry.contains("duration"))
-            transition.duration = json_number(entry.at("duration"));
-        if (entry.contains("offset"))
-            transition.offset = json_number(entry.at("offset"));
-        if (entry.contains("interruption"))
-            transition.interruption =
-                enumerator(interruption_names, entry.at("interruption"), "Unknown animation transition interruption: ");
-        if (entry.contains("to_self"))
-            transition.to_self = entry.at("to_self").get<bool>();
+        transition.duration = json_number(entry.at("duration"));
+        transition.offset = json_number(entry.at("offset"));
+        transition.interruption =
+            enumerator(interruption_names, entry.at("interruption"), "Unknown animation transition interruption: ");
+        transition.to_self = entry.at("to_self").get<bool>();
         definition.transitions.push_back(std::move(transition));
     }
     return definition;

@@ -5,13 +5,16 @@ namespace anima {
 namespace {
 // A document may hold this many contacts per actor, counted over the whole document.
 constexpr std::size_t contacts_per_actor = 8;
+// The one coordinated interaction version InteractionRuntime accepts.
+constexpr int interaction_version = 2;
 } // namespace
 struct InteractionRuntime::Impl {
   public:
     using Actors = std::map<std::string, InteractionActor, std::less<>>;
     Impl(Actors actors, const nlohmann::json &document) : actors_(std::move(actors)) {
         using namespace presentation_data;
-        anima::detail::json_version(document, "version", 1, "Unsupported coordinated interaction version");
+        anima::detail::json_version(document, "version", interaction_version,
+                                    "Unsupported coordinated interaction version");
         anima::detail::json_fields(document, {"version", "id", "phases", "roles", "attachments", "contacts"});
         if (actors_.empty() || actors_.size() > InteractionBindings::maximum_roles ||
             !document.at("roles").is_object() || document.at("roles").size() != actors_.size())
@@ -21,16 +24,14 @@ struct InteractionRuntime::Impl {
         if (!document.at("phases").is_array())
             throw std::invalid_argument("Coordinated interaction phases must be an array");
         for (const auto &phase : document.at("phases")) {
-            anima::detail::json_fields(phase, {"id", "duration"}, {"held", "cues"});
+            anima::detail::json_fields(phase, {"id", "duration", "held", "cues"});
             anima::ActionPhase result{
-                text(phase.at("id")), phase.at("duration").get<double>(), phase.value("held", false), {}};
-            if (phase.contains("cues")) {
-                if (!phase.at("cues").is_array())
-                    throw std::invalid_argument("Coordinated interaction cues must be an array");
-                for (const auto &cue : phase.at("cues")) {
-                    anima::detail::json_fields(cue, {"id", "at"});
-                    result.cues.push_back({text(cue.at("id")), cue.at("at").get<double>()});
-                }
+                text(phase.at("id")), phase.at("duration").get<double>(), phase.at("held").get<bool>(), {}};
+            if (!phase.at("cues").is_array())
+                throw std::invalid_argument("Coordinated interaction cues must be an array");
+            for (const auto &cue : phase.at("cues")) {
+                anima::detail::json_fields(cue, {"id", "at"});
+                result.cues.push_back({text(cue.at("id")), cue.at("at").get<double>()});
             }
             phases.push_back(std::move(result));
         }
@@ -42,7 +43,10 @@ struct InteractionRuntime::Impl {
             const auto &definition = document.at("roles").at(id);
             if (!definition.is_object() || definition.size() != timeline_->phases().size())
                 throw std::invalid_argument("Every interaction role needs every phase");
-            nlohmann::json action{{"id", id_}, {"handling", {id}}, {"phases", nlohmann::json::array()}};
+            nlohmann::json action{{"id", id_},
+                                  {"handling", {id}},
+                                  {"roles", nlohmann::json::object()},
+                                  {"phases", nlohmann::json::array()}};
             for (const auto &phase : document.at("phases")) {
                 const auto &layers = definition.at(phase.at("id").get<std::string>());
                 // A role has pose layers only: other participants are roles of the
@@ -50,11 +54,14 @@ struct InteractionRuntime::Impl {
                 anima::detail::json_fields(layers, {"layers"});
                 auto entry = phase;
                 entry["layers"] = layers.at("layers");
+                entry["props"] = nlohmann::json::array();
+                entry["contacts"] = nlohmann::json::object();
                 action["phases"].push_back(std::move(entry));
             }
-            runtimes_.emplace(id,
-                              std::make_shared<ActionRuntime>(
-                                  actor.motion, nlohmann::json{{"schema_version", 1}, {"actions", {action}}}.dump()));
+            runtimes_.emplace(
+                id,
+                std::make_shared<ActionRuntime>(
+                    actor.motion, nlohmann::json{{"version", action_catalog_version}, {"actions", {action}}}.dump()));
             roles.push_back({id, actor.motion->model()});
         }
         std::vector<anima::InteractionAttachment> attachments;
@@ -72,15 +79,15 @@ struct InteractionRuntime::Impl {
             throw std::invalid_argument("Invalid interaction contact count");
         std::set<std::pair<std::string, std::string>> owned_chains;
         for (const auto &entry : document.at("contacts")) {
-            anima::detail::json_fields(entry, {"child", "parent", "chain", "target_socket", "pole", "weights"},
-                                       {"orientation"});
+            anima::detail::json_fields(entry,
+                                       {"child", "parent", "chain", "target_socket", "pole", "weights", "orientation"});
             Contact contact{text(entry.at("child")),
                             text(entry.at("parent")),
                             text(entry.at("chain")),
                             socket(text(entry.at("parent")), text(entry.at("target_socket"))),
                             vec3(entry.at("pole"), "Interaction pole requires three coordinates"),
                             weights(entry.at("weights")),
-                            entry.value("orientation", false)};
+                            entry.at("orientation").get<bool>()};
             // Attachment sockets are checked by the bindings; the target socket is
             // only read at sample time, so check it before publishing.
             anima::validate_interaction_socket(*actors_.at(contact.parent).motion->model(), contact.target);

@@ -10,7 +10,7 @@
 ///
 /// Part of the `anima::assets` target. The model and its motion are separate resources: the model
 /// GLB holds geometry and a skin, and the motion GLB (see load_motion_asset) holds nodes and clips
-/// only; clips that the model carries itself are not used. A version 3 motion contract (a JSON
+/// only; clips that the model carries itself are not used. A version 4 motion contract (a JSON
 /// document; see Manifest::motion_contract) declares the evaluation joints, masks, contact chains,
 /// base clips and layer clips.
 /// MotionRuntime checks node identity, ancestry and bind pose before transferring motion onto the
@@ -99,17 +99,19 @@ class MotionRuntime {
     /// Binds the motion contract @p contract to @p asset, the model of @p manifest. The runtime holds
     /// @p asset, and with it the images of its textures; TexelRetention describes how to let them go.
     ///
-    /// The contract has `version` 3; `skeleton` (`id`, `bind_signature` and `joint_count`, equal
+    /// The contract has the integer `version` 4, checked before any other field ("Unsupported motion
+    /// contract version" otherwise); `skeleton` (`id`, `bind_signature` and `joint_count`, equal
     /// to the manifest's); `resource`, a relative `.glb` path without `..`, resolved beside the
     /// manifest's contract file; and `evaluation` with `version` 1, a nonempty `id`, `parents` (one
     /// entry per manifest joint: joint name to its parent's name or null), `masks` (name to a
     /// nonempty list of unique root joints; a mask covers their subtrees) and `chains` (name to
     /// `joints` [start, middle, end], `minimum_angle` and `maximum_angle`, as in TwoBoneContact).
-    /// `clips` lists the base clips: unique nonempty `name`, `loop`, `events` (`time` and nonempty
-    /// `name`, in nondecreasing time within the clip) and optional positive finite
-    /// `reference_speed`. Each base clip must have a positive duration in the motion GLB, so a pose
+    /// `clips` lists the base clips: unique nonempty `name`, `loop`, `reference_speed` (positive and
+    /// finite, or null for none) and `events` (`time` and nonempty `name`, in nondecreasing time
+    /// within the clip). Each base clip must have a positive duration in the motion GLB, so a pose
     /// clip, whose keys all sit at time 0, throws "Motion requires a positive duration". `layers`
-    /// maps each layer clip to its `mask`, `owned_joints` and `context_joints`.
+    /// maps each layer clip to its `mask`, `owned_joints` and `context_joints`. Every field is
+    /// required.
     ///
     /// Clips of the model and of the manifest are ignored. Each joint name must name one model
     /// node and one motion node, and every motion node must match a uniquely named model node with

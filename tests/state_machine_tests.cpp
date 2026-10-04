@@ -1108,26 +1108,27 @@ TEST_CASE("The codec rejects invalid registrations, keys and payloads") {
 namespace {
 // Every document field, and the definition it decodes to.
 constexpr std::string_view full_document = R"({
-  "version": 1,
+  "version": 2,
   "kind": "anima.animation-state-machine",
   "parameters": [
     {"name": "speed", "type": "float", "initial": 0.5},
     {"name": "stance", "type": "int", "initial": -2},
     {"name": "grounded", "type": "bool", "initial": true},
-    {"name": "jump", "type": "trigger"}
+    {"name": "jump", "type": "trigger", "initial": false}
   ],
   "states": [
-    {"name": "move", "blend": {"parameter": "speed", "clips": [
+    {"name": "move", "clip": null, "blend": {"parameter": "speed", "clips": [
       {"clip": "walk", "threshold": 1}, {"clip": "run", "threshold": 3}]}, "speed": 1.5, "speed_parameter": "speed"},
-    {"name": "air", "clip": "jump"}
+    {"name": "air", "clip": "jump", "blend": null, "speed": 1, "speed_parameter": null}
   ],
   "transitions": [
-    {"from": null, "to": "air", "conditions": [{"parameter": "jump", "mode": "is_true"}], "duration": 0.25,
-     "interruption": "destination_then_source", "to_self": true},
-    {"from": "air", "to": "move", "exit_time": 1, "offset": 0.5, "interruption": "source",
-     "conditions": [{"parameter": "grounded", "mode": "is_true"}, {"parameter": "stance", "mode": "not_equal",
-      "threshold": 3}]},
-    {"from": "move", "to": "move", "conditions": [{"parameter": "speed", "mode": "less", "threshold": -1}]}
+    {"from": null, "to": "air", "conditions": [{"parameter": "jump", "mode": "is_true", "threshold": 0}],
+     "exit_time": null, "duration": 0.25, "offset": 0, "interruption": "destination_then_source", "to_self": true},
+    {"from": "air", "to": "move", "exit_time": 1, "duration": 0, "offset": 0.5, "interruption": "source",
+     "conditions": [{"parameter": "grounded", "mode": "is_true", "threshold": 0}, {"parameter": "stance",
+      "mode": "not_equal", "threshold": 3}], "to_self": false},
+    {"from": "move", "to": "move", "conditions": [{"parameter": "speed", "mode": "less", "threshold": -1}],
+     "exit_time": null, "duration": 0, "offset": 0, "interruption": "none", "to_self": false}
   ]
 })";
 } // namespace
@@ -1194,27 +1195,32 @@ TEST_CASE("Invalid documents are rejected with their reason") {
     };
     REQUIRE_NOTHROW((void)decode(valid));
     std::vector<std::pair<std::string, std::string>> rejected{
-        {changed(valid, R"("version": 1)", R"("version": 1, "version": 1)"), "Duplicate JSON document field"},
-        {changed(valid, R"("version": 1)", R"("version": 2)"), "Unsupported animation state machine document version"},
-        {changed(valid, R"("version": 1)", R"("version": 1.0)"),
+        {changed(valid, R"("version": 2)", R"("version": 2, "version": 2)"), "Duplicate JSON document field"},
+        {changed(valid, R"("version": 2)", R"("version": 1)"), "Unsupported animation state machine document version"},
+        {changed(valid, R"("version": 2)", R"("version": 2.0)"),
          "Unsupported animation state machine document version"},
-        {changed(valid, R"("version": 1,)", ""), "Missing JSON field: version"},
+        {changed(valid, R"("version": 2,)", ""), "Missing JSON field: version"},
         {changed(valid, R"("anima.animation-state-machine")", R"("anima.scene")"),
          "Invalid animation state machine document kind"},
         // Another version is reported before a field that it lacks or adds.
-        {changed(changed(valid, R"("version": 1)", R"("version": 2)"), R"("states")", R"("modes")"),
+        {changed(changed(valid, R"("version": 2)", R"("version": 1)"), R"("states")", R"("modes")"),
          "Unsupported animation state machine document version"},
-        {changed(valid, R"("version": 1)", R"("version": 1, "layers": [])"), "Unknown JSON field: layers"},
+        {changed(valid, R"("version": 2)", R"("version": 2, "layers": [])"), "Unknown JSON field: layers"},
         {changed(valid, R"("type": "float")", R"("type": "double")"), "Unknown animation parameter type: double"},
-        {changed(valid, R"("type": "trigger")", R"("type": "trigger", "initial": false)"),
-         "Unknown JSON field: initial"},
+        // A trigger's initial value is a flag that starts unset.
+        {changed(valid, R"("initial": false)", R"("initial": 0)"),
+         "[json.exception.type_error.302] type must be boolean, but is number"},
+        {changed(valid, R"("initial": false)", R"("initial": true)"),
+         "Invalid initial value of animation parameter: jump"},
         {changed(valid, R"("initial": true)", R"("initial": 1)"),
          "[json.exception.type_error.302] type must be boolean, but is number"},
         {changed(valid, R"("initial": 0.5)", R"("initial": true)"), "JSON value must be a number"},
-        {changed(valid, R"("name": "air", "clip": "jump")", R"("name": "air", "clip": "jump", "blend": {})"),
+        {changed(valid, R"("clip": "jump", "blend": null)", R"("clip": "jump", "blend": {})"),
          "Animation state needs exactly one of a clip and a blend: air"},
-        {changed(valid, R"("name": "air", "clip": "jump")", R"("name": "air")"),
+        {changed(valid, R"("clip": "jump", "blend": null)", R"("clip": null, "blend": null)"),
          "Animation state needs exactly one of a clip and a blend: air"},
+        // null is the one spelling of no speed parameter.
+        {changed(valid, R"("speed_parameter": null)", R"("speed_parameter": "")"), "Unknown animation parameter: "},
         {changed(valid, R"("threshold": 3})", R"("threshold": "3"})"), "JSON value must be a number"},
         {changed(valid, R"("threshold": 3})", R"("threshold": 1e39})"), "JSON number outside the float range"},
         {changed(valid, R"("threshold": 3})", R"("threshold": 3, "weight": 1})"), "Unknown JSON field: weight"},
@@ -1235,21 +1241,32 @@ TEST_CASE("Invalid documents are rejected with their reason") {
          "[json.exception.parse_error.101] parse error at line 1, column 2: syntax error while parsing object key - "
          "unexpected end of input; expected string literal"},
     };
+    // Every field is required, so each that version 1 left optional is missing when renamed.
+    for (const std::string field : {"initial", "clip", "blend", "speed", "speed_parameter", "conditions", "exit_time",
+                                    "duration", "offset", "interruption", "to_self"})
+        rejected.emplace_back(changed(valid, '"' + field + "\":", '"' + field + "_renamed\":"),
+                              "Missing JSON field: " + field);
+    rejected.emplace_back(changed(valid, R"("mode": "is_true", "threshold": 0)", R"("mode": "is_true")"),
+                          "Missing JSON field: threshold");
     // Lists that must be arrays, and nesting, in the smallest document.
-    const std::string smallest = R"({"version": 1, "kind": "anima.animation-state-machine", "parameters": [],)"
-                                 R"( "states": [{"name": "idle", "clip": "idle"}], "transitions": []})";
+    const std::string idle = R"({"name": "idle", "clip": "idle", "blend": null, "speed": 1, "speed_parameter": null})";
+    const std::string smallest =
+        R"({"version": 2, "kind": "anima.animation-state-machine", "parameters": [], "states": [)" + idle +
+        R"(], "transitions": []})";
     REQUIRE_NOTHROW((void)decode(smallest));
     const std::vector<std::pair<std::string, std::string>> structure{
         {changed(smallest, R"("parameters": [])", R"("parameters": {})"),
          "Animation state machine field must be an array: parameters"},
-        {changed(smallest, R"("states": [{"name": "idle", "clip": "idle"}])", R"("states": "idle")"),
+        {changed(smallest, R"("states": [)" + idle + "]", R"("states": "idle")"),
          "Animation state machine field must be an array: states"},
         {changed(smallest, R"("transitions": [])", R"("transitions": null)"),
          "Animation state machine field must be an array: transitions"},
-        {changed(smallest, R"("clip": "idle")", R"("blend": {"parameter": "speed", "clips": {}})"),
+        {changed(smallest, R"("clip": "idle", "blend": null)",
+                 R"("clip": null, "blend": {"parameter": "speed", "clips": {}})"),
          "Animation state machine field must be an array: clips"},
         {changed(smallest, R"("transitions": [])",
-                 R"("transitions": [{"from": null, "to": "idle", "conditions": {}}])"),
+                 R"("transitions": [{"from": null, "to": "idle", "conditions": {}, "exit_time": null, "duration": 0,)"
+                 R"( "offset": 0, "interruption": "none", "to_self": false}])"),
          "Animation state machine field must be an array: conditions"},
         {changed(smallest, R"("transitions": [])", R"("transitions": [[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]])"),
          "JSON document exceeds nesting limit"},

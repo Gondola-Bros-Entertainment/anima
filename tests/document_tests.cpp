@@ -23,7 +23,7 @@ constexpr auto invalid_utf8 = "\xff"; // A lone continuation byte is never valid
 // Identifiers the JSON library puts in its messages, which the rethrown exceptions keep.
 constexpr auto wrong_type = "[json.exception.type_error.302]";
 constexpr auto valid_manifest =
-    R"({"schema_version":3,"units":"meters","asset_id":"body","model":"body.glb","skeleton":{"id":"rig","joint_count":1,"bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"clips":[{"name":"idle","loop":false}]})";
+    R"({"version":4,"units":"meters","asset_id":"body","model":"body.glb","motion_contract":null,"skeleton":{"id":"rig","joint_count":1,"bind_signature":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"clips":[{"name":"idle","loop":false,"reference_speed":null,"events":[]}]})";
 struct Tag {};
 
 // Writes @p json to a manifest file that is removed when the object is destroyed.
