@@ -99,11 +99,12 @@ class MotionRuntime {
     /// @p asset, and with it the images of its textures; TexelRetention describes how to let them go.
     ///
     /// The contract has `version` 3; `skeleton` (`id`, `bind_signature` and `joint_count`, equal
-    /// to the manifest's); `resource`, a relative `.glb` path without `..`, resolved beside the
-    /// manifest's contract file; and `evaluation` with `version` 1, a nonempty `id`, `parents` (one
-    /// entry per manifest joint: joint name to its parent's name or null), `masks` (name to a
-    /// nonempty list of unique root joints; a mask covers their subtrees) and `chains` (name to
-    /// `joints` [start, middle, end], `minimum_angle` and `maximum_angle`, as in TwoBoneContact).
+    /// to the manifest's); `resource`, a relative UTF-8 `.glb` path without a root, colon, backslash
+    /// or `..` component, resolved beside the manifest's contract file; and `evaluation` with
+    /// `version` 1, a nonempty `id`, `parents` (one entry per manifest joint: joint name to its
+    /// parent's name or null), `masks` (name to a nonempty list of unique root joints; a mask covers
+    /// their subtrees) and `chains` (name to `joints` [start, middle, end], `minimum_angle` and
+    /// `maximum_angle`, as in TwoBoneContact).
     /// `clips` lists the base clips: unique nonempty `name`, `loop`, `events` (`time` and nonempty
     /// `name`, in nondecreasing time within the clip) and optional positive finite
     /// `reference_speed`. `layers` maps each layer clip to its `mask`, `owned_joints` and

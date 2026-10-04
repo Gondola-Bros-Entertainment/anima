@@ -97,12 +97,17 @@ TEST_CASE("Manifest fields that are missing or of the wrong JSON type are reject
     REQUIRE_THROWS_WITH_AS((void)read_manifest(missing.path), "Missing JSON field: units", std::invalid_argument);
 }
 
-TEST_CASE("A fitted model path must be a relative .glb path without '..'") {
+TEST_CASE("A fitted model path must be a relative .glb path that stays inside its directory on every platform") {
     const auto body = std::make_shared<const Asset>();
-    const auto catalog = R"({"version":2,"items":[{"id":"cover","fits":{"profile":)"
-                         R"({"model":"../cover.glb","skeleton":"s","bind_signature":"b"}}}]})";
-    REQUIRE_THROWS_WITH_AS(FittedLibrary(body, Manifest{}, "profile", catalog),
-                           "Fitted model must be a relative .glb path without '..'", std::invalid_argument);
+    // JSON strings for a parent directory, a root, a Windows drive and a Windows parent directory. Windows reads the
+    // colon and the backslash as a drive and a separator, so every platform rejects them.
+    for (const std::string model : {"../cover.glb", "/cover.glb", "C:cover.glb", R"(..\\cover.glb)"}) {
+        CAPTURE(model);
+        const auto catalog = R"({"version":2,"items":[{"id":"cover","fits":{"profile":{"model":")" + model +
+                             R"(","skeleton":"s","bind_signature":"b"}}}]})";
+        CHECK_THROWS_WITH_AS(FittedLibrary(body, Manifest{}, "profile", catalog),
+                             "Fitted model must be a relative .glb path without '..'", std::invalid_argument);
+    }
 }
 
 TEST_CASE("A fitted library rejects an unknown texel retention") {

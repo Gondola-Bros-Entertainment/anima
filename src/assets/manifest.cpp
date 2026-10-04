@@ -30,18 +30,18 @@ constexpr std::streamoff maximum_manifest_bytes = 1024 * 1024;
 constexpr int maximum_manifest_depth = 32;
 // A bind signature is 64 lowercase hexadecimal digits.
 constexpr std::size_t bind_signature_digits = 64;
-void filename(const char *field, const std::string &value) {
-    const std::filesystem::path path = value;
-    if (value.empty() || value.find('\0') != std::string::npos || value.find(':') != std::string::npos ||
-        value.find('\\') != std::string::npos || path.is_absolute() || path.has_parent_path() || value == "." ||
-        value == "..")
-        throw std::invalid_argument("Manifest " + std::string(field) +
-                                    " must be a filename beside the manifest: " + value);
+// The file that @p value, the UTF-8 text of manifest field @p field, names beside the manifest.
+std::filesystem::path filename(const char *field, const std::string &value) {
+    const auto message = "Manifest " + std::string(field) + " must be a filename beside the manifest: " + value;
+    auto result = presentation_data::relative_document_path(value, {}, message.c_str());
+    if (result.has_parent_path() || value == ".")
+        throw std::invalid_argument(message);
+    return result;
 }
 Manifest load_manifest(const std::filesystem::path &path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
-        throw std::invalid_argument("Cannot open manifest: " + path.string());
+        throw std::invalid_argument("Cannot open manifest: " + detail::utf8_text(path));
     const auto size = input.tellg();
     if (size <= 0 || size > maximum_manifest_bytes)
         throw std::invalid_argument("Manifest exceeds 1 MiB or is empty");
@@ -64,12 +64,9 @@ Manifest load_manifest(const std::filesystem::path &path) {
     Manifest result;
     result.directory = std::filesystem::absolute(path).parent_path();
     result.asset_id = text(json, "asset_id");
-    result.model = text(json, "model");
-    filename("model", result.model);
-    if (const auto *contract = optional(json, "motion_contract")) {
-        result.motion_contract = contract->get<std::string>();
-        filename("motion_contract", result.motion_contract);
-    }
+    result.model = filename("model", text(json, "model"));
+    if (const auto *contract = optional(json, "motion_contract"))
+        result.motion_contract = filename("motion_contract", contract->get<std::string>());
     const auto &skeleton = json.at("skeleton");
     detail::json_fields(skeleton, {"id", "bind_signature", "joint_count"});
     result.skeleton_id = text(skeleton, "id");

@@ -3,13 +3,6 @@
 #include <anima/assets/fitted.hpp>
 #include <mutex>
 namespace anima {
-static std::filesystem::path relative_model(const std::string &name) {
-    const std::filesystem::path result = name;
-    if (result.is_absolute() || result.extension() != ".glb" ||
-        std::any_of(result.begin(), result.end(), [](const auto &component) { return component == ".."; }))
-        throw std::invalid_argument("Fitted model must be a relative .glb path without '..'");
-    return result;
-}
 struct FittedLibrary::State {
     std::shared_ptr<const anima::Asset> body;
     std::filesystem::path directory;
@@ -65,7 +58,8 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
                 if (body_id.empty())
                     throw std::invalid_argument("Empty fitted body profile");
                 anima::detail::json_fields(fit, {"model", "skeleton", "bind_signature"});
-                const auto path = relative_model(text(fit.at("model")));
+                const auto path = relative_document_path(text(fit.at("model")), ".glb",
+                                                         "Fitted model must be a relative .glb path without '..'");
                 if (text(fit.at("skeleton")).empty() || text(fit.at("bind_signature")).empty())
                     throw std::invalid_argument("Missing fitted skeleton or bind signature");
                 if (body_id != profile)

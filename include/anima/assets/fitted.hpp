@@ -36,7 +36,8 @@ struct FittedAsset {
 /// One catalog item that fits the library's body.
 struct FittedDefinition {
     std::string id;
-    /// Relative `.glb` path without `..`, resolved against the body manifest's directory.
+    /// Relative `.glb` path, decoded from the catalog's UTF-8, without a root, colon, backslash or
+    /// `..` component; resolved against the body manifest's directory.
     std::filesystem::path model;
 };
 /// The items of a fitted catalog that fit one body profile, with shared loading.
@@ -51,9 +52,9 @@ class FittedLibrary {
     /// profile @p profile.
     ///
     /// The document has `version` 2 and at most 65,536 `items`, each with a unique nonempty `id` and
-    /// a nonempty `fits` object, mapping nonempty body profiles to `model` (a relative `.glb` path
-    /// without `..`) and nonempty `skeleton` and `bind_signature`. The fit for @p profile must
-    /// match the manifest's skeleton and bind signature. Loads compile their meshes with
+    /// a nonempty `fits` object, mapping nonempty body profiles to `model` (a path as
+    /// FittedDefinition::model describes) and nonempty `skeleton` and `bind_signature`. The fit for
+    /// @p profile must match the manifest's skeleton and bind signature. Loads compile their meshes with
     /// @p texel_retention. Throws also for a null @p body or an unknown @p texel_retention.
     FittedLibrary(std::shared_ptr<const Asset> body, const Manifest &manifest, std::string_view profile,
                   std::string_view document, TexelRetention texel_retention = TexelRetention::keep);

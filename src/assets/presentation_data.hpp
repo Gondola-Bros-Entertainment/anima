@@ -1,5 +1,7 @@
 #pragma once
 #include "../detail/json.hpp"
+#include "../detail/utf8_path.hpp"
+#include <algorithm>
 #include <anima/assets/preview.hpp>
 #include <cstdint>
 #include <fstream>
@@ -21,6 +23,23 @@ inline std::string text(const Json &value) {
         throw std::invalid_argument("Empty presentation identity/reference");
     return result;
 }
+// The path that a document's file reference @p utf8 names, relative to the directory that the document resolves it
+// against. Throws std::invalid_argument with @p message unless @p utf8 is nonempty without a NUL, colon or backslash,
+// and the path has no root and no ".." component and ends in @p extension when that is nonempty. Colons and
+// backslashes are rejected on every platform, since Windows reads them as a drive and as separators, so a document
+// accepted anywhere names a file inside its directory on Windows too.
+inline std::filesystem::path relative_document_path(std::string_view utf8, std::string_view extension,
+                                                    const char *message) {
+    if (utf8.empty() || utf8.find('\0') != std::string_view::npos || utf8.find(':') != std::string_view::npos ||
+        utf8.find('\\') != std::string_view::npos)
+        throw std::invalid_argument(message);
+    auto result = detail::utf8_path(utf8);
+    if (result.has_root_path() ||
+        std::any_of(result.begin(), result.end(), [](const auto &part) { return part == ".."; }) ||
+        (!extension.empty() && result.extension() != detail::utf8_path(extension)))
+        throw std::invalid_argument(message);
+    return result;
+}
 inline Json parse(std::string_view source, int maximum_depth = 64) {
     return detail::parse_json(source, maximum_document_bytes, maximum_depth);
 }
@@ -28,7 +47,7 @@ inline Json read(const std::filesystem::path &path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     const auto size = input.tellg();
     if (!input || size < 0 || static_cast<std::uintmax_t>(size) > maximum_document_bytes)
-        throw std::invalid_argument("Missing/oversized presentation document: " + path.string());
+        throw std::invalid_argument("Missing/oversized presentation document: " + detail::utf8_text(path));
     std::string source(static_cast<std::size_t>(size), '\0');
     input.seekg(0);
     if (!input.read(source.data(), static_cast<std::streamsize>(source.size())))
