@@ -53,6 +53,38 @@ inline Vec3 normalized(Vec3 v) {
         return world_up;
     return {float(v.x / n), float(v.y / n), float(v.z / n)};
 }
+/// Two-component float vector, such as a position, direction or velocity in the XY plane of 2D physics, where +Y is
+/// up. Its operators are defined in namespace anima, so argument-dependent lookup finds them from any namespace.
+struct Vec2 {
+    float x{}, y{};
+};
+/// Returns the componentwise sum of @p a and @p b.
+inline Vec2 operator+(Vec2 a, Vec2 b) { return {a.x + b.x, a.y + b.y}; }
+/// Returns the componentwise difference of @p a and @p b.
+inline Vec2 operator-(Vec2 a, Vec2 b) { return {a.x - b.x, a.y - b.y}; }
+/// Returns @p v with both components negated.
+inline Vec2 operator-(Vec2 v) { return {-v.x, -v.y}; }
+/// Returns @p a with both components multiplied by @p b.
+inline Vec2 operator*(Vec2 a, float b) { return {a.x * b, a.y * b}; }
+/// Returns the dot product of @p a and @p b, computed in `float`.
+inline float dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
+namespace detail {
+/// The length of @p v, squared and summed in double, where no finite `float` component overflows or underflows.
+inline double length_in_double(Vec2 v) { return std::sqrt(double(v.x) * v.x + double(v.y) * v.y); }
+} // namespace detail
+/// Returns the length of @p v, computed in double and rounded once to `float`, so a large component does not overflow
+/// when squared. A length beyond the `float` range, or an infinite component, gives infinity, and a NaN component
+/// gives NaN.
+inline float length(Vec2 v) { return float(detail::length_in_double(v)); }
+/// Returns @p v scaled to unit length, or `{0, 1}` (+Y, up) when its length is NaN, infinite or at most `1e-12`. The
+/// length and the division are computed in double, so any vector of finite `float` components longer than `1e-12`
+/// normalizes.
+inline Vec2 normalized(Vec2 v) {
+    const double n = detail::length_in_double(v);
+    if (!(n > detail::minimum_direction_length) || !std::isfinite(n))
+        return {0, 1};
+    return {float(v.x / n), float(v.y / n)};
+}
 /// 4x4 matrix stored column-major for column vectors: row `r` of column `c` is element `c * 4 + r`.
 ///
 /// It is a type of its own in namespace anima, so argument-dependent lookup finds its operators from any namespace.

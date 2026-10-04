@@ -101,9 +101,9 @@ find_package(Threads REQUIRED)
 function(add_anima_consumer mode target test_name)
     set(CONSUMER_MODE "${mode}")
     add_executable(${target} main.cpp)
-    if(CONSUMER_MODE MATCHES "^(core|physics2d|ui_documents)$")
-        # Standalone documents and Box2D do not depend on core; this application
-        # also exercises core audio/navigation alongside those independent APIs.
+    if(CONSUMER_MODE MATCHES "^(core|ui_documents)$")
+        # Standalone documents do not depend on core; this application also
+        # exercises core audio/navigation alongside that independent API.
         target_link_libraries(${target} PRIVATE anima::core)
     endif()
     if(ANIMA_ENABLE_SANITIZERS)

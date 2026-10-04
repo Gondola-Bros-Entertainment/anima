@@ -315,3 +315,14 @@ TEST_CASE("A sensor pair is reported only when either body can move") {
     CHECK_FALSE_MESSAGE(reported(zone, wall), "Two stationary bodies reported a sensor overlap");
     CHECK(events.size() == 2u);
 }
+
+TEST_CASE("Body vectors combine with core's Vec2 arithmetic") {
+    World world;
+    auto body = world.create(box({0, 0}, {.5F, .5F}, Motion::kinematic));
+    const Vec2 direction = anima::normalized(Vec2{3, 4});
+    body.set_velocity({1, 0});
+    body.set_velocity(body.velocity() + direction * 2.F);
+    CHECK(body.velocity().x == doctest::Approx(2.2F));
+    CHECK(body.velocity().y == doctest::Approx(1.6F));
+    CHECK(length(body.velocity() - Vec2{2.2F, 1.6F}) < 1e-5F);
+}
