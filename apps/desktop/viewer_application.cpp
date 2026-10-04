@@ -39,10 +39,11 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
         std::unique_ptr<anima::AssetPreview> preview;
         if (!options.manifest.empty()) {
             preview = std::make_unique<anima::AssetPreview>(options.manifest);
+            const auto start = options.paused ? anima::PlaybackStart::paused : anima::PlaybackStart::playing;
             if (!options.clip.empty())
-                preview->select(options.clip, !options.paused);
+                preview->select(options.clip, start);
             else if (!preview->manifest().clips.empty())
-                preview->select(preview->manifest().clips.front().name, !options.paused);
+                preview->select(preview->manifest().clips.front().name, start);
             if (options.pose_time)
                 preview->seek(options.pose_time);
             options.renderer.scenes = {preview->render_scene()};
