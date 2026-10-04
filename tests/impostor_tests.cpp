@@ -231,10 +231,17 @@ TEST_CASE("Frames lay out their texture axes and faces as documented") {
         CHECK(quarter(4, 0, 10, 14) == std::array{255, 255, 255, 0});
         CHECK(quarter(4, 0, 1, 1) == std::array{255, 0, 0, 0});
         if (!double_sided) {
+            // A frame that nothing covers holds zeros, except the alpha of the surface and emission, which is 1.
+            auto glowing = quarters_asset(false);
+            glowing.materials[0].emissive = {1, 1, 1};
+            const auto emitting = bake_impostor(*Mesh::compile(glowing), options(5, 16, 4));
+            REQUIRE(emitting.emissive);
             for (std::uint32_t t = 0; t < 16; ++t)
                 for (std::uint32_t s = 0; s < 16; ++s) {
                     CHECK(texel(atlas, atlas.color, 0, 4, s, t) == std::array{0, 0, 0, 0});
                     CHECK(texel(atlas, atlas.normal_depth, 0, 4, s, t) == std::array{0, 0, 0, 0});
+                    CHECK(texel(atlas, atlas.surface, 0, 4, s, t) == std::array{0, 0, 0, 255});
+                    CHECK(texel(emitting, *emitting.emissive, 0, 4, s, t) == std::array{0, 0, 0, 255});
                 }
             continue;
         }
@@ -351,6 +358,23 @@ TEST_CASE("An impostor mesh draws one quad around its source's center") {
         CHECK(material.emissive_texture == -1);
         CHECK(material.metallic == 1);
         CHECK(material.roughness == 1);
+        // A custom material on the slot draws these vertices: a diagonal of the cube around the sphere, by uv.
+        const auto c = atlas.frames.center;
+        const auto r = atlas.frames.radius;
+        const auto vertices = mesh->vertices();
+        REQUIRE(vertices.size() == 4);
+        using Uv = std::array<float, 2>;
+        const std::array corners{std::pair{Vec3{-1, -1, -1}, Uv{0, 0}}, std::pair{Vec3{1, -1, 1}, Uv{1, 0}},
+                                 std::pair{Vec3{1, 1, 1}, Uv{1, 1}}, std::pair{Vec3{-1, 1, -1}, Uv{0, 1}}};
+        for (std::size_t k = 0; k < corners.size(); ++k) {
+            CAPTURE(k);
+            const auto corner = c + corners[k].first * r;
+            CHECK(vertices[k].position.x == doctest::Approx(corner.x));
+            CHECK(vertices[k].position.y == doctest::Approx(corner.y));
+            CHECK(vertices[k].position.z == doctest::Approx(corner.z));
+            CHECK(vertices[k].uv == corners[k].second);
+            CHECK(vertices[k].normal.z == 1);
+        }
     }
     auto emissive = atlas;
     emissive.emissive = atlas.color;
@@ -457,5 +481,14 @@ TEST_CASE("Compiling an impostor rejects frames and images it cannot draw") {
         rejects(value, "Impostor emission scale must be finite and at least 1");
     }
     CHECK_THROWS_WITH_AS((void)Mesh::compile_impostor(atlas, static_cast<TexelRetention>(7)), "Unknown texel retention",
+                         std::invalid_argument);
+    // An image whose texels do not match its size passes the atlas's checks and fails compile()'s, which come after
+    // the retention's.
+    value = atlas;
+    auto truncated = std::make_shared<Image>(*atlas.surface.image);
+    truncated->rgba.resize(truncated->rgba.size() - 4);
+    value.surface.image = truncated;
+    rejects(value, "MeshSnapshot texture byte count does not match dimensions");
+    CHECK_THROWS_WITH_AS((void)Mesh::compile_impostor(value, static_cast<TexelRetention>(7)), "Unknown texel retention",
                          std::invalid_argument);
 }
