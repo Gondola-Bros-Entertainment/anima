@@ -346,35 +346,61 @@ inline std::array<float, 4> view_origin(const Mat4 &vp) {
 }
 /// Camera orbiting #target at #distance; angles are in radians.
 struct OrbitCamera {
+    /// #yaw that the initializer and frame() set.
+    static constexpr float default_yaw = 0.3F;
+    /// #pitch that the initializer and frame() set.
+    static constexpr float default_pitch = 0.12F;
+    /// Largest magnitude orbit() leaves in #pitch, short of the vertical at `std::numbers::pi_v<float> / 2` where
+    /// look_at() has no defined up.
+    static constexpr float max_pitch = 1.4F;
+    /// Rate of zoom(): each unit of its amount scales #distance by `exp(-zoom_rate)`.
+    static constexpr float zoom_rate = 0.12F;
+    /// Smallest #radius frame() sets, for bounds that are empty or a single point.
+    static constexpr float min_radius = 0.01F;
+    /// #distance in radii that the initializer and frame() set.
+    static constexpr float frame_distance_radii = 3;
+    /// Smallest #distance zoom() leaves, in radii.
+    static constexpr float min_distance_radii = 1.2F;
+    /// Largest #distance zoom() leaves, in radii.
+    static constexpr float max_distance_radii = 15;
+    /// Vertical field of view of matrix(), in radians (45 degrees).
+    static constexpr float field_of_view = std::numbers::pi_v<float> / 4;
+    /// Distance of matrix()'s near plane, in radii.
+    static constexpr float near_radii = 0.01F;
+    /// Distance of matrix()'s far plane, in radii.
+    static constexpr float far_radii = 50;
     /// Point the camera orbits and looks at.
     Vec3 target{};
     /// Radius of the framed bounds; the zoom limits and clip planes scale with it.
     float radius = 1;
     /// Horizontal angle around world_up; 0 places the camera on the +Z side of #target.
-    float yaw = 0.3F;
+    float yaw = default_yaw;
     /// Elevation angle; positive values raise the camera.
-    float pitch = 0.12F;
+    float pitch = default_pitch;
     /// Distance from #target.
-    float distance = 3;
+    float distance = frame_distance_radii;
     /// Frames the box from @p minimum to @p maximum: targets its center, sets #radius to half its
-    /// diagonal (at least 0.01), restores the default #yaw and #pitch and sets #distance to three
-    /// radii.
+    /// diagonal (at least #min_radius), restores #default_yaw and #default_pitch and sets #distance to
+    /// #frame_distance_radii radii.
     void frame(Vec3 minimum, Vec3 maximum) {
         target = (minimum + maximum) * 0.5F;
-        radius = std::max(length(maximum - minimum) * 0.5F, 0.01F);
-        yaw = 0.3F;
-        pitch = 0.12F;
-        distance = radius * 3;
+        radius = std::max(length(maximum - minimum) * 0.5F, min_radius);
+        yaw = default_yaw;
+        pitch = default_pitch;
+        distance = radius * frame_distance_radii;
     }
     /// Adds @p horizontal to #yaw, wrapped to [-pi, pi], and @p vertical to #pitch, clamped to
-    /// [-1.4, 1.4].
+    /// [-#max_pitch, #max_pitch].
     void orbit(float horizontal, float vertical) {
-        yaw = std::remainder(yaw + horizontal, 6.28318530718F);
-        pitch = std::clamp(pitch + vertical, -1.4F, 1.4F);
+        yaw = std::remainder(yaw + horizontal, 2 * std::numbers::pi_v<float>);
+        pitch = std::clamp(pitch + vertical, -max_pitch, max_pitch);
     }
-    /// Scales #distance by `exp(-0.12 * amount)`, so a positive @p amount moves closer, keeping it
-    /// between 1.2 and 15 times #radius.
-    void zoom(float amount) { distance = std::clamp(distance * std::exp(-amount * 0.12F), radius * 1.2F, radius * 15); }
+    /// Scales #distance by `exp(-zoom_rate * amount)`, so a positive @p amount moves closer, keeping it
+    /// between #min_distance_radii and #max_distance_radii times #radius.
+    void zoom(float amount) {
+        distance = std::clamp(distance * std::exp(-amount * zoom_rate), radius * min_distance_radii,
+                              radius * max_distance_radii);
+    }
     /// World position of the camera.
     [[nodiscard]] Vec3 position() const {
         return target +
@@ -384,14 +410,13 @@ struct OrbitCamera {
     [[nodiscard]] Vec3 horizontal_forward() const { return {-std::sin(yaw), 0, -std::cos(yaw)}; }
     /// Horizontal unit direction to the camera's right; it depends only on #yaw.
     [[nodiscard]] Vec3 horizontal_right() const { return {std::cos(yaw), 0, -std::sin(yaw)}; }
-    /// View-projection matrix: perspective() with a vertical field of view of `std::numbers::pi_v<float> / 4` radians
-    /// (45 degrees) and near and far planes at 0.01 and 50 times #radius, applied to look_at() from position() toward
-    /// #target. Throws MathError with MathErrorCode::invalid_frustum when perspective() rejects those arguments, as for
-    /// an @p aspect or #radius that is not finite and positive, or with MathErrorCode::invalid_look when look_at()
-    /// rejects position() and #target, as for a #distance of 0 or a #pitch of
-    /// `std::numbers::pi_v<float> / 2`.
+    /// View-projection matrix: perspective() with a vertical field of view of #field_of_view and near and far planes
+    /// at #near_radii and #far_radii times #radius, applied to look_at() from position() toward #target. Throws
+    /// MathError with MathErrorCode::invalid_frustum when perspective() rejects those arguments, as for an @p aspect
+    /// or #radius that is not finite and positive, or with MathErrorCode::invalid_look when look_at() rejects
+    /// position() and #target, as for a #distance of 0 or a #pitch of `std::numbers::pi_v<float> / 2`.
     [[nodiscard]] Mat4 matrix(float aspect) const {
-        return perspective(std::numbers::pi_v<float> / 4, aspect, radius * 0.01F, radius * 50) *
+        return perspective(field_of_view, aspect, radius * near_radii, radius * far_radii) *
                look_at(position(), target);
     }
 };
