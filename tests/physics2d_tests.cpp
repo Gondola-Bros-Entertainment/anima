@@ -326,3 +326,92 @@ TEST_CASE("Body vectors combine with core's Vec2 arithmetic") {
     CHECK(body.velocity().y == doctest::Approx(1.6F));
     CHECK(length(body.velocity() - Vec2{2.2F, 1.6F}) < 1e-5F);
 }
+
+TEST_CASE("Damping slows only dynamic bodies, by the documented factor per substep") {
+    constexpr int ticks = 60; // One second.
+    constexpr double tick = 1. / 60;
+    constexpr unsigned substeps = 4;
+    constexpr float damping = 1;
+    constexpr float decay_tolerance = 1e-4F; // Float rounding over the substeps.
+    constexpr auto invalid_damping = "Invalid 2D body damping";
+    World world({{0, 0}, 8, substeps});
+    const Vec2 velocity{1, 0};
+    const float spin = 1;
+    auto s = box({}, {.5F, .5F}, Motion::dynamic);
+    s.velocity = velocity;
+    s.angular_velocity = spin;
+    auto undamped = world.create(s);
+    s.pose.position = {0, 5};
+    s.linear_damping = damping;
+    s.angular_damping = damping;
+    auto damped = world.create(s);
+    s.pose.position = {0, 10};
+    s.motion = Motion::kinematic;
+    auto kinematic = world.create(s);
+    for (int i = 0; i < ticks; ++i)
+        world.step(tick);
+    CHECK_MESSAGE((undamped.velocity().x == velocity.x && undamped.velocity().y == velocity.y &&
+                   undamped.angular_velocity() == spin),
+                  "An undamped body lost speed");
+    const auto factor = static_cast<float>(std::pow(1 / (1 + damping * tick / substeps), ticks * substeps));
+    CHECK_MESSAGE((std::abs(damped.velocity().x - velocity.x * factor) < decay_tolerance &&
+                   std::abs(damped.velocity().y) < decay_tolerance),
+                  "Linear damping did not scale the velocity by 1 / (1 + c h) per substep");
+    CHECK_MESSAGE(std::abs(damped.angular_velocity() - spin * factor) < decay_tolerance,
+                  "Angular damping did not scale the angular velocity by 1 / (1 + c h) per substep");
+    CHECK_MESSAGE((kinematic.velocity().x == velocity.x && kinematic.velocity().y == velocity.y &&
+                   kinematic.angular_velocity() == spin),
+                  "Damping slowed a kinematic body");
+    for (const float bad :
+         {-1.F, 61.F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        CAPTURE(bad);
+        auto linear = box({}, {.5F, .5F}, Motion::dynamic);
+        linear.linear_damping = bad;
+        CHECK_THROWS_WITH_AS(world.create(linear), invalid_damping, std::invalid_argument);
+        auto angular = box({}, {.5F, .5F}, Motion::dynamic);
+        angular.angular_damping = bad;
+        CHECK_THROWS_WITH_AS(world.create(angular), invalid_damping, std::invalid_argument);
+    }
+    s.linear_damping = 60;
+    s.angular_damping = 60;
+    (void)world.create(s);
+    CHECK(world.size() == 4u);
+}
+
+TEST_CASE("A dynamic body's mass is BodySettings::mass for every shape and sets its response to impulses") {
+    constexpr float mass = 10;
+    constexpr float mass_tolerance = 1e-5F * mass; // Float rounding of density times area.
+    constexpr auto dynamic_only = "Only dynamic 2D bodies have mass";
+    constexpr auto invalid_mass = "Invalid 2D body mass/material";
+    World world({{0, 0}, 8});
+    auto s = box({}, {.5F, .25F}, Motion::dynamic);
+    s.mass = mass;
+    s.collider.shape = Shape::circle;
+    auto circle = world.create(s);
+    CHECK(std::abs(circle.mass() - mass) < mass_tolerance);
+    circle.add_impulse({mass, 0});
+    CHECK_MESSAGE((std::abs(circle.velocity().x - 1) < mass_tolerance && circle.velocity().y == 0),
+                  "An impulse did not change the velocity by impulse / mass");
+    circle.set_enabled(false);
+    CHECK_MESSAGE(std::abs(circle.mass() - mass) < mass_tolerance, "A disabled body lost its mass");
+    s.pose.position = {0, 5};
+    s.collider.shape = Shape::box;
+    CHECK_MESSAGE(std::abs(world.create(s).mass() - mass) < mass_tolerance, "A box's mass is not BodySettings::mass");
+    s.pose.position = {0, 10};
+    s.collider.shape = Shape::capsule;
+    s.collider.radius = .25F;
+    CHECK_MESSAGE(std::abs(world.create(s).mass() - mass) < mass_tolerance,
+                  "A capsule's mass is not BodySettings::mass");
+    CHECK_THROWS_WITH_AS((void)world.create(box({0, 15}, {.5F, .5F})).mass(), dynamic_only, std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)world.create(box({0, 20}, {.5F, .5F}, Motion::kinematic)).mass(), dynamic_only,
+                         std::invalid_argument);
+    for (const float bad :
+         {0.F, .0009F, 1'000'001.F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        CAPTURE(bad);
+        auto invalid = box({}, {.5F, .5F}, Motion::dynamic);
+        invalid.mass = bad;
+        CHECK_THROWS_WITH_AS(world.create(invalid), invalid_mass, std::invalid_argument);
+    }
+    circle.remove();
+    CHECK_THROWS_WITH_AS((void)circle.mass(), "Expired 2D physics body", std::out_of_range);
+}

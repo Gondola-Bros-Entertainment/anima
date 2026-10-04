@@ -165,6 +165,30 @@ template <class Error = std::invalid_argument, class Step> decltype(auto) json_s
         throw Error(error.what());
     }
 }
+
+// The name of each enumerator of Enum, for documents that store enumerators by name: reordering or inserting an
+// enumerator then cannot change what a saved document means.
+template <class Enum, std::size_t N> using JsonNames = std::array<std::pair<Enum, std::string_view>, N>;
+
+// Returns value's name in names. Throws std::invalid_argument with message when names has no entry for value.
+template <class Enum, std::size_t N>
+std::string_view json_name(const JsonNames<Enum, N> &names, Enum value, const char *message) {
+    for (const auto &[enumerator, name] : names)
+        if (enumerator == value)
+            return name;
+    throw std::invalid_argument(message);
+}
+
+// Returns the enumerator that value names in names. Throws std::invalid_argument with message for any value that is
+// not one of those names, including an enumerator's number.
+template <class Enum, std::size_t N>
+Enum json_enumerator(const JsonNames<Enum, N> &names, const nlohmann::json &value, const char *message) {
+    if (const auto *text = value.get_ptr<const std::string *>())
+        for (const auto &[enumerator, name] : names)
+            if (*text == name)
+                return enumerator;
+    throw std::invalid_argument(message);
+}
 } // namespace anima::detail
 
 namespace anima {

@@ -143,8 +143,8 @@ TEST_CASE("A malformed compound payload rolls back the prefab's earlier body") {
         malformed.push_back({generated[i], generated_errors[i]});
     malformed.push_back(
         {changed("\"children\":[{", "\"children\":[{\"children\":[],"), "Unknown JSON field: children"});
-    malformed.push_back({changed("\"shape\":4", "\"shape\":5"), compound_child});
-    malformed.push_back({changed("\"shape\":4", "\"shape\":3"), compound_child});
+    malformed.push_back({changed("\"shape\":\"convex_hull\"", "\"shape\":\"compound\""), compound_child});
+    malformed.push_back({changed("\"shape\":\"convex_hull\"", "\"shape\":\"mesh\""), compound_child});
     malformed.push_back({changed("\"position\":[2.0,0.0,0.0]", "\"position\":[2000000,0,0]"), vector_range});
     // A value that replaces a number keeps the array's length, so only the numeric check rejects it; an added
     // number fails the length check instead.
@@ -297,7 +297,7 @@ TEST_CASE("Bodies and codecs expire with their world") {
         body = object.add_component<p::RigidBody>(temporary)->body();
     }
     CHECK_FALSE_MESSAGE(body.valid(), "World destruction left component body alive");
-    const std::vector<ComponentData> data{{"anima.rigid-body.v2", "{}", true}};
+    const std::vector<ComponentData> data{{"anima.rigid-body.v3", "{}", true}};
     CHECK_THROWS_WITH_AS(expired.restore(survivor.create(), data, {}), "Rigid body codec world expired",
                          std::out_of_range);
 }
@@ -332,4 +332,92 @@ TEST_CASE("A malformed rigid body payload rolls back the prefab's earlier body")
         CHECK_MESSAGE(world.size() == 1u, "Prefab rollback leaked bodies or objects");
         CHECK(scene.size() == before);
     }
+}
+
+TEST_CASE("The rigid body codec keeps mass and damping and stores shape and motion by name") {
+    p::World world({{0, 0, 0}, 8});
+    ComponentCodecs codecs;
+    p::add_component_codec(codecs, world);
+    Scene scene;
+    p::BodySettings settings;
+    settings.collider.half_extent = {.5F, .25F, 1};
+    settings.motion = p::Motion::dynamic;
+    settings.mass = 3;
+    settings.linear_damping = .25F;
+    settings.angular_damping = .5F;
+    auto root = scene.create();
+    root.add_component<p::RigidBody>(world, settings);
+    const auto prefab = Prefab::capture(root, codecs);
+    const auto &components = prefab.nodes()[0].components;
+    REQUIRE(components.size() == 1u);
+    CHECK(components[0].type == "anima.rigid-body.v3");
+    const auto payload = components[0].state;
+    for (const std::string_view field :
+         {"\"shape\":\"box\"", "\"motion\":\"dynamic\"", "\"half_extent\":[0.5,0.25,1.0]", "\"mass\":3.0",
+          "\"linear_damping\":0.25", "\"angular_damping\":0.5"}) {
+        CAPTURE(field);
+        CHECK(payload.find(field) != std::string::npos);
+    }
+    auto copy = Prefab::deserialize(prefab.serialize({}), {}, codecs).instantiate(scene);
+    const auto restored = copy.get_component<p::RigidBody>();
+    const auto &s = restored->settings();
+    CHECK((s.collider.shape == p::Shape::box && s.motion == p::Motion::dynamic));
+    CHECK((s.collider.half_extent.x == .5F && s.collider.half_extent.y == .25F && s.collider.half_extent.z == 1));
+    CHECK((s.mass == 3 && s.linear_damping == .25F && s.angular_damping == .5F));
+    CHECK(std::abs(restored->body().mass() - 3) < 1e-5F);
+    copy.destroy();
+
+    // Version 2's keys, enumerator numbers and names that differ only in case are rejected.
+    const auto changed = [&](std::string_view before, std::string_view after) {
+        auto result = payload;
+        const auto at = result.find(before);
+        REQUIRE(at != std::string::npos);
+        result.replace(at, before.size(), after);
+        return result;
+    };
+    struct Malformed {
+        std::string state;
+        const char *error;
+    };
+    const std::array<Malformed, 10> malformed{{
+        {changed("\"half_extent\":", "\"extent\":"), "Missing JSON field: half_extent"},
+        {changed("\"angular_damping\":0.5,", ""), "Missing JSON field: angular_damping"},
+        {changed("\"linear_damping\":0.25,", ""), "Missing JSON field: linear_damping"},
+        {changed("\"shape\":\"box\"", "\"shape\":0"), "Unknown rigid body shape"},
+        {changed("\"shape\":\"box\"", "\"shape\":\"Box\""), "Unknown rigid body shape"},
+        {changed("\"motion\":\"dynamic\"", "\"motion\":2"), "Unknown rigid body motion"},
+        {changed("\"motion\":\"dynamic\"", "\"motion\":null"), "Unknown rigid body motion"},
+        {changed("\"linear_damping\":0.25", "\"linear_damping\":-1"), "Invalid body damping"},
+        {changed("\"angular_damping\":0.5", "\"angular_damping\":61"), "Invalid body damping"},
+        {changed("\"layer\":0", "\"layer\":16"), "Invalid rigid body layer"},
+    }};
+    for (std::size_t i = 0; i < malformed.size(); ++i) {
+        CAPTURE(i);
+        const std::vector<ComponentData> data{{"anima.rigid-body.v3", malformed[i].state, true}};
+        CHECK_THROWS_WITH_AS(codecs.restore(scene.create(), data, {}), malformed[i].error, std::invalid_argument);
+        CHECK_MESSAGE(world.size() == 1u, "A rejected payload created a body");
+    }
+    const std::vector<ComponentData> version_2{{"anima.rigid-body.v2", payload, true}};
+    CHECK_THROWS_WITH_AS(codecs.restore(scene.create(), version_2, {}), "Unknown serialized component type",
+                         std::invalid_argument);
+}
+
+TEST_CASE("Capturing a rigid body payload over 16 MiB throws") {
+    // Unreferenced mesh vertices are kept and stored. Each of these prints its coordinates in full, as
+    // [-1.100000023841858,-1.100000023841858,-1.100000023841858], so the vertices take about 17.7 MB.
+    constexpr std::size_t vertex_count = 300'000;
+    p::World world({{0, 0, 0}, 1});
+    ComponentCodecs codecs;
+    p::add_component_codec(codecs, world);
+    Scene scene;
+    p::BodySettings settings;
+    settings.collider.shape = p::Shape::mesh;
+    settings.collider.vertices.assign(vertex_count, {-1.1F, -1.1F, -1.1F});
+    settings.collider.vertices[0] = {0, 0, 0};
+    settings.collider.vertices[1] = {0, 0, 1};
+    settings.collider.vertices[2] = {1, 0, 0};
+    settings.collider.indices = {0, 1, 2};
+    auto object = scene.create();
+    object.add_component<p::RigidBody>(world, std::move(settings));
+    CHECK_THROWS_WITH_AS((void)codecs.capture(object, {}), "Rigid body payload exceeds 16 MiB", std::invalid_argument);
 }

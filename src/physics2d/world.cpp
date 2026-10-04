@@ -48,6 +48,15 @@ void validate(const Collider &c) {
         require(std::isfinite(v) && v >= detail::minimum_collider_dimension && v <= detail::maximum_collider_dimension,
                 "2D collider dimensions outside [0.01, 10000]");
 }
+// The collider's area, which Box2D's polygon, circle and capsule mass functions multiply by the shape's density.
+float area(const Collider &c) {
+    const float circle = std::numbers::pi_v<float> * c.radius * c.radius;
+    if (c.shape == Shape::box)
+        return 4 * c.half_extent.x * c.half_extent.y;
+    if (c.shape == Shape::circle)
+        return circle;
+    return 4 * c.radius * c.half_height + circle;
+}
 b2ShapeProxy proxy(const Collider &c, Pose p) {
     validate(c);
     const auto t = transform(p);
@@ -193,6 +202,12 @@ float Body::angular_velocity() const {
     const auto &e = world->entries.at(id_);
     return e.enabled ? b2Body_GetAngularVelocity(e.body) : e.disabled_angular_velocity;
 }
+float Body::mass() const {
+    auto world = lock();
+    const auto &e = world->entries.at(id_);
+    require(e.motion == Motion::dynamic, "Only dynamic 2D bodies have mass");
+    return b2Body_GetMass(e.body);
+}
 bool Body::enabled() const { return lock()->entries.at(id_).enabled; }
 bool Body::awake() const { return b2Body_IsAwake(lock()->entries.at(id_).body); }
 void Body::teleport(Pose p) {
@@ -292,10 +307,14 @@ Body World::create(const BodySettings &s) {
     scalar(s.angular_velocity);
     require(s.motion >= Motion::stationary && s.motion <= Motion::dynamic && s.layer < detail::collision_layer_count,
             "Invalid 2D body motion/layer");
-    require(std::isfinite(s.density) && s.density >= detail::minimum_density && s.density <= detail::maximum_density &&
+    require(std::isfinite(s.mass) && s.mass >= detail::minimum_body_mass && s.mass <= detail::maximum_body_mass &&
                 std::isfinite(s.friction) && s.friction >= 0 && s.friction <= 1 && std::isfinite(s.restitution) &&
                 s.restitution >= 0 && s.restitution <= 1,
-            "Invalid 2D body material/density");
+            "Invalid 2D body mass/material");
+    require(std::isfinite(s.linear_damping) && s.linear_damping >= 0 && s.linear_damping <= detail::maximum_damping &&
+                std::isfinite(s.angular_damping) && s.angular_damping >= 0 &&
+                s.angular_damping <= detail::maximum_damping,
+            "Invalid 2D body damping");
     require(s.motion != Motion::stationary || (s.velocity.x == 0 && s.velocity.y == 0 && s.angular_velocity == 0),
             "Static 2D body has velocity");
     require(!s.fixed_rotation || s.angular_velocity == 0, "Fixed-rotation 2D body has angular velocity");
@@ -311,12 +330,19 @@ Body World::create(const BodySettings &s) {
     def.angularVelocity = s.angular_velocity;
     def.isBullet = s.continuous;
     def.fixedRotation = s.fixed_rotation;
+    // Box2D damps kinematic bodies too, which would slow Body::move_kinematic short of its target; as in 3D, only
+    // dynamic bodies are damped.
+    if (s.motion == Motion::dynamic) {
+        def.linearDamping = s.linear_damping;
+        def.angularDamping = s.angular_damping;
+    }
     const auto body = b2CreateBody(state_->world, &def);
     b2ShapeId shape{};
     const auto id = state_->next++;
     try {
         auto shape_def = b2DefaultShapeDef();
-        shape_def.density = s.density;
+        // The body's one collider carries all of its mass, so this density gives the body that mass up to rounding.
+        shape_def.density = s.mass / area(s.collider);
         shape_def.material.friction = s.friction;
         shape_def.material.restitution = s.restitution;
         shape_def.filter.categoryBits = std::uint64_t{1} << s.layer;

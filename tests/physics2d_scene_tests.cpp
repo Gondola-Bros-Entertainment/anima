@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using namespace anima;
@@ -175,9 +177,77 @@ TEST_CASE("Bodies and codecs expire with their world") {
         handle = survivor.create().add_component<p::RigidBody>(temporary)->body();
     }
     CHECK_FALSE_MESSAGE(handle.valid(), "World teardown left body valid");
-    const std::vector<ComponentData> data{{"anima.rigid-body-2d.v1", "{}", true}};
+    const std::vector<ComponentData> data{{"anima.rigid-body-2d.v2", "{}", true}};
     CHECK_THROWS_WITH_AS(expired.restore(survivor.create(), data, {}), "2D rigid body codec world expired",
                          std::out_of_range);
     CHECK_THROWS_WITH_AS(p::step(survivor, world, 1. / 60), "2D body belongs to another or expired world",
+                         std::invalid_argument);
+}
+
+TEST_CASE("The 2D rigid body codec keeps mass and damping and stores shape and motion by name") {
+    p::World world({{0, 0}, 8});
+    ComponentCodecs codecs;
+    p::add_component_codec(codecs, world);
+    Scene scene;
+    p::BodySettings settings;
+    settings.collider.shape = p::Shape::capsule;
+    settings.collider.radius = .25F;
+    settings.motion = p::Motion::dynamic;
+    settings.mass = 3;
+    settings.linear_damping = .25F;
+    settings.angular_damping = .5F;
+    auto root = scene.create();
+    root.add_component<p::RigidBody>(world, settings);
+    const auto prefab = Prefab::capture(root, codecs);
+    const auto &components = prefab.nodes()[0].components;
+    REQUIRE(components.size() == 1u);
+    CHECK(components[0].type == "anima.rigid-body-2d.v2");
+    const auto payload = components[0].state;
+    for (const std::string_view field : {"\"shape\":\"capsule\"", "\"motion\":\"dynamic\"", "\"half_extent\":[0.5,0.5]",
+                                         "\"mass\":3.0", "\"linear_damping\":0.25", "\"angular_damping\":0.5"}) {
+        CAPTURE(field);
+        CHECK(payload.find(field) != std::string::npos);
+    }
+    auto copy = Prefab::deserialize(prefab.serialize({}), {}, codecs).instantiate(scene);
+    const auto restored = copy.get_component<p::RigidBody>();
+    const auto &s = restored->settings();
+    CHECK((s.collider.shape == p::Shape::capsule && s.motion == p::Motion::dynamic && s.collider.radius == .25F));
+    CHECK((s.mass == 3 && s.linear_damping == .25F && s.angular_damping == .5F));
+    CHECK(std::abs(restored->body().mass() - 3) < 1e-5F);
+    copy.destroy();
+
+    // Version 1's keys, enumerator numbers and names that differ only in case are rejected.
+    const auto changed = [&](std::string_view before, std::string_view after) {
+        auto result = payload;
+        const auto at = result.find(before);
+        REQUIRE(at != std::string::npos);
+        result.replace(at, before.size(), after);
+        return result;
+    };
+    struct Malformed {
+        std::string state;
+        const char *error;
+    };
+    const std::array<Malformed, 11> malformed{{
+        {changed("\"half_extent\":", "\"extent\":"), "Missing JSON field: half_extent"},
+        {changed("\"mass\":", "\"density\":"), "Missing JSON field: mass"},
+        {changed("\"angular_damping\":0.5,", ""), "Missing JSON field: angular_damping"},
+        {changed("\"linear_damping\":0.25,", ""), "Missing JSON field: linear_damping"},
+        {changed("\"shape\":\"capsule\"", "\"shape\":2"), "Unknown 2D rigid body shape"},
+        {changed("\"shape\":\"capsule\"", "\"shape\":\"Capsule\""), "Unknown 2D rigid body shape"},
+        {changed("\"motion\":\"dynamic\"", "\"motion\":2"), "Unknown 2D rigid body motion"},
+        {changed("\"linear_damping\":0.25", "\"linear_damping\":-1"), "Invalid 2D body damping"},
+        {changed("\"angular_damping\":0.5", "\"angular_damping\":61"), "Invalid 2D body damping"},
+        {changed("\"mass\":3.0", "\"mass\":0"), "Invalid 2D body mass/material"},
+        {changed("\"layer\":0", "\"layer\":16"), "Invalid 2D rigid body layer"},
+    }};
+    for (std::size_t i = 0; i < malformed.size(); ++i) {
+        CAPTURE(i);
+        const std::vector<ComponentData> data{{"anima.rigid-body-2d.v2", malformed[i].state, true}};
+        CHECK_THROWS_WITH_AS(codecs.restore(scene.create(), data, {}), malformed[i].error, std::invalid_argument);
+        CHECK_MESSAGE(world.size() == 1u, "A rejected payload created a body");
+    }
+    const std::vector<ComponentData> version_1{{"anima.rigid-body-2d.v1", payload, true}};
+    CHECK_THROWS_WITH_AS(codecs.restore(scene.create(), version_1, {}), "Unknown serialized component type",
                          std::invalid_argument);
 }
