@@ -201,6 +201,21 @@ struct Hit {
     bool initial_overlap{};
 };
 enum class ContactPhase { begin, end };
+/// Where a solid contact began and how fast its bodies met, as Box2D found the contact, before its
+/// solver resolved it.
+struct ContactPoint {
+    /// World-space point in meters: the mean of Box2D's contact points, each midway between the
+    /// two surfaces.
+    Vec2 point{};
+    /// Unit normal pointing from ContactEvent::first toward ContactEvent::second.
+    Vec2 normal{};
+    /// Speed at which the bodies approached along #normal at the start of the step, in meters per
+    /// second and never negative: the largest at any contact point the solver pushed on. Box2D
+    /// measures it only for a contact its solver pushes on in the step the contact begins, so a
+    /// contact that begins while its bodies are still apart, by less than Box2D's speculative
+    /// distance of 0.02 meters, and that they do not close within that step reports zero.
+    float approach_speed{};
+};
 /// A change in contact between two bodies, either a solid contact or a sensor overlap. Solid
 /// contacts need at least one dynamic body.
 struct ContactEvent {
@@ -211,6 +226,8 @@ struct ContactEvent {
     ContactPhase phase{};
     /// Whether either body is a sensor.
     bool sensor{};
+    /// Set on the begin event of a solid contact and empty on end events and sensor overlaps.
+    std::optional<ContactPoint> contact;
 };
 /// Owns bodies and steps their simulation.
 ///
