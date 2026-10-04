@@ -69,15 +69,13 @@ struct Hash {
 };
 } // namespace
 
-std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention texel_retention) {
-    return compile(source, texel_retention, {});
+std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, MeshOptions options) {
+    return compile_indexed(source, {}, options);
 }
-std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention texel_retention, MeshLodOptions lods) {
-    return compile_indexed(source, {}, texel_retention, lods);
-}
-std::shared_ptr<const Mesh> Mesh::compile_indexed(const Asset &source,
-                                                  std::span<const std::vector<std::uint32_t>> indices,
-                                                  TexelRetention texel_retention, MeshLodOptions lods) {
+std::shared_ptr<const Mesh>
+Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint32_t>> indices, MeshOptions options) {
+    const auto lods = options.lods;
+    const auto texel_retention = options.texel_retention;
     require(lods.levels <= 8, "Mesh LOD levels must be from 0 to 8");
     if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
         throw std::invalid_argument("Unknown texel retention");
@@ -237,7 +235,7 @@ std::shared_ptr<const Mesh> Mesh::compile_indexed(const Asset &source,
         // meshoptimizer's cluster LOD reference requires. Clamping keeps attribute error at the scale of the positional
         // error that selection projects, as meshoptimizer recommends when the error chooses levels.
         constexpr float maximum_relative_error = 1, minimum_reduction = .85F;
-        constexpr unsigned options =
+        constexpr unsigned flags =
             meshopt_SimplifyLockBorder | meshopt_SimplifyErrorClamped | meshopt_SimplifyPermissive;
         const auto scale = meshopt_simplifyScale(positions, count, sizeof(SourceVertex));
         position_remap.resize(count);
@@ -255,10 +253,10 @@ std::shared_ptr<const Mesh> Mesh::compile_indexed(const Asset &source,
         for (std::size_t k = 0; k < lods.levels; ++k) {
             float step = 0;
             level.resize(current.size());
-            level.resize(meshopt_simplifyWithAttributes(
-                level.data(), current.data(), current.size(), positions, count, sizeof(SourceVertex), attributes,
-                sizeof(SourceVertex), weights.data(), weights.size(), vertex_locks.data(), current.size() / 6 * 3,
-                maximum_relative_error, options, &step));
+            level.resize(meshopt_simplifyWithAttributes(level.data(), current.data(), current.size(), positions, count,
+                                                        sizeof(SourceVertex), attributes, sizeof(SourceVertex),
+                                                        weights.data(), weights.size(), vertex_locks.data(),
+                                                        current.size() / 6 * 3, maximum_relative_error, flags, &step));
             if (level.empty() || float(level.size()) > float(current.size()) * minimum_reduction)
                 break;
             require(level.size() <= UINT32_MAX - result->indices_.size(), "Invalid render triangle count");

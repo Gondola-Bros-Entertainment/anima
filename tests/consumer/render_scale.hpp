@@ -218,7 +218,7 @@ struct Levels {
 // At a render scale of 0.5 or 2 the LOD threshold chooses the levels that twice or half of it chooses at 1, since the
 // scene targets' height, which projects each level's error to pixels, halves or doubles exactly.
 inline void check_levels(anima::VulkanRenderer &renderer, gpu_check::Captures &captures, float aspect) {
-    const auto sphere = anima::Mesh::compile(lod_test::sphere_asset(), anima::TexelRetention::keep, {6});
+    const auto sphere = anima::Mesh::compile(lod_test::sphere_asset(), {.lods = {.levels = 6}});
     std::vector<anima::Mat4> field;
     constexpr int rows = 20;
     constexpr float spacing = 3;

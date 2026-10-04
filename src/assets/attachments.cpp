@@ -181,7 +181,7 @@ std::shared_ptr<const AttachmentAsset> AttachmentLibrary::load(std::string_view 
         }
     auto source = anima::load_asset(path);
     validate(*source, definition);
-    auto render = anima::Mesh::compile(*source, texel_retention_);
+    auto render = anima::Mesh::compile(*source, {.texel_retention = texel_retention_});
     source = anima::detail::without_texels(std::move(source), *render);
     cached = {source, render};
     return std::make_shared<AttachmentAsset>(AttachmentAsset{std::move(source), std::move(render)});

@@ -402,7 +402,7 @@ TEST_CASE("A mesh compiled until upload describes its textures without texels an
     {
         const auto source = shared_image_source();
         authored = source.textures[0].image;
-        mesh = Mesh::compile(source, TexelRetention::until_upload);
+        mesh = Mesh::compile(source, {.texel_retention = TexelRetention::until_upload});
     }
     CHECK(mesh->texel_retention() == TexelRetention::until_upload);
     // The source is gone, but the mesh holds its image for the upload.
@@ -427,7 +427,7 @@ TEST_CASE("A mesh compiled until upload describes its textures without texels an
 TEST_CASE("Released texels are freed with their last holder and stay readable until then") {
     auto source = std::make_shared<Asset>(shared_image_source());
     const std::weak_ptr<const Image> authored = source->textures[0].image;
-    const auto mesh = Mesh::compile(*source, TexelRetention::until_upload);
+    const auto mesh = Mesh::compile(*source, {.texel_retention = TexelRetention::until_upload});
     mesh->release_texels();
     // The application still holds the source, so the images stay readable through the mesh.
     CHECK(mesh->texel_images().front() == authored.lock());
@@ -449,7 +449,7 @@ TEST_CASE("Meshes that share images hold them until each of them is released") {
         authored = source.textures[0].image;
         pieces = Mesh::compile_static(source, {.max_vertices = triangle_corners,
                                                .max_texture_edge = reduced_edge,
-                                               .texel_retention = TexelRetention::until_upload});
+                                               .mesh = {.texel_retention = TexelRetention::until_upload}});
     }
     REQUIRE(pieces.size() == 3);
     // Only the shrunk image is needed, and every textured piece holds it.
@@ -472,7 +472,7 @@ TEST_CASE("A copy of a mesh holds its images on its own") {
     {
         const auto source = static_source({0});
         authored = source.textures[0].image;
-        mesh = Mesh::compile(source, TexelRetention::until_upload);
+        mesh = Mesh::compile(source, {.texel_retention = TexelRetention::until_upload});
     }
     const auto copy = std::make_shared<const Mesh>(*mesh);
     mesh->release_texels();
@@ -484,7 +484,7 @@ TEST_CASE("A copy of a mesh holds its images on its own") {
 TEST_CASE("A copy of a released mesh finds its images only while something else holds them") {
     auto source = std::make_shared<Asset>(static_source({0}));
     const std::weak_ptr<const Image> authored = source->textures[0].image;
-    const auto mesh = Mesh::compile(*source, TexelRetention::until_upload);
+    const auto mesh = Mesh::compile(*source, {.texel_retention = TexelRetention::until_upload});
     mesh->release_texels();
     const auto copy = std::make_shared<const Mesh>(*mesh);
     CHECK(copy->texel_images().at(0) == authored.lock());
@@ -517,14 +517,17 @@ TEST_CASE("Moving a mesh copies it, so the mesh moved from keeps its content") {
 TEST_CASE("Compilation rejects an unknown texel retention and images without texels") {
     const auto source = static_source({0, 1});
     const auto unknown = static_cast<TexelRetention>(2);
-    CHECK_THROWS_WITH_AS(Mesh::compile(source, unknown), unknown_retention, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.texel_retention = unknown}), unknown_retention,
+    CHECK_THROWS_WITH_AS(Mesh::compile(source, {.texel_retention = unknown}), unknown_retention, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.mesh = {.texel_retention = unknown}}), unknown_retention,
                          std::invalid_argument);
-    // The retention is checked before anything else.
-    CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.max_vertices = 1, .texel_retention = unknown}),
-                         unknown_retention, std::invalid_argument);
+    // compile() checks the levels of detail first, and compile_static() the retention before anything else.
+    const MeshOptions both{.texel_retention = unknown, .lods = {.levels = 9}};
+    CHECK_THROWS_WITH_AS(Mesh::compile(source, both), "Mesh LOD levels must be from 0 to 8", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(Mesh::compile_static(source, {.max_vertices = 1, .mesh = both}), unknown_retention,
+                         std::invalid_argument);
     // A mesh's descriptions cannot be compiled again: they have no texels to upload.
     auto described = source;
-    described.textures = Mesh::compile(source, TexelRetention::until_upload)->materials()->textures;
+    described.textures =
+        Mesh::compile(source, {.texel_retention = TexelRetention::until_upload})->materials()->textures;
     rejects_like_compile<std::invalid_argument>(described, no_texels);
 }

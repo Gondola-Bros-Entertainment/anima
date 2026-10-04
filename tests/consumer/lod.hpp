@@ -143,7 +143,7 @@ inline int run(int argc, char **argv) {
     environment.shadow_cascades.distance = 150;
     renderer.set_environment(environment);
 
-    const auto sphere = anima::Mesh::compile(sphere_asset(), anima::TexelRetention::keep, {6});
+    const auto sphere = anima::Mesh::compile(sphere_asset(), {.lods = {.levels = 6}});
     require(sphere->draws()[0].levels.size() >= 3, "The sphere did not simplify into levels");
     std::vector<anima::Mat4> field;
     for (int z = 0; z < 20; ++z)
@@ -258,14 +258,14 @@ inline int run(int argc, char **argv) {
     only(sphere, at(1));
     const auto rigid = draw("rigid-levels", 1);
     require(rigid.lod_draws > 0, "The rigid sphere did not choose a level");
-    only(anima::Mesh::compile(skinned_sphere_asset(), anima::TexelRetention::keep, {6}), at(100));
+    only(anima::Mesh::compile(skinned_sphere_asset(), {.lods = {.levels = 6}}), at(100));
     (void)draw("skinned-full", 0);
     const auto skinned = draw("skinned-levels", 1);
     require(skinned.submitted_indices == rigid.submitted_indices &&
                 skinned.shadow_submitted_indices == rigid.shadow_submitted_indices,
             "The skinned sphere chose another level than the rigid one");
     require_levels_match("skinned-full", "skinned-levels");
-    only(anima::Mesh::compile(faceted_sphere_asset(), anima::TexelRetention::keep, {6}), at(1));
+    only(anima::Mesh::compile(faceted_sphere_asset(), {.lods = {.levels = 6}}), at(1));
     const auto faceted_full = draw("faceted-full", 0);
     const auto faceted = draw("faceted-levels", 1);
     require(faceted.lod_draws > 0 && faceted.submitted_indices < faceted_full.submitted_indices / 2,

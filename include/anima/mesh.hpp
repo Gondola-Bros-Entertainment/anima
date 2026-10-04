@@ -79,6 +79,15 @@ struct MeshLodOptions {
     std::size_t levels{};
 };
 
+/// How Mesh::load() and Mesh::compile() compile a source, and how Mesh::compile_static() compiles each Mesh it
+/// returns.
+struct MeshOptions {
+    /// How the Mesh holds its textures' texels, TexelRetention::keep or TexelRetention::until_upload.
+    TexelRetention texel_retention = TexelRetention::keep;
+    /// Levels of detail that each draw of the Mesh gets.
+    MeshLodOptions lods{};
+};
+
 /// The directions from which an impostor's frames view its mesh (ImpostorFrames).
 enum class ImpostorLayout {
     /// Directions at or above the mesh's horizontal plane, on a hemi-octahedral grid, for objects seen from above or
@@ -125,11 +134,10 @@ struct MeshCompileOptions {
     /// the texture limit") when it stores none. Textures that share an image and an encoding share each shrunk
     /// image. Zero keeps authored sizes.
     unsigned max_texture_edge{};
-    /// How long each resulting Mesh holds its textures' texels; shrunk images have no other holder, so with
-    /// TexelRetention::until_upload they are freed once their Mesh is uploaded.
-    TexelRetention texel_retention = TexelRetention::keep;
-    /// Levels of detail that each resulting Mesh generates, as compile() does.
-    MeshLodOptions lods{};
+    /// How each resulting Mesh holds its textures' texels and which levels of detail it generates, as compile() does
+    /// with these options. Shrunk images have no other holder, so with TexelRetention::until_upload they are freed
+    /// once their Mesh is uploaded.
+    MeshOptions mesh{};
 };
 
 /// Immutable compiled render mesh: indexed geometry, draws, materials, textures and skins.
@@ -152,20 +160,22 @@ class Mesh {
     /// Mesh, such as a Scene, MeshPlacements, MeshPreparation or VulkanRenderer, keeps what it derived from the content
     /// it found, so assign only to a Mesh that nothing else uses, on any thread.
     Mesh &operator=(const Mesh &other) = default;
-    /// Imports the GLB file at @p path with load_asset() and compiles it with @p texel_retention; throws what
-    /// either throws. With TexelRetention::until_upload nothing else holds the imported images, so they are freed
-    /// once the Mesh is uploaded. Calls may run concurrently on any thread, as calls of both functions may.
-    [[nodiscard]] static std::shared_ptr<const Mesh> load(const std::filesystem::path &path,
-                                                          TexelRetention texel_retention = TexelRetention::keep) {
-        return compile(*load_asset(path), texel_retention);
+    /// Imports the GLB file at @p path with load_asset() and compiles it with @p options as compile() does; throws
+    /// what either throws, so it reads the file before it checks @p options. With TexelRetention::until_upload
+    /// nothing else holds the imported images, so they are freed once the Mesh is uploaded. Calls may run
+    /// concurrently on any thread, as calls of both functions may.
+    [[nodiscard]] static std::shared_ptr<const Mesh> load(const std::filesystem::path &path, MeshOptions options = {}) {
+        return compile(*load_asset(path), options);
     }
     /// Validates @p source and copies it into a new Mesh, which shares the images of its textures, or with
-    /// TexelRetention::until_upload holds them until it is uploaded; @p source may change or be destroyed
-    /// afterwards, but the images must not (see Image).
+    /// TexelRetention::until_upload in MeshOptions::texel_retention holds them until it is uploaded; @p source may
+    /// change or be destroyed afterwards, but the images must not (see Image).
     ///
     /// Each source primitive becomes one IndexedDraw, in order. Within a primitive, vertices whose attributes are all
-    /// bit-identical are merged, so seams and triangle order are preserved and nothing is simplified. Throws
-    /// `std::invalid_argument` for an unknown @p texel_retention, before anything else, and for invalid content, for
+    /// bit-identical are merged, so seams and triangle order are preserved and the draw's own triangles are not
+    /// simplified; MeshOptions::lods then adds the simplified levels of detail that MeshLodOptions describes. Throws
+    /// `std::invalid_argument` for more than 8 levels ("Mesh LOD levels must be from 0 to 8"), before anything else,
+    /// then for an unknown MeshOptions::texel_retention ("Unknown texel retention"), and for invalid content, for
     /// example nonfinite attributes, vertex alpha outside [0, 1], a tangent `w` other than -1, 0 or 1, skin weights
     /// that are negative or do not sum to 1 within `0.0001`, a skin with more than 512 joints, material factors outside
     /// [0, 1], a texture whose encoding does not suit its use or whose image has no texels, or a transform that is not
@@ -174,31 +184,25 @@ class Mesh {
     ///
     /// Calls may run concurrently on any thread. Each reads @p source, which must not change during the call,
     /// shares or holds its images through their atomic reference counts, and calls no application code.
-    [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source,
-                                                             TexelRetention texel_retention = TexelRetention::keep);
-    /// Compiles @p source as compile(const Asset &, TexelRetention) does, then gives each draw the levels of detail
-    /// that @p lods asks for. Throws what that overload throws, and `std::invalid_argument` for more than 8 levels
-    /// ("Mesh LOD levels must be from 0 to 8") before anything else.
-    [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source, TexelRetention texel_retention,
-                                                             MeshLodOptions lods);
+    [[nodiscard]] static std::shared_ptr<const Mesh> compile(const Asset &source, MeshOptions options = {});
     /// Compiles a static @p source into one or more meshes that together draw its geometry with the same node
     /// placement, to bound individual uploads.
     ///
-    /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks oversized
-    /// textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at every material
-    /// change between consecutive primitives and whenever MeshCompileOptions::max_vertices would be exceeded, splitting
-    /// primitives between whole triangles; the draws of a split blended primitive sort separately in VulkanRenderer.
-    /// Each result keeps every node, Asset::mesh_nodes and Asset::notices, as compile() does, but only the materials
-    /// and textures it uses; a source without primitives gives one Mesh with no materials or textures. Throws
-    /// `std::invalid_argument` for an unknown MeshCompileOptions::texel_retention, a `max_vertices` of 1 or 2 or a
-    /// primitive that is not a nonempty list of whole triangles, and `std::runtime_error` when @p source has skins or
-    /// animations, before anything else. Otherwise invalid content anywhere in @p source, including materials and
-    /// textures that no primitive uses, fails as compile(source) would: its first defect in compile()'s order throws
-    /// the same exception. Limits on the size of one Mesh apply to each result. The results share the images of
-    /// @p source's textures, and each shrunk image among themselves, or hold them as
-    /// MeshCompileOptions::texel_retention says. Each result generates the levels of detail MeshCompileOptions::lods
-    /// asks for, as compile() does, and throws as compile() does for more than 8. Calls may run concurrently on any
-    /// thread, as compile() calls may.
+    /// With both limits in @p options zero this returns `{compile(source, options.mesh)}`. Otherwise it first shrinks
+    /// oversized textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at every
+    /// material change between consecutive primitives and whenever MeshCompileOptions::max_vertices would be exceeded,
+    /// splitting primitives between whole triangles; the draws of a split blended primitive sort separately in
+    /// VulkanRenderer. Each result keeps every node, Asset::mesh_nodes and Asset::notices, as compile() does, but only
+    /// the materials and textures it uses; a source without primitives gives one Mesh with no materials or textures.
+    /// Throws `std::invalid_argument` for an unknown MeshOptions::texel_retention in MeshCompileOptions::mesh, a
+    /// `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of whole triangles, and `std::runtime_error`
+    /// when @p source has skins or animations, before anything else. Otherwise invalid content anywhere in @p source,
+    /// including materials and textures that no primitive uses, fails as compile(source) would: its first defect in
+    /// compile()'s order throws the same exception. Limits on the size of one Mesh apply to each result. The results
+    /// share the images of @p source's textures, and each shrunk image among themselves, or hold them as
+    /// MeshCompileOptions::mesh says. Each result generates the levels of detail that MeshCompileOptions::mesh asks
+    /// for, as compile() does, and throws as compile() does for more than 8. Calls may run concurrently on any thread,
+    /// as compile() calls may.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Compiles @p atlas, from bake_impostor() or persisted from it, into a Mesh that VulkanRenderer draws as an
@@ -273,12 +277,11 @@ class Mesh {
     // An empty Mesh, whose null materials_ Scene and texel_images() would dereference; only compile_indexed() starts
     // from one.
     Mesh() = default;
-    // compile(source, texel_retention, lods), except that nonempty indices hold one triangle list per source primitive,
-    // indexing that primitive's vertices, which are copied as they are instead of welded. Every vertex must be
-    // referenced, since the bounds cover them all. Terrain compiles its samples, distinct by construction, this way.
-    static std::shared_ptr<const Mesh> compile_indexed(const Asset &source,
-                                                       std::span<const std::vector<std::uint32_t>> indices,
-                                                       TexelRetention texel_retention, MeshLodOptions lods);
+    // compile(source, options), except that nonempty indices hold one triangle list per source primitive, indexing
+    // that primitive's vertices, which are copied as they are instead of welded. Every vertex must be referenced,
+    // since the bounds cover them all. Terrain compiles its samples, distinct by construction, this way.
+    static std::shared_ptr<const Mesh>
+    compile_indexed(const Asset &source, std::span<const std::vector<std::uint32_t>> indices, MeshOptions options);
     struct BoundPart {
         std::uint32_t palette;
         RenderBounds bound;

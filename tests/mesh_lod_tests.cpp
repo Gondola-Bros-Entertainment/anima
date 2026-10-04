@@ -1,17 +1,26 @@
-// Levels of detail: how Mesh::compile and Mesh::compile_static simplify draws, which draws they leave whole, the rules
-// their options follow, and what snapshots count of them. GPU checks cover how the renderer chooses levels.
+// Levels of detail: how Mesh::load, Mesh::compile and Mesh::compile_static simplify draws, which draws they leave
+// whole, the rules their options follow, and what snapshots count of them. GPU checks cover how the renderer chooses
+// levels.
 #include <algorithm>
 #include <anima/assets/scene_budget.hpp>
 #include <anima/mesh_placements.hpp>
 #include <anima/scene.hpp>
 #include <array>
+#include <bit>
+#include <charconv>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <doctest/doctest.h>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <numbers>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -70,6 +79,70 @@ Asset faceted_sphere_asset() {
     }
     return asset;
 }
+// A GLB file whose one node draws @p primitive's triangle corners, unindexed, with their positions and normals and no
+// material, so the importer gives it glTF's default material.
+std::string glb(const SourcePrimitive &primitive) {
+    const auto count = primitive.vertices.size();
+    std::string binary, minimum, maximum;
+    const auto word = [](std::string &out, std::uint32_t value) {
+        for (unsigned shift = 0; shift < 32; shift += 8)
+            out.push_back(static_cast<char>((value >> shift) & 0xff));
+    };
+    for (const auto member : {&SourceVertex::position, &SourceVertex::normal})
+        for (const auto &vertex : primitive.vertices)
+            for (const float value : {(vertex.*member).x, (vertex.*member).y, (vertex.*member).z})
+                word(binary, std::bit_cast<std::uint32_t>(value));
+    // glTF requires a position accessor's bounds, which the shortest form of each float states exactly.
+    for (const auto axis : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+        const auto [low, high] = std::minmax_element(
+            primitive.vertices.begin(), primitive.vertices.end(),
+            [&](const SourceVertex &a, const SourceVertex &b) { return a.position.*axis < b.position.*axis; });
+        for (const auto &[text, vertex] : {std::pair{&minimum, low}, std::pair{&maximum, high}}) {
+            std::array<char, 32> digits{};
+            const auto end = std::to_chars(digits.data(), digits.data() + digits.size(), vertex->position.*axis).ptr;
+            *text += (text->empty() ? "" : ",") + std::string(digits.data(), end);
+        }
+    }
+    const auto bytes = std::to_string(count * 3 * sizeof(float));
+    std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],)"
+                       R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1}}]}],"accessors":[)"
+                       R"({"bufferView":0,"componentType":5126,"count":)" +
+                       std::to_string(count) + R"(,"type":"VEC3","min":[)" + minimum + R"(],"max":[)" + maximum +
+                       R"(]},{"bufferView":1,"componentType":5126,"count":)" + std::to_string(count) +
+                       R"(,"type":"VEC3"}],"bufferViews":[{"buffer":0,"byteLength":)" + bytes +
+                       R"(},{"buffer":0,"byteOffset":)" + bytes + R"(,"byteLength":)" + bytes +
+                       R"(}],"buffers":[{"byteLength":)" + std::to_string(binary.size()) + "}]}";
+    json.append((4 - json.size() % 4) % 4, ' ');
+    constexpr std::uint32_t magic = 0x46546c67, version = 2, json_chunk = 0x4e4f534a, binary_chunk = 0x004e4942;
+    constexpr std::uint32_t header_bytes = 12, chunk_header_bytes = 8;
+    std::string file;
+    word(file, magic);
+    word(file, version);
+    word(file, static_cast<std::uint32_t>(header_bytes + 2 * chunk_header_bytes + json.size() + binary.size()));
+    word(file, static_cast<std::uint32_t>(json.size()));
+    word(file, json_chunk);
+    file += json;
+    word(file, static_cast<std::uint32_t>(binary.size()));
+    word(file, binary_chunk);
+    return file + binary;
+}
+// A file of @p bytes that the destructor removes.
+struct TemporaryFile {
+    std::filesystem::path path;
+    explicit TemporaryFile(const std::string &bytes) {
+        std::random_device random;
+        path = std::filesystem::temp_directory_path() / ("anima-mesh-lods-" + std::to_string(random()) + ".glb");
+        std::ofstream file(path, std::ios::binary);
+        file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        REQUIRE(file.good());
+    }
+    ~TemporaryFile() {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+    }
+    TemporaryFile(const TemporaryFile &) = delete;
+    TemporaryFile &operator=(const TemporaryFile &) = delete;
+};
 // Triangles that one draw, or one of its levels, draws: @p count indices of @p mesh from @p first.
 struct Triangles {
     const Mesh *mesh{};
@@ -167,7 +240,7 @@ float deviation(const Mesh &mesh, std::size_t index, const DrawLevel &level) {
 } // namespace
 
 TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
-    const auto mesh = Mesh::compile(sphere_asset(), TexelRetention::keep, {4});
+    const auto mesh = Mesh::compile(sphere_asset(), {.lods = {.levels = 4}});
     REQUIRE(mesh->draws().size() == 1);
     const auto &draw = mesh->draws()[0];
     REQUIRE(!draw.levels.empty());
@@ -205,7 +278,7 @@ TEST_CASE("Compiling with levels simplifies each draw into coarser levels") {
 }
 
 TEST_CASE("Faceted draws simplify across their hard edges and keep their texture seams") {
-    const auto mesh = Mesh::compile(faceted_sphere_asset(), TexelRetention::keep, {4});
+    const auto mesh = Mesh::compile(faceted_sphere_asset(), {.lods = {.levels = 4}});
     const auto &draw = mesh->draws()[0];
     REQUIRE(draw.levels.size() >= 3);
     CHECK(draw.levels[0].index_count <= draw.index_count * 6 / 10);
@@ -259,7 +332,7 @@ TEST_CASE("Faceted draws keep the splits in attributes that simplification does 
                    : split == Split::handedness ? vertex.tangent[3]
                                                 : float(vertex.joints[0]);
         };
-        const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+        const auto mesh = Mesh::compile(asset, {.lods = {.levels = 4}});
         const auto &draw = mesh->draws()[0];
         REQUIRE(draw.levels.size() >= 3);
         // The protected splits are two meridians, so the hard edges elsewhere still simplify.
@@ -291,7 +364,7 @@ TEST_CASE("A blended draw's levels keep their triangles in source order") {
             for (std::size_t c = 0; c < 3; ++c)
                 scrambled.push_back(vertices[k * 1009 % triangles * 3 + c]);
         vertices = std::move(scrambled);
-        const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+        const auto mesh = Mesh::compile(asset, {.lods = {.levels = 4}});
         const auto steps = draw_and_levels(*mesh, 0);
         REQUIRE(steps.size() >= 3);
         bool every_level_ordered = true;
@@ -310,7 +383,7 @@ TEST_CASE("A level's error covers every step that produced it") {
     // A single step's error is meshoptimizer's own estimate, which the first level shows: this sphere's lies 17%
     // beyond it with fused multiply-adds and 29% without. A deeper level, made by several steps, may understate its
     // distance no more than that; levels that kept only the largest step lay up to 64% beyond their error.
-    const auto mesh = Mesh::compile(sphere_asset(), TexelRetention::keep, {6});
+    const auto mesh = Mesh::compile(sphere_asset(), {.lods = {.levels = 6}});
     const auto &levels = mesh->draws()[0].levels;
     REQUIRE(levels.size() >= 5);
     const auto one_step = deviation(*mesh, 0, levels[0]) / levels[0].error;
@@ -342,7 +415,7 @@ TEST_CASE("Draws that meet stay closed whichever levels each draws") {
     asset.materials.resize(2);
     asset.primitives.push_back(sphere_band(24, 48, 0, 12, 0));
     asset.primitives.push_back(sphere_band(24, 48, 12, 24, 1));
-    const auto mesh = Mesh::compile(asset, TexelRetention::keep, {4});
+    const auto mesh = Mesh::compile(asset, {.lods = {.levels = 4}});
     REQUIRE(mesh->draws().size() == 2);
     REQUIRE(!mesh->draws()[0].levels.empty());
     REQUIRE(!mesh->draws()[1].levels.empty());
@@ -352,26 +425,26 @@ TEST_CASE("Draws that meet stay closed whichever levels each draws") {
 }
 
 TEST_CASE("Draws without levels of detail") {
-    CHECK(Mesh::compile(sphere_asset(), TexelRetention::keep, {0})->draws()[0].levels.empty());
+    CHECK(Mesh::compile(sphere_asset(), {.lods = {.levels = 0}})->draws()[0].levels.empty());
     CHECK(Mesh::compile(sphere_asset())->draws()[0].levels.empty());
     // Masked draws keep only themselves: their cutout edges follow texture coordinates, which simplification does not
     // weigh.
-    CHECK(Mesh::compile(sphere_asset(AlphaMode::mask), TexelRetention::keep, {4})->draws()[0].levels.empty());
-    CHECK_FALSE(Mesh::compile(sphere_asset(AlphaMode::blend), TexelRetention::keep, {4})->draws()[0].levels.empty());
-    CHECK_THROWS_WITH_AS((void)Mesh::compile(sphere_asset(), TexelRetention::keep, {9}),
+    CHECK(Mesh::compile(sphere_asset(AlphaMode::mask), {.lods = {.levels = 4}})->draws()[0].levels.empty());
+    CHECK_FALSE(Mesh::compile(sphere_asset(AlphaMode::blend), {.lods = {.levels = 4}})->draws()[0].levels.empty());
+    CHECK_THROWS_WITH_AS((void)Mesh::compile(sphere_asset(), {.lods = {.levels = 9}}),
                          "Mesh LOD levels must be from 0 to 8", std::invalid_argument);
     // A double pyramid of six triangles cannot lose 15% of its triangles without collapsing, so it keeps at most one.
     Asset tiny;
     tiny.nodes.resize(1);
     tiny.materials.emplace_back();
     tiny.primitives.push_back(sphere(2, 3));
-    CHECK(Mesh::compile(tiny, TexelRetention::keep, {4})->draws()[0].levels.size() <= 1);
+    CHECK(Mesh::compile(tiny, {.lods = {.levels = 4}})->draws()[0].levels.size() <= 1);
 }
 
 TEST_CASE("Static compilation generates levels in every resulting mesh, which stay closed together") {
     MeshCompileOptions options;
     options.max_vertices = 3000;
-    options.lods.levels = 3;
+    options.mesh.lods.levels = 3;
     const auto pieces = Mesh::compile_static(sphere_asset(), options);
     REQUIRE(pieces.size() == 3);
     for (const auto &piece : pieces)
@@ -381,13 +454,28 @@ TEST_CASE("Static compilation generates levels in every resulting mesh, which st
         for (const auto &second : draw_and_levels(*pieces[1], 0))
             for (const auto &third : draw_and_levels(*pieces[2], 0))
                 CHECK(closed({first, second, third}));
-    options.lods.levels = 9;
+    options.mesh.lods.levels = 9;
     CHECK_THROWS_WITH_AS((void)Mesh::compile_static(sphere_asset(), options), "Mesh LOD levels must be from 0 to 8",
                          std::invalid_argument);
 }
 
+TEST_CASE("Loading a GLB file compiles it with the options given, as compiling its import does") {
+    const TemporaryFile file(glb(sphere(24, 48)));
+    REQUIRE(Mesh::load(file.path)->draws().size() == 1);
+    CHECK(Mesh::load(file.path)->draws()[0].levels.empty());
+    const auto mesh = Mesh::load(file.path, {.texel_retention = TexelRetention::until_upload, .lods = {.levels = 2}});
+    const auto &levels = mesh->draws()[0].levels;
+    CHECK_FALSE(levels.empty());
+    CHECK(levels.size() <= 2);
+    CHECK(mesh->texel_retention() == TexelRetention::until_upload);
+    const auto compiled = Mesh::compile(*load_asset(file.path), {.lods = {.levels = 2}});
+    CHECK(std::ranges::equal(mesh->indices(), compiled->indices()));
+    CHECK_THROWS_WITH_AS((void)Mesh::load(file.path, {.lods = {.levels = 9}}), "Mesh LOD levels must be from 0 to 8",
+                         std::invalid_argument);
+}
+
 TEST_CASE("Snapshots budget each draw's own triangles, not its levels") {
-    const auto mesh = Mesh::compile(sphere_asset(), TexelRetention::keep, {4});
+    const auto mesh = Mesh::compile(sphere_asset(), {.lods = {.levels = 4}});
     const auto corners = mesh->draws()[0].index_count;
     REQUIRE(mesh->indices().size() > corners);
     Scene scene;

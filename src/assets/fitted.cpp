@@ -25,7 +25,7 @@ FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::
                                                : throw std::invalid_argument("Fitted asset requires a source")) {
     if (!source->animations.empty())
         throw std::invalid_argument("Fitted models follow the body pose and cannot own motion");
-    render = anima::Mesh::compile(*source, texel_retention);
+    render = anima::Mesh::compile(*source, {.texel_retention = texel_retention});
     source = anima::detail::without_texels(std::move(source), *render);
 }
 anima::Pose FittedAsset::pose(const anima::Pose &body) const {

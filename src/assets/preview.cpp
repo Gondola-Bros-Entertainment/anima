@@ -163,7 +163,7 @@ AssetPreview::AssetPreview(const std::filesystem::path &manifest, TexelRetention
     : manifest_(read_manifest(manifest)) {
     const auto model = load_asset(manifest_.directory / manifest_.model);
     validate_manifest(manifest_, *model);
-    auto mesh = Mesh::compile(*model, texel_retention);
+    auto mesh = Mesh::compile(*model, {.texel_retention = texel_retention});
     auto motion = std::make_shared<Asset>();
     motion->nodes = model->nodes;
     motion->animations = model->animations;
