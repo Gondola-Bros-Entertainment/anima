@@ -21,26 +21,33 @@ layout(push_constant) uniform Draw {
 }
 draw;
 #include "visibility.glsl"
+// The point @p p placed by this copy's placement, whose rows dot it as a homogeneous point.
+vec3 placePoint(vec3 p) {
+    vec4 h = vec4(p, 1.0);
+    return vec3(dot(placement0, h), dot(placement1, h), dot(placement2, h));
+}
 void main() {
-    // indices as in resource.vert.
+    // indices as in resource.vert. Every matrix here is affine, so the point passes through each as a mat3 and a
+    // translation; composing them as mat4 products would cost several times the multiply-adds per vertex.
     mat4 transform = poses.matrices[draw.indices.x];
     bool placed = (draw.indices.w & 1u) != 0u, ranged = (draw.indices.w & 2u) != 0u;
-    // The object's world matrix, or with placements this copy's.
-    mat4 object = placed || ranged ? poses.matrices[draw.indices.z] : mat4(1.0);
-    if (placed) {
-        object = object * transpose(mat4(placement0, placement1, placement2, vec4(0, 0, 0, 1)));
-        transform = object * transform;
-    } else if (draw.indices.y != 0) {
+    if (!placed && draw.indices.y != 0) {
         transform = mat4(0);
         for (uint i = 0; i < 4; ++i)
             if (weights[i] != 0.0)
                 transform += poses.matrices[draw.indices.x + joints[i]] * weights[i];
     }
-    gl_Position = draw.viewProjection * transform * vec4(position, 1);
+    vec3 point = mat3(transform) * position + transform[3].xyz;
+    // The object's world matrix; with placements it places the point after the copy's placement.
+    mat4 object = placed || ranged ? poses.matrices[draw.indices.z] : mat4(1.0);
+    if (placed)
+        point = mat3(object) * placePoint(point) + object[3].xyz;
+    gl_Position = draw.viewProjection * vec4(point, 1.0);
     // A copy casts while more than half of it draws; a dithered shadow map would speckle.
     if (ranged) {
         mat4 range = poses.matrices[draw.indices.z + 1u];
-        if (abs(visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0], draw.origin)) <= 0.5)
+        vec3 center = placed ? placePoint(range[1].xyz) : range[1].xyz;
+        if (abs(visibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin)) <= 0.5)
             gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     }
     texcoord = uv;
