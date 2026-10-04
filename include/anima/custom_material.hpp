@@ -56,8 +56,9 @@
 ///   an object with placements, `matrices[paletteOffset]` is instead the node's matrix in the mesh's rest pose,
 ///   and the vertex's world matrix is `matrices[objectOffset] * placement * matrices[paletteOffset]`. For an object
 ///   with placements or a visibility range, `matrices[objectOffset]` is its world matrix. The first column of
-///   `matrices[objectOffset + 1]` is then its range: begin, begin margin, end and end margin (VisibilityRange), with
-///   an endless range ending at the largest finite `float` and no end margin. The `xyz` of its second column is the
+///   `matrices[objectOffset + 1]` is then its range: begin, begin margin, end and end margin (VisibilityRange), each
+///   times the view distance scale (VulkanRenderer::set_view_distance_scale()), with an endless range ending at the
+///   largest finite `float` and no end margin. The `xyz` of its second column is the
 ///   center of Mesh::rest_bounds(), which the range measures to once the object, and each placement, places it.
 /// - Set 2, binding 0, any stage: the parameter block, a uniform block that holds
 ///   CustomMaterialDefinition::parameters from its start, laid out as the shader declares it.

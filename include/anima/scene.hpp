@@ -36,7 +36,9 @@ class Scene;
 class SceneSet;
 /// Distances from the eye at which an object draws, in metres, measured to the center of its mesh's rest bounds
 /// (Mesh::rest_bounds()) as its world matrix places it or, for an object with placements, as each copy is placed, as
-/// Godot's visibility ranges measure to the center of an instance's bounds.
+/// Godot's visibility ranges measure to the center of an instance's bounds. The renderer multiplies #begin, #end and
+/// both margins by its view distance scale (VulkanRenderer::set_view_distance_scale()), 1 unless the application sets
+/// it, so a quality preset scales every range without changing the ranges that scenes and documents hold.
 ///
 /// Outside [#begin, #end] the object, or the copy, does not draw in any pass. Within #begin_margin of #begin and
 /// #end_margin of #end it dissolves with a 4x4 ordered dither instead of popping: it is whole from `begin +
