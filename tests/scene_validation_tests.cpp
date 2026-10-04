@@ -105,9 +105,9 @@ TEST_CASE("Nonfinite vertices, node transforms and bounds are rejected") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.primitives[0].node_world[0] = nan; })),
                          "Non-finite scene node transform", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.minimum.x = nan; })), nonfinite_bounds,
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.bounds.minimum.x = nan; })), nonfinite_bounds,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.maximum.y = nan; })), nonfinite_bounds,
+    CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.bounds.maximum.y = nan; })), nonfinite_bounds,
                          std::invalid_argument);
 }
 

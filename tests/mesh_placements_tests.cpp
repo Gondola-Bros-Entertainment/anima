@@ -303,8 +303,9 @@ TEST_CASE("Snapshots expand every copy") {
             CHECK(v.z == doctest::Approx(expected[corner].z));
         }
     }
-    CHECK(snapshot.maximum.x == doctest::Approx(6));
-    CHECK(snapshot.maximum.z == doctest::Approx(7));
+    CHECK(snapshot.bounds.valid);
+    CHECK(snapshot.bounds.maximum.x == doctest::Approx(6));
+    CHECK(snapshot.bounds.maximum.z == doctest::Approx(7));
 }
 
 TEST_CASE("Scene documents and prefabs keep placements") {

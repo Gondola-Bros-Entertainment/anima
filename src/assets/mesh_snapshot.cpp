@@ -11,7 +11,6 @@
 #include <array>
 #include <fstream>
 #include <functional>
-#include <limits>
 #include <map>
 #include <memory>
 #include <ostream>
@@ -701,15 +700,8 @@ MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose) {
             snapshot.skinned_vertices += p.vertices.size();
     }
     pose_mesh_snapshot(asset, pose, snapshot);
-    const auto infinity = std::numeric_limits<float>::infinity();
-    snapshot.minimum = {infinity, infinity, infinity};
-    snapshot.maximum = {-infinity, -infinity, -infinity};
-    for (const auto &v : snapshot.vertices) {
-        snapshot.minimum = {std::min(snapshot.minimum.x, v.position.x), std::min(snapshot.minimum.y, v.position.y),
-                            std::min(snapshot.minimum.z, v.position.z)};
-        snapshot.maximum = {std::max(snapshot.maximum.x, v.position.x), std::max(snapshot.maximum.y, v.position.y),
-                            std::max(snapshot.maximum.z, v.position.z)};
-    }
+    for (const auto &v : snapshot.vertices)
+        encapsulate(snapshot.bounds, v.position);
     return snapshot;
 }
 MeshSnapshot load_mesh_snapshot(const std::filesystem::path &path) {
@@ -722,8 +714,12 @@ void print_mesh_report(const MeshSnapshot &snapshot, std::ostream &out) {
         << " skins=" << snapshot.skins << " joints=" << snapshot.joints
         << " skinned_vertices=" << snapshot.skinned_vertices << " bind_deviation=" << snapshot.bind_deviation
         << " pose=" << (snapshot.default_is_bind_pose ? "bind" : "default") << '\n';
-    out << "Bounds: [" << snapshot.minimum.x << ',' << snapshot.minimum.y << ',' << snapshot.minimum.z << "] to ["
-        << snapshot.maximum.x << ',' << snapshot.maximum.y << ',' << snapshot.maximum.z << "]\n";
+    const auto &bounds = snapshot.bounds;
+    if (bounds.valid)
+        out << "Bounds: [" << bounds.minimum.x << ',' << bounds.minimum.y << ',' << bounds.minimum.z << "] to ["
+            << bounds.maximum.x << ',' << bounds.maximum.y << ',' << bounds.maximum.z << "]\n";
+    else
+        out << "Bounds: none\n";
     for (const auto &p : snapshot.primitives)
         out << "  " << p.node_name << " / " << p.material_name << ": " << p.vertex_count / 3 << " triangles\n";
     for (const auto &clip : snapshot.clips)
