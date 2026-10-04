@@ -1,3 +1,5 @@
+#include "../../shaders/shader_interface.h"
+#include "../detail/custom_material_interface.hpp"
 #include "surface_validation.hpp"
 #include "texel_hold.hpp"
 #include <algorithm>
@@ -53,26 +55,48 @@ struct Member {
     std::uint32_t offset;
     std::string_view type;
 };
-constexpr std::array<Member, 15> frame_members{{{0, "mat4"},
-                                                {64, "mat4"},
-                                                {128, "vec4"},
-                                                {144, "vec4"},
-                                                {160, "vec4"},
-                                                {176, "vec4"},
-                                                {192, "vec4"},
-                                                {208, "vec4"},
-                                                {224, "vec4"},
-                                                {240, "vec4"},
-                                                {256, "vec4"},
-                                                {272, "vec4"},
-                                                {288, "float"},
-                                                {304, "vec4"},
-                                                {320, "vec4"}}};
-constexpr std::array<Member, 7> draw_members{
-    {{0, "mat4"}, {64, "uint"}, {68, "uint"}, {72, "uint"}, {76, "uint"}, {80, "vec4"}, {96, "uint"}}};
-// The SourceVertex attributes, then the three placement rows.
-constexpr std::array<std::string_view, 11> attribute_types{"vec3", "vec3",  "vec3", "vec2", "uvec4", "vec4",
-                                                           "vec4", "float", "vec4", "vec4", "vec4"};
+constexpr std::array<Member, 15> frame_members{{{detail::custom_frame_view_projection, "mat4"},
+                                                {detail::custom_frame_inverse_view_projection, "mat4"},
+                                                {detail::custom_frame_view_origin, "vec4"},
+                                                {detail::custom_frame_sun_direction, "vec4"},
+                                                {detail::custom_frame_sun_irradiance, "vec4"},
+                                                {detail::custom_frame_fill_direction, "vec4"},
+                                                {detail::custom_frame_fill_irradiance, "vec4"},
+                                                {detail::custom_frame_ambient_sky, "vec4"},
+                                                {detail::custom_frame_ambient_ground, "vec4"},
+                                                {detail::custom_frame_ambient_specular, "vec4"},
+                                                {detail::custom_frame_fog, "vec4"},
+                                                {detail::custom_frame_viewport, "vec4"},
+                                                {detail::custom_frame_time, "float"},
+                                                {detail::custom_frame_fog_shape, "vec4"},
+                                                {detail::custom_frame_fog_sun, "vec4"}}};
+constexpr std::array<Member, 7> draw_members{{{detail::custom_draw_view_projection, "mat4"},
+                                              {detail::custom_draw_palette_offset, "uint"},
+                                              {detail::custom_draw_skinned, "uint"},
+                                              {detail::custom_draw_object_offset, "uint"},
+                                              {detail::custom_draw_placed, "uint"},
+                                              {detail::custom_draw_factor, "vec4"},
+                                              {detail::custom_draw_ranged, "uint"}}};
+// The type of each vertex attribute, by location: the SourceVertex fields, then the three placement rows.
+struct Attribute {
+    std::uint32_t location;
+    std::string_view type;
+};
+constexpr std::array<Attribute, 11> attribute_types{{{ANIMA_ATTRIBUTE_POSITION, "vec3"},
+                                                     {ANIMA_ATTRIBUTE_NORMAL, "vec3"},
+                                                     {ANIMA_ATTRIBUTE_COLOR, "vec3"},
+                                                     {ANIMA_ATTRIBUTE_UV, "vec2"},
+                                                     {ANIMA_ATTRIBUTE_JOINTS, "uvec4"},
+                                                     {ANIMA_ATTRIBUTE_WEIGHTS, "vec4"},
+                                                     {ANIMA_ATTRIBUTE_TANGENT, "vec4"},
+                                                     {ANIMA_ATTRIBUTE_ALPHA, "float"},
+                                                     {ANIMA_ATTRIBUTE_PLACEMENT_ROW0, "vec4"},
+                                                     {ANIMA_ATTRIBUTE_PLACEMENT_ROW1, "vec4"},
+                                                     {ANIMA_ATTRIBUTE_PLACEMENT_ROW2, "vec4"}}};
+static_assert(CustomMaterial::placement_attributes ==
+                  (1U << ANIMA_ATTRIBUTE_PLACEMENT_ROW0 | 1U << ANIMA_ATTRIBUTE_PLACEMENT_ROW1 |
+                   1U << ANIMA_ATTRIBUTE_PLACEMENT_ROW2),
+              "placement_attributes holds the vertex_attributes() bits of the placement rows' locations");
 constexpr std::array<std::string_view, 12> varying_types{"float", "vec2",  "vec3", "vec4",  "int",   "ivec2",
                                                          "ivec3", "ivec4", "uint", "uvec2", "uvec3", "uvec4"};
 constexpr std::uint32_t varying_locations = 16;
@@ -669,13 +693,15 @@ StageInterface check_stage(const Module &shader, const CustomMaterialDefinition 
                             "not support");
         const auto name = shader.name(pointee);
         if (input && vertex_stage(stage)) {
-            if (location >= attribute_types.size())
+            const auto attribute = std::find_if(attribute_types.begin(), attribute_types.end(),
+                                                [&](const Attribute &entry) { return entry.location == location; });
+            if (attribute == attribute_types.end())
                 fail(stage, "reads vertex attribute " + number(location) +
                                 ", which the custom material interface does not provide");
-            if (name != attribute_types[location])
+            if (name != attribute->type)
                 fail(stage, "reads vertex attribute " + number(location) + " as " + name +
-                                ", but the custom material interface provides a " +
-                                std::string(attribute_types[location]) + " there");
+                                ", but the custom material interface provides a " + std::string(attribute->type) +
+                                " there");
             result.attributes |= 1U << location;
             continue;
         }

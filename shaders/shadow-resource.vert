@@ -1,17 +1,17 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-layout(location = 0) in vec3 position;
-layout(location = 3) in vec2 uv;
-layout(location = 4) in uvec4 joints;
-layout(location = 5) in vec4 weights;
-layout(location = 7) in float alpha;
+#include "shader_interface.h"
+layout(location = ANIMA_ATTRIBUTE_POSITION) in vec3 position;
+layout(location = ANIMA_ATTRIBUTE_UV) in vec2 uv;
+layout(location = ANIMA_ATTRIBUTE_JOINTS) in uvec4 joints;
+layout(location = ANIMA_ATTRIBUTE_WEIGHTS) in vec4 weights;
+layout(location = ANIMA_ATTRIBUTE_ALPHA) in float alpha;
 // Rows 0 to 2 of the placement's affine matrix, per instance; an identity for an object without placements.
-layout(location = 8) in vec4 placement0;
-layout(location = 9) in vec4 placement1;
-layout(location = 10) in vec4 placement2;
+layout(location = ANIMA_ATTRIBUTE_PLACEMENT_ROW0) in vec4 placement0;
+layout(location = ANIMA_ATTRIBUTE_PLACEMENT_ROW1) in vec4 placement1;
+layout(location = ANIMA_ATTRIBUTE_PLACEMENT_ROW2) in vec4 placement2;
 layout(location = 0) out vec2 texcoord;
 layout(location = 1) out float vertexAlpha;
-#include "shader_interface.h"
 layout(set = ANIMA_SET_POSES, binding = ANIMA_POSE_MATRICES, std430) readonly buffer Poses { mat4 matrices[]; }
 poses;
 layout(push_constant) uniform Draw {

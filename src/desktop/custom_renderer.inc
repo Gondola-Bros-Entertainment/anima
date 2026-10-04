@@ -1,7 +1,7 @@
 // Custom materials: application shaders drawn through pipelines, passes and descriptors that the renderer owns.
 // Included inside Impl. custom_material.hpp documents the interface that these structures feed.
 
-// The frame block of custom shaders, at set 0, binding 0.
+// The frame block of custom shaders, at set 0, binding 0, laid out as src/detail/custom_material_interface.hpp states.
 struct CustomFrameUniform {
     Mat4 view_projection, inverse_view_projection;
     std::array<float, 4> view_origin, sun_direction, sun_irradiance, fill_direction, fill_irradiance, ambient_sky,
@@ -10,22 +10,37 @@ struct CustomFrameUniform {
     std::array<float, 3> padding;
     std::array<float, 4> fog_shape, fog_sun;
 };
-static_assert(offsetof(CustomFrameUniform, inverse_view_projection) == 64 &&
-              offsetof(CustomFrameUniform, view_origin) == 128 && offsetof(CustomFrameUniform, sun_direction) == 144 &&
-              offsetof(CustomFrameUniform, ambient_specular) == 240 && offsetof(CustomFrameUniform, fog) == 256 &&
-              offsetof(CustomFrameUniform, viewport) == 272 && offsetof(CustomFrameUniform, time) == 288 &&
-              offsetof(CustomFrameUniform, fog_shape) == 304 && offsetof(CustomFrameUniform, fog_sun) == 320 &&
-              sizeof(CustomFrameUniform) == 336);
-// The per-draw push constants of custom shaders.
+static_assert(offsetof(CustomFrameUniform, view_projection) == detail::custom_frame_view_projection &&
+              offsetof(CustomFrameUniform, inverse_view_projection) == detail::custom_frame_inverse_view_projection &&
+              offsetof(CustomFrameUniform, view_origin) == detail::custom_frame_view_origin &&
+              offsetof(CustomFrameUniform, sun_direction) == detail::custom_frame_sun_direction &&
+              offsetof(CustomFrameUniform, sun_irradiance) == detail::custom_frame_sun_irradiance &&
+              offsetof(CustomFrameUniform, fill_direction) == detail::custom_frame_fill_direction &&
+              offsetof(CustomFrameUniform, fill_irradiance) == detail::custom_frame_fill_irradiance &&
+              offsetof(CustomFrameUniform, ambient_sky) == detail::custom_frame_ambient_sky &&
+              offsetof(CustomFrameUniform, ambient_ground) == detail::custom_frame_ambient_ground &&
+              offsetof(CustomFrameUniform, ambient_specular) == detail::custom_frame_ambient_specular &&
+              offsetof(CustomFrameUniform, fog) == detail::custom_frame_fog &&
+              offsetof(CustomFrameUniform, viewport) == detail::custom_frame_viewport &&
+              offsetof(CustomFrameUniform, time) == detail::custom_frame_time &&
+              offsetof(CustomFrameUniform, fog_shape) == detail::custom_frame_fog_shape &&
+              offsetof(CustomFrameUniform, fog_sun) == detail::custom_frame_fog_sun &&
+              sizeof(CustomFrameUniform) == detail::custom_frame_bytes);
+// The per-draw push constants of custom shaders, laid out as src/detail/custom_material_interface.hpp states.
 struct CustomPush {
     Mat4 view;
     std::uint32_t palette_offset, skinned, object_offset, placed;
     std::array<float, 4> factor;
     std::uint32_t ranged;
 };
-static_assert(offsetof(CustomPush, palette_offset) == 64 && offsetof(CustomPush, skinned) == 68 &&
-              offsetof(CustomPush, object_offset) == 72 && offsetof(CustomPush, placed) == 76 &&
-              offsetof(CustomPush, factor) == 80 && offsetof(CustomPush, ranged) == 96 && sizeof(CustomPush) == 100);
+static_assert(offsetof(CustomPush, view) == detail::custom_draw_view_projection &&
+              offsetof(CustomPush, palette_offset) == detail::custom_draw_palette_offset &&
+              offsetof(CustomPush, skinned) == detail::custom_draw_skinned &&
+              offsetof(CustomPush, object_offset) == detail::custom_draw_object_offset &&
+              offsetof(CustomPush, placed) == detail::custom_draw_placed &&
+              offsetof(CustomPush, factor) == detail::custom_draw_factor &&
+              offsetof(CustomPush, ranged) == detail::custom_draw_ranged &&
+              sizeof(CustomPush) == detail::custom_draw_bytes);
 // Descriptor bindings of a custom material's set: its parameter block, then its textures.
 static constexpr std::uint32_t custom_material_bindings = CustomMaterial::max_textures + 1;
 
@@ -308,29 +323,12 @@ void write_custom_textures(const GpuCustomMaterial &gpu) const {
     stages[0].module = shadow ? gpu.shadow_vertex : gpu.vertex;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = shadow ? gpu.shadow_fragment : gpu.fragment;
-    // Only the attributes that the vertex shader declares, so that no supplied attribute goes unread, and the
-    // bindings they read: the mesh's vertices and the placement rows.
-    const auto declared = shadow ? source.shadow_vertex_attributes() : source.vertex_attributes();
-    std::vector<VkVertexInputAttributeDescription> attributes;
-    std::vector<VkVertexInputBindingDescription> bindings;
-    for (const auto &binding : resource_bindings) {
-        const auto first = attributes.size();
-        const std::span<const VkVertexInputAttributeDescription> candidates =
-            binding.binding == 0 ? std::span<const VkVertexInputAttributeDescription>(resource_attributes)
-                                 : std::span<const VkVertexInputAttributeDescription>(placement_attributes);
-        for (const auto &attribute : candidates)
-            if (declared & (1U << attribute.location))
-                attributes.push_back(attribute);
-        if (attributes.size() != first)
-            bindings.push_back(binding);
-    }
+    // Only the attributes that the vertex shader declares.
+    const auto input = vertex_input(shadow ? source.shadow_vertex_attributes() : source.vertex_attributes());
     GraphicsPipelineState state;
     // A depth-only variant without a fragment shader writes the depth of every covered pixel.
     state.stages = std::span(stages).first(stages[1].module ? 2 : 1);
-    state.vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size());
-    state.vertex.pVertexBindingDescriptions = bindings.data();
-    state.vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size());
-    state.vertex.pVertexAttributeDescriptions = attributes.data();
+    input.describe(state.vertex);
     // Opaque materials write depth; blended and additive ones test it without writing, as blended materials do.
     const bool opaque = shadow || source.blend() == CustomBlend::opaque;
     state.depth.depthTestEnable = VK_TRUE;

@@ -4,13 +4,16 @@ Environment environment;
 // The sun at the ground, atmosphere_sunlight() of the environment, which set_environment() keeps with it and
 // integrates again only when an input of it changes (ground_sunlight()).
 Vec3 sunlight = Environment{}.sun.irradiance;
-// As shaders/environment.glsl lays it out, in std140.
+// As shaders/environment_data.glsl lays out EnvironmentData, in std140.
 struct EnvironmentUniform {
     std::array<float, 4> sun_direction, sun_irradiance, fill_direction, fill_irradiance;
     std::array<float, 4> ambient_sky, ambient_ground, ambient_specular;
     // The atmosphere's Rayleigh and Mie scattering with their scale heights, and its Mie absorption with the Mie
     // phase function's asymmetry.
-    std::array<float, 4> atmosphere_rayleigh, atmosphere_mie, atmosphere_mie_absorption, fog, controls;
+    std::array<float, 4> atmosphere_rayleigh, atmosphere_mie, atmosphere_mie_absorption;
+    // HeightFog::color with HeightFog::density in w; and EnvironmentSettings::exposure, with the ToneMapping value of
+    // EnvironmentSettings::tone_mapping in y, which resolve.frag applies.
+    std::array<float, 4> fog, controls;
     // The sky's view rays (rays_of()) and the eye.
     Mat4 view_rays;
     std::array<float, 4> view_origin;

@@ -136,25 +136,56 @@ static_assert(sizeof(SourceVertex) == 96 && offsetof(SourceVertex, joints) == 44
 static constexpr std::uint32_t placement_stride = 3 * 4 * sizeof(float);
 // Per-instance attributes from binding 1: rows 0 to 2 of a placement's affine matrix.
 static constexpr auto placement_attributes = std::to_array<VkVertexInputAttributeDescription>({
-    {8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
-    {9, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16},
-    {10, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32},
+    {ANIMA_ATTRIBUTE_PLACEMENT_ROW0, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+    {ANIMA_ATTRIBUTE_PLACEMENT_ROW1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16},
+    {ANIMA_ATTRIBUTE_PLACEMENT_ROW2, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32},
 });
 static constexpr std::array<VkVertexInputBindingDescription, 2> resource_bindings{{
     {0, sizeof(SourceVertex), VK_VERTEX_INPUT_RATE_VERTEX},
     {1, placement_stride, VK_VERTEX_INPUT_RATE_INSTANCE},
 }};
-// SourceVertex attributes that the resource vertex shader reads, by location.
+// SourceVertex attributes that the resource vertex shader reads.
 static constexpr auto resource_attributes = std::to_array<VkVertexInputAttributeDescription>({
-    {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, position)},
-    {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, normal)},
-    {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, color)},
-    {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(SourceVertex, uv)},
-    {4, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(SourceVertex, joints)},
-    {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, weights)},
-    {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, tangent)},
-    {7, 0, VK_FORMAT_R32_SFLOAT, offsetof(SourceVertex, alpha)},
+    {ANIMA_ATTRIBUTE_POSITION, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, position)},
+    {ANIMA_ATTRIBUTE_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, normal)},
+    {ANIMA_ATTRIBUTE_COLOR, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SourceVertex, color)},
+    {ANIMA_ATTRIBUTE_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(SourceVertex, uv)},
+    {ANIMA_ATTRIBUTE_JOINTS, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(SourceVertex, joints)},
+    {ANIMA_ATTRIBUTE_WEIGHTS, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, weights)},
+    {ANIMA_ATTRIBUTE_TANGENT, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SourceVertex, tangent)},
+    {ANIMA_ATTRIBUTE_ALPHA, 0, VK_FORMAT_R32_SFLOAT, offsetof(SourceVertex, alpha)},
 });
+// A pipeline's vertex attributes and the bindings that hold them.
+struct VertexInput {
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    std::vector<VkVertexInputBindingDescription> bindings;
+    // Points @p state at these descriptions, which must outlive its use.
+    void describe(VkPipelineVertexInputStateCreateInfo &state) const {
+        state.vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size());
+        state.pVertexBindingDescriptions = bindings.data();
+        state.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size());
+        state.pVertexAttributeDescriptions = attributes.data();
+    }
+};
+// The vertex input of a vertex shader that reads the attributes at the locations that @p locations sets, bit i for
+// location i, as CustomMaterial::vertex_attributes() reports a custom material's: those of resource_attributes and
+// placement_attributes, in that order, with the bindings that hold them, so that the pipeline supplies no attribute
+// that the shader leaves unread.
+static VertexInput vertex_input(std::uint32_t locations) {
+    VertexInput input;
+    for (const auto &binding : resource_bindings) {
+        const auto first = input.attributes.size();
+        const std::span<const VkVertexInputAttributeDescription> candidates =
+            binding.binding == 0 ? std::span<const VkVertexInputAttributeDescription>(resource_attributes)
+                                 : std::span<const VkVertexInputAttributeDescription>(placement_attributes);
+        for (const auto &attribute : candidates)
+            if (locations & (1U << attribute.location))
+                input.attributes.push_back(attribute);
+        if (input.attributes.size() != first)
+            input.bindings.push_back(binding);
+    }
+    return input;
+}
 VkShaderModule resource_vertex_shader{};
 VkPipelineLayout resource_pipeline_layout{};
 VkDescriptorSetLayout pose_layout{};

@@ -1,8 +1,9 @@
-// The numbers that the built-in shaders and the renderer must agree on: descriptor sets and bindings, specialization
-// constant IDs, what a draw's push constants pack, and the atmosphere's table sizes and workgroups. The shaders here
-// include it, and so does src/desktop/vulkan_renderer.cpp, so it holds only macros, which GLSL's preprocessor and
-// C++'s both read. A mismatch between same-typed bindings or between specialization IDs passes validation, so neither
-// side states these numbers itself. The public include/anima/custom_material.glsl states its own.
+// The numbers that the built-in shaders and the renderer must agree on: descriptor sets and bindings, vertex attribute
+// locations, specialization constant IDs, what a draw's push constants pack, and the atmosphere's table sizes and
+// workgroups. The shaders here include it, and so do src/desktop/vulkan_renderer.cpp and, for the vertex attributes
+// that custom materials read, src/assets/custom_material.cpp, so it holds only macros, which GLSL's preprocessor and
+// C++'s both read. A mismatch between same-typed bindings, attributes or specialization IDs passes validation, so
+// neither side states these numbers itself. The public include/anima/custom_material.glsl states its own.
 #ifndef ANIMA_SHADER_INTERFACE_H
 #define ANIMA_SHADER_INTERFACE_H
 
@@ -44,6 +45,21 @@
 
 // The pose set: the frame's palettes, as matrices.
 #define ANIMA_POSE_MATRICES 0
+
+// Vertex attribute locations (resource.vert): the SourceVertex fields, from the mesh's vertices, then rows 0 to 2 of
+// the affine matrix of the placement being drawn, per instance. Custom materials read the same locations
+// (anima/custom_material.hpp), which the renderer supplies from the same attribute descriptions.
+#define ANIMA_ATTRIBUTE_POSITION 0
+#define ANIMA_ATTRIBUTE_NORMAL 1
+#define ANIMA_ATTRIBUTE_COLOR 2
+#define ANIMA_ATTRIBUTE_UV 3
+#define ANIMA_ATTRIBUTE_JOINTS 4
+#define ANIMA_ATTRIBUTE_WEIGHTS 5
+#define ANIMA_ATTRIBUTE_TANGENT 6
+#define ANIMA_ATTRIBUTE_ALPHA 7
+#define ANIMA_ATTRIBUTE_PLACEMENT_ROW0 8
+#define ANIMA_ATTRIBUTE_PLACEMENT_ROW1 9
+#define ANIMA_ATTRIBUTE_PLACEMENT_ROW2 10
 
 // Specialization constant IDs, which each shader stage numbers apart. In the fragment stage of the view's pipelines:
 // mesh.frag's premultiplied output, the height fog's code (environment.glsl), mesh.frag's discards, the 2x2 shadow
