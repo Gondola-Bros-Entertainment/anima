@@ -649,7 +649,8 @@ struct VulkanRenderer::Impl {
             if (!std::any_of(layers.begin(), layers.end(),
                              [&](const auto &layer) { return std::strcmp(layer.layerName, validation_layer) == 0; }) ||
                 !has_extension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
-                throw std::runtime_error("--validation requires VK_LAYER_KHRONOS_validation and VK_EXT_debug_utils");
+                throw std::runtime_error(
+                    "RendererOptions::validation requires VK_LAYER_KHRONOS_validation and VK_EXT_debug_utils");
             enabled.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
