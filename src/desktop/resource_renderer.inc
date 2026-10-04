@@ -41,6 +41,12 @@ struct ResourceInstance {
     // runs of placement clusters that may lie in a margin of the visibility range, or whose orientation varies under a
     // single-sided draw. Preparation clears it, and record_resources() sets it as it records the opaque group.
     bool deferred_runs{};
+    // Without placements, whether resource_draw_levels holds, from first_level, the level of each of its Mesh::draws()
+    // that the view chose; it does when the frame records a draw with levels while the LOD threshold is above 0.
+    bool chosen_levels{};
+    std::size_t first_level{};
+    // With placements, where the world bounds of its MeshPlacements::clusters() start in resource_cluster_bounds.
+    std::size_t first_cluster{};
 };
 // Placements, in MeshPlacements::transforms() order, that one draw call copies: one visible cluster's, which recording
 // merges with the next when they draw the same level of detail; a renderer without placements draws one run of its
@@ -187,6 +193,13 @@ std::unique_ptr<ResourceBuffer> identity_placement;
 // The runs that the instance being recorded draws in the current pass.
 std::vector<PlacementRun> placement_runs;
 std::vector<ResourceInstance> resource_instances;
+// The levels of detail that the view chose for the draws of instances without placements, by
+// ResourceInstance::first_level plus the draw's index into Mesh::draws(): null for the full draw. Every pass that
+// records a draw this frame reads its level here, so the shadow passes draw the level that the view chose.
+std::vector<const DrawLevel *> resource_draw_levels;
+// The world bounds of the clusters of instances with placements, by ResourceInstance::first_cluster plus the cluster's
+// index into MeshPlacements::clusters(), computed once per frame for every pass's find_placement_runs().
+std::vector<RenderBounds> resource_cluster_bounds;
 // The opaque and masked draws of the main view: each one's index into its instance's Mesh::draws() and its
 // view_pipeline().
 struct ViewDraw {
@@ -524,10 +537,6 @@ static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *fru
     return (!frustum || frustum->intersects(bounds)) &&
            (!range || within_range(*range, eye, bounds.minimum, bounds.maximum));
 }
-static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &world, const RenderFrustum *frustum,
-                            const VisibilityRange *range, Vec3 eye) {
-    return cluster_visible(cluster_bounds(cluster, world), frustum, range, eye);
-}
 // Pixels of the view's height per unit of error at distance 1, or at any distance in an orthographic view: the length
 // of the view-projection's second row, which is the projection's vertical scale, times half the scene targets' height,
 // so that the LOD threshold counts the pixels that the view renders.
@@ -551,6 +560,17 @@ const DrawLevel *level_for(const IndexedDraw &draw, double distance, double scal
     }
     return chosen;
 }
+// The level of draw @p draw_index of @p render_instance, an object without placements, that the view chooses: by the
+// distance to the draw's world bounds and the largest scale among the matrices that place it, its node's matrix or its
+// skin's joint matrices, which may number hundreds.
+const DrawLevel *object_level(const Scene::Instance &render_instance, std::size_t draw_index) const {
+    const auto &draw = render_instance.asset->draws()[draw_index];
+    const auto &bounds = render_instance.primitive_bounds[draw_index];
+    double scale = 0;
+    for (std::uint32_t j = 0; j < draw.palette_count; ++j)
+        scale = std::max(scale, axis_scale(render_instance.palette[draw.palette_offset + j]));
+    return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum), scale);
+}
 // The visibility range that culling applies to @p render_instance: none for the default range or an orthographic view.
 const VisibilityRange *culling_range(const Scene::Instance &render_instance) const {
     return render_instance.visibility_range != VisibilityRange{} && view_origin[3] != 0
@@ -559,22 +579,21 @@ const VisibilityRange *culling_range(const Scene::Instance &render_instance) con
 }
 Vec3 eye() const { return {view_origin[0], view_origin[1], view_origin[2]}; }
 // Fills placement_runs with one run for each of @p render_instance's placement clusters that @p frustum, when given,
-// contains and its visibility range can draw; record_indexed() merges adjacent runs that draw the same level through
-// the same pipeline. Without placements the single copy is one run, whose draws' view_pipeline() already holds its
-// orientation and visibility range.
+// contains and its visibility range can draw, by the cluster bounds that prepare_resources() computed for the frame;
+// record_indexed() merges adjacent runs that draw the same level through the same pipeline. Without placements the
+// single copy is one run, whose draws' view_pipeline() already holds its orientation and visibility range.
 void find_placement_runs(const ResourceInstance &render_instance, const RenderFrustum *frustum) {
     placement_runs.clear();
     if (!render_instance.placements) {
         placement_runs.push_back({0, 1});
         return;
     }
-    const auto &world = render_instance.source->world;
     const auto *range = culling_range(*render_instance.source);
-    const auto world_scale = axis_scale(world);
+    const auto world_scale = axis_scale(render_instance.source->world);
     const auto clusters = render_instance.placements->source->clusters();
     for (std::size_t i = 0; i < clusters.size(); ++i) {
         const auto &cluster = clusters[i];
-        const auto bounds = cluster_bounds(cluster, world);
+        const auto &bounds = resource_cluster_bounds[render_instance.first_cluster + i];
         if (cluster_visible(bounds, frustum, range, eye()))
             placement_runs.push_back({cluster.first, cluster.count,
                                       nearest_distance(eye(), bounds.minimum, bounds.maximum),
@@ -654,6 +673,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     std::vector<std::size_t> masked_shadows;
     std::vector<BlendedDraw> blended;
     std::vector<CustomDraw> custom_draws, custom_shadows;
+    std::vector<const DrawLevel *> draw_levels;
+    std::vector<RenderBounds> placed_cluster_bounds;
     std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0,
                   culled_clusters = 0, range_culled = 0;
     for (const auto &source : sources)
@@ -674,7 +695,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 dissolving = may_dissolve(*range, eye(), center, center);
             }
             const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size(),
-                       first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size();
+                       first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size(),
+                       first_level = draw_levels.size();
             bool candidate = false;
             const auto source_draws = render_instance.asset->draws();
             const bool cull = use_frustum && options.frustum_culling;
@@ -693,7 +715,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 const bool blend = custom ? custom->blend() != CustomBlend::opaque
                                           : material && material->alpha_mode == AlphaMode::blend;
                 const auto &bounds = render_instance.primitive_bounds[i];
-                if (outside || (cull && !resource_frustum.intersects(bounds)))
+                const bool culled = outside || (cull && !resource_frustum.intersects(bounds));
+                if (culled)
                     ++culled_draws;
                 else if (blend) // Every nonempty draw has valid bounds.
                     blended.push_back(
@@ -725,6 +748,14 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                     else
                         shadows.push_back(i);
                 }
+                // The view chooses the level of each draw of an object that some pass records, once for every pass;
+                // placed copies choose theirs by cluster as each pass records them. Such an object is always kept.
+                if ((!culled || cast) && !render_instance.placements && !source_draws[i].levels.empty() &&
+                    options.lod_threshold > 0) {
+                    if (draw_levels.size() == first_level)
+                        draw_levels.resize(first_level + source_draws.size());
+                    draw_levels[first_level + i] = object_level(render_instance, i);
+                }
             }
             const auto opaque_draw_count = draws.size() - first_draw;
             draws.insert(draws.end(), discarding_draws.begin(), discarding_draws.end());
@@ -739,17 +770,24 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 draws.size() != first_draw || blended.size() != first_blended || custom_draws.size() != first_custom;
             if (!main_view)
                 ++culled_instances;
-            else if (render_instance.placements && use_frustum)
-                for (const auto &cluster : render_instance.placements->clusters()) {
-                    const auto *range = culling_range(render_instance);
-                    if (cull && !cluster_visible(cluster, render_instance.world, &resource_frustum, nullptr, eye()))
-                        ++culled_clusters;
-                    else if (range && !cluster_visible(cluster, render_instance.world, nullptr, range, eye()))
-                        ++range_culled;
-                }
             // An instance with blended or custom draws is always kept, so their instance index above stays valid.
             if (!main_view && shadows.size() == first_shadow && custom_shadows.size() == first_custom_shadow)
                 continue;
+            const auto first_cluster = placed_cluster_bounds.size();
+            if (render_instance.placements) {
+                for (const auto &cluster : render_instance.placements->clusters())
+                    placed_cluster_bounds.push_back(cluster_bounds(cluster, render_instance.world));
+                if (main_view && use_frustum) {
+                    const auto *range = culling_range(render_instance);
+                    for (auto bounds = placed_cluster_bounds.begin() + std::ptrdiff_t(first_cluster);
+                         bounds != placed_cluster_bounds.end(); ++bounds) {
+                        if (cull && !cluster_visible(*bounds, &resource_frustum, nullptr, eye()))
+                            ++culled_clusters;
+                        else if (range && !cluster_visible(*bounds, nullptr, range, eye()))
+                            ++range_culled;
+                    }
+                }
+            }
             // With placements or a visibility range, the object's world matrix and the range with the point it measures
             // to, then with placements the rest pose's node matrices, which the vertex shaders compose with each
             // placement, or else the palette.
@@ -775,7 +813,10 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                                       first_matrix,
                                       ranged,
                                       render_instance.asset->impostor() != nullptr,
-                                      false};
+                                      false,
+                                      draw_levels.size() != first_level,
+                                      first_level,
+                                      first_cluster};
             if (header) {
                 prepared.palette_offset = first_matrix + 2;
                 palettes.push_back(render_instance.world);
@@ -831,6 +872,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     resource_blended_draws.swap(blended);
     resource_custom_draws.swap(custom_draws);
     resource_custom_shadow_draws.swap(custom_shadows);
+    resource_draw_levels.swap(draw_levels);
+    resource_cluster_bounds.swap(placed_cluster_bounds);
     resource_opaque_inputs = resources.opaque_inputs = reads_opaque;
     resources.pose_uploaded_bytes = bytes;
     resources.instances = candidate_instances - culled_instances;
@@ -877,6 +920,8 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
             resource_blended_draws.clear();
             resource_custom_draws.clear();
             resource_custom_shadow_draws.clear();
+            resource_draw_levels.clear();
+            resource_cluster_bounds.clear();
             resource_opaque_inputs = resources.opaque_inputs = false;
             resources.pose_uploaded_bytes = resources.instances = 0;
             resources.candidate_instances = resources.culled_instances = 0;
@@ -1020,20 +1065,14 @@ bool record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
                     std::optional<ViewRouting> routing = std::nullopt) {
     const auto &source = *render_instance.source;
     const auto &draw = source.asset->draws()[draw_index];
-    // Without placements the draw's own bounds and placing matrices choose its level, the largest scale among its
-    // node's matrix or its skin's joint matrices; with them, each run's cluster and the node's rest matrix, which the
-    // copies' placements multiply.
+    // Without placements the level that the view chose for the frame; with them, each run's cluster and the node's
+    // rest matrix, which the copies' placements multiply, choose its level.
     const auto level_of = [&](const PlacementRun &run) -> const DrawLevel * {
-        // Before scanning a skin's joints, which may number hundreds.
+        if (!render_instance.placements)
+            return render_instance.chosen_levels ? resource_draw_levels[render_instance.first_level + draw_index]
+                                                 : nullptr;
         if (draw.levels.empty() || options.lod_threshold <= 0)
             return nullptr;
-        if (!render_instance.placements) {
-            const auto &bounds = source.primitive_bounds[draw_index];
-            double scale = 0;
-            for (std::uint32_t j = 0; j < draw.palette_count; ++j)
-                scale = std::max(scale, axis_scale(source.palette[draw.palette_offset + j]));
-            return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum), scale);
-        }
         return level_for(draw, run.distance, run.scale * axis_scale(source.asset->rest_pose().world[draw.node]));
     };
     const auto command = frame().command;
@@ -1251,6 +1290,8 @@ void retire_resources() {
     resource_blended_draws.clear();
     resource_custom_draws.clear();
     resource_custom_shadow_draws.clear();
+    resource_draw_levels.clear();
+    resource_cluster_bounds.clear();
     resource_opaque_inputs = false;
     // Drops each entry whose source @p source gives only the cache's reference to.
     const auto release = [&](auto &cache, const auto &source) {
