@@ -130,6 +130,30 @@ inline void reject_invalid_shadow_caster_threshold() {
     rejects<std::invalid_argument>([&] { construct(1, -1, 2); }, "LOD threshold must be finite and nonnegative");
     rejects<std::invalid_argument>([&] { construct(1, 1, 3); }, invalid);
 }
+// Construction rejects a RendererOptions::view_distance_scale that is not finite or is not positive, after the shadow
+// caster threshold and before the frames in flight and anything that needs a window or GPU.
+inline void reject_invalid_view_distance_scale() {
+    constexpr std::string_view invalid = "View distance scale must be finite and positive";
+    const auto construct = [](float scale, float share, std::uint32_t frames) {
+        anima::RendererOptions options;
+        options.view_distance_scale = scale;
+        options.shadow_caster_threshold = share;
+        options.frames_in_flight = frames;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    for (const auto scale : {0.F, -0.F, -1.F, -std::numeric_limits<float>::denorm_min(), -infinity, infinity,
+                             std::numeric_limits<float>::quiet_NaN()})
+        rejects<std::invalid_argument>([&] { construct(scale, 0, 2); }, invalid);
+    for (const auto scale :
+         {std::numeric_limits<float>::denorm_min(), .5F, 1.F, 2.F, std::numeric_limits<float>::max()})
+        rejects<std::invalid_argument>([&] { construct(scale, 0, 2); }, "Renderer requires an SDL window");
+    // The shadow caster threshold is checked first, and the frames in flight after.
+    rejects<std::invalid_argument>([&] { construct(0, 1, 2); },
+                                   "Shadow caster threshold must be finite, at least 0 and below 1");
+    rejects<std::invalid_argument>([&] { construct(1, 0, 3); }, "Frames in flight must be 1 or 2");
+    rejects<std::invalid_argument>([&] { construct(0, 0, 3); }, invalid);
+}
 // Construction rejects a RendererOptions::frames_in_flight other than 1 or 2, after the LOD threshold and before it
 // needs a window or GPU.
 inline void reject_invalid_frames_in_flight() {

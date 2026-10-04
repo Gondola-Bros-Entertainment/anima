@@ -1,13 +1,16 @@
 #pragma once
 #include "gpu_checks.hpp"
+#include "rejection.hpp"
 #include "resources.hpp"
 #include <anima/mesh_placements.hpp>
+#include <limits>
 
 // Draws a field of copies through one object's placements and the same copies as separate objects, over a ground
 // that receives their sun shadows, and requires identical frames. Every placement is an integer translation, a
 // quarter turn about Y and a Y scale of 1 or 2, every other one mirrored in one case, and the objects are placed by
 // integer translations, so the matrices that the CPU composes for separate objects and the GPU composes for placed
-// copies are exact and equal.
+// copies are exact and equal. A visibility range draws the same frames on both, and at a view distance scale of 2 half
+// that range draws them again.
 namespace placements_test {
 // A square pyramid with flat faces: a 1 m base centered on the origin and its apex 1.5 m up.
 inline std::shared_ptr<const anima::Mesh> pyramid() {
@@ -221,6 +224,30 @@ inline int run(int argc, char **argv) {
     // Nor after a frame that culls objects by their visibility range.
     require(draw_then_clear(separate).range_culled > 0,
             "No separate object fell outside the visibility range before the selection was cleared");
+
+    // At a view distance scale of 2, half that range draws the same frames: culling and the shaders' dither both
+    // scale it, exactly at a power of two, so the copies from its end out to twice it still draw and the same rows
+    // dissolve. Back at 1 the halved range hides more of the field.
+    constexpr float doubled = 2;
+    const anima::VisibilityRange halved{range.begin / doubled, range.end / doubled, range.begin_margin / doubled,
+                                        range.end_margin / doubled};
+    for (const auto id : copies)
+        separate->set_visibility_range(id, halved);
+    field_object.renderer().set_visibility_range(halved);
+    require(renderer.view_distance_scale() == 1, "The view distance scale did not start at 1");
+    renderer.set_view_distance_scale(doubled);
+    for (const float invalid :
+         {0.F, -1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
+        rejection::rejects<std::invalid_argument>([&] { renderer.set_view_distance_scale(invalid); },
+                                                  "View distance scale must be finite and positive");
+    require(renderer.view_distance_scale() == doubled, "A rejected view distance scale replaced the scale");
+    const auto [scaled_apart, scaled] = compare("scaled");
+    captures.require_same("ranged-placed", "scaled-placed", "Twice the view distance did not draw twice the range");
+    require(scaled_apart.range_culled == ranged_apart.range_culled && scaled.range_culled == ranged.range_culled,
+            "Twice the view distance culled other objects or clusters than twice the range");
+    renderer.set_view_distance_scale(1);
+    (void)draw(placed, "halved-placed");
+    captures.require_changed("ranged-placed", "halved-placed", .002, "The view distance scale did not scale the range");
     for (const auto id : copies)
         separate->set_visibility_range(id, {});
     field_object.renderer().set_visibility_range({});
@@ -284,7 +311,7 @@ inline int run(int argc, char **argv) {
     require(!stats.validation_errors && !stats.validation_warnings, "Placement validation failed");
     std::cout << "PASS placements: " << placed_copies.size()
               << " copies through one object match separate objects with shadows and visibility ranges, culled by "
-                 "cluster; "
+                 "cluster and scaled by the view distance scale; "
                  "validation_warnings=0 validation_errors=0\n";
     return 0;
 }
