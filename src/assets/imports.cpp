@@ -34,11 +34,13 @@ std::filesystem::path ImportSource::resolve(const std::filesystem::path &path) c
 std::span<const std::byte> ImportSource::read(const std::filesystem::path &path) {
     const auto key = path.lexically_normal();
     const auto resolved = resolve(key);
-    if (std::find(dependencies_.begin(), dependencies_.end(), key) == dependencies_.end())
-        dependencies_.push_back(key);
     auto found = files_.find(key);
     if (found == files_.end())
         found = files_.emplace(key, read_file(resolved, file_limit_)).first;
+    // Track only a file whose bytes are in the snapshot, since refresh() compares each dependency
+    // with its accepted copy.
+    if (std::find(dependencies_.begin(), dependencies_.end(), key) == dependencies_.end())
+        dependencies_.push_back(key);
     return found->second;
 }
 AssetImports::AssetImports(std::filesystem::path root, std::size_t maximum_file_bytes)

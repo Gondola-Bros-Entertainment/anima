@@ -141,6 +141,35 @@ TEST_CASE("A reimport tracks the inputs its importer reads") {
     CHECK(assets.refresh().empty()); // The input it no longer reads is not required.
 }
 
+TEST_CASE("A read that fails records no dependency") {
+    const Project project;
+    project.write("main", "main");
+    std::string failure;
+    AssetImports assets(project.root);
+    const auto optional = assets.add<std::string>("optional", [&](ImportSource &source) {
+        auto value = text(source.read("main"));
+        try {
+            value += text(source.read("sidecar"));
+        } catch (const std::runtime_error &error) {
+            failure = error.what();
+        }
+        return std::make_shared<const std::string>(value);
+    });
+    CHECK(failure ==
+          "Cannot open import dependency: " + (std::filesystem::canonical(project.root) / "sidecar").string());
+    REQUIRE(assets.dependencies("optional") == std::vector<std::filesystem::path>{"main"});
+    CHECK(assets.refresh().empty());
+    // A file the importer failed to read is not tracked, so its appearance reimports nothing.
+    project.write("sidecar", "-sidecar");
+    CHECK(assets.refresh().empty());
+    CHECK(*optional.get() == "main");
+    // A reimport for a tracked input reads the file again, and tracks it once that read succeeds.
+    project.write("main", "edited");
+    CHECK(assets.refresh() == std::vector<std::string>{"optional"});
+    CHECK(*optional.get() == "edited-sidecar");
+    CHECK(assets.dependencies("optional") == std::vector<std::filesystem::path>{"main", "sidecar"});
+}
+
 TEST_CASE("Erasing an importer keeps its held version, and adding its key again creates a new identity") {
     const Project project;
     project.write("shared", "one");
