@@ -327,10 +327,19 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
                 events.push_back({handle(key.first), handle(key.second), ContactPhase::begin, sensor});
         reported = std::move(current);
     }
+    // Contacts change only in Jolt's callbacks during step(), which reconciles right after, so between steps
+    // `reported` holds exactly the body pairs of `contacts`, and forgetting a body changes only its own pairs.
+    // Ending them in place, in key order as reconcile() would, avoids rebuilding the map of every contact for
+    // each removed body. Events are recorded before `reported` changes, so if recording one throws, the
+    // next step still ends every pair this left reported.
     void forget(std::uint64_t id) {
         std::erase_if(contacts,
                       [id](const auto &entry) { return entry.second.first == id || entry.second.second == id; });
-        reconcile();
+        const auto names = [id](const Key &key) { return key.first == id || key.second == id; };
+        for (auto [key, sensor] : reported)
+            if (names(key))
+                events.push_back({handle(key.first), handle(key.second), ContactPhase::end, sensor});
+        std::erase_if(reported, [&](const auto &entry) { return names(entry.first); });
     }
 };
 } // namespace detail

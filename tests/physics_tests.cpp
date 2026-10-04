@@ -622,6 +622,32 @@ TEST_CASE("Reenabling a body before the next step reports its contact again") {
     REQUIRE(events[0].phase == ContactPhase::begin);
 }
 
+TEST_CASE("Removing or disabling a body ends only its own contacts, in body creation order") {
+    World world;
+    const auto floor = world.create(box({0, -.5F, 0}, {20, .5F, 20}));
+    auto crate = world.create(box({0, resting_height, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+    auto zone_settings = box({0, resting_height, 0}, {1, 1, 1});
+    zone_settings.sensor = true;
+    const auto zone = world.create(zone_settings);
+    auto other = world.create(box({5, resting_height, 0}, {.5F, .5F, .5F}, Motion::dynamic));
+    world.step(tick);
+    REQUIRE(world.take_events().size() == 3u); // Floor and crate, crate and zone, floor and other.
+    crate.remove();
+    auto events = world.take_events();
+    REQUIRE(events.size() == 2u);
+    CHECK((events[0].first == floor && events[0].second == crate && events[0].phase == ContactPhase::end &&
+           !events[0].sensor));
+    CHECK((events[1].first == crate && events[1].second == zone && events[1].phase == ContactPhase::end &&
+           events[1].sensor));
+    world.step(tick);
+    CHECK_MESSAGE(world.take_events().empty(), "A step after removal changed the remaining contacts");
+    other.set_enabled(false);
+    events = world.take_events();
+    REQUIRE(events.size() == 1u);
+    CHECK((events[0].first == floor && events[0].second == other && events[0].phase == ContactPhase::end &&
+           !events[0].sensor));
+}
+
 TEST_CASE("Disabling a body keeps its velocities") {
     World world(weightless(1));
     auto moving = world.create(box({}, {.5F, .5F, .5F}, Motion::dynamic));
