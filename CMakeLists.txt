@@ -118,6 +118,7 @@ if(ANIMA_BUILD_ASSETS OR ANIMA_BUILD_UI)
     add_library(anima_image_dependencies STATIC src/assets/image.cpp)
     anima_enable_sanitizers(anima_image_dependencies)
     target_include_directories(anima_image_dependencies SYSTEM PUBLIC third_party/stb)
+    target_compile_features(anima_image_dependencies PRIVATE cxx_std_20)
 endif()
 
 if(ANIMA_BUILD_ASSETS)

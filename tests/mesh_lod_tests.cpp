@@ -431,7 +431,10 @@ TEST_CASE("Draws without levels of detail") {
     // weigh.
     CHECK(Mesh::compile(sphere_asset(AlphaMode::mask), {.lods = {.levels = 4}})->primitives()[0].levels.empty());
     CHECK_FALSE(Mesh::compile(sphere_asset(AlphaMode::blend), {.lods = {.levels = 4}})->primitives()[0].levels.empty());
-    CHECK_THROWS_WITH_AS((void)Mesh::compile(sphere_asset(), {.lods = {.levels = 9}}),
+    CHECK(Mesh::compile(sphere_asset(), {.lods = {.levels = MeshLodOptions::max_levels}})
+              ->primitives()[0]
+              .levels.size() <= MeshLodOptions::max_levels);
+    CHECK_THROWS_WITH_AS((void)Mesh::compile(sphere_asset(), {.lods = {.levels = MeshLodOptions::max_levels + 1}}),
                          "Mesh LOD levels must be from 0 to 8", std::invalid_argument);
     // A double pyramid of six triangles cannot lose 15% of its triangles without collapsing, so it keeps at most one.
     Asset tiny;
@@ -454,7 +457,7 @@ TEST_CASE("Static compilation generates levels in every resulting mesh, which st
         for (const auto &second : draw_and_levels(*pieces[1], 0))
             for (const auto &third : draw_and_levels(*pieces[2], 0))
                 CHECK(closed({first, second, third}));
-    options.mesh.lods.levels = 9;
+    options.mesh.lods.levels = MeshLodOptions::max_levels + 1;
     CHECK_THROWS_WITH_AS((void)Mesh::compile_static(sphere_asset(), options), "Mesh LOD levels must be from 0 to 8",
                          std::invalid_argument);
 }
@@ -470,8 +473,8 @@ TEST_CASE("Loading a GLB file compiles it with the options given, as compiling i
     CHECK(mesh->texel_retention() == TexelRetention::until_upload);
     const auto compiled = Mesh::compile(*load_asset(file.path), {.lods = {.levels = 2}});
     CHECK(std::ranges::equal(mesh->indices(), compiled->indices()));
-    CHECK_THROWS_WITH_AS((void)Mesh::load(file.path, {.lods = {.levels = 9}}), "Mesh LOD levels must be from 0 to 8",
-                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)Mesh::load(file.path, {.lods = {.levels = MeshLodOptions::max_levels + 1}}),
+                         "Mesh LOD levels must be from 0 to 8", std::invalid_argument);
 }
 
 TEST_CASE("Snapshots budget each draw's own triangles, not its levels") {

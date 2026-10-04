@@ -17,7 +17,7 @@ struct Manifest {
     std::string skeleton_id;
     /// Bind pose identity, 64 lowercase hexadecimal characters, matched by the same documents.
     std::string bind_signature;
-    /// Joints in the model's single skin, in [1, 512].
+    /// Joints in the model's single skin, from 1 to Mesh::max_skin_joints.
     std::size_t joint_count{};
     /// Playback metadata for the model's clips; validate_manifest requires one per clip.
     std::vector<ClipMetadata> clips;

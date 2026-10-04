@@ -129,6 +129,12 @@ enum class ImageFormat {
     /// their mip levels, beforehand. load_ktx2() reads them from KTX 2.0 files.
     bc7
 };
+/// Most texels along each edge of an image that load_asset() decodes from a GLB or load_ktx2()
+/// reads.
+inline constexpr std::uint32_t max_image_edge = 8192;
+/// Most texels in an image that load_asset() decodes from a GLB or load_ktx2() reads, 16,777,216:
+/// 4096 by 4096, or 2048 across an image max_image_edge long.
+inline constexpr std::size_t max_image_texels = std::size_t{16} * 1024 * 1024;
 /// Texels that textures share by identity.
 ///
 /// Textures hold an image through `std::shared_ptr<const Image>`, and the pointer is its identity:
@@ -391,20 +397,21 @@ struct Pose {
 /// Imports a binary glTF 2.0 (GLB) snapshot of 1 byte to 64 MiB. The result owns its data; no file
 /// is opened and @p bytes is not retained.
 ///
-/// The file needs exactly one embedded buffer and may embed PNG or JPEG images of at most 8192
-/// texels per edge and 16,777,216 texels. Each image that a texture uses is decoded once, into an
-/// Image that every texture made from it shares, and together those images may decode to at most
-/// 1 GiB (268,435,456 texels), which is checked from their headers before any is decoded. Limits:
-/// 4096 nodes, 4096 materials, 4096 textures before the copies that give a texture a second
-/// encoding, 4096 images, 1 to 512 joints per skin, 2,000,000 elements per accessor, 2,000,000
-/// expanded vertices in total, 8,000,000 animation keys in total and a node depth of 256. Geometry
-/// comes from the default scene, else the first scene, else every root node; it must be triangle
-/// lists, reach no node twice and contain at least one triangle. Skinned primitives need
-/// `JOINTS_0` and `WEIGHTS_0`; further joint sets are rejected. Clips animate translation,
-/// rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix nodes; channels without
-/// a target node are ignored, and a clip whose keys all sit at time 0 is a pose of zero duration.
-/// Every other channel counts its keys toward the key limit, even when it shares its sampler's
-/// accessors with other channels, and the limit is checked before any key is read.
+/// The file needs exactly one embedded buffer and may embed PNG or JPEG images of at most
+/// max_image_edge texels per edge and max_image_texels texels. Each image that a texture uses is
+/// decoded once, into an Image that every texture made from it shares, and together those images
+/// may decode to at most 1 GiB (268,435,456 texels), which is checked from their headers before any
+/// is decoded. Limits: 4096 nodes, 4096 materials, 4096 textures before the copies that give a
+/// texture a second encoding, 4096 images, 1 to Mesh::max_skin_joints joints per skin, 2,000,000
+/// elements per accessor, 2,000,000 expanded vertices in total, 8,000,000 animation keys in total
+/// and a node depth of 256. Geometry comes from the default scene, else the first scene, else every
+/// root node; it must be triangle lists, reach no node twice and contain at least one triangle.
+/// Skinned primitives need `JOINTS_0` and `WEIGHTS_0`; further joint sets are rejected. Clips
+/// animate translation, rotation or scale with `LINEAR` or `STEP` keys and cannot target matrix
+/// nodes; channels without a target node are ignored, and a clip whose keys all sit at time 0 is a
+/// pose of zero duration. Every other channel counts its keys toward the key limit, even when it
+/// shares its sampler's accessors with other channels, and the limit is checked before any key is
+/// read.
 ///
 /// Each material's `alphaMode` becomes the AlphaMode of the same name, with its `alphaCutoff` and
 /// the alpha of its base-color factor. `KHR_materials_unlit` is the only extension that may be

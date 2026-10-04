@@ -7,6 +7,7 @@
 #include <map>
 #endif
 #ifdef ANIMA_UI
+#include "../detail/image_limits.hpp"
 #include "ui_draw.hpp"
 #include <map>
 #endif

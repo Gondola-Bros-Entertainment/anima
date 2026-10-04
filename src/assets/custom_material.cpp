@@ -721,6 +721,8 @@ void match(const StageInterface &vertex, const StageInterface &fragment, Stage f
 
 CustomMaterial::CustomMaterial(CustomMaterialDefinition definition) : definition_(std::move(definition)) {
     const auto &value = definition_;
+    static_assert(max_name_bytes == 4096 && max_parameter_bytes == 256 && max_textures == 4,
+                  "The name, parameter and texture messages state these limits");
     require(!value.name.empty() && value.name.size() <= max_name_bytes, "Custom material name must be 1 to 4096 bytes");
     require(value.blend == CustomBlend::opaque || value.blend == CustomBlend::blended ||
                 value.blend == CustomBlend::additive,

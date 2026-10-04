@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 
@@ -229,6 +230,22 @@ TEST_CASE("Invalid skins, primitives and influences are rejected when compiling"
                          "Invalid render primitive material", std::invalid_argument);
     CHECK_THROWS_WITH_AS(Mesh::compile(edited([](auto &s) { s.skins[0].inverse_bind.pop_back(); })),
                          "Invalid render skin palette", std::invalid_argument);
+}
+
+TEST_CASE("A skin has at most Mesh::max_skin_joints joints") {
+    using anima::Mesh;
+    // A distinct root node for each joint, so that only the count can be out of range.
+    const auto with_joints = [](std::size_t count) {
+        return edited([count](auto &s) {
+            s.nodes.resize(count);
+            s.skins[0].joints.resize(count);
+            std::iota(s.skins[0].joints.begin(), s.skins[0].joints.end(), std::size_t{0});
+            s.skins[0].inverse_bind.assign(count, anima::identity());
+        });
+    };
+    CHECK(Mesh::compile(with_joints(Mesh::max_skin_joints))->description()->joints == Mesh::max_skin_joints);
+    CHECK_THROWS_WITH_AS(Mesh::compile(with_joints(Mesh::max_skin_joints + 1)), "Invalid render skin palette",
+                         std::invalid_argument);
 }
 
 TEST_CASE("An empty scene has no bounds or instances") {

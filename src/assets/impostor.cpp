@@ -26,9 +26,16 @@ constexpr char options_message[] =
     "Impostor options must give 2 to 32 frames of 8 to 1024 texels, at most 8192 in all, and 1 to 8 samples";
 constexpr char frames_message[] =
     "Impostor frames must number from 2 to 32 per side, with a finite center and a positive finite radius";
+static_assert(ImpostorFrames::min_frames_per_side == 2 && ImpostorFrames::max_frames_per_side == 32 &&
+                  ImpostorOptions::min_frame_size == 8 && ImpostorOptions::max_frame_size == 1024 &&
+                  ImpostorOptions::max_atlas_edge == 8192 && ImpostorOptions::max_samples == 8,
+              "The options and frames messages state these limits");
 constexpr char images_message[] = "Impostor images must be equal squares divisible into the frames, color and "
                                   "emission sRGB, normals and surface linear";
-constexpr std::uint32_t minimum_frames = 2, maximum_frames = 32;
+bool frames_in_range(std::uint32_t frames_per_side) {
+    return frames_per_side >= ImpostorFrames::min_frames_per_side &&
+           frames_per_side <= ImpostorFrames::max_frames_per_side;
+}
 bool known(ImpostorLayout layout) { return layout == ImpostorLayout::hemisphere || layout == ImpostorLayout::sphere; }
 bool finite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
@@ -603,9 +610,10 @@ class Baker {
 
 ImpostorAtlas bake_impostor(const Mesh &mesh, const ImpostorOptions &options) {
     require(known(options.layout), "Unknown impostor layout");
-    require(options.frames_per_side >= minimum_frames && options.frames_per_side <= maximum_frames &&
-                options.frame_size >= 8 && options.frame_size <= 1024 &&
-                options.frames_per_side * options.frame_size <= 8192 && options.samples >= 1 && options.samples <= 8,
+    require(frames_in_range(options.frames_per_side) && options.frame_size >= ImpostorOptions::min_frame_size &&
+                options.frame_size <= ImpostorOptions::max_frame_size &&
+                options.frames_per_side * options.frame_size <= ImpostorOptions::max_atlas_edge &&
+                options.samples >= 1 && options.samples <= ImpostorOptions::max_samples,
             options_message);
     return Baker(mesh, options).bake();
 }
@@ -613,8 +621,8 @@ ImpostorAtlas bake_impostor(const Mesh &mesh, const ImpostorOptions &options) {
 std::shared_ptr<const Mesh> Mesh::compile_impostor(const ImpostorAtlas &atlas, TexelRetention texel_retention) {
     const auto &frames = atlas.frames;
     require(known(frames.layout), "Unknown impostor layout");
-    require(frames.frames_per_side >= minimum_frames && frames.frames_per_side <= maximum_frames &&
-                finite(frames.center) && std::isfinite(frames.radius) && frames.radius > 0,
+    require(frames_in_range(frames.frames_per_side) && finite(frames.center) && std::isfinite(frames.radius) &&
+                frames.radius > 0,
             frames_message);
     const auto side = atlas.color.image ? atlas.color.image->width : 0;
     const auto square = [&](const Texture &texture, TextureEncoding encoding) {

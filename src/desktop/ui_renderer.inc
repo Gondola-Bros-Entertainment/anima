@@ -83,7 +83,7 @@ void upload_ui_texture(const UiTexturePtr &source) {
     vkGetPhysicalDeviceProperties(physical, &limits);
     if (!source->width || !source->height || source->width > limits.limits.maxImageDimension2D ||
         source->height > limits.limits.maxImageDimension2D ||
-        source->rgba.size() != std::uint64_t(source->width) * source->height * 4)
+        source->rgba.size() != std::uint64_t(source->width) * source->height * detail::rgba_bytes_per_pixel)
         throw std::invalid_argument("Invalid UI texture dimensions/bytes");
     auto candidate = std::make_unique<UiImage>();
     candidate->device = device;

@@ -1,7 +1,7 @@
-#include "mesh_limits.hpp"
 #include "presentation_data.hpp"
 #include <algorithm>
 #include <anima/assets/preview.hpp>
+#include <anima/mesh.hpp>
 #include <fstream>
 #include <set>
 #include <stdexcept>
@@ -75,7 +75,7 @@ Manifest load_manifest(const std::filesystem::path &path) {
     result.skeleton_id = text(skeleton, "id");
     result.bind_signature = text(skeleton, "bind_signature");
     const auto count = number(skeleton.at("joint_count"));
-    if (count < 1 || count > mesh_limits::maximum_skin_joints || std::floor(count) != count)
+    if (count < 1 || count > Mesh::max_skin_joints || std::floor(count) != count)
         throw std::invalid_argument("Invalid manifest joint count");
     result.joint_count = static_cast<std::size_t>(count);
     if (result.skeleton_id.empty() || result.bind_signature.size() != bind_signature_digits ||

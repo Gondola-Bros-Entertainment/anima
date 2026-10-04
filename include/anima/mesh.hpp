@@ -130,7 +130,9 @@ struct MeshPrimitive {
 /// foliage draws far away as an impostor instead (bake_impostor()). Each level takes its indices' memory and upload in
 /// addition to the primitive's.
 struct MeshLodOptions {
-    /// Most levels per primitive, from 0, the default, which generates none, to 8.
+    /// Largest #levels.
+    static constexpr std::uint32_t max_levels = 8;
+    /// Most levels per primitive, from 0, the default, which generates none, to #max_levels.
     std::uint32_t levels{};
 };
 
@@ -164,9 +166,13 @@ enum class ImpostorLayout {
 /// perpendicular to `d`, with texture `u` along `right` and `v` along `up`: `right` is `(d.z, 0, -d.x)` normalized, or
 /// `(1, 0, 0)` where `d.x` and `d.z` are both 0, and `up` is `cross(d, right)`.
 struct ImpostorFrames {
+    /// Fewest #frames_per_side.
+    static constexpr std::uint32_t min_frames_per_side = 2;
+    /// Most #frames_per_side.
+    static constexpr std::uint32_t max_frames_per_side = 32;
     /// The directions that the frames cover.
     ImpostorLayout layout = ImpostorLayout::hemisphere;
-    /// Frames along each side of the atlas, from 2 to 32.
+    /// Frames along each side of the atlas, from #min_frames_per_side to #max_frames_per_side.
     std::uint32_t frames_per_side{};
     /// Center of the sphere that holds every vertex, the center of Mesh::rest_bounds().
     Vec3 center{};
@@ -235,6 +241,9 @@ struct MeshCompileOptions {
 /// compile_impostor() and Terrain::compile() create a Mesh, apart from copying one.
 class Mesh {
   public:
+    /// Most joints in one skin: compile() and load_asset() reject a skin with more, and read_manifest() a larger
+    /// joint count.
+    static constexpr std::size_t max_skin_joints = 512;
     /// A distinct Mesh with @p other's content, which VulkanRenderer caches and uploads separately. With
     /// TexelRetention::until_upload it holds the images itself until its own release_texels() if @p other had not
     /// released them; otherwise it finds them, as @p other does, only while something else holds them. Only reads
@@ -259,13 +268,13 @@ class Mesh {
     /// Each source primitive becomes one MeshPrimitive, in order. Within a primitive, vertices whose attributes are all
     /// bit-identical are merged, so seams and triangle order are preserved and the primitive's own triangles are not
     /// simplified; MeshOptions::lods then adds the simplified levels of detail that MeshLodOptions describes. Throws
-    /// `std::invalid_argument` for more than 8 levels ("Mesh LOD levels must be from 0 to 8"), before anything else,
-    /// then for an unknown MeshOptions::texel_retention ("Unknown texel retention"), and for invalid content, for
-    /// example nonfinite attributes, vertex alpha outside [0, 1], a tangent `w` other than -1, 0 or 1, skin weights
-    /// that are negative or do not sum to 1 within `0.0001`, a skin with more than 512 joints, material factors outside
-    /// [0, 1], a texture whose encoding does not suit its use or whose image has no texels, or a transform that is not
-    /// affine; anima::MathError for a rest rotation that cannot be normalized; and `std::runtime_error` for a cyclic,
-    /// dangling or nonfinite node hierarchy.
+    /// `std::invalid_argument` for more than MeshLodOptions::max_levels levels ("Mesh LOD levels must be from 0 to 8"),
+    /// before anything else, then for an unknown MeshOptions::texel_retention ("Unknown texel retention"), and for
+    /// invalid content, for example nonfinite attributes, vertex alpha outside [0, 1], a tangent `w` other than -1, 0
+    /// or 1, skin weights that are negative or do not sum to 1 within `0.0001`, a skin with more than #max_skin_joints
+    /// joints, material factors outside [0, 1], a texture whose encoding does not suit its use or whose image has no
+    /// texels, or a transform that is not affine; anima::MathError for a rest rotation that cannot be normalized; and
+    /// `std::runtime_error` for a cyclic, dangling or nonfinite node hierarchy.
     ///
     /// Calls may run concurrently on any thread. Each reads @p source, which must not change during the call,
     /// shares or holds its images through their atomic reference counts, and calls no application code.
@@ -286,8 +295,8 @@ class Mesh {
     /// compile()'s order throws the same exception. Limits on the size of one Mesh apply to each result. The results
     /// share the images of @p source's textures, and each shrunk image among themselves, or hold them as
     /// MeshCompileOptions::mesh says. Each result generates the levels of detail that MeshCompileOptions::mesh asks
-    /// for, as compile() does, and throws as compile() does for more than 8. Calls may run concurrently on any thread,
-    /// as compile() calls may.
+    /// for, as compile() does, and throws as compile() does for more than MeshLodOptions::max_levels. Calls may run
+    /// concurrently on any thread, as compile() calls may.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Compiles @p atlas, from bake_impostor() or persisted from it, into a Mesh that VulkanRenderer draws as an

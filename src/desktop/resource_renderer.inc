@@ -914,6 +914,7 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
     // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
     // its frames per side and layout where they say whether they are skinned, which an impostor never is.
+    static_assert(ImpostorFrames::max_frames_per_side <= 255, "The impostor shaders read frames per side from 8 bits");
     const auto *impostor_frames = source.mesh->impostor();
     const ResourcePush push{
         view,

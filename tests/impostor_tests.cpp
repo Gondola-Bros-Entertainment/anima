@@ -128,8 +128,15 @@ TEST_CASE("Baking rejects options out of range and meshes it cannot bake") {
     const auto mesh = Mesh::compile(sphere_asset());
     const char *options_message =
         "Impostor options must give 2 to 32 frames of 8 to 1024 texels, at most 8192 in all, and 1 to 8 samples";
-    for (const auto &invalid : {options(1, 8, 1), options(33, 8, 1, ImpostorLayout::sphere), options(4, 7, 1),
-                                options(4, 1025, 1), options(32, 512, 1), options(4, 8, 0), options(4, 8, 9)})
+    // The bounds that ImpostorFrames and ImpostorOptions publish are inclusive.
+    constexpr auto min_frames = ImpostorFrames::min_frames_per_side, max_frames = ImpostorFrames::max_frames_per_side;
+    constexpr auto min_size = ImpostorOptions::min_frame_size, max_size = ImpostorOptions::max_frame_size;
+    const auto smallest = bake_impostor(*mesh, options(min_frames, min_size, ImpostorOptions::max_samples));
+    CHECK(smallest.color.image->width == min_frames * min_size);
+    for (const auto &invalid : {options(min_frames - 1, 8, 1), options(max_frames + 1, 8, 1, ImpostorLayout::sphere),
+                                options(4, min_size - 1, 1), options(4, max_size + 1, 1),
+                                options(max_frames, ImpostorOptions::max_atlas_edge / max_frames + 1, 1),
+                                options(4, 8, 0), options(4, 8, ImpostorOptions::max_samples + 1)})
         CHECK_THROWS_WITH_AS((void)bake_impostor(*mesh, invalid), options_message, std::invalid_argument);
     CHECK_THROWS_WITH_AS((void)bake_impostor(*mesh, options(4, 8, 1, static_cast<ImpostorLayout>(7))),
                          "Unknown impostor layout", std::invalid_argument);
