@@ -53,7 +53,7 @@ inline std::shared_ptr<const anima::Asset> fixture() {
         primitive.vertices.push_back(v);
     }
     asset->primitives.push_back(primitive);
-    primitive.skin = -1;
+    primitive.skin = anima::no_index;
     primitive.node = 1;
     for (auto &v : primitive.vertices) {
         v.position.x += 1.2F;

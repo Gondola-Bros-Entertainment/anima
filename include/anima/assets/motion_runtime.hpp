@@ -1,6 +1,6 @@
 #pragma once
 #include <anima/assets/evaluation.hpp>
-#include <anima/assets/preview.hpp>
+#include <anima/assets/manifest.hpp>
 #include <map>
 #include <span>
 

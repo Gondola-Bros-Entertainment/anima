@@ -145,7 +145,7 @@ class Scene {
         /// Linear RGB factor per mesh material: the authored value or this object's override.
         std::vector<Vec3> factors;
         /// Custom material per mesh material, which draws that material's primitives in place of it;
-        /// null keeps the mesh's Material. Primitives without a material (IndexedDraw::material -1)
+        /// null keeps the mesh's Material. Primitives without a material (IndexedDraw::material no_index)
         /// always draw with the default Material.
         std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
         /// Visibility per mesh primitive.

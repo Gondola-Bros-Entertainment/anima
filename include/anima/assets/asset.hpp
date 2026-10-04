@@ -23,13 +23,16 @@
 /// Texture::image.
 
 namespace anima {
+/// The value of an `int` index field that refers to nothing, such as AssetNode::parent of a root
+/// or SourcePrimitive::material of a primitive without a material. Valid indices are at least 0.
+inline constexpr int no_index = -1;
 /// One glTF node.
 struct AssetNode {
     /// Node name, or `(unnamed)` when the file gives none. Names need not be unique; see
     /// find_node.
     std::string name;
-    /// Index of the parent node, or -1 for a root.
-    int parent = -1;
+    /// Index of the parent node, or no_index for a root.
+    int parent = no_index;
     /// Local rest translation, rotation and scale. For a node authored as a matrix, the matrix's
     /// decomposition, which glTF requires to exist: a mirrored matrix has a negative X scale, and one
     /// with a zero-scale axis keeps the identity rotation. Pose world matrices of such a node use
@@ -77,11 +80,11 @@ struct SourcePrimitive {
     std::string mesh_name;
     /// Index of the node that instances the mesh.
     std::size_t node{};
-    /// Index into Asset::skins, or -1 when unskinned.
-    int skin = -1;
-    /// Index into Asset::materials, or -1 for none. Imported primitives without a material use an
+    /// Index into Asset::skins, or no_index when unskinned.
+    int skin = no_index;
+    /// Index into Asset::materials, or no_index for none. Imported primitives without a material use an
     /// appended `glTF default` material (metallic 1, roughness 1).
-    int material = -1;
+    int material = no_index;
     /// Three vertices per triangle, in file order. Posing never modifies them.
     std::vector<SourceVertex> vertices;
 };
@@ -294,22 +297,22 @@ struct Material {
     std::string name;
     /// Linear base-color RGB factor, each channel in [0, 1].
     Vec3 factor{1, 1, 1};
-    /// Base-color texture index, or -1; the texture must be sRGB.
-    int texture = -1;
+    /// Base-color texture index, or no_index; the texture must be sRGB.
+    int texture = no_index;
     /// Linear metallic factor in [0, 1], applied to the map's blue channel. Programmatic
     /// materials default to a matte dielectric; the importer supplies glTF's default of 1.
     float metallic = 0;
     /// Linear roughness factor in [0, 1], applied to the map's green channel.
     float roughness = 1;
-    /// Normal map index, or -1; the texture must be linear.
-    int normal_texture = -1;
-    /// Metallic-roughness map index, or -1; the texture must be linear.
-    int metallic_roughness_texture = -1;
-    /// Emissive map index, or -1; the texture must be sRGB.
-    int emissive_texture = -1;
-    /// Occlusion map index, or -1; the texture must be linear, and its red channel darkens ambient
+    /// Normal map index, or no_index; the texture must be linear.
+    int normal_texture = no_index;
+    /// Metallic-roughness map index, or no_index; the texture must be linear.
+    int metallic_roughness_texture = no_index;
+    /// Emissive map index, or no_index; the texture must be sRGB.
+    int emissive_texture = no_index;
+    /// Occlusion map index, or no_index; the texture must be linear, and its red channel darkens ambient
     /// light only.
-    int occlusion_texture = -1;
+    int occlusion_texture = no_index;
     /// Linear emissive RGB factor, each channel finite and at least 0.
     Vec3 emissive{};
     /// Scale of the normal map's XY; finite.

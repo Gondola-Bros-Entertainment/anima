@@ -9,7 +9,7 @@ MaterialTexturePlan material_texture_plan(std::span<const Material> materials, s
     plan.images.push_back({});
     plan.bindings.push_back({});
     using Key = std::pair<int, detail::MipKey>;
-    std::map<Key, std::size_t> images{{Key{-1, detail::mip_key({})}, 0}};
+    std::map<Key, std::size_t> images{{Key{no_index, detail::mip_key({})}, 0}};
     for (const auto &material : materials) {
         validate_material(material, textures);
         const int sources[]{material.texture, material.normal_texture, material.metallic_roughness_texture,

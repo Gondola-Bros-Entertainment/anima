@@ -108,7 +108,8 @@ std::vector<std::size_t> order(const std::vector<int> &parents) {
         if (visited[i] == 2)
             return;
         visited[i] = 1;
-        require(parents[i] >= -1 && parents[i] < static_cast<int>(parents.size()), "Missing evaluation/asset parent");
+        require(parents[i] >= no_index && parents[i] < static_cast<int>(parents.size()),
+                "Missing evaluation/asset parent");
         if (parents[i] >= 0)
             self(self, static_cast<std::size_t>(parents[i]));
         visited[i] = 2;
@@ -186,7 +187,7 @@ Quat affine_rotation(const Mat4 &transform) {
 }
 EvaluationRig::EvaluationRig(const Asset &asset, std::vector<EvaluationJoint> joints) : joints_(std::move(joints)) {
     require(!joints_.empty(), "Evaluation rig has no joints");
-    mapping_.assign(asset.nodes.size(), -1);
+    mapping_.assign(asset.nodes.size(), no_index);
     std::set<std::string> names;
     std::vector<int> parents;
     for (std::size_t i = 0; i < joints_.size(); ++i) {

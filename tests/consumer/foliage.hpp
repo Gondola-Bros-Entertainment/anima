@@ -31,7 +31,7 @@ inline std::shared_ptr<const anima::Asset> fixture() {
     opaque.alpha_mode = anima::AlphaMode::opaque;
     auto emission = opaque;
     emission.unlit = false;
-    emission.texture = -1;
+    emission.texture = anima::no_index;
     emission.factor = {};
     emission.emissive = {1, 1, 1};
     emission.emissive_texture = 0;
