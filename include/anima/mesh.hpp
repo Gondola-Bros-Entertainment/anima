@@ -16,8 +16,8 @@ struct RenderBounds {
     bool valid{};
 };
 /// A simplified version of an IndexedDraw's triangles: a subset of its vertices, joined into fewer triangles, which
-/// VulkanRenderer draws in its place where the error it adds would cover less than its LOD threshold on screen
-/// (RendererOptions::lod_threshold).
+/// VulkanRenderer draws in its place where the error it adds would cover at most its LOD threshold in pixels of the
+/// scene targets (VulkanRenderer::set_lod_threshold).
 struct DrawLevel {
     /// Offset of the level's first index in Mesh::indices().
     std::uint32_t first_index{};

@@ -25,7 +25,7 @@ layout(set = 0, binding = 0, std140) uniform AnimaFrame {
     vec4 ambientSpecular;
     // The fog's color, and in w its density per unit at its height (fogShape.x), which fogShape.y's falloff varies.
     vec4 fog;
-    // Width and height in pixels, and their reciprocals.
+    // The scene target's width and height in pixels, the window's times the render scale, and their reciprocals.
     vec4 viewport;
     float time;
     // The fog's height, falloff, sky distance and phase asymmetry.

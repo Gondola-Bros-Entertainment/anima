@@ -44,6 +44,14 @@ constexpr std::uint64_t present_wait_timeout = 100'000'000ULL;
 constexpr std::uint32_t display_time_batch = 16;
 // Most frames that RendererOptions::frames_in_flight allows.
 constexpr std::uint32_t max_frames_in_flight = 2;
+// Throws `std::invalid_argument` unless @p scale is finite and from VulkanRenderer::min_render_scale to
+// VulkanRenderer::max_render_scale.
+void validate_render_scale(float scale) {
+    if (!std::isfinite(scale) || scale < VulkanRenderer::min_render_scale || scale > VulkanRenderer::max_render_scale)
+        throw std::invalid_argument("Render scale must be finite and from 0.25 to 2");
+}
+// What construction and VulkanRenderer::set_render_scale() report for a render scale without asset support.
+[[maybe_unused]] constexpr auto render_scale_without_assets = "Render scale requires asset support";
 constexpr std::uint32_t vertex_code[] =
 #include "triangle.vert.inc"
     ;
@@ -385,13 +393,33 @@ struct VulkanRenderer::Impl {
     std::array<float, 4> view_origin{0, 0, -1, 0};
 
     VkSwapchainKHR swapchain{};
-    VkExtent2D extent{};
+    // The swapchain's size, which display conversion, UI and captures use, and the size of the current scene targets,
+    // which the view renders at: the swapchain's times the render scale with asset support (scene_size()), and the
+    // swapchain's without. With asset support each swapchain creation leaves scene_extent zero until draw() creates the
+    // scene targets, and a failure to create them keeps it zero.
+    VkExtent2D extent{}, scene_extent{};
     VkFormat format{};
     VkRenderPass render_pass{};
     VkPipeline pipeline{}, ui_pipeline{};
-    VkImage depth_image{};
-    VmaAllocation depth_allocation{};
-    VkImageView depth_view{};
+    // The view's depth attachment, of scene_extent.
+    struct DepthTarget {
+        VkDevice device{};
+        VmaAllocator allocator{};
+        VkImage image{};
+        VmaAllocation allocation{};
+        VkImageView view{};
+        VkDeviceSize allocation_bytes{};
+        ~DepthTarget() {
+            if (view)
+                vkDestroyImageView(device, view, nullptr);
+            if (image)
+                vmaDestroyImage(allocator, image, allocation);
+        }
+        DepthTarget() = default;
+        DepthTarget(const DepthTarget &) = delete;
+        DepthTarget &operator=(const DepthTarget &) = delete;
+    };
+    std::unique_ptr<DepthTarget> depth_target;
     VkFormat depth_format{};
     struct Image {
         VkImage image{};
@@ -450,6 +478,14 @@ struct VulkanRenderer::Impl {
                 break;
 #endif
             throw std::invalid_argument(unknown_stage);
+        case RendererFailureStage::scene_targets:
+#ifdef ANIMA_HAS_ASSETS
+            // draw() fires it while the render scale is above 1.
+            break;
+#else
+            // Without asset support the render scale is always 1.
+            throw std::invalid_argument(unknown_stage);
+#endif
         default:
             throw std::invalid_argument(unknown_stage);
         }
@@ -460,6 +496,12 @@ struct VulkanRenderer::Impl {
         if (options.frames_in_flight < 1 || options.frames_in_flight > max_frames_in_flight)
             throw std::invalid_argument("Frames in flight must be 1 or 2");
         (void)vulkan_present_mode(options.present_mode);
+        validate_render_scale(options.render_scale);
+#ifndef ANIMA_HAS_ASSETS
+        // Without the scene targets the view renders straight into the swapchain images.
+        if (options.render_scale != 1)
+            throw std::invalid_argument(render_scale_without_assets);
+#endif
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -607,6 +649,12 @@ struct VulkanRenderer::Impl {
             graphics_family = graphics;
             timestamp_bits = families[graphics].timestampValidBits;
             timestamp_period = properties.limits.timestampPeriod;
+#ifdef ANIMA_HAS_ASSETS
+            // The scene targets are 2D images attached to framebuffers.
+            const auto &limits = properties.limits;
+            max_scene_extent = {std::min(limits.maxImageDimension2D, limits.maxFramebufferWidth),
+                                std::min(limits.maxImageDimension2D, limits.maxFramebufferHeight)};
+#endif
             present_family = present;
             selected_extensions = extensions;
             std::cout << "GPU: " << properties.deviceName << "; Vulkan " << VK_VERSION_MAJOR(properties.apiVersion)
@@ -995,10 +1043,16 @@ struct VulkanRenderer::Impl {
         const auto handles = enumerate<VkImage>(
             [&](auto *n, auto *p) { return vkGetSwapchainImagesKHR(device, swapchain, n, p); }, "Get swapchain images");
         images.resize(handles.size());
-        create_depth();
+        choose_depth_format();
+#ifndef ANIMA_HAS_ASSETS
+        // The view renders into the swapchain images, with a depth buffer of their size.
+        scene_extent = extent;
+        depth_target = create_depth(scene_extent);
+#endif
         create_render_pass();
 #ifdef ANIMA_HAS_ASSETS
-        create_world_targets();
+        // The scene targets are left to draw()'s ensure_scene_targets(), where a failure to create them is recoverable.
+        present_pass = create_display_pass();
         create_display_pipeline();
 #endif
         create_pipeline(PipelineKind::diagnostic, pipeline);
@@ -1023,14 +1077,17 @@ struct VulkanRenderer::Impl {
             view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             check(vkCreateImageView(device, &view, nullptr, &image.view), "Create image view");
             VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-            framebuffer.renderPass = render_pass;
-            const VkImageView attachments[]{image.view, depth_view};
-            framebuffer.attachmentCount = 2;
 #ifdef ANIMA_HAS_ASSETS
+            // The display pass writes the swapchain image alone; the view's depth belongs to the scene targets.
             framebuffer.renderPass = present_pass;
             framebuffer.attachmentCount = 1;
-#endif
+            framebuffer.pAttachments = &image.view;
+#else
+            framebuffer.renderPass = render_pass;
+            const VkImageView attachments[]{image.view, depth_target->view};
+            framebuffer.attachmentCount = 2;
             framebuffer.pAttachments = attachments;
+#endif
             framebuffer.width = extent.width;
             framebuffer.height = extent.height;
             framebuffer.layers = 1;
@@ -1328,7 +1385,7 @@ struct VulkanRenderer::Impl {
         check(vmaCreateBuffer(allocator, &info, &placement, &buffer, &allocation, &allocated), action);
         return allocated;
     }
-    void create_depth() {
+    void choose_depth_format() {
         depth_format = VK_FORMAT_UNDEFINED;
         // Reversed depth keeps its precision only in the floating-point format, and X8_D24 keeps more than D16. Each
         // holds depth alone, so the depth aspect and the clear to 0 suit all three. Custom materials that read opaque
@@ -1348,10 +1405,17 @@ struct VulkanRenderer::Impl {
         }
         if (depth_format == VK_FORMAT_UNDEFINED)
             throw std::runtime_error("No depth attachment format");
+    }
+    // Creates a depth attachment of @p size in depth_format. Throws `std::runtime_error` when a Vulkan call fails,
+    // releasing what it created.
+    std::unique_ptr<DepthTarget> create_depth(VkExtent2D size) const {
+        auto target = std::make_unique<DepthTarget>();
+        target->device = device;
+        target->allocator = allocator;
         VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         image.imageType = VK_IMAGE_TYPE_2D;
         image.format = depth_format;
-        image.extent = {extent.width, extent.height, 1};
+        image.extent = {size.width, size.height, 1};
         image.mipLevels = image.arrayLayers = 1;
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1362,16 +1426,14 @@ struct VulkanRenderer::Impl {
             image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 #endif
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        [[maybe_unused]] const auto bytes = create_image(image, depth_image, depth_allocation, "Create depth image");
-#ifdef ANIMA_HAS_ASSETS
-        depth_allocation_bytes = bytes;
-#endif
+        target->allocation_bytes = create_image(image, target->image, target->allocation, "Create depth image");
         VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        view.image = depth_image;
+        view.image = target->image;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
         view.format = depth_format;
         view.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-        check(vkCreateImageView(device, &view, nullptr, &depth_view), "Create depth view");
+        check(vkCreateImageView(device, &view, nullptr, &target->view), "Create depth view");
+        return target;
     }
 #ifdef ANIMA_HAS_ASSETS
     std::shared_ptr<GpuSampler> material_sampler(const Sampler &source, std::uint32_t levels) {
@@ -1909,6 +1971,8 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         retire_resources();
         try {
+            // Before the custom materials' frame block, which holds the scene targets' size.
+            ensure_scene_targets();
             ensure_shadow_targets();
             fit_shadow_cascades();
             update_custom_frame();
@@ -2086,14 +2150,18 @@ struct VulkanRenderer::Impl {
         if (split)
             pass.renderPass = opaque_pass;
 #endif
-        pass.renderArea.extent = extent;
+        // The view covers the scene targets, which record_display() then filters to the swapchain's size.
+        pass.renderArea.extent = scene_extent;
         pass.clearValueCount = 2;
         pass.pClearValues = clear.data();
         vkCmdBeginRenderPass(command, &pass, VK_SUBPASS_CONTENTS_INLINE);
-        const VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0, 1};
-        const VkRect2D scissor{{0, 0}, extent};
+        const VkViewport viewport{0, 0, static_cast<float>(scene_extent.width), static_cast<float>(scene_extent.height),
+                                  0, 1};
+        const VkRect2D scissor{{0, 0}, scene_extent};
         vkCmdSetViewport(command, 0, 1, &viewport);
         vkCmdSetScissor(command, 0, 1, &scissor);
+        // The window's aspect: display conversion maps the whole scene target onto the whole window, so proportions on
+        // screen follow the window's, whatever rounding or the device's limits make of the targets' aspect.
         const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
         const float scale[]{std::min(1.0F, 1.0F / aspect), std::min(1.0F, aspect)};
         bool triangle = options.diagnostic_triangle;
@@ -2273,13 +2341,8 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         destroy_world_targets();
 #endif
-        if (depth_view)
-            vkDestroyImageView(device, depth_view, nullptr);
-        depth_view = VK_NULL_HANDLE;
-        if (depth_image)
-            vmaDestroyImage(allocator, depth_image, depth_allocation);
-        depth_image = VK_NULL_HANDLE;
-        depth_allocation = VK_NULL_HANDLE;
+        depth_target.reset();
+        scene_extent = {};
 #ifdef ANIMA_HAS_ASSETS
         // Each pair holds a pipeline without and with the height fog's code.
         const auto destroy_pair = [&](std::array<VkPipeline, 2> &pipelines) noexcept {
@@ -2522,6 +2585,17 @@ void VulkanRenderer::set_lod_threshold(float pixels) {
         throw std::invalid_argument("LOD threshold must be finite and nonnegative");
     impl_->options.lod_threshold = pixels;
 }
+void VulkanRenderer::set_render_scale(float scale) {
+    impl_->running();
+    validate_render_scale(scale);
+#ifdef ANIMA_HAS_ASSETS
+    // The next draw() resizes the scene targets once it has waited for its frame.
+    impl_->options.render_scale = scale;
+#else
+    throw std::logic_error(render_scale_without_assets);
+#endif
+}
+float VulkanRenderer::render_scale() const noexcept { return impl_->options.render_scale; }
 void VulkanRenderer::set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions options) {
 #ifdef ANIMA_HAS_ASSETS
     impl_->set_scenes(std::move(sources), std::move(options));
@@ -2553,8 +2627,9 @@ void VulkanRenderer::prepare_mesh(const MeshPreparation &preparation, ResourcePr
 ResourceStats VulkanRenderer::resource_stats() const noexcept {
 #ifdef ANIMA_HAS_ASSETS
     auto stats = impl_->resource_stats();
+    // The depth target exists whenever the world target does.
     if (impl_->world_target)
-        stats.world_target_bytes = impl_->world_target->color.allocation_bytes + impl_->depth_allocation_bytes;
+        stats.world_target_bytes = impl_->world_target->color.allocation_bytes + impl_->depth_target->allocation_bytes;
     return stats;
 #else
     return {};

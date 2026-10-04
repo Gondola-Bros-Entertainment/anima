@@ -693,12 +693,19 @@ if(ANIMA_BUILD_TESTS)
         set(desktop_checks instances)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
         foreach(check_mode IN ITEMS allocations culling placements lod impostors cascades foliage fog atmosphere
-            environment resources frames-in-flight present-modes
+            environment resources frames-in-flight present-modes render-scale
             material-sampling pbr surface-maps sidedness draw-order blending custom-materials texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})
         endforeach()
+        # The same scale changes with one frame in flight, where draw() destroys replaced scene targets at once.
+        anima_add_gpu_check(desktop_render_scale_one_frame "${desktop}" --render-scale
+            "${anima_gpu_checks}/desktop_render_scale_one_frame" --frames-in-flight 1)
+        list(APPEND desktop_checks render_scale_one_frame)
+        # Changing the render scale must not recreate the swapchain between these markers, which only the log shows.
+        set_property(TEST gpu_desktop_render_scale gpu_desktop_render_scale_one_frame APPEND PROPERTY
+            FAIL_REGULAR_EXPRESSION "STABLE_SWAPCHAIN_BEGIN.*Swapchain [0-9].*STABLE_SWAPCHAIN_END")
         anima_add_gpu_check(desktop_compressed_textures "${desktop}" --compressed-textures
             "${anima_gpu_checks}/desktop_compressed_textures" "${CMAKE_CURRENT_SOURCE_DIR}/tests/textures")
         list(APPEND desktop_checks compressed_textures)

@@ -1,5 +1,7 @@
-// Linear scene target and final display conversion. Included inside Impl.
+// Linear scene target, its size for the render scale, and final display conversion. Included inside Impl.
 static constexpr VkFormat world_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+// The linear color target with the framebuffer that also attaches the depth target of its size, and the descriptor
+// that display conversion samples it through.
 struct WorldTarget {
     VkDevice device{};
     VmaAllocator allocator{};
@@ -26,7 +28,10 @@ VkPipelineLayout post_pipeline_layout{};
 VkShaderModule resolve_fragment_shader{};
 VkRenderPass present_pass{};
 VkPipeline resolve_pipeline{};
-VkDeviceSize depth_allocation_bytes{};
+// The largest scene targets that the device can create and attach: its 2D image and framebuffer limits.
+VkExtent2D max_scene_extent{};
+// The push constant of resolve.frag: scene target pixels per window pixel along each axis.
+using DisplayFootprint = std::array<float, 2>;
 
 void create_world_layout() {
     const VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
@@ -36,12 +41,25 @@ void create_world_layout() {
     info.pBindings = &binding;
     check(vkCreateDescriptorSetLayout(device, &info, nullptr, &scene_input_layout), "Create scene input layout");
     const VkDescriptorSetLayout layouts[]{scene_input_layout, environment_layout};
+    // The display shader's footprint (DisplayFootprint).
+    const VkPushConstantRange footprint{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(DisplayFootprint)};
     VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout.setLayoutCount = 2;
     layout.pSetLayouts = layouts;
+    layout.pushConstantRangeCount = 1;
+    layout.pPushConstantRanges = &footprint;
     check(vkCreatePipelineLayout(device, &layout, nullptr, &post_pipeline_layout), "Create display pipeline layout");
 }
-void create_world_image(GpuTexture &target) {
+// The scene targets' size for a swapchain of @p size: each side times the render scale, rounded to the nearest pixel
+// and kept from 1 to max_scene_extent.
+VkExtent2D scene_size(VkExtent2D size) const {
+    const auto scaled = [&](std::uint32_t pixels, std::uint32_t limit) {
+        const double rounded = std::round(double(pixels) * double(options.render_scale));
+        return static_cast<std::uint32_t>(std::clamp(rounded, 1.0, double(limit)));
+    };
+    return {scaled(size.width, max_scene_extent.width), scaled(size.height, max_scene_extent.height)};
+}
+void create_world_image(GpuTexture &target, VkExtent2D size) {
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(physical, world_color_format, &properties);
     // Blended meshes composite into the target, which the display conversion then samples.
@@ -52,7 +70,7 @@ void create_world_image(GpuTexture &target) {
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     image.imageType = VK_IMAGE_TYPE_2D;
     image.format = world_color_format;
-    image.extent = {extent.width, extent.height, 1};
+    image.extent = {size.width, size.height, 1};
     image.mipLevels = image.arrayLayers = 1;
     image.samples = VK_SAMPLE_COUNT_1_BIT;
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -107,26 +125,27 @@ VkRenderPass create_display_pass() {
     check(vkCreateRenderPass(device, &info, nullptr, &pass), "Create display pass");
     return pass;
 }
-void create_world_targets() {
-    present_pass = create_display_pass();
+// Creates the world target of @p size, whose framebuffer attaches @p depth_view, a depth target of that size. Throws
+// `std::runtime_error` when the device lacks the target's format or a Vulkan call fails, releasing what it created.
+std::unique_ptr<WorldTarget> create_world_target(VkImageView depth_view, VkExtent2D size) {
     auto next = std::make_unique<WorldTarget>();
     next->device = device;
     next->allocator = allocator;
-    create_world_image(next->color);
+    create_world_image(next->color, size);
     const VkImageView views[]{next->color.view, depth_view};
     VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     framebuffer.renderPass = render_pass;
     framebuffer.attachmentCount = 2;
     framebuffer.pAttachments = views;
-    framebuffer.width = extent.width;
-    framebuffer.height = extent.height;
+    framebuffer.width = size.width;
+    framebuffer.height = size.height;
     framebuffer.layers = 1;
     check(vkCreateFramebuffer(device, &framebuffer, nullptr, &next->framebuffer), "Create world framebuffer");
-    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    const VkDescriptorPoolSize sampled{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = 1;
     pool.poolSizeCount = 1;
-    pool.pPoolSizes = &size;
+    pool.pPoolSizes = &sampled;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &next->pool), "Create world descriptor pool");
     VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     allocate.descriptorPool = next->pool;
@@ -141,7 +160,29 @@ void create_world_targets() {
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &image;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    world_target.swap(next);
+    return next;
+}
+// Gives the scene targets the size that the render scale sets for the swapchain: creates the depth and world targets
+// after a swapchain creation, which destroyed the previous ones, and replaces them when that size changes. The replaced
+// targets and the opaque input copies, which the next frame that reads them creates at the new size, are destroyed once
+// no frame in flight can use them. A failure keeps the current targets, or none after a swapchain creation, and the
+// next call tries again.
+void ensure_scene_targets() {
+    const auto size = scene_size(extent);
+    if (size.width == scene_extent.width && size.height == scene_extent.height)
+        return;
+    auto next_depth = create_depth(size);
+    // Between the two creations, so that an injected failure releases the new depth target alone, as a failure to
+    // create the world target does.
+    if (options.render_scale > 1)
+        fail_after(RendererFailureStage::scene_targets);
+    auto next_world = create_world_target(next_depth->view, size);
+    depth_target.swap(next_depth);
+    world_target.swap(next_world);
+    scene_extent = size;
+    release_after_frames(std::move(next_depth));
+    release_after_frames(std::move(next_world));
+    release_after_frames(std::move(opaque_inputs));
 }
 void create_display_pipeline() {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
@@ -202,9 +243,21 @@ void record_display(VkFramebuffer framebuffer) {
     pass.framebuffer = framebuffer;
     pass.renderArea.extent = extent;
     vkCmdBeginRenderPass(command, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    // The swapchain's size, which UI also draws at, rather than the scene targets' that the world pass set. The
+    // fullscreen triangle maps the whole world target onto it: a target no larger than the window is interpolated
+    // through normalized coordinates, and a larger one averaged over each window pixel's area, which the footprint
+    // measures in target pixels.
+    const VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0, 1};
+    const VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetViewport(command, 0, 1, &viewport);
+    vkCmdSetScissor(command, 0, 1, &scissor);
+    const DisplayFootprint footprint{static_cast<float>(double(scene_extent.width) / extent.width),
+                                     static_cast<float>(double(scene_extent.height) / extent.height)};
     const VkDescriptorSet sets[]{world_target->descriptor, frame().environment_set};
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipeline_layout, 0, 2, sets, 0, nullptr);
+    vkCmdPushConstants(command, post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(footprint),
+                       footprint.data());
     vkCmdDraw(command, 3, 1, 0, 0);
     // Caller draws UI here, in display colour, then ends this render pass.
 }
