@@ -1,5 +1,6 @@
 #pragma once
 // An application's own authored state machine, run on its own synthetic model through the public API.
+#include "presentation.hpp"
 #include "rejection.hpp"
 #include <anima/animation_state_machine.hpp>
 #include <anima/prefab.hpp>
@@ -71,6 +72,57 @@ inline constexpr std::string_view puppet_machine = R"({
   ]
 })";
 
+// Plays the base clips of the presentation actor's motion on its model, and places the published pose with a joint
+// offset through a pose filter.
+inline void run_motion() {
+    using namespace anima;
+    presentation_test::Workspace workspace;
+    const auto fixture = presentation_test::actor_fixture(workspace.directory, 2);
+    const ActorPresentation actor(fixture.directory / "actor.profile.json");
+    const auto &motion = actor.actor.motion;
+    constexpr std::string_view document = R"({
+  "version": 1,
+  "kind": "anima.animation-state-machine",
+  "parameters": [{"name": "wave", "type": "trigger"}],
+  "states": [{"name": "drifting", "clip": "drift"}, {"name": "waving", "clip": "signal"}],
+  "transitions": [
+    {"from": "drifting", "to": "waving", "conditions": [{"parameter": "wave", "mode": "is_true"}], "duration": 0.5}
+  ]
+})";
+    const auto machine =
+        std::make_shared<const AnimationStateMachine>(AnimationStateMachine::deserialize(motion, document));
+    require(machine->motion() == motion && machine->source() == motion->model(),
+            "State machine lost its motion runtime or the motion's model");
+
+    Scene scene;
+    auto body = scene.create("body", actor.render);
+    auto animator = body.add_component<StateMachineAnimator>(machine);
+    MotionControls controls;
+    auto lift = identity();
+    lift[14] = .5F;
+    controls.offsets.push_back({fixture.names[0], lift, 1});
+    animator->set_pose_filter([&](Pose &pose) { pose = motion->evaluate(pose, controls).pose; });
+    const auto root = [&] { return scene.instance(body.id()).palette.at(0); };
+    scene.update(.5);
+    require(close_to(root()[12], motion->sample("drift", .5).world[0][12]) && close_to(root()[14], .5F),
+            "State machine did not publish its motion clip through the pose filter");
+    require(animator->published_pose().local.empty() &&
+                animator->pose().local.size() == motion->model()->nodes.size() &&
+                close_to(animator->pose().world[0][14], 0),
+            "Pose filter changed the evaluated pose");
+
+    // The crossfade blends the evaluated poses, and the filter places each blend.
+    animator->set_trigger("wave");
+    scene.update(.25);
+    require(animator->state() == "waving" && animator->crossfade() && close_to(root()[12], .075F) &&
+                close_to(root()[14], .5F),
+            "Crossfade between motion clips did not publish through the pose filter");
+
+    auto layered = machine->definition();
+    layered.states[1].clip = "layer.port";
+    rejects<std::invalid_argument>([&] { (void)AnimationStateMachine(motion, layered); },
+                                   "Animation clip has no metadata: layer.port");
+}
 inline void run() {
     using namespace anima;
     const auto asset = puppet();
@@ -152,5 +204,6 @@ inline void run() {
     rejects<std::invalid_argument>([&] { (void)animator->update(-1); }, "Invalid StateMachineAnimator time step");
     rejects<std::invalid_argument>([&] { (void)StateMachineAnimator(scene.create("other", mesh), nullptr); },
                                    "StateMachineAnimator requires a state machine");
+    run_motion();
 }
 } // namespace state_machine_consumer
