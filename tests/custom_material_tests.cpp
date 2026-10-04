@@ -621,7 +621,11 @@ TEST_CASE("Scene objects assign custom materials per mesh material") {
     CHECK(scene.instance(object.id()).custom_materials == std::vector<std::shared_ptr<const CustomMaterial>>(2));
     object.renderer().set_custom_material(1, water);
     CHECK(scene.instance(object.id()).custom_materials[1] == water);
+    CHECK(object.renderer().custom_material(1) == water);
+    CHECK_FALSE(object.renderer().custom_material(0));
     CHECK_THROWS_WITH_AS(object.renderer().set_custom_material(2, water),
+                         "Custom material slot is outside the mesh's materials", std::out_of_range);
+    CHECK_THROWS_WITH_AS((void)object.renderer().custom_material(2),
                          "Custom material slot is outside the mesh's materials", std::out_of_range);
     scene.set_custom_material(object.id(), 1, nullptr);
     CHECK_FALSE(scene.instance(object.id()).custom_materials[1]);
