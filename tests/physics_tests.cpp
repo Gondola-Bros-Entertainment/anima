@@ -554,14 +554,28 @@ TEST_CASE("Tangent rays, initial overlaps and continuous collision") {
     const auto tangent = world.raycast({-2, 1, 0}, {4, 0, 0});
     REQUIRE_MESSAGE((tangent && tangent->body == target && std::abs(tangent->fraction - .5F) < surface_tolerance),
                     "Tangent ray missed sphere");
+    REQUIRE_MESSAGE((!tangent->initial_overlap && tangent->penetration == 0), "Tangent ray reported an overlap");
     const auto inside = world.raycast({0, 0, 0}, {4, 0, 0});
-    REQUIRE_MESSAGE((inside && inside->fraction == 0), "Ray starting inside did not report initial overlap");
+    REQUIRE_MESSAGE((inside && inside->body == target && inside->fraction == 0 && inside->initial_overlap),
+                    "Ray starting inside did not report initial overlap");
     Collider query;
     query.shape = Shape::sphere;
     query.radius = .5F;
     const auto initial = world.sweep(query, {{0, .25F, 0}}, {0, 5, 0});
-    REQUIRE_MESSAGE((initial && initial->fraction == 0 && initial->penetration > 0),
+    REQUIRE_MESSAGE((initial && initial->fraction == 0 && initial->penetration > 0 && initial->initial_overlap),
                     "Sweep initial penetration missing");
+    // The query sphere starts 0.01 meters below the target and meets it after 0.01 of 5 meters.
+    const auto outside = world.sweep(query, {{0, -1.51F, 0}}, {0, 5, 0});
+    REQUIRE_MESSAGE((outside && outside->body == target && std::abs(outside->fraction - .002F) < surface_tolerance &&
+                     !outside->initial_overlap && outside->penetration == 0),
+                    "Sweep starting outside reported an initial overlap");
+    const auto overlaps = world.overlap(query, {{0, .25F, 0}});
+    REQUIRE_MESSAGE((overlaps.size() == 1u && overlaps.front().initial_overlap), "Overlap result not flagged");
+    World other;
+    QueryFilter foreign;
+    foreign.ignore = target;
+    REQUIRE_THROWS_WITH_AS(other.sweep(query, {}, {1, 0, 0}, foreign), "Foreign query body", std::invalid_argument);
+    REQUIRE_THROWS_WITH_AS(other.overlap(query, {}, foreign), "Foreign query body", std::invalid_argument);
     target.remove();
     [[maybe_unused]] const auto wall = world.create(box({0, 0, 0}, {.05F, 5, 5}));
     sphere.motion = Motion::dynamic;
