@@ -257,6 +257,30 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_scene_lifecycle_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_scene_lifecycle_tests)
         add_test(NAME scene_lifecycle COMMAND anima_scene_lifecycle_tests)
+        # Each case builds one source on demand and passes on its static_assert message; the matching
+        # case must build. The builds share this tree, so they run one at a time.
+        foreach(hook_case IN ITEMS matching update_returns_value update_without_seconds late_update_extra_argument
+                                   fixed_update_overloads enable_returns_value disable_with_seconds)
+            list(LENGTH anima_component_hook_cases hook_case_index)
+            list(APPEND anima_component_hook_cases ${hook_case})
+            add_library(anima_component_hooks_${hook_case} OBJECT EXCLUDE_FROM_ALL tests/component_hook_checks.cpp)
+            target_link_libraries(anima_component_hooks_${hook_case} PRIVATE anima::assets)
+            target_compile_definitions(anima_component_hooks_${hook_case} PRIVATE ANIMA_HOOK_CASE=${hook_case_index})
+            anima_target_defaults(anima_component_hooks_${hook_case})
+            add_test(NAME component_hooks_${hook_case} COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+                --target anima_component_hooks_${hook_case} --config $<CONFIG>)
+            set_tests_properties(component_hooks_${hook_case} PROPERTIES RESOURCE_LOCK anima_build_tree TIMEOUT 300)
+        endforeach()
+        set_tests_properties(component_hooks_update_returns_value component_hooks_update_without_seconds PROPERTIES
+            PASS_REGULAR_EXPRESSION "on_update must be void on_update\\(double\\)")
+        set_tests_properties(component_hooks_late_update_extra_argument PROPERTIES
+            PASS_REGULAR_EXPRESSION "on_late_update must be void on_late_update\\(double\\)")
+        set_tests_properties(component_hooks_fixed_update_overloads PROPERTIES
+            PASS_REGULAR_EXPRESSION "on_fixed_update must be void on_fixed_update\\(double\\)")
+        set_tests_properties(component_hooks_enable_returns_value PROPERTIES
+            PASS_REGULAR_EXPRESSION "on_enable must be void on_enable\\(\\) noexcept")
+        set_tests_properties(component_hooks_disable_with_seconds PROPERTIES
+            PASS_REGULAR_EXPRESSION "on_disable must be void on_disable\\(\\) noexcept")
         add_executable(anima_scene_reference_tests tests/scene_reference_tests.cpp)
         target_link_libraries(anima_scene_reference_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_scene_reference_tests)

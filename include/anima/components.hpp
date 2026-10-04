@@ -26,19 +26,60 @@ struct ComponentOwner {
 };
 namespace detail {
 enum class ComponentPhase { frame, fixed, late };
-// Whether Scene calls any hook of T, as ComponentBox checks each one; only these are scheduled.
+// The hooks Scene calls, each with its exact shape.
 template <class T>
-concept ScheduledComponent = requires(T &hooked_value, double hooked_seconds) {
+concept UpdateHook = requires(T &hooked_value, double hooked_seconds) {
     { hooked_value.on_update(hooked_seconds) } -> std::same_as<void>;
-} || requires(T &hooked_value, double hooked_seconds) {
+};
+template <class T>
+concept LateUpdateHook = requires(T &hooked_value, double hooked_seconds) {
     { hooked_value.on_late_update(hooked_seconds) } -> std::same_as<void>;
-} || requires(T &hooked_value, double hooked_seconds) {
+};
+template <class T>
+concept FixedUpdateHook = requires(T &hooked_value, double hooked_seconds) {
     { hooked_value.on_fixed_update(hooked_seconds) } -> std::same_as<void>;
-} || requires(T &hooked_value) {
+};
+template <class T>
+concept EnableHook = requires(T &hooked_value) {
     { hooked_value.on_enable() } -> std::same_as<void>;
-} || requires(T &hooked_value) {
+};
+template <class T>
+concept DisableHook = requires(T &hooked_value) {
     { hooked_value.on_disable() } -> std::same_as<void>;
 };
+// Whether T visibly declares a member of a hook's name: a single accessible member (a function or
+// a field), or an overload callable with the time step or with none. A private member is not seen.
+template <class T>
+concept DeclaresUpdate = requires { &T::on_update; } || requires(T &hooked_value, double hooked_seconds) {
+    hooked_value.on_update(hooked_seconds);
+} || requires(T &hooked_value) { hooked_value.on_update(); };
+template <class T>
+concept DeclaresLateUpdate = requires { &T::on_late_update; } || requires(T &hooked_value, double hooked_seconds) {
+    hooked_value.on_late_update(hooked_seconds);
+} || requires(T &hooked_value) { hooked_value.on_late_update(); };
+template <class T>
+concept DeclaresFixedUpdate = requires { &T::on_fixed_update; } || requires(T &hooked_value, double hooked_seconds) {
+    hooked_value.on_fixed_update(hooked_seconds);
+} || requires(T &hooked_value) { hooked_value.on_fixed_update(); };
+template <class T>
+concept DeclaresEnable = requires { &T::on_enable; } || requires(T &hooked_value) { hooked_value.on_enable(); } ||
+                         requires(T &hooked_value, double hooked_seconds) { hooked_value.on_enable(hooked_seconds); };
+template <class T>
+concept DeclaresDisable = requires { &T::on_disable; } || requires(T &hooked_value) { hooked_value.on_disable(); } ||
+                          requires(T &hooked_value, double hooked_seconds) { hooked_value.on_disable(hooked_seconds); };
+// Rejects a member of a hook's name that Scene would never call.
+template <class T> constexpr void check_component_hooks() {
+    static_assert(!DeclaresUpdate<T> || UpdateHook<T>, "on_update must be void on_update(double)");
+    static_assert(!DeclaresLateUpdate<T> || LateUpdateHook<T>, "on_late_update must be void on_late_update(double)");
+    static_assert(!DeclaresFixedUpdate<T> || FixedUpdateHook<T>,
+                  "on_fixed_update must be void on_fixed_update(double)");
+    static_assert(!DeclaresEnable<T> || EnableHook<T>, "on_enable must be void on_enable() noexcept");
+    static_assert(!DeclaresDisable<T> || DisableHook<T>, "on_disable must be void on_disable() noexcept");
+}
+// Whether Scene calls any hook of T; only these are scheduled.
+template <class T>
+concept ScheduledComponent =
+    UpdateHook<T> || LateUpdateHook<T> || FixedUpdateHook<T> || EnableHook<T> || DisableHook<T>;
 struct ComponentValue {
     virtual ~ComponentValue() = default;
     virtual void *address() noexcept = 0;
@@ -67,16 +108,12 @@ template <class T> struct ComponentBox final : ComponentValue {
     void *address() noexcept override { return &value; }
     void activate(bool active) noexcept override {
         if (active) {
-            if constexpr (requires {
-                              { value.on_enable() } -> std::same_as<void>;
-                          }) {
+            if constexpr (EnableHook<T>) {
                 static_assert(noexcept(value.on_enable()), "on_enable must be noexcept");
                 value.on_enable();
             }
         } else {
-            if constexpr (requires {
-                              { value.on_disable() } -> std::same_as<void>;
-                          }) {
+            if constexpr (DisableHook<T>) {
                 static_assert(noexcept(value.on_disable()), "on_disable must be noexcept");
                 value.on_disable();
             }
@@ -84,19 +121,13 @@ template <class T> struct ComponentBox final : ComponentValue {
     }
     void update(ComponentPhase phase, double seconds) override {
         if (phase == ComponentPhase::frame) {
-            if constexpr (requires {
-                              { value.on_update(seconds) } -> std::same_as<void>;
-                          })
+            if constexpr (UpdateHook<T>)
                 value.on_update(seconds);
         } else if (phase == ComponentPhase::fixed) {
-            if constexpr (requires {
-                              { value.on_fixed_update(seconds) } -> std::same_as<void>;
-                          })
+            if constexpr (FixedUpdateHook<T>)
                 value.on_fixed_update(seconds);
         } else {
-            if constexpr (requires {
-                              { value.on_late_update(seconds) } -> std::same_as<void>;
-                          })
+            if constexpr (LateUpdateHook<T>)
                 value.on_late_update(seconds);
         }
     }
@@ -218,6 +249,7 @@ template <class T, class... Args> ComponentRef<T> GameObject::add_component(Args
         (void)add_mesh(std::forward<Args>(args)...);
         return get_component<T>();
     } else {
+        detail::check_component_hooks<T>();
         auto &owner = scene();
         const std::type_index type = typeid(T);
         auto record = std::make_shared<detail::ComponentRecord>(*this, type, detail::ScheduledComponent<T>);

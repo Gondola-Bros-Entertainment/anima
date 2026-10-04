@@ -118,8 +118,12 @@ struct SceneLifetime {
 ///   sees the active state change; removal calls `on_disable()` at once if `on_enable()` was
 ///   delivered. Their `noexcept` is checked at compile time.
 ///
-/// Members of these names that return anything but `void` are not called. There are no implicit
-/// creation or destruction hooks: constructors and destructors own resources.
+/// GameObject::add_component does not compile for a type with an accessible member of one of these
+/// names that the scene would not call: one callable with the hook's arguments that returns a
+/// value, a single member function or field not callable with them, or overloads callable with no
+/// argument or one `double` but not with the hook's arguments. A private member of these names is
+/// neither called nor checked. There are no implicit creation or destruction hooks: constructors and
+/// destructors own resources.
 class Scene {
   public:
     /// Runtime handle of one object: its scene's process-unique owner number, a storage slot and
@@ -519,8 +523,9 @@ class GameObject {
     /// `std::constructible_from` allows it and `T(args...)` otherwise. A GameObject parameter or member
     /// never receives this object: `add_component<T>()` leaves an aggregate's first GameObject member
     /// null and does not compile for a constructor that requires a GameObject. Passing a
-    /// ComponentOwner in @p args does not compile. The component starts enabled, and its first
-    /// `on_enable()` waits for a lifecycle reconciliation.
+    /// ComponentOwner in @p args does not compile, and neither does a type with a mismatched hook,
+    /// as Scene describes. The component starts enabled, and its first `on_enable()` waits for a
+    /// lifecycle reconciliation.
     ///
     /// Throws `std::logic_error` when the object already has a `T`, including a recursive add from
     /// the constructor, or when construction removed the object or the attachment. A failed
