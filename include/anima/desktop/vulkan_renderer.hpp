@@ -52,6 +52,20 @@ enum class PresentMode {
     fifo_relaxed,
 };
 
+/// How the view filters the sun's shadow maps, the cascades and the detail region alike (ShadowCascades,
+/// DirectionalShadow); see VulkanRenderer::set_shadow_filter. Each texel that a filter reads is compared with the
+/// nearer to the light of the receiver's depth and the receiver plane's depth at that texel, less the bias, as
+/// DirectionalShadow describes, and the filter returns the weighted share of the texels that leave the receiver lit.
+enum class ShadowFilter {
+    /// A bilinearly weighted 3x3 comparison kernel over the 4x4 texels around the shaded point: four gathers and
+    /// sixteen comparisons. A straight shadow edge fades over 3 texels.
+    kernel_4x4,
+    /// The 2x2 texels around the shaded point, weighted bilinearly: one gather and four comparisons, for less shading
+    /// work wherever the sun lights a surface. A straight shadow edge fades over 1 texel, so shadow edges are harder
+    /// and show the steps of their texels more.
+    bilinear_2x2,
+};
+
 /// Construction options for VulkanRenderer.
 struct RendererOptions {
     /// Enables `VK_LAYER_KHRONOS_validation` through `VK_EXT_debug_utils`; construction throws
@@ -133,6 +147,9 @@ struct RendererOptions {
     /// Initial present mode request, under the rules of VulkanRenderer::set_present_mode. A value that is not a
     /// PresentMode enumerator makes construction throw `std::invalid_argument`.
     PresentMode present_mode = PresentMode::fifo;
+    /// Initial shadow filter; see VulkanRenderer::set_shadow_filter. A value that is not a ShadowFilter enumerator
+    /// makes construction throw `std::invalid_argument` ("Unknown shadow filter").
+    ShadowFilter shadow_filter = ShadowFilter::kernel_4x4;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -170,11 +187,13 @@ class RendererFatalError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
 };
-/// draw() could not prepare the selected scenes, the environment's shadow maps or the scene targets
-/// (VulkanRenderer::set_render_scale).
+/// draw() could not prepare the selected scenes, the environment's shadow maps, the scene targets
+/// (VulkanRenderer::set_render_scale) or the view's pipelines for a new shadow filter
+/// (VulkanRenderer::set_shadow_filter).
 ///
 /// Thrown before an image is acquired, so no frame was submitted. The renderer stays usable and the next
-/// draw() prepares again: repair the selected scenes or environment, change the selection, or lower the render scale.
+/// draw() prepares again: repair the selected scenes or environment, change the selection, lower the render scale, or
+/// request the previous shadow filter.
 class SceneResourceError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -238,7 +257,8 @@ struct FrameProfile {
     /// Frame preparation after that wait: destroying what earlier calls released once no frame in flight can use it,
     /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in flight
     /// and otherwise in a later call, once that frame has finished, creating the scene targets after a swapchain
-    /// creation or a render scale change (VulkanRenderer::set_render_scale), sizing the shadow maps and fitting their
+    /// creation or a render scale change (VulkanRenderer::set_render_scale), compiling the view's pipelines after a
+    /// shadow filter change (VulkanRenderer::set_shadow_filter), sizing the shadow maps and fitting their
     /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
     /// fence_wait_ms waited for, reading the display times that set present_interval_ms, and for a UiContext frame,
     /// copying its vertices, creating the UI pipeline when first needed and uploading each new UI texture, which waits
@@ -427,7 +447,8 @@ struct ResourceStats {
 /// one depth image, and the optional detail region (DirectionalShadow), each the first of `VK_FORMAT_D32_SFLOAT` and
 /// `VK_FORMAT_D16_UNORM` that the device can attach and sample; with 16-bit depth, each cascade's bias also covers a
 /// step of its depth. Each pass draws the opaque and masked casters that it holds, culled against itself, and each
-/// cascade only those that reach a share of its radius (set_shadow_caster_threshold()).
+/// cascade only those that reach a share of its radius (set_shadow_caster_threshold()). The view filters them as
+/// set_shadow_filter() requests.
 ///
 /// The view's depth buffer is the first of `VK_FORMAT_D32_SFLOAT`, `VK_FORMAT_X8_D24_UNORM_PACK32` and
 /// `VK_FORMAT_D16_UNORM` that the device can attach, sample and copy, as custom materials that read opaque depth
@@ -641,7 +662,8 @@ class VulkanRenderer {
     /// for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
     /// RendererOptions::render_scale that is not finite or lies outside min_render_scale to max_render_scale ("Render
     /// scale must be finite and from 0.25 to 2"), or without asset support is not 1 ("Render scale requires asset
-    /// support"), and for a null @p window; RendererUnavailableError when no driver or device can present to the
+    /// support"), for a RendererOptions::shadow_filter that is not a ShadowFilter enumerator ("Unknown shadow
+    /// filter"), and for a null @p window; RendererUnavailableError when no driver or device can present to the
     /// window; what set_scenes() throws for the initial selection; InjectedRendererFailure for
     /// RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
     /// Completed stages are released before the exception propagates.
@@ -784,6 +806,21 @@ class VulkanRenderer {
     void set_render_scale(float scale);
     /// The render scale that RendererOptions::render_scale or the latest accepted set_render_scale() set.
     [[nodiscard]] float render_scale() const noexcept;
+    /// Requests @p filter for the sun's shadow maps (ShadowFilter); it starts as RendererOptions::shadow_filter.
+    ///
+    /// The view's pipelines that draw meshes and impostors with the standard material compile the filter, so changing
+    /// it compiles them anew; custom materials read no shadow maps and keep their pipelines. Construction compiles them
+    /// for RendererOptions::shadow_filter, and swapchain creation keeps them. The first draw() that prepares a frame
+    /// while those pipelines have another filter compiles them for the requested one once it has waited for its frame.
+    /// The compilation holds that draw(), but it does not wait for the device: the replaced pipelines stay until no
+    /// frame in flight can use them. If compiling fails, that draw() throws SceneResourceError and keeps the previous
+    /// filter's pipelines, and the next draw() tries again. Only the latest request counts, so a draw() compiles
+    /// nothing when it names the filter that the pipelines have. Without asset support the renderer draws no shadows,
+    /// so the request has no effect. Throws `std::invalid_argument` for a value that is not a ShadowFilter enumerator
+    /// ("Unknown shadow filter"), keeping the previous request.
+    void set_shadow_filter(ShadowFilter filter);
+    /// The shadow filter that RendererOptions::shadow_filter or the latest accepted set_shadow_filter() requested.
+    [[nodiscard]] ShadowFilter shadow_filter() const noexcept;
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and the detail region, enabled or not, with
@@ -887,14 +924,14 @@ class VulkanRenderer {
     /// Each call waits for the frame submitted RendererOptions::frames_in_flight submissions before the one that it
     /// submits and, as wait_for_frame() describes, for the present of the frame submitted one submission before that,
     /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, creates
-    /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), culls,
-    /// uploads meshes that became visible or cast shadows (prepare_meshes() can upload them earlier) and writes every
-    /// prepared instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
-    /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface loss, a
-    /// fence timeout, any other Vulkan failure, or any failure to build a new swapchain once the previous one is
-    /// released; and `std::runtime_error` for other failures, such as a surface that offers no usable format, which
-    /// leaves the current swapchain in place, or a capture request that fails, which only that call reports (see
-    /// request_capture()).
+    /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), compiles the view's
+    /// pipelines after a shadow filter change (set_shadow_filter()), culls, uploads meshes that became visible or cast
+    /// shadows (prepare_meshes() can upload them earlier) and writes every prepared instance's palette. The palettes of
+    /// one frame must fit the device's storage-buffer range. Throws SceneResourceError when that preparation fails
+    /// recoverably; RendererFatalError for device or surface loss, a fence timeout, any other Vulkan failure, or any
+    /// failure to build a new swapchain once the previous one is released; and `std::runtime_error` for other
+    /// failures, such as a surface that offers no usable format, which leaves the current swapchain in place, or a
+    /// capture request that fails, which only that call reports (see request_capture()).
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;

@@ -108,8 +108,9 @@ struct ShadowCascades {
 /// the region's result replaces the cascades' (EnvironmentSettings::shadow_cascades), blending into theirs over the
 /// outer 4 percent of the box on each axis.
 ///
-/// Filtering takes a bilinearly weighted 3x3 comparison kernel over 4x4 texels. Each texel is compared with the
-/// nearer to the light of the receiver's own depth and the receiver plane's depth at that texel, less #bias. The
+/// Filtering takes a bilinearly weighted 3x3 comparison kernel over 4x4 texels, or the 2x2 texels around the shaded
+/// point weighted bilinearly, as VulkanRenderer::set_shadow_filter selects (ShadowFilter). Each texel is compared with
+/// the nearer to the light of the receiver's own depth and the receiver plane's depth at that texel, less #bias. The
 /// plane, found from screen-space position derivatives rather than shading normals, keeps a sloped receiver from
 /// shadowing itself toward the light; it never reaches deeper than the receiver, where a crease that bends toward the
 /// light would leave the surface in front of it. Nearly edge-on planes fall back to the bias alone.

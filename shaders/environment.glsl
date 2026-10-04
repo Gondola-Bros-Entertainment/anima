@@ -15,6 +15,9 @@ vec3 environmentFog(vec3 color, vec3 position, vec4 viewOrigin) {
     }
     return color;
 }
+// True in the pipelines compiled for ShadowFilter::bilinear_2x2 (VulkanRenderer::set_shadow_filter), which then compile
+// the 2x2 filter alone.
+layout(constant_id = 3) const bool bilinearShadowFilter = false;
 layout(set = 1, binding = 1) uniform sampler2DArray cascadeDepth;
 layout(set = 1, binding = 2) uniform sampler2DArray detailShadowDepth;
 // What the shadow filter knows about a receiver: the screen-space derivatives of its world position, the variation of
@@ -48,20 +51,34 @@ vec2 receiverPlaneGradient(ShadowReceiver receiver, mat4 view, float texel) {
     return shadowReceiverGradient(receiver.dx, receiver.dy, view) * weight;
 }
 // The share of the filter's texels around @p p, in a map's normalized coordinates, that leave the receiver lit: a
-// bilinearly weighted 3x3 comparison kernel over 4x4 texels of layer @p layer, each compared with the nearer to the
-// light of the receiver's depth and the receiver plane's at that texel, from @p gradient, less @p bias. Toward the
-// light the plane keeps a sloped receiver from shadowing itself; away from it the receiver's own depth already does,
-// and the plane would put a surface that bends toward the light, such as a simplified level's shallow crease, in front
-// of the receiver.
+// bilinearly weighted 3x3 comparison kernel over 4x4 texels of layer @p layer, or with bilinearShadowFilter the 2x2
+// texels around @p p, weighted bilinearly; each compared with the nearer to the light of the receiver's depth and the
+// receiver plane's at that texel, from @p gradient, less @p bias. Toward the light the plane keeps a sloped receiver
+// from shadowing itself; away from it the receiver's own depth already does, and the plane would put a surface that
+// bends toward the light, such as a simplified level's shallow crease, in front of the receiver.
 float shadowFilter(sampler2DArray depth, float layer, vec3 p, vec2 gradient, float bias) {
-    float visible = 0.0;
     ivec2 size = textureSize(depth, 0).xy;
-    // Bilinearly interpolate the 3x3 comparison kernel, rather than snapping it
-    // to one texel. Its union is 4x4; the separable weights sum to nine. Compare
-    // each depth against its own receiver-plane position before interpolation.
+    // The texel whose center is the nearest at or below p on both axes, and p's position from it toward the next.
     vec2 pixel = p.xy * vec2(size) - 0.5;
     ivec2 base = ivec2(floor(pixel));
     vec2 fraction = fract(pixel);
+    if (bilinearShadowFilter) {
+        // One gather of the 2x2 texels from base, at the corner that they share, as for each block below. Their
+        // offsets from p across the map and their bilinear weights follow the gather's order: texels (0, 1), (1, 1),
+        // (1, 0) and (0, 0) from base.
+        vec4 stored = textureGather(depth, vec3(vec2(base + 1) / vec2(size), layer));
+        vec2 low = (vec2(clamp(base, ivec2(0), size - 1)) + 0.5) / vec2(size) - p.xy;
+        vec2 high = (vec2(clamp(base + 1, ivec2(0), size - 1)) + 0.5) / vec2(size) - p.xy;
+        vec4 across = gradient.x * vec4(low.x, high.x, high.x, low.x) + gradient.y * vec4(high.y, high.y, low.y, low.y);
+        vec4 receiverDepth = p.z + min(across, 0.0);
+        vec4 weight = vec4(1.0 - fraction.x, fraction.x, fraction.x, 1.0 - fraction.x) *
+                      vec4(fraction.y, fraction.y, 1.0 - fraction.y, 1.0 - fraction.y);
+        return dot(vec4(lessThanEqual(receiverDepth - bias, stored)), weight);
+    }
+    // Bilinearly interpolate the 3x3 comparison kernel, rather than snapping it
+    // to one texel. Its union is 4x4; the separable weights sum to nine. Compare
+    // each depth against its own receiver-plane position before interpolation.
+    float visible = 0.0;
     // The 4x4 texels' depths, gathered as four 2x2 blocks. Each gather is at the corner that its block's texels share,
     // where choosing another block would take an error of half a texel. The sampler clamps to the edge, as the texel
     // coordinates below are clamped. textureGather returns a block's texels (0, 1), (1, 1), (1, 0) and (0, 0).

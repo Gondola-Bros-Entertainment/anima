@@ -183,6 +183,9 @@ ResourceBound resource_bound;
 // Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow passes.
 VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
 std::array<VkPipeline, 2> impostor_pipelines{};
+// The shadow filter that the view's mesh and impostor pipelines compile (for_each_view_pipeline()), which draw() brings
+// to RendererOptions::shadow_filter (ensure_shadow_filter()).
+ShadowFilter compiled_shadow_filter{};
 VkPipeline shadow_impostor_pipeline{};
 // Holds each frame slot's pose set (FrameSlot::pose_set).
 VkDescriptorPool pose_pool{};
