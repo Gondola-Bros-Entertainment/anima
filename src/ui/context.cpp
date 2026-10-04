@@ -630,8 +630,8 @@ struct UiContext::Impl {
         result.consumed = cancelled_release || (!(pointer_event && world_pointer) &&
                                                 (!propagate || (pointer_event && (owned_pointer || result.pointer)) ||
                                                  (keyboard_event && (before.keyboard || result.keyboard))));
-        if (keyboard_event && event.key.scancode != SDL_SCANCODE_UNKNOWN &&
-            (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)) {
+        if (keyboard_event && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+            event.key.scancode != SDL_SCANCODE_UNKNOWN) {
             // Like a pointer press, a key keeps its starting ownership: a release whose press reached
             // gameplay stays with gameplay even if a control took keyboard focus in between.
             if (event.type == SDL_EVENT_KEY_DOWN && !result.consumed)
