@@ -214,7 +214,9 @@ void create_display_pipeline() {
     stages[0].module = sky_vertex_shader;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = resolve_fragment_shader;
-    const VkBool32 encode = (format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_R8G8B8A8_UNORM);
+    // A known UNORM format stores what the shader writes, so the shader encodes to sRGB itself.
+    const auto *surface_info = surface_format_info(format);
+    const VkBool32 encode = surface_info && !surface_info->srgb;
     const VkSpecializationMapEntry entry{0, 0, sizeof(encode)};
     const VkSpecializationInfo specialization{1, &entry, sizeof(encode), &encode};
     stages[1].pSpecializationInfo = &specialization;

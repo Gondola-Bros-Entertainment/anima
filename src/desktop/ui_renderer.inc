@@ -176,7 +176,8 @@ void upload_ui_texture(const UiTexturePtr &source) {
 // UI blending in linear light needs a format that decodes the destination and encodes the result. Encoding
 // in the shader, as the display pass does for UNORM formats, would blend translucent UI in encoded values.
 static bool srgb_format(VkFormat format) {
-    return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB;
+    const auto *info = surface_format_info(format);
+    return info && info->srgb;
 }
 // Whether the swapchain that recreate() would create now can present UI; UiContext asks at construction.
 bool srgb_presentation() const { return srgb_format(surface_format().format); }
