@@ -102,6 +102,10 @@ struct AudioSceneAccess;
 /// A clip has 1 or 2 channels (stereo interleaves left, then right), a sample rate in [8,000, 192,000] Hz and at
 /// least one frame; a decompressed clip holds at most 33,554,432 samples, counting every channel. Factories
 /// validate their input before creating a clip; file IO belongs to the caller.
+///
+/// pcm() and decode() read only their arguments and may run concurrently on any thread, such as an application's
+/// loader threads. A clip never changes after its factory returns, so any number of threads and engines, including
+/// their device threads, may share it.
 class AudioClip {
   public:
     /// Creates a decompressed clip from interleaved @p samples, which must hold whole frames of @p channels and be
@@ -118,12 +122,16 @@ class AudioClip {
     /// malformed audio data" when the decoder cannot open the input, "Audio clips must have 1 or 2 channels", the
     /// sample rate message of pcm(), and "Audio data holds no samples".
     ///
-    /// AudioLoadMode::decompress decodes the whole input now, and also throws "Malformed audio data" when decoding
-    /// fails partway, "Decoded audio exceeds 33554432 samples" and "Decoded audio samples must be finite". Decoded
-    /// samples may exceed 1 in magnitude, as lossy decoders produce. AudioLoadMode::stream opens the input only to
-    /// read its format and length, then copies it. Its length is the one the decoder reports from the file's header,
-    /// or for MP3 from its Xing or Info tag or else its frame headers; an input without one is decoded once to count
-    /// its frames. A voice that meets malformed data later ends there, and non-finite samples play as silence.
+    /// AudioLoadMode::decompress decodes the whole input now, and also throws "Decoded audio exceeds 33554432
+    /// samples" and "Decoded audio samples must be finite". Decoded samples may exceed 1 in magnitude, as lossy
+    /// decoders produce. AudioLoadMode::stream opens the input only to read its format and length, then copies it.
+    /// Its length is the one the decoder reports from the file's header, or for MP3 from its Xing or Info tag or else
+    /// its frame headers; an input without one is decoded once to count its frames. A voice that meets malformed
+    /// data later ends there, and non-finite samples play as silence.
+    ///
+    /// Decoding, of the whole input or to count its frames, throws "Malformed audio data" when the decoder reports
+    /// an error before the end. The decoders report none for truncated data but end at the cut, so a truncated input
+    /// decodes, or counts, to the frames before it, and throws "Audio data holds no samples" when there are none.
     [[nodiscard]] static std::shared_ptr<const AudioClip> decode(std::span<const std::byte> encoded,
                                                                  AudioLoadMode mode = AudioLoadMode::decompress);
     /// Channels per frame: 1 or 2.

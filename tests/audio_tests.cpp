@@ -808,6 +808,38 @@ TEST_CASE("Malformed or unsupported audio data is rejected") {
                          std::invalid_argument);
 }
 
+TEST_CASE("Decoding and counting end at truncated data, which the decoders do not report as malformed") {
+    // "Malformed audio data" needs a decoder to report an error partway, which miniaudio's readers and stb_vorbis do
+    // not do for truncated data: cutting each fixture at every byte reached it in neither mode. These inputs check
+    // that each mode instead decodes, or counts, to the frames before the cut.
+    std::vector<float> samples(100);
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        samples[i] = float(tone(i));
+    auto pcm16 = wave(samples, 1);
+    pcm16.resize(pcm16.size() - 2 * 40); // Cut 40 frames before the length that the data chunk states.
+    for (const auto mode : {AudioLoadMode::decompress, AudioLoadMode::stream}) {
+        CAPTURE(static_cast<int>(mode));
+        CHECK(AudioClip::decode(pcm16, mode)->frames() == 60u);
+    }
+    // The MP3 fixture has no Xing or Info tag, so a streamed clip takes its length from the frame headers that remain.
+    auto mp3 = read_asset("tone.mp3");
+    mp3.resize(mp3.size() * 2 / 3);
+    const auto decoded = AudioClip::decode(mp3);
+    CHECK(decoded->frames() < 2880u);
+    CHECK(AudioClip::decode(mp3, AudioLoadMode::stream)->frames() == decoded->frames());
+    // A FLAC whose STREAMINFO block states 0 frames, as an encoder that cannot seek back may write, is counted by
+    // decoding it. Its 36-bit sample count ends the 64 bits that begin 18 bytes in.
+    auto flac = read_asset("tone.flac");
+    flac[21] &= std::byte(0xF0);
+    std::fill(flac.begin() + 22, flac.begin() + 26, std::byte(0));
+    CHECK(AudioClip::decode(flac, AudioLoadMode::stream)->frames() == 1600u);
+    flac.pop_back(); // Leaves the only frame incomplete, which the decoder drops.
+    for (const auto mode : {AudioLoadMode::decompress, AudioLoadMode::stream}) {
+        CAPTURE(static_cast<int>(mode));
+        CHECK_THROWS_WITH_AS(AudioClip::decode(flac, mode), "Audio data holds no samples", std::invalid_argument);
+    }
+}
+
 TEST_CASE("A device on the null backend mixes on its own thread, so a stalled caller does not delay playback") {
     auto audio = Audio::open_device(AudioBackend::null);
     CHECK(audio.sample_rate() >= 8000u);
