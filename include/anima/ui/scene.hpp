@@ -22,8 +22,10 @@ class UiPanel {
   public:
     /// Loads @p path through @p host and, if @p visible, shows the document at once, whatever the
     /// component's or object's state; the next sync_ui_panels reconciles it. The codec stores
-    /// @p asset_key in place of the path. Throws `std::invalid_argument` for an empty key or one
-    /// over 4,096 bytes, and fails as UiDocuments::load does.
+    /// @p asset_key in place of the path, which must be nonempty, at most 4,096 bytes and
+    /// well-formed UTF-8 without NUL (no overlong forms or surrogates). Throws
+    /// `std::invalid_argument` with "Invalid UI asset key" for another key before loading, and
+    /// fails as UiDocuments::load does.
     UiPanel(UiDocuments &host, std::string asset_key, const std::filesystem::path &path, bool visible = true);
     /// The owned document. Showing or hiding it directly lasts until the next sync_ui_panels.
     [[nodiscard]] UiDocument &document() { return document_; }

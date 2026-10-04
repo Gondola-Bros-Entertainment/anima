@@ -1,5 +1,6 @@
 #include "../detail/audio.hpp"
 #include "../detail/json.hpp"
+#include "../detail/resource_key.hpp"
 #include "../detail/scene_driver.hpp"
 #include <anima/audio_scene.hpp>
 
@@ -14,7 +15,6 @@ struct AudioSceneAccess {
 };
 } // namespace detail
 namespace {
-constexpr std::size_t maximum_clip_key_bytes = 4096;
 constexpr std::size_t maximum_component_bytes = 64 * 1024;
 void validate(const AudioSourceSettings &s) {
     detail::audio_gain(s.volume);
@@ -24,10 +24,7 @@ void validate(const AudioSourceSettings &s) {
     detail::audio_priority(s.priority);
 }
 constexpr std::string_view linear_rolloff = "linear", inverse_rolloff = "inverse";
-void key(std::string_view value) {
-    if (value.empty() || value.size() > maximum_clip_key_bytes || value.find('\0') != std::string_view::npos)
-        throw std::invalid_argument("Invalid audio clip key");
-}
+void key(std::string_view value) { detail::validate_resource_key(value, "Invalid audio clip key"); }
 } // namespace
 AudioSource::AudioSource(Audio &audio, std::shared_ptr<const AudioClip> clip, AudioSourceSettings settings,
                          const AudioBus &bus)

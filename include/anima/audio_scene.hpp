@@ -135,9 +135,10 @@ using AudioClipResolver = std::function<std::shared_ptr<const AudioClip>(std::st
 /// AudioAttenuation. Every field is required: a missing one throws `std::invalid_argument` with
 /// "Missing JSON field: " followed by its name. Unknown or duplicate fields, wrong types and invalid
 /// values are rejected too, as is a null clip from @p resolve. Keys must be nonempty, at most 4,096
-/// bytes and free of NUL, both when captured and when restored. The scene or prefab stores
-/// transforms and component enablement; cursors, playback state, pending requests and bus settings
-/// are not persisted.
+/// bytes and well-formed UTF-8 without NUL (no overlong forms or surrogates), both when captured
+/// and when restored; another key throws `std::invalid_argument` with "Invalid audio clip key",
+/// on restore before @p resolve runs. The scene or prefab stores transforms and component
+/// enablement; cursors, playback state, pending requests and bus settings are not persisted.
 ///
 /// Neither callback may mutate scenes, components or the engine. Throws `std::invalid_argument` for
 /// an empty callback, a @p bus of another engine, or when @p codecs already has a codec for either
