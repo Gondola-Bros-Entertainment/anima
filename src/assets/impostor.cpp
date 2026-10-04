@@ -1,5 +1,7 @@
 // Impostors: a CPU rasterizer that views a Mesh from each frame of an octahedral grid, and the compilation of its atlas
 // into a Mesh that VulkanRenderer draws as an impostor.
+#include "alpha_coverage.hpp"
+#include "srgb.hpp"
 #include <algorithm>
 #include <anima/impostor.hpp>
 #include <array>
@@ -61,17 +63,13 @@ FrameAxes frame_axes(Vec3 d) {
 
 float unit_byte(std::uint8_t value) { return float(value) / 255; }
 std::uint8_t to_byte(float value) { return static_cast<std::uint8_t>(std::lround(std::clamp(value, 0.F, 1.F) * 255)); }
-float decode_srgb(float value) { return value <= .04045F ? value / 12.92F : std::pow((value + .055F) / 1.055F, 2.4F); }
-std::uint8_t encode_srgb(float value) {
-    value = std::clamp(value, 0.F, 1.F);
-    return to_byte(value <= .0031308F ? value * 12.92F : 1.055F * std::pow(value, 1 / 2.4F) - .055F);
-}
+std::uint8_t encode_srgb(float value) { return to_byte(detail::encode_srgb(std::clamp(value, 0.F, 1.F))); }
 // Linear light of each 8-bit sRGB value.
 const std::array<float, 256> &srgb_table() {
     static const auto table = [] {
         std::array<float, 256> values{};
         for (std::size_t i = 0; i < values.size(); ++i)
-            values[i] = decode_srgb(float(i) / 255);
+            values[i] = detail::decode_srgb(float(i) / 255);
         return values;
     }();
     return table;
@@ -219,11 +217,7 @@ class Baker {
         for (auto &material : materials_) {
             const auto &m = material.source;
             // A masked base color's mips keep its coverage at the cutoff, as material_texture_plan() plans them.
-            std::optional<float> cutoff;
-            if (m.alpha_mode == AlphaMode::mask && m.alpha > 0 && m.alpha_cutoff / m.alpha > 0 &&
-                m.alpha_cutoff / m.alpha <= 1)
-                cutoff = m.alpha_cutoff / m.alpha;
-            material.base = sampled(m.texture, cutoff);
+            material.base = sampled(m.texture, detail::alpha_coverage_cutoff(m));
             material.normal = sampled(m.normal_texture, {});
             material.metallic_roughness = sampled(m.metallic_roughness_texture, {});
             material.occlusion = sampled(m.occlusion_texture, {});

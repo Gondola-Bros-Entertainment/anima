@@ -1,4 +1,5 @@
-#include "mesh_limits.hpp"
+#include "../detail/affine.hpp"
+#include "render_bounds.hpp"
 #include <algorithm>
 #include <anima/mesh_placements.hpp>
 #include <array>
@@ -8,7 +9,6 @@
 
 namespace anima {
 namespace {
-constexpr float affine_tolerance = 1e-5F;
 // Bits of each axis in a cluster ordering key; three of them fill 63 bits.
 constexpr unsigned morton_bits = 21;
 
@@ -25,19 +25,6 @@ void expand(RenderBounds &bounds, const RenderBounds &other) {
         expand(bounds, other.minimum);
         expand(bounds, other.maximum);
     }
-}
-// Widens @p bounds by the margin Scene gives posed bounds, which also covers the rounding of composing the
-// placement on the GPU in another order.
-void pad(RenderBounds &bounds) {
-    if (!bounds.valid)
-        return;
-    const auto margin = [](float lo, float hi) {
-        return std::max({1.F, std::abs(lo), std::abs(hi)}) * (2 * mesh_limits::skin_weight_tolerance);
-    };
-    const Vec3 m{margin(bounds.minimum.x, bounds.maximum.x), margin(bounds.minimum.y, bounds.maximum.y),
-                 margin(bounds.minimum.z, bounds.maximum.z)};
-    bounds.minimum = bounds.minimum - m;
-    bounds.maximum = bounds.maximum + m;
 }
 // Spreads the low 21 bits of @p v so that two zero bits follow each.
 std::uint64_t spread(std::uint64_t v) {
@@ -59,10 +46,7 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
             "Placements draw only rigid meshes");
     require(!transforms.empty() && transforms.size() <= max_count, "Placement count must be from 1 to 1048576");
     for (const auto &m : transforms)
-        require(std::all_of(m.begin(), m.end(), [](float v) { return std::isfinite(v); }) &&
-                    std::abs(m[3]) < affine_tolerance && std::abs(m[7]) < affine_tolerance &&
-                    std::abs(m[11]) < affine_tolerance && std::abs(m[15] - 1) < affine_tolerance,
-                "Placement transforms must be finite and affine");
+        require(detail::is_affine(m), "Placement transforms must be finite and affine");
 
     // Order the placements along a Morton curve through their translations, quantized within their bounds, so
     // that each run of cluster_size holds near neighbours. The sort is stable, so equal keys keep their order.
@@ -128,11 +112,11 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
             if (rest_bounds.valid)
                 expand(cluster.bounds, point(placement, rest_center));
         }
-        pad(cluster.bounds);
+        detail::pad_posed_bounds(cluster.bounds);
         result->clusters_.push_back(cluster);
     }
     for (auto &bounds : result->primitive_bounds_) {
-        pad(bounds);
+        detail::pad_posed_bounds(bounds);
         expand(result->bounds_, bounds);
     }
     return result;

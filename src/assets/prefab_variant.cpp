@@ -1,3 +1,4 @@
+#include "../detail/affine.hpp"
 #include "../detail/document_json.hpp"
 #include "../detail/document_limits.hpp"
 #include "../detail/json.hpp"
@@ -45,24 +46,21 @@ constexpr detail::RendererFormat renderer_format{
     .visibility_range = "Invalid prefab variant visibility range",
     .numbers = number_format,
 };
-void validate_native(Scene &validation, const PrefabVariant::Override &value) {
+void validate_native(const PrefabVariant::Override &value) {
     const auto *renderer = value.renderer ? &*value.renderer : nullptr;
     if (renderer)
         detail::validate_renderer_state(*renderer, renderer_format);
-    auto object = validation.create();
     if (value.local)
-        object.set_local_matrix(*value.local);
-    if (!renderer || !renderer->mesh) {
-        object.destroy();
+        detail::require_affine(*value.local);
+    if (!renderer || !renderer->mesh)
         return;
-    }
     // The base parent is not available yet. Validate authored matrices without
     // a renderer; resolving checks their actual world composition and bounds.
     if (renderer->pose) {
         require(renderer->pose->world.size() == renderer->mesh->rest_pose().world.size(),
                 "Prefab variant pose does not match the mesh");
         for (const auto &world : renderer->pose->world)
-            object.set_local_matrix(world);
+            detail::require_affine(world);
     }
     require(renderer->material_factors.empty() ||
                 renderer->material_factors.size() == renderer->mesh->description()->materials.size(),
@@ -76,7 +74,6 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     for (auto factor : renderer->material_factors)
         for (auto channel : {factor.x, factor.y, factor.z})
             require(std::isfinite(channel) && channel >= 0 && channel <= 1, "Invalid prefab variant material factor");
-    object.destroy();
 }
 } // namespace
 
@@ -85,7 +82,6 @@ PrefabVariant::PrefabVariant(std::string base_key, std::vector<Override> overrid
     validate_key(base_key_);
     require(overrides_.size() <= maximum_document_objects, "Invalid prefab variant override count");
     std::set<ObjectKey> keys;
-    Scene validation;
     for (const auto &value : overrides_) {
         require(value.key.value && keys.insert(value.key).second, "Null or duplicate prefab variant object key");
         require(value.name || value.local || value.active || value.renderer || !value.set_components.empty() ||
@@ -103,7 +99,7 @@ PrefabVariant::PrefabVariant(std::string base_key, std::vector<Override> overrid
             validate_key(type);
             require(types.insert(type).second, "Duplicate or conflicting prefab variant component removal");
         }
-        validate_native(validation, value);
+        validate_native(value);
     }
 }
 
