@@ -338,7 +338,7 @@ inline void run() {
             auto expected = reference.create("Expected", shell->render);
             expected.set_position({4, 0, 0});
             expected.renderer().set_pose(shell->pose(baseline));
-            check(child.parent()->id() == body.id() &&
+            check(child.parent() == body &&
                       scene.instance(child.id()).palette == reference.instance(expected.id()).palette,
                   "Fitted component did not follow the final frame pose during late update");
             body.remove_component<FittedSet>();
@@ -474,7 +474,7 @@ inline void run() {
         attachments.add(attachment_owner);
         check(scene.instances().size() == 3, "Two named attachments were not independently assembled");
         const auto bound = *attachments.roles.at("probe").instance;
-        check(scene.object(bound).parent()->id() == attachment_owner.id() && !scene.instance(bound).visible,
+        check(scene.object(bound).parent() == attachment_owner && !scene.instance(bound).visible,
               "Held attachment did not inherit owner lifetime or initial visibility");
         const auto held_world = scene.object(bound).world_matrix();
         attachment_owner.set_position({5, 0, 0});

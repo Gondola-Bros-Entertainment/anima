@@ -45,8 +45,7 @@ inline void hierarchy(const std::shared_ptr<const anima::Asset> &asset,
     child.set_position({8, 4, 0});
     child.set_parent(root);
     require(child.position().x == 8 && child.local_position().x == 2 && child.local_position().y == 1 &&
-                child.parent()->id() == root.id() && root.children().front().id() == child.id() &&
-                scene.roots().size() == 1,
+                child.parent() == root && root.children().front().id() == child.id() && scene.roots().size() == 1,
             "Parenting did not preserve world placement or expose hierarchy membership");
     Animator animator(child, asset);
     animator.play("Move");

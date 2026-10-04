@@ -85,13 +85,21 @@ class StagedSceneSet {
 /// Checked, weak identity of one member scene of a SceneSet.
 ///
 /// Unloading or replacing the scene, or clearing, restoring or destroying the set, invalidates every
-/// copy; any access except valid() and `operator bool` then throws `std::out_of_range`.
+/// copy; any access except valid(), `operator bool` and `operator==` then throws `std::out_of_range`.
 class SceneRef {
   public:
     SceneRef() = default;
     /// Whether the scene is still a member of its set.
     [[nodiscard]] bool valid() const noexcept;
     explicit operator bool() const noexcept { return valid(); }
+    /// Whether @p a and @p b refer to the same membership, or both to none: default handles and those
+    /// that SceneSet::find returned for a missing namespace are equal. A handle stays equal to its
+    /// copies after the scene leaves the set, and never equals a handle to another membership, even
+    /// the scene that SceneSet::replace put under the same namespace. There is no `std::hash`: C++20
+    /// offers none for the shared ownership that equality compares.
+    friend bool operator==(const SceneRef &a, const SceneRef &b) noexcept {
+        return !a.record_.owner_before(b.record_) && !b.record_.owner_before(a.record_);
+    }
     /// Namespace of the scene.
     [[nodiscard]] std::string key() const;
     /// Borrowed scene for explicit drivers; do not keep the reference across membership changes.

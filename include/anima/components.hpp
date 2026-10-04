@@ -122,8 +122,8 @@ struct ComponentRecord {
 /// Checked, non-owning identity of one component attachment.
 ///
 /// Removing the component, or destroying its object or scene, invalidates the handle for good,
-/// even if a new `T` is attached later. Every access except valid() and `operator bool` then throws
-/// `std::out_of_range`.
+/// even if a new `T` is attached later. Every access except valid(), `operator bool` and
+/// `operator==` then throws `std::out_of_range`.
 template <class T> class ComponentRef {
   public:
     ComponentRef() = default;
@@ -133,6 +133,14 @@ template <class T> class ComponentRef {
         return record && record->attached && record->object.valid();
     }
     explicit operator bool() const noexcept { return valid(); }
+    /// Whether @p a and @p b refer to the same attachment, or both to none: default handles and those
+    /// that GameObject::get_component returned for a missing component are equal. A handle stays equal
+    /// to its copies after the attachment ends, and never equals a handle to another attachment, even a
+    /// later one of the same type on the same object. There is no `std::hash`: C++20 offers none for the
+    /// shared ownership that equality compares.
+    friend bool operator==(const ComponentRef &a, const ComponentRef &b) noexcept {
+        return !a.record_.owner_before(b.record_) && !b.record_.owner_before(a.record_);
+    }
     /// Object the component is attached to.
     [[nodiscard]] GameObject object() const { return lock()->object; }
     /// Authored enabled flag; for a MeshRenderer, its visibility.
