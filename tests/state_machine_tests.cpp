@@ -821,6 +821,161 @@ TEST_CASE("play enters a state at a time and ends a crossfade") {
     CHECK(events[0].offset == 0);
 }
 
+TEST_CASE("cross_fade blends from the state the machine plays by the seconds elapsed") {
+    Actor actor(states("walk"));
+    auto &animator = actor.animator;
+    animator->set_trigger("go");
+    (void)animator->update(.25);
+    animator->cross_fade("run", .5);
+    // The crossfade's start publishes walk's pose, and the trigger stays set.
+    auto fade = animator->crossfade();
+    REQUIRE(fade);
+    CHECK_FALSE(fade->transition);
+    CHECK(fade->source == "walk");
+    CHECK(fade->source_time == .25);
+    CHECK(fade->duration == .5);
+    CHECK(fade->elapsed == 0);
+    CHECK(fade->weight == 0);
+    CHECK(animator->state() == "run");
+    CHECK(animator->time() == 0);
+    CHECK(animator->get_bool("go"));
+    CHECK(actor.x() == Near{.25, pose_tolerance});
+    // Walk keeps playing from 0.25, and its X is its time; run's is 4 times its clip time, and run advances 2
+    // normalized units a second.
+    const std::vector<std::pair<double, float>> expected{
+        {.125, .75F * .375F + .25F * .5F}, {.25, .5F * .5F + .5F * 1.F}, {.375, .25F * .625F + .75F * 1.5F}};
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        CAPTURE(i);
+        const auto events = animator->update(.125);
+        fade = animator->crossfade();
+        REQUIRE(fade);
+        CHECK(fade->source_time == .25 + expected[i].first);
+        CHECK(fade->elapsed == expected[i].first);
+        CHECK(fade->weight == static_cast<float>(expected[i].first / .5));
+        CHECK(animator->time() == 2 * expected[i].first);
+        CHECK(actor.x() == Near{expected[i].second, pose_tolerance});
+        // Halfway through, walk crosses its step as it fades out and run its stride as it fades in.
+        REQUIRE(events.size() == (i == 1 ? 2 : 0));
+        if (i == 1) {
+            CHECK(events[0].clip == "walk");
+            CHECK(events[0].weight == .5F);
+            CHECK(events[1].clip == "run");
+            CHECK(events[1].weight == .5F);
+            CHECK(events[1].offset == events[0].offset);
+        }
+    }
+    (void)animator->update(.125);
+    CHECK_FALSE(animator->crossfade());
+    CHECK(animator->time() == 1);
+    CHECK(actor.x() == Near{0, pose_tolerance});
+}
+
+TEST_CASE("cross_fade during a crossfade fades from the evaluated pose, frozen, under a pose filter") {
+    auto definition = states("walk");
+    definition.transitions = {transition("walk", "run", {condition("go", ConditionMode::is_true)}, .5)};
+    Actor actor(std::move(definition));
+    auto &animator = actor.animator;
+    // Publishes a world-only pose 100 units further along +X, which blend_pose would reject.
+    animator->set_pose_filter([](Pose &pose) {
+        pose.local.clear();
+        pose.world[0][12] += 100;
+    });
+    const auto published = [&] { return actor.scene.instance(actor.object.id()).palette.at(0)[12]; };
+    animator->set_trigger("go");
+    (void)animator->update(.25);
+    CHECK(animator->pose().world[0][12] == Near{.5F * .25F + .5F * 1.F, pose_tolerance});
+
+    // The transition admits no interruption, but code still interrupts it, from the pose evaluated last.
+    animator->cross_fade("jump", .5);
+    auto fade = animator->crossfade();
+    REQUIRE(fade);
+    CHECK_FALSE(fade->transition);
+    CHECK(fade->source == "run");
+    CHECK_FALSE(fade->source_time);
+    CHECK(animator->state() == "jump");
+    CHECK(animator->pose().world[0][12] == Near{.625, pose_tolerance});
+    CHECK(published() == Near{100.625, pose_tolerance});
+    // Jump reports its takeoff, at its entry point, on its first advance.
+    std::vector<AnimationStateEvent> events;
+    REQUIRE_NOTHROW(events = animator->update(.25));
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].event.name == "takeoff");
+    CHECK(animator->crossfade()->weight == .5F);
+    CHECK(animator->pose().world[0][12] == Near{.5F * .625F + .5F * 10.F, pose_tolerance});
+    CHECK(published() == Near{100 + .5F * .625F + .5F * 10.F, pose_tolerance});
+}
+
+TEST_CASE("cross_fade over no seconds enters at once, and rejects its arguments before any change") {
+    Actor actor(states("walk"));
+    auto &animator = actor.animator;
+    animator->cross_fade("run", 1);
+    (void)animator->update(.25);
+    CHECK_THROWS_WITH_AS(animator->cross_fade("sky", -1), "Unknown animation state: sky", std::out_of_range);
+    for (const auto seconds : {-.5, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        CHECK_THROWS_WITH_AS(animator->cross_fade("idle", seconds), "Invalid animation crossfade duration",
+                             std::invalid_argument);
+    for (const auto offset : {-.25, 1., std::numeric_limits<double>::quiet_NaN()})
+        CHECK_THROWS_WITH_AS(animator->cross_fade("idle", .5, offset), "Invalid animation crossfade offset",
+                             std::invalid_argument);
+    CHECK(animator->state() == "run");
+    CHECK(animator->time() == .5);
+    REQUIRE(animator->crossfade());
+    CHECK(animator->crossfade()->elapsed == .25);
+
+    // Zero seconds ends the crossfade and enters jump at once, as play() does.
+    animator->cross_fade("jump", 0, .5);
+    CHECK_FALSE(animator->crossfade());
+    CHECK(animator->state() == "jump");
+    CHECK(animator->time() == .5);
+    CHECK(actor.x() == Near{10, pose_tolerance});
+    animator->cross_fade("jump", 0);
+    const auto events = animator->update(.25);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].event.name == "takeoff");
+    CHECK(events[0].weight == 1);
+}
+
+TEST_CASE("No transition interrupts a crossfade that cross_fade started") {
+    auto definition = states("walk");
+    definition.transitions = {
+        transition({}, "hit", {condition("stance", ConditionMode::equals, 9)}, .25),
+        transition("run", "idle", {condition("stop", ConditionMode::is_true)}, .5),
+    };
+    definition.transitions[0].interruption = Machine::Interruption::destination;
+    Actor actor(std::move(definition));
+    auto &animator = actor.animator;
+    animator->cross_fade("run", .5);
+    animator->set_trigger("stop");
+    animator->set_integer("stance", 9);
+    (void)animator->update(.25);
+    REQUIRE(animator->crossfade());
+    CHECK_FALSE(animator->crossfade()->transition);
+    CHECK(animator->state() == "run");
+    (void)animator->update(.25); // The crossfade ends.
+    CHECK_FALSE(animator->crossfade());
+    CHECK(animator->state() == "run");
+    CHECK(animator->get_bool("stop"));
+
+    // The next update checks transitions again, those from any state first.
+    (void)animator->update(0);
+    CHECK(animator->state() == "hit");
+    auto fade = animator->crossfade();
+    REQUIRE(fade);
+    CHECK(fade->transition == 0);
+    CHECK(fade->source == "run");
+    CHECK(fade->duration == .25);
+
+    // Code interrupts that crossfade too, and the transition to hit, whose condition still holds, waits.
+    animator->cross_fade("walk", .5);
+    (void)animator->update(.25);
+    fade = animator->crossfade();
+    REQUIRE(fade);
+    CHECK_FALSE(fade->transition);
+    CHECK(fade->source == "hit");
+    CHECK_FALSE(fade->source_time);
+    CHECK(animator->state() == "walk");
+}
+
 TEST_CASE("The codec persists the machine key, parameters and current state") {
     auto definition = states("walk");
     definition.transitions = {transition("walk", "run", {condition("go", ConditionMode::is_true)}, 1)};
@@ -1302,6 +1457,9 @@ TEST_CASE("The animator rejects invalid bindings, parameters, states and steps")
                          "StateMachineAnimator mesh was replaced; bind a new StateMachineAnimator explicitly",
                          std::logic_error);
     CHECK_THROWS_WITH_AS(animator->play("walk"),
+                         "StateMachineAnimator mesh was replaced; bind a new StateMachineAnimator explicitly",
+                         std::logic_error);
+    CHECK_THROWS_WITH_AS(animator->cross_fade("walk", .5),
                          "StateMachineAnimator mesh was replaced; bind a new StateMachineAnimator explicitly",
                          std::logic_error);
 }

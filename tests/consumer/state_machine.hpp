@@ -187,6 +187,17 @@ inline void run() {
                 !restored[0]->crossfade(),
             "State machine animator did not persist its key, parameters and state");
 
+    // Code crossfades without a transition, here from the pose of the crossfade in progress, frozen.
+    animator->cross_fade("air", .25);
+    const auto scripted = animator->crossfade();
+    require(animator->state() == "air" && scripted && !scripted->transition && scripted->source == "ground" &&
+                !scripted->source_time && scripted->duration == .25 && close_to(base().y, 2),
+            "cross_fade did not start from the pose it interrupted");
+    scene.update(.125);
+    require(animator->crossfade() && close_to(base().y, 3) && close_to(base().x, .03125F),
+            "cross_fade did not blend toward the state it entered");
+    rejects<std::invalid_argument>([&] { animator->cross_fade("air", -1); }, "Invalid animation crossfade duration");
+
     rejects<std::invalid_argument>(
         [&] {
             (void)AnimationStateMachine::deserialize(asset, clips,
