@@ -57,6 +57,8 @@ static_assert(detail::maximum_damping == collision_steps_per_second,
 // A mesh triangle whose unnormalized normal, the cross product of two edges, has a squared length at or
 // below this is degenerate.
 constexpr float minimum_squared_triangle_normal = 1e-12F;
+constexpr auto accepts_impulses = "Only enabled dynamic bodies accept impulses";
+constexpr auto accepts_forces = "Only enabled dynamic bodies accept forces and torques";
 
 void require(bool value, const char *message) {
     if (!value)
@@ -316,6 +318,14 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
     }
     Body handle(std::uint64_t id) { return Body(weak_from_this(), id); }
     Body handle(JPH::BodyID id) { return handle(system.GetBodyInterface().GetUserData(id)); }
+    // The Jolt body of an existing body that accepts forces and impulses, or `std::invalid_argument` with
+    // @p message. Disabled bodies are outside Jolt's broadphase, and Jolt's AddImpulse, AddAngularImpulse,
+    // AddForce and AddTorque activate a body without checking membership.
+    JPH::BodyID accepting(std::uint64_t id, const char *message) const {
+        const auto &e = entries.at(id);
+        require(e.motion == Motion::dynamic && e.enabled, message);
+        return e.id;
+    }
     // A persisted contact keeps its entry, whose bodies and sensor flag cannot change, so a solid contact is measured
     // only when it is recorded first, before the solver has resolved it.
     void record(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &m) {
@@ -452,10 +462,37 @@ void Body::set_velocity(Vec3 velocity) {
 void Body::add_impulse(Vec3 impulse) {
     vector(impulse);
     auto w = lock();
-    const auto &e = w->entries.at(id_);
-    // Disabled bodies are outside Jolt's broadphase, and AddImpulse activates without checking membership.
-    require(e.motion == Motion::dynamic && e.enabled, "Only enabled dynamic bodies accept impulses");
-    w->system.GetBodyInterface().AddImpulse(e.id, j(impulse));
+    w->system.GetBodyInterface().AddImpulse(w->accepting(id_, accepts_impulses), j(impulse));
+}
+void Body::add_impulse_at(Vec3 impulse, Vec3 world_point) {
+    vector(impulse);
+    vector(world_point);
+    auto w = lock();
+    w->system.GetBodyInterface().AddImpulse(w->accepting(id_, accepts_impulses), j(impulse), j(world_point));
+}
+void Body::add_angular_impulse(Vec3 impulse) {
+    vector(impulse);
+    auto w = lock();
+    w->system.GetBodyInterface().AddAngularImpulse(w->accepting(id_, accepts_impulses), j(impulse));
+}
+// Jolt accumulates forces and torques on the body. Each collision step of PhysicsSystem::Update applies them for
+// its share of the step, and the last one clears them for every active body, which every enabled dynamic body is
+// while sleeping is disabled.
+void Body::add_force(Vec3 force) {
+    vector(force);
+    auto w = lock();
+    w->system.GetBodyInterface().AddForce(w->accepting(id_, accepts_forces), j(force));
+}
+void Body::add_force_at(Vec3 force, Vec3 world_point) {
+    vector(force);
+    vector(world_point);
+    auto w = lock();
+    w->system.GetBodyInterface().AddForce(w->accepting(id_, accepts_forces), j(force), j(world_point));
+}
+void Body::add_torque(Vec3 torque) {
+    vector(torque);
+    auto w = lock();
+    w->system.GetBodyInterface().AddTorque(w->accepting(id_, accepts_forces), j(torque));
 }
 void Body::move_kinematic(Pose target, double seconds) {
     vector(target.position);
@@ -483,6 +520,13 @@ void Body::set_enabled(bool enabled) {
         bodies.RemoveBody(e.id);
         bodies.SetLinearVelocity(e.id, linear);
         bodies.SetAngularVelocity(e.id, angular);
+        // Only a step clears accumulated forces, and only on active bodies, so a removed body would keep them
+        // until it is reenabled.
+        if (e.motion == Motion::dynamic) {
+            const JPH::BodyLockWrite body(w->system.GetBodyLockInterface(), e.id);
+            body.GetBody().ResetForce();
+            body.GetBody().ResetTorque();
+        }
         w->forget(id_);
     }
     e.enabled = enabled;

@@ -45,9 +45,9 @@ struct Pose {
 };
 /// How the solver moves a body.
 enum class Motion {
-    stationary, ///< Moved only by Body::teleport; rejects velocities and impulses.
+    stationary, ///< Moved only by Body::teleport; rejects velocities, forces and impulses.
     kinematic,  ///< Moved only by its velocity, Body::move_kinematic or Body::teleport; ignores gravity and contacts.
-    dynamic     ///< Simulated under gravity, contacts and impulses.
+    dynamic     ///< Simulated under gravity, contacts, forces and impulses.
 };
 /// Collider geometry kind; selects which Collider fields describe the geometry.
 enum class Shape {
@@ -104,7 +104,9 @@ struct BodySettings {
     /// stationary bodies; bullets also have it against kinematic and non-bullet dynamic bodies,
     /// but not against other bullets or sensors.
     bool continuous{};
-    /// Prevents rotation: nonzero angular velocities and kinematic angle changes are rejected.
+    /// Prevents rotation: nonzero angular velocities and kinematic angle changes are rejected, and
+    /// torques and angular impulses, including those of forces and impulses applied off the center,
+    /// leave the angular velocity unchanged.
     bool fixed_rotation{};
 };
 /// World construction options.
@@ -146,13 +148,39 @@ class Body {
     /// Applies a linear impulse at the center of mass and wakes the body. Throws unless the body
     /// is dynamic and enabled.
     void add_impulse(Vec2 impulse);
+    /// Applies @p impulse, in newton seconds, at @p world_point, a world-space position, and wakes
+    /// the body. The velocity changes by @p impulse / mass(), and the angular velocity by the
+    /// scalar cross product (@p world_point - c) x @p impulse divided by the body's rotational
+    /// inertia, except on a fixed-rotation body. The center of mass c is pose().position, up to
+    /// float rounding, since every collider is centered on its body. Throws
+    /// `std::invalid_argument` unless the body is dynamic and enabled.
+    void add_impulse_at(Vec2 impulse, Vec2 world_point);
+    /// Applies a counterclockwise angular impulse, in newton meter seconds, and wakes the body: the
+    /// angular velocity changes by @p impulse divided by the body's rotational inertia, except on a
+    /// fixed-rotation body. Throws `std::invalid_argument` unless the body is dynamic and enabled.
+    void add_angular_impulse(float impulse);
+    /// Adds a world-space force through the center of mass, in newtons, and wakes the body. Forces
+    /// and torques add up until the next World::step, which applies their sums over its whole
+    /// duration and then clears them; set_enabled(false) clears them too. Throws
+    /// `std::invalid_argument` unless the body is dynamic and enabled.
+    void add_force(Vec2 force);
+    /// Adds @p force, as add_force() does, and the torque given by the scalar cross product
+    /// (@p world_point - c) x @p force, as add_torque() does, where c is the center of mass at the
+    /// time of the call, as in add_impulse_at(). Throws `std::invalid_argument` unless the body is
+    /// dynamic and enabled.
+    void add_force_at(Vec2 force, Vec2 world_point);
+    /// Adds a counterclockwise torque, in newton meters, which the next World::step applies as
+    /// add_force() describes, and wakes the body. A fixed-rotation body's angular velocity does
+    /// not change. Throws `std::invalid_argument` unless the body is dynamic and enabled.
+    void add_torque(float torque);
     /// Sets both velocities so a kinematic body reaches @p target after @p seconds, in
     /// [0.000001, 0.1], turning the shorter way; a body already at @p target stops. Box2D's
     /// speed caps can leave a distant target unreached. Throws for other motion types and for a
     /// fixed-rotation body whose angle would change.
     void move_kinematic(Pose target, double seconds);
     /// Disabled bodies leave simulation and queries, end their contacts immediately and reject
-    /// impulses, but keep their pose and velocities, which stay editable. Reenabling resumes
+    /// forces, torques and impulses, but keep their pose and velocities, which stay editable.
+    /// Disabling discards the forces and torques added since the last step. Reenabling resumes
     /// from that state.
     void set_enabled(bool enabled);
     [[nodiscard]] bool enabled() const;
