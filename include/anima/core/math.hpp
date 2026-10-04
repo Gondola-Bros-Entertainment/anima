@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <numbers>
 #include <stdexcept>
+#include <type_traits>
 
 /// @file
 /// Vector and matrix math in the engine's conventions. Part of the `anima::core` target.
@@ -50,7 +51,38 @@ inline Vec3 normalized(Vec3 v) {
     return {float(v.x / n), float(v.y / n), float(v.z / n)};
 }
 /// 4x4 matrix stored column-major for column vectors: row `r` of column `c` is element `c * 4 + r`.
-using Mat4 = std::array<float, 16>;
+///
+/// It is a type of its own in namespace anima, so argument-dependent lookup finds its operators from any namespace.
+/// Brace elision fills #elements from a flat list, as in `Mat4{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}`, and
+/// `Mat4{}` is all zeros. It holds its 16 `float`s contiguously with nothing else, and is standard-layout and trivially
+/// copyable, so its bytes are the column-major elements a GPU buffer expects.
+struct Mat4 {
+    /// The elements, column-major.
+    std::array<float, 16> elements{};
+    /// Element @p i, which must be less than 16; as `std::array`, it does not check the index.
+    constexpr float &operator[](std::size_t i) noexcept { return elements[i]; }
+    /// Element @p i, which must be less than 16; as `std::array`, it does not check the index.
+    constexpr const float &operator[](std::size_t i) const noexcept { return elements[i]; }
+    /// The first of the 16 contiguous elements.
+    constexpr float *data() noexcept { return elements.data(); }
+    /// The first of the 16 contiguous elements.
+    constexpr const float *data() const noexcept { return elements.data(); }
+    /// The element count, 16.
+    static constexpr std::size_t size() noexcept { return 16; }
+    /// The first element, for iteration in column-major order.
+    constexpr float *begin() noexcept { return elements.data(); }
+    /// The first element, for iteration in column-major order.
+    constexpr const float *begin() const noexcept { return elements.data(); }
+    /// One past the last element.
+    constexpr float *end() noexcept { return elements.data() + size(); }
+    /// One past the last element.
+    constexpr const float *end() const noexcept { return elements.data() + size(); }
+    /// Compares the elements in order with `float` equality, so a NaN element makes matrices unequal and 0 equals -0.
+    bool operator==(const Mat4 &) const = default;
+};
+static_assert(sizeof(Mat4) == Mat4::size() * sizeof(float) && std::is_standard_layout_v<Mat4> &&
+                  std::is_trivially_copyable_v<Mat4>,
+              "Mat4 must be 16 contiguous floats for GPU copies");
 inline Mat4 identity() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
 /// Column 0: the X axis of @p m, including its scale.
 inline Vec3 axis_x(const Mat4 &m) { return {m[0], m[1], m[2]}; }

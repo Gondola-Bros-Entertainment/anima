@@ -642,7 +642,7 @@ class VulkanRenderer {
     /// call the view-projection is all zeros. Throws anima::MathError (a `std::invalid_argument`) when
     /// @p view_projection is not finite or not invertible, and `std::invalid_argument` when its eye position
     /// exceeds the finite range, keeping the previous view. Without asset support only finiteness is checked.
-    void set_view(const std::array<float, 16> &view_projection);
+    void set_view(const Mat4 &view_projection);
     /// Enables or disables main-view frustum culling, which starts as RendererOptions::frustum_culling.
     ///
     /// Culling tests each instance's bounds against the view, then the bounds of each visible part of the

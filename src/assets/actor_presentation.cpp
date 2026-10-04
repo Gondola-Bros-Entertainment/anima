@@ -4,7 +4,6 @@ namespace anima {
 ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
                                      std::optional<std::filesystem::path> manifest_override) {
     using namespace presentation_data;
-    using anima::operator*;
     const auto document = read(profile);
     anima::detail::json_version(document, "version", 2, "Unsupported actor presentation profile version");
     anima::detail::json_fields(document, {"version", "id", "manifest", "sockets"});

@@ -24,7 +24,6 @@ using gpu_check::Image;
 // fall toward -X, one texel of a cascade spanning 1 / 0.514 of its width on the ground across their edges.
 constexpr anima::Vec3 eye{0, 3, 0}, target{0, 0, -10}, sun{1, .6F, 0};
 inline anima::Mat4 view(anima::Vec3 offset = {}) {
-    using anima::operator*;
     return anima::perspective(std::numbers::pi_v<float> / 4, 4.F / 3, .1F, 300) *
            anima::look_at(eye + offset, target + offset);
 }
@@ -304,11 +303,8 @@ inline int run(int argc, char **argv) {
     (void)field->add(anima::Mesh::compile(*environment_test::box_fixture({200, 0, 200}, true)));
     field->create("field", shape).renderer().set_placements(anima::MeshPlacements::create(shape, copies));
     renderer.set_scenes({field});
-    {
-        using anima::operator*;
-        renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 16.F / 9, .1F, 400) *
-                          anima::look_at({-4, 2, -4}, {150, 0, 150}));
-    }
+    renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 16.F / 9, .1F, 400) *
+                      anima::look_at({-4, 2, -4}, {150, 0, 150}));
     for (std::uint32_t count = 1; count <= 4; ++count) {
         auto environment = lighting(count, 2048);
         environment.shadow_cascades.distance = 150;

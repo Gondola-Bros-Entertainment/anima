@@ -93,9 +93,8 @@ class Harness {
         const auto aspect = float(width) / float(height);
         if (eye) {
             constexpr float near_plane = .05F, far_plane = 200;
-            renderer_.set_view(
-                anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, aspect, near_plane, far_plane),
-                                 anima::look_at(eye->position, eye->target)));
+            renderer_.set_view(anima::perspective(std::numbers::pi_v<float> / 4, aspect, near_plane, far_plane) *
+                               anima::look_at(eye->position, eye->target));
         } else {
             anima::OrbitCamera camera;
             camera.frame(scene->bounds().minimum, scene->bounds().maximum);

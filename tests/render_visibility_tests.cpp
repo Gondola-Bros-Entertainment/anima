@@ -124,7 +124,7 @@ TEST_CASE("A float clip contact survives cancellation in the camera rows") {
 TEST_CASE("Culling never rejects a box that the homogeneous oracle keeps") {
     std::mt19937 random(7139);
     std::uniform_real_distribution<float> coordinate(-25, 25), size(0, .75F);
-    const auto camera = anima::operator*(projection(), anima::look_at({3, 4, 7}, {-2, 1, 0}));
+    const auto camera = projection() * anima::look_at({3, 4, 7}, {-2, 1, 0});
     const std::array views{anima::identity(), projection(), camera, infinite_far(), reversed_depth()};
     unsigned rejected_boxes = 0;
     for (std::size_t view = 0; view < views.size(); ++view) {

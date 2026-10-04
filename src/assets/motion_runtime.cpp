@@ -167,8 +167,8 @@ struct MotionRuntime::Impl {
         }
         for (const auto &offset : controls.offsets) {
             const auto joint = rig_.joint(offset.joint);
-            evaluated.local[joint] = anima::operator*(
-                evaluated.local[joint], anima::blend_affine(anima::identity(), offset.delta, offset.weight));
+            evaluated.local[joint] =
+                evaluated.local[joint] * anima::blend_affine(anima::identity(), offset.delta, offset.weight);
         }
         MotionEvaluation result;
         for (const auto &request : controls.contacts) {

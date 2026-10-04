@@ -1,4 +1,6 @@
 #pragma once
+#include <anima/core/transform.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -164,3 +166,13 @@ template <class Error = std::invalid_argument, class Step> decltype(auto) json_s
     }
 }
 } // namespace anima::detail
+
+namespace anima {
+// Documents write a matrix as its 16 column-major elements and a quaternion as its XYZW components, the arrays their
+// readers check with json_floats or element by element. nlohmann finds these by argument-dependent lookup. There is no
+// from_json: nlohmann's conversion would skip the readers' range and finiteness checks.
+inline void to_json(nlohmann::json &value, const Mat4 &matrix) { value = matrix.elements; }
+inline void to_json(nlohmann::json &value, const Quat &rotation) {
+    value = nlohmann::json::array({rotation.x, rotation.y, rotation.z, rotation.w});
+}
+} // namespace anima

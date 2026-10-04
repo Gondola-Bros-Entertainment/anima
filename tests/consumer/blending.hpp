@@ -209,13 +209,11 @@ class Harness {
 // A camera at the origin looking down -Z.
 constexpr anima::Vec3 origin{0, 0, 0};
 inline anima::Mat4 perspective_view(float aspect) {
-    using anima::operator*;
     return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 50) * anima::look_at(origin, {0, 0, -1});
 }
 // An orthographic camera at the origin looking down -Z, 4 units high, with reversed Vulkan depth from 1 at 0.1 to 0
 // at 50.
 inline anima::Mat4 orthographic_view(float aspect) {
-    using anima::operator*;
     return anima::orthographic(aspect, 4, .1F, 50) * anima::look_at(origin, {0, 0, -1});
 }
 
@@ -338,7 +336,6 @@ inline void check_order(Harness &harness) {
 // Two blended quads that intersect: each contributes on both sides of the intersection, in the one order the keys
 // give. A blended quad behind an opaque one is hidden where the opaque one covers it.
 inline void check_depth(Harness &harness) {
-    using anima::operator*;
     const auto view = perspective_view(harness.aspect());
     constexpr float turn = std::numbers::pi_v<float> / 3; // The second quad turns 60 degrees about +Y.
     const anima::Vec3 across{std::cos(turn), 0, std::sin(turn)}, turned_center{0, 0, -4.2F};
@@ -410,7 +407,6 @@ inline void require_shadow(const gpu_check::Captures &images, const std::string 
 inline void check_shadows(Harness &harness) {
     const auto aspect = harness.aspect();
     const auto view = [&] {
-        using anima::operator*;
         return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 50) *
                anima::look_at({0, 6, 6}, {0, 0, 0});
     }();

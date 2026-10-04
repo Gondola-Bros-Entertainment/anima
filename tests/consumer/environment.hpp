@@ -159,7 +159,6 @@ inline std::shared_ptr<const anima::Asset> box_fixture(anima::Vec3 half, bool gr
 // them, and each cube stands on its own ground tile, the mirrored cube's tile being the other tile mirrored.
 template <class Capture>
 void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, const gpu_check::Captures &images) {
-    using anima::operator*;
     constexpr float half = .5F, offset = 1.5F, turn = .5235988F; // 30 degrees about +Y.
     constexpr anima::Vec3 tile_half{offset, 0, 3};               // Covers a cube and its shadow.
     constexpr float tile_z = -1;
@@ -290,7 +289,6 @@ void check_mirrored_shading(anima::VulkanRenderer &renderer, Capture &&capture, 
 // their normals can differ. An upward square in view shows that a +Y normal would shade them differently.
 template <class Capture>
 void check_collapsed_shading(anima::VulkanRenderer &renderer, Capture &&capture, const gpu_check::Captures &images) {
-    using anima::operator*;
     constexpr float half = .5F, offset = 1.2F;
     constexpr float quarter_turn = 1.5707964F; // Turns +Y to +Z about +X.
     constexpr anima::Quat unrotated{0, 0, 0, 1};
@@ -366,7 +364,6 @@ inline int sum(const gpu_check::Rgb &c) { return c[0] + c[1] + c[2]; }
 // The orthographic view of the curved fixture: 1.2 m wide and 0.9 m high, with reversed depth from 1 at the eye to 0
 // at 20 m.
 inline anima::Mat4 curved_view() {
-    using anima::operator*;
     return anima::orthographic(1.2F / .9F, .9F, 0, 20) * anima::look_at({0, 0, 3}, {0, 0, 0});
 }
 // Light grazing the curved fixture from its side, without ambient light, and, when @p shadowed, one cascade of the
@@ -524,7 +521,6 @@ inline void check_images(const gpu_check::Captures &images) {
 }
 inline int run(int argc, char **argv) {
     using resource_test::require;
-    using anima::operator*;
     require(argc == 3, "Usage: consumer --environment OUTPUT");
     const std::filesystem::path output = argv[2];
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");

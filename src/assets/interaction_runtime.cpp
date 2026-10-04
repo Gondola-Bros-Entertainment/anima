@@ -100,7 +100,6 @@ struct InteractionRuntime::Impl {
 
     InteractionSample sample(double elapsed, std::optional<double> released,
                              const std::map<std::string, anima::Mat4, std::less<>> &free_worlds) const {
-        using anima::operator*;
         if (free_worlds.size() != actors_.size())
             throw std::invalid_argument("Every interaction role needs a free placement");
         InteractionSample result{timeline_->sample(elapsed, released), {}, {}, {}};

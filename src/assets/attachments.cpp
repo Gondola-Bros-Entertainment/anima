@@ -218,10 +218,10 @@ void AttachmentLibrary::validate(const anima::Asset &source, const AttachmentVis
     }
 }
 AttachmentBinding bind_attachment(const AttachmentSocket &socket, const AttachmentVisual &visual) {
-    return {socket.node, anima::operator*(socket.local, anima::inverse(visual.primary_grip))};
+    return {socket.node, socket.local * anima::inverse(visual.primary_grip)};
 }
 anima::Mat4 attachment_placement(const anima::Pose &pose, const AttachmentBinding &binding, const anima::Mat4 &actor) {
-    return anima::operator*(anima::operator*(actor, pose.world.at(binding.node)), binding.local);
+    return actor * pose.world.at(binding.node) * binding.local;
 }
 anima::Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual, std::string_view track,
                                    double progress, bool required) {
@@ -242,7 +242,6 @@ AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, 
                                               const anima::Asset &asset, const anima::Pose &pose) {
     if (visual.primary_node.empty())
         return binding;
-    using anima::operator*;
     const auto primary = pose.world.at(anima::unique_node(asset, visual.primary_node)) * visual.primary_grip;
     return {binding.node, binding.local * visual.primary_grip * anima::inverse(primary)};
 }
@@ -254,7 +253,7 @@ anima::Mat4 attachment_marker(const AttachmentVisual &visual, const anima::Asset
         return local;
     if (!asset || !pose)
         throw std::invalid_argument("Animated attachment marker requires the sampled prop pose");
-    return anima::operator*(pose->world.at(anima::unique_node(*asset, found->second)), local);
+    return pose->world.at(anima::unique_node(*asset, found->second)) * local;
 }
 bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &library,
                                  const std::map<std::string, AttachmentSocket, std::less<>> &sockets,

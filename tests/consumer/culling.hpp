@@ -163,13 +163,13 @@ inline int run(int argc, char **argv) {
         compare("edge-" + std::to_string(clips++));
     }
     const auto eye = center + anima::Vec3{0, 0, 3 * radius};
-    renderer.set_view(anima::operator*(
-        anima::perspective(std::numbers::pi_v<float> / 4, float(width) / height, 3 * radius, 50 * radius),
-        anima::look_at(eye, center)));
+    renderer.set_view(
+        anima::perspective(std::numbers::pi_v<float> / 4, float(width) / height, 3 * radius, 50 * radius) *
+        anima::look_at(eye, center));
     compare("near-plane");
-    renderer.set_view(anima::operator*(
-        anima::perspective(std::numbers::pi_v<float> / 4, float(width) / height, .01F * radius, 3 * radius),
-        anima::look_at(eye, center)));
+    renderer.set_view(
+        anima::perspective(std::numbers::pi_v<float> / 4, float(width) / height, .01F * radius, 3 * radius) *
+        anima::look_at(eye, center));
     compare("far-plane");
     camera.target = center;
     require(SDL_SetWindowSize(window.get(), 600, 800), "Culling resize failed");

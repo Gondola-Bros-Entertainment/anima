@@ -172,7 +172,7 @@ TEST_CASE("Affine rotation rejects a transform within the collapse threshold") {
     const auto rotation = affine_rotation(matrix(t));
     // q and -q are the same rotation.
     float cosine = 0;
-    for (std::size_t i = 0; i < rotation.size(); ++i)
+    for (std::size_t i = 0; i < 4; ++i)
         cosine += rotation[i] * t.rotation[i];
     CHECK(std::abs(cosine) == Near{1, tolerance});
     t.scale = {collapsed_scale, collapsed_scale, collapsed_scale};

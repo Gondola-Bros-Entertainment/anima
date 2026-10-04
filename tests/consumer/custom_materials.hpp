@@ -274,7 +274,6 @@ inline void check_rejections(Harness &harness) {
 inline void check_inputs(Harness &harness) {
     const anima::Vec3 eye{1, 2, 3};
     const auto view = [&] {
-        using anima::operator*;
         return anima::perspective(std::numbers::pi_v<float> / 4, harness.aspect(), .1F, 50) *
                anima::look_at(eye, eye + anima::Vec3{0, 0, -1});
     }();
@@ -539,7 +538,6 @@ inline void check_skinning(Harness &harness) {
 inline void check_shadows(Harness &harness) {
     const auto aspect = harness.aspect();
     const auto view = [&] {
-        using anima::operator*;
         return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 50) *
                anima::look_at({0, 6, 6}, {0, 0, 0});
     }();
@@ -594,7 +592,6 @@ inline void check_shadows(Harness &harness) {
 inline void check_placements(Harness &harness) {
     const auto aspect = harness.aspect();
     const auto view = [&] {
-        using anima::operator*;
         return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 50) *
                anima::look_at({0, 6, 6}, {0, 0, 0});
     }();
@@ -650,7 +647,6 @@ inline void check_fading(Harness &harness) {
     const auto aspect = harness.aspect();
     const anima::Vec3 eye{0, 2, 0};
     const auto view = [&] {
-        using anima::operator*;
         return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 100) * anima::look_at(eye, {0, 2, -1});
     }();
     // Gone before 4 m, dissolving in until it is whole at 12 m, whole to 24 m, then dissolving out until it is gone
@@ -842,7 +838,6 @@ inline void check_crossfade(Harness &harness) {
         add_quad(*both, red_factor, outgoing);
         add_quad(*both, blue_factor, incoming);
         for (const int distance : {13, 16, 19}) {
-            using anima::operator*;
             const auto view = anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 100) *
                               anima::look_at({0, 0, float(distance)}, {0, 0, 0});
             const auto name = "crossfade-" + path + "-" + std::to_string(distance);

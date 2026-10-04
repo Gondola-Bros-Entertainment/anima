@@ -312,9 +312,10 @@ TEST_CASE("Blending local poses keeps the hierarchy, the shorter arc and matrix 
     // A 180-degree endpoint has two equally short arcs. Use 90 degrees
     // here so this verifies sign invariance of the unique shortest arc.
     auto equivalent = half;
-    for (auto &transform : equivalent.local)
-        for (auto &value : transform.rotation)
-            value = -value;
+    for (auto &transform : equivalent.local) {
+        const auto q = transform.rotation;
+        transform.rotation = {-q.x, -q.y, -q.z, -q.w};
+    }
     CHECK(deviation(blend_pose(asset, rest, equivalent, .5F), blend_pose(asset, rest, half, .5F)) < tolerance);
     // A matrix node keeps its rest transform.
     auto matrix_asset = asset;
@@ -341,9 +342,8 @@ TEST_CASE("Quaternion interpolation takes the shorter arc and normalizes its res
     const auto antipodal = slerp({0, 0, 0, 1}, {0, 0, 0, -1}, .5F);
     CHECK(std::abs(antipodal[3]) == Near{1, tolerance});
     const auto unit = slerp({0, 0, 0, 2}, {0, 0, .001F, 1}, .5F);
-    double norm = 0;
-    for (const double v : unit)
-        norm += v * v;
+    const double norm =
+        double(unit.x) * unit.x + double(unit.y) * unit.y + double(unit.z) * unit.z + double(unit.w) * unit.w;
     CHECK(norm == Near{1, tolerance});
 }
 
