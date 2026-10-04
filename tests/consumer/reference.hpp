@@ -32,9 +32,9 @@ inline std::shared_ptr<anima::Scene> scene(std::span<const anima::MeshSnapshot> 
             }
             asset.primitives.push_back(std::move(primitive));
         }
-        const auto id = result->add(anima::Mesh::compile(asset));
+        auto renderer = result->create({}, anima::Mesh::compile(asset)).renderer();
         for (std::size_t i = 0; i < snapshot.primitives.size(); ++i)
-            result->set_primitive_visible(id, i, snapshot.primitives[i].visible);
+            renderer.set_primitive_visible(i, snapshot.primitives[i].visible);
     }
     return result;
 }

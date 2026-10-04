@@ -14,7 +14,7 @@ inline int run(int argc, char **argv) {
     const auto asset = argc == 5 ? anima::load_asset(argv[4]) : resource_test::fixture();
     const auto compiled = anima::Mesh::compile(*asset);
     auto scene = std::make_shared<anima::Scene>();
-    const auto a = scene->add(compiled);
+    auto a = scene->create({}, compiled);
     const auto bounds = scene->bounds();
     anima::OrbitCamera camera;
     camera.frame(bounds.minimum, bounds.maximum);
@@ -22,8 +22,8 @@ inline int run(int argc, char **argv) {
     const auto radius = camera.radius;
     auto remote_world = anima::identity();
     remote_world[12] = 30 * radius;
-    const auto b = scene->add(compiled);
-    scene->set_pose(b, compiled->rest_pose(), remote_world);
+    const auto b = scene->create({}, compiled);
+    b.renderer().set_pose(compiled->rest_pose(), remote_world);
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     gpu_check::Video video;
     const auto window =
@@ -37,8 +37,8 @@ inline int run(int argc, char **argv) {
     auto view = camera.matrix(float(width) / height);
     renderer.set_view(view);
     renderer.set_scenes({scene});
-    const auto original_palette_a = scene->instance(a).palette;
-    const auto original_palette_b = scene->instance(b).palette;
+    const auto original_palette_a = scene->instance(a.id()).palette;
+    const auto original_palette_b = scene->instance(b.id()).palette;
     const auto started = std::chrono::steady_clock::now();
     auto frame = [&] {
         for (;;) {
@@ -103,17 +103,18 @@ inline int run(int argc, char **argv) {
     require(baseline.instances == 1 && baseline.culled_instances == 1 && baseline.draw_calls,
             "Off-camera instance was not culled");
     auto group = scene->create("activation group");
-    scene->object(a).set_parent(group);
+    a.set_parent(group);
     group.set_active(false);
     const auto inactive = compare("hierarchy-inactive");
-    require(inactive.candidate_instances == 1 && !inactive.draw_calls && scene->instance(a).visible &&
-                !scene->instance(a).active,
+    require(inactive.candidate_instances == 1 && !inactive.draw_calls && scene->instance(a.id()).visible &&
+                !scene->instance(a.id()).active,
             "Inactive hierarchy submitted rendering or overwrote visibility");
     group.set_active(true);
     const auto reactivated = compare("hierarchy-reactivated");
     require(reactivated.instances == 1 && reactivated.mesh_uploads == baseline.mesh_uploads,
             "Reactivation lost rendering or reuploaded shared mesh");
-    require(scene->instance(a).palette == original_palette_a && scene->instance(b).palette == original_palette_b,
+    require(scene->instance(a.id()).palette == original_palette_a &&
+                scene->instance(b.id()).palette == original_palette_b,
             "Culling changed the source poses");
     camera.target.x += 100 * radius;
     renderer.set_view(camera.matrix(float(width) / height));
@@ -127,10 +128,10 @@ inline int run(int argc, char **argv) {
         pose = anima::sample_pose(*asset, &asset->animations.back(), .7);
     else
         pose.world[1][13] = .35F;
-    scene->set_pose(a, pose);
-    scene->set_pose(b, pose, remote_world);
-    if (!scene->instance(b).factors.empty())
-        scene->set_material_factor(b, 0, {.8F, .3F, .2F});
+    a.renderer().set_pose(pose);
+    b.renderer().set_pose(pose, remote_world);
+    if (!scene->instance(b.id()).factors.empty())
+        b.renderer().set_material_factor(0, {.8F, .3F, .2F});
     frame();
     camera.target = center;
     camera.target.x += 30 * radius;
@@ -151,7 +152,7 @@ inline int run(int argc, char **argv) {
                 "Primitive-level culling did not refine the instance broad phase");
     }
     for (const auto &clip : asset->animations) {
-        scene->set_pose(a, anima::sample_pose(*asset, &clip, .2));
+        a.renderer().set_pose(anima::sample_pose(*asset, &clip, .2));
         compare("clip-" + std::to_string(clips++));
     }
     // Move the camera across object edges and clip through the object with the
@@ -178,11 +179,11 @@ inline int run(int argc, char **argv) {
     SDL_GetWindowSizeInPixels(window.get(), &width, &height);
     renderer.set_view(camera.matrix(float(width) / height));
     compare("resized");
-    scene->set_visible(a, false);
+    a.renderer().set_visible(false);
     compare("explicit-hidden");
-    scene->set_visible(a, true);
-    for (std::size_t i = 0; i < scene->instance(a).primitive_visible.size(); ++i)
-        scene->set_primitive_visible(a, i, false);
+    a.renderer().set_visible(true);
+    for (std::size_t i = 0; i < scene->instance(a.id()).primitive_visible.size(); ++i)
+        a.renderer().set_primitive_visible(i, false);
     const auto hidden = compare("primitives-hidden");
     require(!hidden.draw_calls && hidden.candidate_instances == 1, "Explicit hidden draws counted as candidates");
     const auto stats = renderer.shutdown();

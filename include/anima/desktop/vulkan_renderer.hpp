@@ -435,7 +435,7 @@ struct ResourceStats {
 ///
 /// Applications customize shading, not the frame. A CustomMaterial supplies SPIR-V vertex and fragment shaders,
 /// an optional depth-only variant, a parameter block, textures and a blend mode for the mesh material slots it
-/// is assigned to (Scene::set_custom_material), and its shaders read the inputs that custom_material.hpp
+/// is assigned to (MeshRenderer::set_custom_material), and its shaders read the inputs that custom_material.hpp
 /// documents. The renderer creates its pipelines and keeps the passes and their order, depth testing, sorting,
 /// the vertex, descriptor and push constant layouts, the display conversion and every Vulkan object.
 /// Applications cannot add render passes, render targets, post-processing or compute work, cannot reach Vulkan
@@ -465,22 +465,22 @@ struct ResourceStats {
 /// resources once no frame in flight can draw them; a draw() that returns early because the window is not drawable
 /// releases nothing. Selection, culling and visibility never evict, and there is no size budget.
 ///
-/// An object with placements (Scene::set_placements) draws each of its mesh's draws as instances of one indexed draw,
-/// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that draw the
-/// same level of detail: the main view culls clusters by their world bounds when frustum culling is on, and each
-/// shadow pass culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements uploads
-/// its transforms once into a device buffer, cached per object and released as meshes are, and the vertex shaders
-/// compose each placement with the object's world matrix and the mesh's rest pose.
+/// An object with placements (MeshRenderer::set_placements) draws each of its mesh's draws as instances of one indexed
+/// draw, one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that
+/// draw the same level of detail: the main view culls clusters by their world bounds when frustum culling is on, and
+/// each shadow pass culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements
+/// uploads its transforms once into a device buffer, cached per object and released as meshes are, and the vertex
+/// shaders compose each placement with the object's world matrix and the mesh's rest pose.
 ///
-/// An object with a visibility range (Scene::set_visibility_range) draws only at the distances the range allows, times
-/// the view distance scale (set_view_distance_scale()), from the eye of the current view, in the shadow passes too,
-/// measured to the center of its mesh's rest bounds (Mesh::rest_bounds()) as the object, or each copy, places it.
-/// Objects, and placement clusters, entirely outside it are culled in every pass. In the range's margins the standard
-/// material discards the share of a copy's pixels that a 4x4 ordered dither gives, keeping in a begin margin the pixels
-/// complementary to those an end margin keeps, so it fades without blending or sorting, and a copy casts shadows while
-/// more than half of it draws; its vertex shaders hide the copies outside the range in a cluster that is not culled.
-/// Custom materials fade and hide copies only through animaVisibility() and animaDissolved(), as custom_material.hpp
-/// describes.
+/// An object with a visibility range (MeshRenderer::set_visibility_range) draws only at the distances the range
+/// allows, times the view distance scale (set_view_distance_scale()), from the eye of the current view, in the shadow
+/// passes too, measured to the center of its mesh's rest bounds (Mesh::rest_bounds()) as the object, or each copy,
+/// places it. Objects, and placement clusters, entirely outside it are culled in every pass. In the range's margins
+/// the standard material discards the share of a copy's pixels that a 4x4 ordered dither gives, keeping in a begin
+/// margin the pixels complementary to those an end margin keeps, so it fades without blending or sorting, and a copy
+/// casts shadows while more than half of it draws; its vertex shaders hide the copies outside the range in a cluster
+/// that is not culled. Custom materials fade and hide copies only through animaVisibility() and animaDissolved(), as
+/// custom_material.hpp describes.
 ///
 /// A draw with levels of detail (IndexedDraw::levels) draws, for each object or placement cluster, the coarsest level
 /// whose error stays within set_lod_threshold() pixels of the scene targets, which set_render_scale() sizes; its index

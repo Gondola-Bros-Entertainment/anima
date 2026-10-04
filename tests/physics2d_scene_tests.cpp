@@ -84,9 +84,9 @@ TEST_CASE("Rigid bodies drive XY poses, keep presentation depth and follow enabl
         CHECK_FALSE(rigid);
         CHECK_MESSAGE(world.size() == 1u, "Callback removal retained body");
         auto bad = scene.create();
-        bad.set_transform({{}, {0, 0, 0, 1}, {2, 1, 1}});
+        bad.set_world_transform({{}, {0, 0, 0, 1}, {2, 1, 1}});
         CHECK_THROWS_WITH_AS(bad.add_component<p::RigidBody>(world, settings), planar_transform, std::invalid_argument);
-        bad.set_transform({{}, {.70710678F, 0, 0, .70710678F}, {1, 1, 1}});
+        bad.set_world_transform({{}, {.70710678F, 0, 0, .70710678F}, {1, 1, 1}});
         CHECK_THROWS_WITH_AS(bad.add_component<p::RigidBody>(world, settings), planar_transform, std::invalid_argument);
         auto child = scene.create();
         child.set_parent(floor);

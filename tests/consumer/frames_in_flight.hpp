@@ -74,18 +74,18 @@ inline std::shared_ptr<const anima::Mesh> panel(const blending_test::Color &colo
 class Sequence {
   public:
     Sequence() {
-        (void)scene_->add(
-            blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, -3}, ground_half, ground_half));
-        skinned_ = scene_->add(anima::Mesh::compile(*skinned_asset_));
+        (void)scene_->create({}, blending_test::horizontal(blending_test::opaque({.6, .6, .6}, true), {0, 0, -3},
+                                                           ground_half, ground_half));
+        skinned_ = scene_->create({}, anima::Mesh::compile(*skinned_asset_));
         // Only the scene holds these meshes, their placements and the effect, so removing the objects releases them.
         effect_ = custom_material_test::add(
             *scene_, custom_material_test::surface({1.5F, .8F, -2.5F}, .4F, .4F),
             custom_material_test::effect_material("effect", anima::CustomBlend::opaque, {{.9, .3, .2}, 1, .6, .4, 2}));
-        placed_ = scene_->add(panel({.2, .7, .3}, {}, .15F));
+        placed_ = scene_->create({}, panel({.2, .7, .3}, {}, .15F));
         std::vector<anima::Mat4> copies;
         for (const float x : {-1.5F, -1.F, -.5F})
             copies.push_back(translation({x, .9F, -2}));
-        scene_->set_placements(placed_, anima::MeshPlacements::create(scene_->instance(placed_).asset, copies));
+        placed_.renderer().set_placements(anima::MeshPlacements::create(placed_.renderer().mesh(), copies));
         // Water reads the opaque depth and color that each frame copies.
         (void)custom_material_test::add(*scene_, custom_material_test::surface({0, .3F, -2}, 1, .3F),
                                         custom_material_test::water_material({{.05, .2, .3}, .8}));
@@ -123,21 +123,21 @@ class Sequence {
         renderer.set_time(time_step * t);
         auto pose = anima::sample_pose(*skinned_asset_);
         pose.world[1][13] += .2F * std::sin(pose_rate * t);
-        scene_->set_pose(skinned_, pose, translation({-1, 0, -3}));
-        scene_->set_material_factor(skinned_, 0, {.5F + .4F * std::sin(factor_rate * t), .6F, .4F});
+        skinned_.renderer().set_pose(pose, translation({-1, 0, -3}));
+        skinned_.renderer().set_material_factor(0, {.5F + .4F * std::sin(factor_rate * t), .6F, .4F});
         if (frame == release_frame) {
-            scene_->remove(effect_);
-            scene_->remove(placed_);
+            effect_.destroy();
+            placed_.destroy();
         }
         if (frame == upload_frame)
-            (void)scene_->add(panel({.8, .7, .2}, {1.2F, .5F, -3.5F}, .3F));
+            (void)scene_->create({}, panel({.8, .7, .2}, {1.2F, .5F, -3.5F}, .3F));
     }
 
   private:
     static constexpr float ground_half = 6;
     std::shared_ptr<anima::Scene> scene_ = std::make_shared<anima::Scene>();
     std::shared_ptr<const anima::Asset> skinned_asset_ = resource_test::fixture();
-    anima::Scene::Id skinned_{}, effect_{}, placed_{};
+    anima::GameObject skinned_, effect_, placed_;
 };
 
 // What one renderer drew.

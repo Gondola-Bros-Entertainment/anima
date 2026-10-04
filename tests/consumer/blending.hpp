@@ -236,14 +236,14 @@ inline void check_compositing(Harness &harness) {
     auto scene = std::make_shared<anima::Scene>();
     const auto cases = composites();
     for (const auto &c : cases)
-        (void)scene->add(facing(blended(c.source, c.alpha), c.front, .2F, .2F));
+        (void)scene->create({}, facing(blended(c.source, c.alpha), c.front, .2F, .2F));
     for (std::size_t i = 0; i < cases.size(); ++i) {
         auto backdrop = opaque(cases[i].destination);
         if (i == 2) {
             backdrop.alpha_mode = anima::AlphaMode::mask; // Alpha 1 passes the default cutoff of 0.5.
             backdrop.name = "masked";
         }
-        (void)scene->add(facing(backdrop, cases[i].back, .6F, .6F));
+        (void)scene->create({}, facing(backdrop, cases[i].back, .6F, .6F));
     }
     anima::Environment plain;
     harness.render("composite", {scene}, view, plain);
@@ -289,17 +289,17 @@ inline void check_order(Harness &harness) {
     const auto near_quad = [&](const Color &color) { return facing(blended(color, .5F), near_center, .35F, .35F); };
     const auto far_quad = [](const Color &color) { return facing(blended(color, .5F), {0, 0, -4.5F}, .8F, .8F); };
     auto single = std::make_shared<anima::Scene>();
-    (void)single->add(backdrop);
-    (void)single->add(near_quad(red));
-    (void)single->add(far_quad(blue));
+    (void)single->create({}, backdrop);
+    (void)single->create({}, near_quad(red));
+    (void)single->create({}, far_quad(blue));
     auto nearer = std::make_shared<anima::Scene>(), farther = std::make_shared<anima::Scene>();
-    (void)nearer->add(backdrop);
-    (void)nearer->add(near_quad(green));
-    (void)farther->add(far_quad(red));
+    (void)nearer->create({}, backdrop);
+    (void)nearer->create({}, near_quad(green));
+    (void)farther->create({}, far_quad(red));
     auto tied = std::make_shared<anima::Scene>();
-    (void)tied->add(backdrop);
-    (void)tied->add(facing(blended(red, .5F), tie_center, .3F, .3F));
-    (void)tied->add(facing(blended(green, .5F), tie_center, .3F, .3F));
+    (void)tied->create({}, backdrop);
+    (void)tied->create({}, facing(blended(red, .5F), tie_center, .3F, .3F));
+    (void)tied->create({}, facing(blended(green, .5F), tie_center, .3F, .3F));
     struct Case {
         std::string name, what;
         std::vector<std::shared_ptr<const anima::Scene>> scenes;
@@ -340,10 +340,10 @@ inline void check_depth(Harness &harness) {
     constexpr float turn = std::numbers::pi_v<float> / 3; // The second quad turns 60 degrees about +Y.
     const anima::Vec3 across{std::cos(turn), 0, std::sin(turn)}, turned_center{0, 0, -4.2F};
     auto crossing = std::make_shared<anima::Scene>();
-    (void)crossing->add(facing(opaque(black), {0, 0, -8}, 4, 3));
+    (void)crossing->create({}, facing(opaque(black), {0, 0, -8}, 4, 3));
     // Created first but nearer by its bounds' center, so it draws second.
-    (void)crossing->add(facing(blended(red, .5F), {0, 0, -4}, 1.5F, 1));
-    (void)crossing->add(quad(blended(green, .5F), turned_center, across, {0, .8F, 0}));
+    (void)crossing->create({}, facing(blended(red, .5F), {0, 0, -4}, 1.5F, 1));
+    (void)crossing->create({}, quad(blended(green, .5F), turned_center, across, {0, .8F, 0}));
     harness.render("intersection", {crossing}, view, {});
     const auto expected = over(.5, red, over(.5, green, black));
     // Along the turned quad, behind the facing quad and then in front of it.
@@ -354,11 +354,11 @@ inline void check_depth(Harness &harness) {
     harness.images.discard({"intersection"});
 
     auto hidden = std::make_shared<anima::Scene>();
-    (void)hidden->add(facing(opaque(black), {0, 0, -8}, 4, 3));
-    (void)hidden->add(facing(blended(red, .5F), {0, 0, -4}, 1, 1));
+    (void)hidden->create({}, facing(opaque(black), {0, 0, -8}, 4, 3));
+    (void)hidden->create({}, facing(blended(red, .5F), {0, 0, -4}, 1, 1));
     const Color cover{.2, .6, .3};
     const anima::Vec3 cover_center{.4F, 0, -3};
-    (void)hidden->add(facing(opaque(cover), cover_center, .5F, .5F));
+    (void)hidden->create({}, facing(opaque(cover), cover_center, .5F, .5F));
     harness.render("hidden", {hidden}, view, {});
     harness.expect("hidden", view, cover_center, cover, "A blended quad behind an opaque one");
     harness.expect("hidden", view, {-.6F, 0, -4}, over(.5, red, black), "A blended quad beside an opaque one");
@@ -423,12 +423,12 @@ inline void check_shadows(Harness &harness) {
     const auto ground = horizontal(opaque(gray, true), {0, 0, 0}, 4, 3);
 
     auto policy = std::make_shared<anima::Scene>();
-    (void)policy->add(ground);
-    (void)policy->add(horizontal(opaque(tint, true), {-1.5F, 1, 0}, .5F, .5F));
-    const auto quad_id = policy->add(horizontal(blended(tint, .5F, true), {1.5F, 1, 0}, .5F, .5F));
+    (void)policy->create({}, ground);
+    (void)policy->create({}, horizontal(opaque(tint, true), {-1.5F, 1, 0}, .5F, .5F));
+    auto blended_quad = policy->create({}, horizontal(blended(tint, .5F, true), {1.5F, 1, 0}, .5F, .5F)).renderer();
     harness.render("shadow-policy", {policy}, view, lighting);
     const auto casters = harness.stats.shadow_draw_calls;
-    policy->set_visible(quad_id, false);
+    blended_quad.set_visible(false);
     harness.render("shadow-policy-without", {policy}, view, lighting);
     require(casters == 2U && harness.stats.shadow_draw_calls == casters,
             "A blended quad drew into the shadow map, or the ground and the opaque quad did not");
@@ -459,10 +459,11 @@ inline void check_shadows(Harness &harness) {
     // The receiver at alpha 1 composites as its own color, and the caster above it shadows it either way.
     const auto receiver = [&](bool blend) {
         auto scene = std::make_shared<anima::Scene>();
-        (void)scene->add(ground);
-        (void)scene->add(horizontal(opaque(tint, true), {-2.7F, 1.5F, 0}, .5F, .3F));
-        const auto id = scene->add(horizontal(blend ? blended(gray, 1, true) : opaque(gray, true), {-2, .5F, 0}, 1, 1));
-        scene->set_casts_shadows(id, false);
+        (void)scene->create({}, ground);
+        (void)scene->create({}, horizontal(opaque(tint, true), {-2.7F, 1.5F, 0}, .5F, .3F));
+        scene->create({}, horizontal(blend ? blended(gray, 1, true) : opaque(gray, true), {-2, .5F, 0}, 1, 1))
+            .renderer()
+            .set_casts_shadows(false);
         return scene;
     };
     harness.render("receiver-opaque", {receiver(false)}, view, lighting);
