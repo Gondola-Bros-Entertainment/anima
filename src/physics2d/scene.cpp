@@ -23,6 +23,14 @@ Pose planar_pose(GameObject object, Motion motion) {
         throw std::invalid_argument("2D physics requires unit scale, XY translation and Z rotation without tilt/shear");
     return {{position.x, position.y}, std::atan2(x.y, x.x)};
 }
+// Whether two world matrices differ in anything but their Z translation, which is presentation depth.
+bool planar_change(const Mat4 &a, const Mat4 &b) {
+    constexpr std::size_t depth = 14;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (i != depth && a[i] != b[i])
+            return true;
+    return false;
+}
 using Json = nlohmann::json;
 constexpr auto unknown_shape = "Unknown 2D rigid body shape";
 constexpr auto unknown_motion = "Unknown 2D rigid body motion";
@@ -39,25 +47,36 @@ Vec2 vec(const Json &j) {
     return {anima::detail::json_float(j[0]), anima::detail::json_float(j[1])};
 }
 } // namespace
-RigidBody::RigidBody(ComponentOwner owner, World &world, BodySettings settings) : settings_(std::move(settings)) {
+RigidBody::RigidBody(ComponentOwner owner, World &world, BodySettings settings)
+    : settings_(std::move(settings)), published_(owner.object.world_matrix()) {
     settings_.pose = planar_pose(owner.object, settings_.motion);
     body_ = world.create(settings_);
 }
 RigidBody::~RigidBody() { body_.remove(); }
+namespace detail {
+struct RigidBodyAccess {
+    static Mat4 &published(RigidBody &component) { return component.published_; }
+};
+} // namespace detail
 namespace {
 template <class Scenes> void step_scenes(Scenes &scenes, World &world, double seconds) {
     if (!std::isfinite(seconds) || seconds < detail::minimum_step_seconds || seconds > detail::maximum_step_seconds)
         throw std::invalid_argument("Invalid 2D physics fixed step");
     anima::detail::SceneDriver::check(scenes);
     auto components = scenes.template components<RigidBody>();
-    std::vector<Pose> poses;
-    for (const auto &component : components) {
+    // Validate the full snapshot before changing simulation state. The driver never uses an inactive component's
+    // pose, so its object meets the transform rules only once it is active again.
+    std::vector<Pose> poses(components.size());
+    for (std::size_t i = 0; i < components.size(); ++i) {
+        const auto &component = components[i];
         if (!world.owns(component->body()))
             throw std::invalid_argument("2D body belongs to another or expired world");
-        poses.push_back(planar_pose(component.object(), component->settings().motion));
+        if (!component.active())
+            continue;
+        poses[i] = planar_pose(component.object(), component->settings().motion);
         if (component->settings().motion == Motion::kinematic && component->settings().fixed_rotation &&
-            std::abs(std::remainder(poses.back().angle - component->body().pose().angle,
-                                    2 * std::numbers::pi_v<float>)) >= detail::fixed_rotation_tolerance)
+            std::abs(std::remainder(poses[i].angle - component->body().pose().angle, 2 * std::numbers::pi_v<float>)) >=
+                detail::fixed_rotation_tolerance)
             throw std::invalid_argument("Fixed-rotation kinematic object changed angle");
     }
     for (std::size_t i = 0; i < components.size(); ++i) {
@@ -72,16 +91,24 @@ template <class Scenes> void step_scenes(Scenes &scenes, World &world, double se
             if (old.position.x != poses[i].position.x || old.position.y != poses[i].position.y ||
                 old.angle != poses[i].angle)
                 body.teleport(poses[i]);
-        } else if (motion == Motion::kinematic)
+        } else if (motion == Motion::kinematic) {
             body.move_kinematic(poses[i], seconds);
+        } else if (planar_change(component.object().world_matrix(), detail::RigidBodyAccess::published(*component))) {
+            // The object was edited since construction or the last write-back. Comparing with Body::pose() instead
+            // would undo a teleport through body(), and the written angle need not survive the round trip through
+            // the object's matrix bit for bit.
+            body.teleport(poses[i]);
+        }
     }
     world.step(seconds);
     for (auto &component : components) {
         if (component.active() && component->settings().motion == Motion::dynamic) {
             const auto pose = component->body().pose();
-            component.object().set_world_transform({{pose.position.x, pose.position.y, component.object().position().z},
-                                                    {0, 0, std::sin(pose.angle / 2), std::cos(pose.angle / 2)},
-                                                    {1, 1, 1}});
+            auto object = component.object();
+            object.set_world_transform({{pose.position.x, pose.position.y, object.position().z},
+                                        {0, 0, std::sin(pose.angle / 2), std::cos(pose.angle / 2)},
+                                        {1, 1, 1}});
+            detail::RigidBodyAccess::published(*component) = object.world_matrix();
         }
     }
 }
