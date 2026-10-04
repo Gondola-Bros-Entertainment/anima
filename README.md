@@ -162,9 +162,10 @@ Physics uses caller-consistent units, normally meters and kilograms. `Mat4`
 is column-major with column vectors, quaternions are XYZW, and transforms compose as
 T * R * S. Projections target Vulkan clip space (Y flipped) with reversed depth, from 1
 at the near plane to 0 at the far plane, which keeps a floating-point depth buffer
-precise at a distance; `perspective()`, `orthographic()` and `view_matrix()` build
-them. The sun's shadow cascades and detail region keep forward depth, from 0 on the side
-facing the light, since their orthographic projections space depth evenly.
+precise at a distance; `perspective()`, `orthographic()` and `Camera::projection()`
+build them, and `resolve_camera()` composes the selected camera's with its view. The
+sun's shadow cascades and detail region keep forward depth, from 0 on the side facing
+the light, since their orthographic projections space depth evenly.
 
 ## API reference
 

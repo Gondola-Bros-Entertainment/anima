@@ -674,7 +674,7 @@ class VulkanRenderer {
     /// request, after a newer request, and once the image has been taken.
     [[nodiscard]] std::optional<CapturedImage> take_capture();
     /// Sets the view used for shading, fog, the sky and culling from a column-major Vulkan view-projection
-    /// (clip Y down, reversed depth from 1 at the near plane to 0 at the far one), such as anima::view_matrix
+    /// (clip Y down, reversed depth from 1 at the near plane to 0 at the far one), such as anima::view_projection
     /// returns, or anima::perspective() or anima::orthographic() times anima::look_at(). A matrix with forward depth
     /// would draw farther surfaces over nearer ones.
     ///
