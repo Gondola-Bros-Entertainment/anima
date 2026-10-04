@@ -679,7 +679,7 @@ std::shared_ptr<const Mesh> Mesh::compile_impostor(const ImpostorAtlas &atlas, T
     for (const auto k : {0, 1, 2, 0, 2, 3})
         quad.vertices.push_back(corners[std::size_t(k)]);
     asset.primitives.push_back(std::move(quad));
-    auto result = std::make_shared<Mesh>(*compile(asset, texel_retention));
+    auto result = std::make_shared<Mesh>(*compile(asset, {.texel_retention = texel_retention}));
     result->impostor_ = frames;
     return result;
 }
