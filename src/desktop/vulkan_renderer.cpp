@@ -918,6 +918,10 @@ struct VulkanRenderer::Impl {
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &reference;
         subpass.pDepthStencilAttachment = &depth_reference;
+        // The pass's layout transitions and clears follow earlier attachment work, whose depth writes become
+        // available. The first scope also holds the stages logically earlier than these, so where the pass draws the
+        // world target, they follow the fragment shaders that sampled its color in earlier display passes, a write
+        // after a read that needs only this execution dependency.
         VkSubpassDependency dependency{};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
