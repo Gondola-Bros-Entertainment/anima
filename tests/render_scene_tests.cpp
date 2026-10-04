@@ -45,7 +45,7 @@ anima::Asset fixture() {
     const auto copy = p.vertices;
     p.vertices.insert(p.vertices.end(), copy.begin(), copy.end());
     asset.primitives.push_back(p);
-    p.skin = -1;
+    p.skin = anima::no_index;
     p.node = 1;
     asset.primitives.push_back(p);
     return asset;

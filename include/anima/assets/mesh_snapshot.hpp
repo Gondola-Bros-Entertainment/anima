@@ -37,8 +37,8 @@ struct Primitive {
     std::uint32_t first_vertex{};
     /// Number of vertices, a positive multiple of 3.
     std::uint32_t vertex_count{};
-    /// Index into MeshSnapshot::material_data, or -1.
-    int material_index = -1;
+    /// Index into MeshSnapshot::material_data, or no_index.
+    int material_index = no_index;
     /// Whether the primitive was visible when Scene::snapshot captured it; make_mesh_snapshot
     /// always sets true.
     bool visible = true;

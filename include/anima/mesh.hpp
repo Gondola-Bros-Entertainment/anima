@@ -48,8 +48,8 @@ struct IndexedDraw {
     /// #palette_offset, instead of using its node's matrix.
     bool skinned{};
     /// Index into the material data of Mesh::materials(), which Scene material factor overrides also use, or
-    /// -1 for a default Material.
-    int material = -1;
+    /// no_index for a default Material.
+    int material = no_index;
     /// Source node index; #node_name and #mesh_name name the source node and mesh.
     std::uint32_t node{};
     std::string node_name;

@@ -262,7 +262,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         const auto &node = data->nodes[i];
         AssetNode value;
         value.name = name(node.name);
-        value.parent = node.parent ? static_cast<int>(node.parent - data->nodes) : -1;
+        value.parent = node.parent ? static_cast<int>(node.parent - data->nodes) : no_index;
         value.rest.translation = {node.translation[0], node.translation[1], node.translation[2]};
         std::copy_n(node.rotation, 4, value.rest.rotation.begin());
         value.rest.rotation = unit_quaternion(value.rest.rotation);
@@ -350,7 +350,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
     std::vector<bool> texture_used(data->textures_count);
     const auto texture_index = [&](const cgltf_texture_view &view, TextureEncoding encoding) {
         if (!view.texture)
-            return -1;
+            return no_index;
         require(!view.has_transform, "Texture transforms are unsupported");
         const auto index = static_cast<std::size_t>(view.texture - data->textures);
         const auto key = std::pair{index, encoding};
@@ -449,7 +449,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                 SourcePrimitive value;
                 value.node = node_index;
                 value.mesh_name = name(node->mesh->name);
-                value.skin = node->skin ? static_cast<int>(node->skin - data->skins) : -1;
+                value.skin = node->skin ? static_cast<int>(node->skin - data->skins) : no_index;
                 // The implicit glTF material is also metallic=1, roughness=1 and single-sided.
                 if (!primitive.material && asset->materials.size() == data->materials_count) {
                     Material fallback;

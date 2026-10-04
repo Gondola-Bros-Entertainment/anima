@@ -192,7 +192,7 @@ TEST_CASE("Posed, colored and hidden geometry and the default material and textu
     scene.material_data[0].metallic = .7F;
     scene.material_data[0].roughness = .15F;
     CHECK_NOTHROW(anima::validate_scene(scene));
-    scene.primitives[0].material_index = -1;
-    scene.material_data[0].texture = -1;
+    scene.primitives[0].material_index = anima::no_index;
+    scene.material_data[0].texture = anima::no_index;
     CHECK_NOTHROW(anima::validate_scene(scene));
 }

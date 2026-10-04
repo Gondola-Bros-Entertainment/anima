@@ -20,9 +20,9 @@ struct EvaluationJoint {
     std::string name;
     /// Asset node the joint drives; unique within the rig.
     std::size_t asset_node{};
-    /// Index of the parent joint in the rig, or -1 for a root. The rig hierarchy may differ from
+    /// Index of the parent joint in the rig, or no_index for a root. The rig hierarchy may differ from
     /// the asset's.
-    int parent = -1;
+    int parent = no_index;
 };
 /// Joint-local affine matrices, one per rig joint.
 struct EvaluationPose {
@@ -59,7 +59,7 @@ class EvaluationRig {
     [[nodiscard]] std::size_t joint(std::string_view name) const;
     /// Asset node of joint @p joint. Throws `std::out_of_range` for an invalid index.
     [[nodiscard]] std::size_t asset_node(std::size_t joint) const { return joints_.at(joint).asset_node; }
-    /// Index of the parent joint of joint @p joint, or -1 for a root. Throws `std::out_of_range` for
+    /// Index of the parent joint of joint @p joint, or no_index for a root. Throws `std::out_of_range` for
     /// an invalid index.
     [[nodiscard]] int parent(std::size_t joint) const;
     /// Number of joints.

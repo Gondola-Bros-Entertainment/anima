@@ -1,5 +1,5 @@
 #pragma once
-#include <anima/assets/preview.hpp>
+#include <anima/assets/manifest.hpp>
 #include <anima/scene.hpp>
 #include <map>
 #include <set>
@@ -14,6 +14,22 @@
 /// uses together is the caller's choice: there is no slot or eligibility policy.
 
 namespace anima {
+/// One joint that a fitted model copies from its body: node indices into each model's
+/// Asset::nodes.
+struct FittedJoint {
+    /// Joint node of the fitted model.
+    std::size_t fitted_node{};
+    /// Body joint node of the same name, whose world matrix the fitted node copies.
+    std::size_t body_node{};
+    bool operator==(const FittedJoint &) const = default;
+};
+/// Pairs each joint node of @p fitted's skin with the @p body joint node of the same name, in
+/// @p fitted's joint order, so that @p fitted can copy @p body's pose.
+///
+/// Both assets need exactly one skin, with equal joint counts and unique joint names. Matching
+/// joints need the same ancestor names and inverse bind and rest world matrices within `1e-4`, and
+/// every @p fitted primitive must use the skin. Throws `std::runtime_error` otherwise.
+[[nodiscard]] std::vector<FittedJoint> compatible_skin(const Asset &body, const Asset &fitted);
 /// A fitted model bound to a body's skeleton; it shares the body's bind and never owns animation.
 struct FittedAsset {
     /// Imported fitted model. With TexelRetention::until_upload, a copy whose textures are #render's,
@@ -21,8 +37,8 @@ struct FittedAsset {
     std::shared_ptr<const Asset> source;
     /// Mesh compiled from #source.
     std::shared_ptr<const Mesh> render;
-    /// (fitted joint node, body joint node) pairs; see compatible_skin.
-    std::vector<std::pair<std::size_t, std::size_t>> joints;
+    /// Joints copied from the body, as compatible_skin returns them.
+    std::vector<FittedJoint> joints;
     /// Binds @p fitted to @p body and compiles #render with @p texel_retention. Throws for a null
     /// model or a model with clips, `std::runtime_error` when compatible_skin rejects the pair, and
     /// as Mesh::compile does.

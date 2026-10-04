@@ -121,9 +121,9 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     std::vector<std::size_t> vertex_ranges;
     for (const auto &primitive : source.primitives) {
         require(primitive.node < source.nodes.size(), "Invalid render primitive node");
-        require(primitive.skin >= -1 && (primitive.skin < 0 || std::size_t(primitive.skin) < source.skins.size()),
+        require(primitive.skin >= no_index && (primitive.skin < 0 || std::size_t(primitive.skin) < source.skins.size()),
                 "Invalid render primitive skin");
-        require(primitive.material >= -1 &&
+        require(primitive.material >= no_index &&
                     (primitive.material < 0 || std::size_t(primitive.material) < source.materials.size()),
                 "Invalid render primitive material");
         require(!primitive.vertices.empty() && primitive.vertices.size() % 3 == 0 &&
@@ -1046,7 +1046,7 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                     {draw.node_name, draw.mesh_name,
                      draw.material < 0 ? "default" : description.material_data[draw.material].name, palette[draw.node],
                      static_cast<std::uint32_t>(result.vertices.size()), draw.index_count,
-                     draw.material < 0 ? -1 : static_cast<int>(material_offset) + draw.material, visible});
+                     draw.material < 0 ? no_index : static_cast<int>(material_offset) + draw.material, visible});
                 if (draw.skinned)
                     result.skinned_vertices += draw.index_count;
                 bool reversed = false;

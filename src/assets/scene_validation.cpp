@@ -35,7 +35,7 @@ void validate_material(const Material &m, std::span<const Texture> textures) {
                             {m.emissive_texture, TextureEncoding::srgb},
                             {m.occlusion_texture, TextureEncoding::linear}};
     for (const auto [index, encoding] : uses) {
-        require(index >= -1 && (index < 0 || std::size_t(index) < textures.size()),
+        require(index >= no_index && (index < 0 || std::size_t(index) < textures.size()),
                 "Invalid material texture reference");
         if (index >= 0)
             require(textures[index].encoding == encoding, "Material texture encoding does not match its usage");
@@ -75,9 +75,10 @@ void detail::validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budge
         require(draw.first_vertex <= scene.vertices.size() &&
                     draw.vertex_count <= scene.vertices.size() - draw.first_vertex,
                 "MeshSnapshot draw exceeds vertex range");
-        require(draw.material_index >= -1 && (draw.material_index < 0 || static_cast<std::size_t>(draw.material_index) <
-                                                                             scene.material_data.size()),
-                "MeshSnapshot draw references an invalid material");
+        require(
+            draw.material_index >= no_index &&
+                (draw.material_index < 0 || static_cast<std::size_t>(draw.material_index) < scene.material_data.size()),
+            "MeshSnapshot draw references an invalid material");
         for (float value : draw.node_world)
             require(std::isfinite(value), "Non-finite scene node transform");
     }

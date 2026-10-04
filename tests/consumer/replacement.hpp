@@ -280,7 +280,7 @@ inline int run(int argc, char **argv) {
     frame();
     const auto a_data = geometry(2);
     auto b_data = geometry(3);
-    b_data.primitives.back().material = -1; // Default white descriptor survives replacements.
+    b_data.primitives.back().material = anima::no_index; // Default white descriptor survives replacements.
     auto a = scene(a_data), b = scene(b_data);
     const auto id = a->instances().front();
     std::cout << "STABLE_SWAPCHAIN_BEGIN\n";

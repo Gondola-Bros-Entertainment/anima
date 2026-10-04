@@ -4,7 +4,7 @@
 namespace anima {
 namespace {
 // Nearest evaluation joint of a model node that has none at or above it.
-constexpr int no_joint = -1;
+constexpr int no_joint = anima::no_index;
 } // namespace
 struct MotionRuntime::Impl {
   public:
@@ -231,7 +231,7 @@ struct MotionRuntime::Impl {
         for (const auto &[name, parent] : parents.items()) {
             (void)parent;
             names[name] = static_cast<int>(result.size());
-            result.push_back({name, anima::unique_node(asset, name), -1});
+            result.push_back({name, anima::unique_node(asset, name), anima::no_index});
         }
         for (auto &joint : result) {
             const auto &parent = parents.at(joint.name);

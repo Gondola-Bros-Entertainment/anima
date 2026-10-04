@@ -1,7 +1,7 @@
 #include "mesh_limits.hpp"
 #include "presentation_data.hpp"
 #include <algorithm>
-#include <anima/assets/preview.hpp>
+#include <anima/assets/manifest.hpp>
 #include <fstream>
 #include <set>
 #include <stdexcept>

@@ -2,7 +2,7 @@
 #include "../detail/json.hpp"
 #include "../detail/utf8_path.hpp"
 #include <algorithm>
-#include <anima/assets/preview.hpp>
+#include <anima/assets/manifest.hpp>
 #include <cstdint>
 #include <fstream>
 #include <map>

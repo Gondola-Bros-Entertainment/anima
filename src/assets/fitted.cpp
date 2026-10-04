@@ -1,8 +1,68 @@
 #include "model_cache.hpp"
 #include "presentation_data.hpp"
 #include "texel_hold.hpp"
+#include <algorithm>
 #include <anima/assets/fitted.hpp>
+#include <cmath>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <string>
 namespace anima {
+namespace {
+// compatible_skin's documented bound on inverse-bind and rest world matrix differences.
+constexpr float skin_match_tolerance = 1e-4F;
+float difference(const Mat4 &a, const Mat4 &b) {
+    float d = 0;
+    for (unsigned i = 0; i < 16; ++i)
+        d = std::max(d, std::abs(a[i] - b[i]));
+    return d;
+}
+std::string ancestors(const Asset &asset, std::size_t node) {
+    std::string result;
+    for (auto parent = asset.nodes.at(node).parent; parent >= 0; parent = asset.nodes.at(parent).parent)
+        result += "/" + asset.nodes.at(parent).name;
+    return result;
+}
+} // namespace
+std::vector<FittedJoint> compatible_skin(const Asset &body, const Asset &fitted) {
+    if (body.skins.size() != 1 || fitted.skins.size() != 1)
+        throw std::runtime_error("Fitted skin check requires one skin in the body and in the fitted model");
+    const auto &body_skin = body.skins[0];
+    const auto &fitted_skin = fitted.skins[0];
+    if (body_skin.joints.size() != fitted_skin.joints.size())
+        throw std::runtime_error("Fitted joint count differs from the body; export the fitted model against its rig");
+    std::map<std::string, std::size_t> body_names;
+    std::set<std::string> fitted_names;
+    for (std::size_t i = 0; i < body_skin.joints.size(); ++i)
+        if (!body_names.emplace(body.nodes.at(body_skin.joints[i]).name, i).second)
+            throw std::runtime_error("Duplicate body joint name");
+    const auto body_pose = sample_pose(body), fitted_pose = sample_pose(fitted);
+    std::vector<FittedJoint> mapping;
+    for (std::size_t i = 0; i < fitted_skin.joints.size(); ++i) {
+        const auto node = fitted_skin.joints[i];
+        const auto &name = fitted.nodes.at(node).name;
+        if (!fitted_names.insert(name).second)
+            throw std::runtime_error("Duplicate fitted joint: " + name);
+        const auto found = body_names.find(name);
+        if (found == body_names.end())
+            throw std::runtime_error("Fitted joint missing from the body: " + name);
+        const auto body_node = body_skin.joints[found->second];
+        if (ancestors(body, body_node) != ancestors(fitted, node))
+            throw std::runtime_error("Fitted hierarchy mismatch at " + name + "; export against the body's rig");
+        const auto bind_error = difference(body_skin.inverse_bind.at(found->second), fitted_skin.inverse_bind.at(i));
+        if (bind_error > skin_match_tolerance)
+            throw std::runtime_error("Fitted inverse-bind mismatch at " + name + " (max error " +
+                                     std::to_string(bind_error) + "); export the fitted model for this body");
+        if (difference(body_pose.world.at(body_node), fitted_pose.world.at(node)) > skin_match_tolerance)
+            throw std::runtime_error("Fitted rest-pose mismatch at " + name + "; use the body's rest transforms");
+        mapping.push_back({.fitted_node = node, .body_node = body_node});
+    }
+    for (const auto &primitive : fitted.primitives)
+        if (primitive.skin != 0)
+            throw std::runtime_error("Fitted model contains an unskinned mesh; bind it to the body's rig");
+    return mapping;
+}
 struct FittedLibrary::State {
     std::shared_ptr<const anima::Asset> body;
     std::filesystem::path directory;
@@ -25,8 +85,8 @@ FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::
 }
 anima::Pose FittedAsset::pose(const anima::Pose &body) const {
     auto result = render->rest_pose();
-    for (const auto &[fitted_node, body_node] : joints)
-        result.world.at(fitted_node) = body.world.at(body_node);
+    for (const auto &joint : joints)
+        result.world.at(joint.fitted_node) = body.world.at(joint.body_node);
     // Only world matrices are consumed by the renderer. Do not expose stale
     // local transforms as if they described the copied body pose.
     result.local.clear();
