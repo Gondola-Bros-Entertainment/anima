@@ -53,6 +53,16 @@ struct InteractionPlacement {
     Mat4 offset = identity();
 };
 
+/// Checks that @p socket names a node of @p asset and that its local frame has a rotation. Throws
+/// `std::invalid_argument` ("Unknown interaction socket node") for a node index past the asset's
+/// nodes, and as affine_rotation does for the frame, such as a collapsed one.
+inline void validate_interaction_socket(const Asset &asset, const InteractionSocket &socket) {
+    if (socket.node >= asset.nodes.size())
+        throw std::invalid_argument("Unknown interaction socket node");
+    // A bind-space calibration may cancel stretch on an authored joint.
+    // interaction_socket produces the rigid evaluated frame for placement.
+    (void)affine_rotation(socket.local);
+}
 /// Rigid model-space frame of @p socket in @p pose: its position and rotation without scale or
 /// shear, so a stretched joint cannot stretch an attached actor. Throws `std::out_of_range` for a
 /// node outside @p pose, and as affine_rotation does for the frame, such as a collapsed one.
@@ -80,7 +90,7 @@ class InteractionBindings {
     static constexpr std::size_t maximum_roles = 64;
     /// Throws unless there are 1 to #maximum_roles roles with unique nonempty ids and assets, fewer attachments
     /// than roles, each attachment joins two different known roles, no role has two parents, the
-    /// graph is acyclic, and every socket names a node of its role's asset with a valid local frame.
+    /// graph is acyclic, and every socket passes validate_interaction_socket against its role's asset.
     InteractionBindings(std::vector<InteractionRole> roles, std::vector<InteractionAttachment> attachments)
         : roles_(std::move(roles)), attachments_(std::move(attachments)) {
         if (roles_.empty() || roles_.size() > maximum_roles || attachments_.size() >= roles_.size())
@@ -96,8 +106,8 @@ class InteractionBindings {
             const auto child = role(attachment.child), parent = role(attachment.parent);
             if (child == parent || parents_[child] != -1)
                 throw std::invalid_argument("An interaction role must have one placement owner");
-            validate_socket(child, attachment.child_socket);
-            validate_socket(parent, attachment.parent_socket);
+            validate_interaction_socket(*roles_[child].asset, attachment.child_socket);
+            validate_interaction_socket(*roles_[parent].asset, attachment.parent_socket);
             parents_[child] = static_cast<int>(i);
         }
         std::vector<unsigned> marks(roles_.size());
@@ -182,13 +192,6 @@ class InteractionBindings {
         for (std::size_t i = 0; i < value.size(); ++i)
             if (std::abs(value[i] - expected[i]) > rigid_tolerance)
                 throw std::invalid_argument("Interaction actor placement and socket offsets must be rigid");
-    }
-    void validate_socket(std::size_t owner, const InteractionSocket &socket) const {
-        if (socket.node >= roles_[owner].asset->nodes.size())
-            throw std::invalid_argument("Unknown interaction socket node");
-        // A bind-space calibration may cancel stretch on an authored joint.
-        // interaction_socket produces the rigid evaluated frame for placement.
-        (void)affine_rotation(socket.local);
     }
     std::vector<InteractionRole> roles_;
     std::vector<InteractionAttachment> attachments_;

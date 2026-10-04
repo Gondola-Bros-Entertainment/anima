@@ -120,6 +120,9 @@ class MotionRuntime {
     /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
     /// file is missing or larger than 4 MiB.
     static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset, const Manifest &manifest);
+    /// The model bound at construction; not null, and shared with every copy of the runtime.
+    /// sample() and compose() return poses of its nodes.
+    [[nodiscard]] const std::shared_ptr<const Asset> &model() const noexcept;
     /// Evaluation rig built from the contract's `parents`; joint names are model node names.
     const EvaluationRig &rig() const;
     /// Whether the contract declares mask @p name.

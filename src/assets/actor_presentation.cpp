@@ -16,17 +16,17 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
         std::any_of(relative.begin(), relative.end(), [](const auto &part) { return part == ".."; }))
         throw std::invalid_argument("Actor manifest must be inside its profile directory");
     manifest = anima::read_manifest(manifest_override.value_or(profile.parent_path() / relative));
-    actor.asset = anima::load_asset(manifest.directory / manifest.model);
-    anima::validate_manifest(manifest, *actor.asset);
-    actor.motion = MotionRuntime::load(actor.asset, manifest);
-    render = anima::Mesh::compile(*actor.asset);
-    const auto rest = anima::sample_pose(*actor.asset);
+    const auto model = anima::load_asset(manifest.directory / manifest.model);
+    anima::validate_manifest(manifest, *model);
+    actor.motion = MotionRuntime::load(model, manifest);
+    render = anima::Mesh::compile(*model);
+    const auto rest = anima::sample_pose(*model);
     for (const auto &[name, socket] : document.at("sockets").items()) {
         anima::detail::json_fields(socket, {"node", "frame"});
         const auto node_name = text(socket.at("node"));
         std::optional<std::size_t> node;
-        for (std::size_t i = 0; i < actor.asset->nodes.size(); ++i)
-            if (actor.asset->nodes[i].name == node_name) {
+        for (std::size_t i = 0; i < model->nodes.size(); ++i)
+            if (model->nodes[i].name == node_name) {
                 if (node)
                     throw std::invalid_argument("Ambiguous actor socket node");
                 node = i;

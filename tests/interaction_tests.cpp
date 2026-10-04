@@ -111,3 +111,15 @@ TEST_CASE("Invalid attachment graphs, weights and placements are rejected") {
     CHECK_THROWS_WITH_AS(bindings.sample(frames, released),
                          "Interaction actor placement and socket offsets must be rigid", std::invalid_argument);
 }
+
+TEST_CASE("An interaction socket names a node of its asset with a frame that has a rotation") {
+    Asset asset;
+    asset.nodes.resize(2);
+    CHECK_NOTHROW(validate_interaction_socket(asset, {1}));
+    CHECK_THROWS_WITH_AS(validate_interaction_socket(asset, {2}), "Unknown interaction socket node",
+                         std::invalid_argument);
+    auto collapsed = identity();
+    collapsed[5] = 0;
+    CHECK_THROWS_WITH_AS(validate_interaction_socket(asset, {1, collapsed}), "Affine transform is collapsed",
+                         std::invalid_argument);
+}
