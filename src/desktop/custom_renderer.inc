@@ -410,27 +410,27 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
     record_indexed(render_instance, draw_index, shadow);
 }
 // Records @p draws in order through @p view, culled by @p frustum when given: opaque custom materials in the main view,
-// or with @p shadow the depth-only variants that a shadow pass's frustum contains.
+// or in shadow pass @p shadow, whose frustum @p frustum is, the depth-only variants that it holds (shadow_holds()).
 void record_custom_draws(const std::vector<CustomDraw> &draws, const Mat4 &view, const RenderFrustum *frustum,
-                         bool shadow) {
+                         const ShadowPass *shadow) {
     const GpuCustomMaterial *bound_material = nullptr;
     const ResourceInstance *bound_geometry = nullptr;
     for (const auto &entry : draws) {
         const auto &render_instance = resource_instances[entry.instance];
-        if (shadow && !frustum->intersects(render_instance.source->primitive_bounds[entry.draw]))
+        if (shadow && !shadow_holds(*shadow, render_instance, entry.draw))
             continue;
-        find_placement_runs(render_instance, frustum);
+        find_placement_runs(render_instance, frustum, shadow ? shadow->min_caster_radius : 0);
         if (placement_runs.empty())
             continue;
         if (entry.custom != bound_material) {
             bound_material = entry.custom;
-            bind_custom(*bound_material, shadow);
+            bind_custom(*bound_material, shadow != nullptr);
         }
         if (&render_instance != bound_geometry) {
             bound_geometry = &render_instance;
             bind_geometry(render_instance);
         }
-        record_custom_draw(render_instance, entry.draw, view, shadow);
+        record_custom_draw(render_instance, entry.draw, view, shadow != nullptr);
     }
 }
 // Creates the passes that split a frame around the opaque input copy from @p world, render_pass's description.

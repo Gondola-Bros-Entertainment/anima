@@ -102,6 +102,10 @@ struct RendererOptions {
     /// Initial level of detail threshold, in pixels; see VulkanRenderer::set_lod_threshold. Must be finite and
     /// nonnegative, or construction throws `std::invalid_argument`.
     float lod_threshold = 1;
+    /// Initial shadow caster threshold, a share of each shadow cascade's radius; see
+    /// VulkanRenderer::set_shadow_caster_threshold. Must be finite, at least 0 and below 1, or construction throws
+    /// `std::invalid_argument`.
+    float shadow_caster_threshold = 0;
     /// Initial render scale; see VulkanRenderer::set_render_scale. Must be finite and from
     /// VulkanRenderer::min_render_scale to VulkanRenderer::max_render_scale, and 1 without asset support, or
     /// construction throws `std::invalid_argument`.
@@ -394,7 +398,8 @@ struct ResourceStats {
 /// fit_shadow_cascades() does and extends toward the sun over the casters that each one's square reaches, as layers of
 /// one depth image, and the optional detail region (DirectionalShadow), each the first of `VK_FORMAT_D32_SFLOAT` and
 /// `VK_FORMAT_D16_UNORM` that the device can attach and sample; with 16-bit depth, each cascade's bias also covers a
-/// step of its depth. Each pass draws the opaque and masked casters that it holds, culled against itself.
+/// step of its depth. Each pass draws the opaque and masked casters that it holds, culled against itself, and each
+/// cascade only those that reach a share of its radius (set_shadow_caster_threshold()).
 ///
 /// The view's depth buffer is the first of `VK_FORMAT_D32_SFLOAT`, `VK_FORMAT_X8_D24_UNORM_PACK32` and
 /// `VK_FORMAT_D16_UNORM` that the device can attach, sample and copy, as custom materials that read opaque depth
@@ -580,9 +585,10 @@ struct ResourceStats {
 /// and `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard
 /// output.
 ///
-/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(), set_present_mode(),
-/// set_render_scale(), set_environment(), set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame()
-/// and draw() throw `std::logic_error`; after a RendererFatalError they throw RendererFatalError.
+/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(),
+/// set_shadow_caster_threshold(), set_present_mode(), set_render_scale(), set_environment(), set_time(), set_scenes(),
+/// prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw `std::logic_error`; after a RendererFatalError
+/// they throw RendererFatalError.
 class VulkanRenderer {
   public:
     /// Smallest render scale that set_render_scale() and RendererOptions::render_scale accept.
@@ -598,8 +604,10 @@ class VulkanRenderer {
     /// stage that the option says construction rejects, before anything else, then for a
     /// RendererOptions::max_anisotropy that is not finite or is below 1 ("Maximum anisotropy must be finite and at
     /// least 1"), for a RendererOptions::lod_threshold that is not finite or is negative ("LOD threshold must be finite
-    /// and nonnegative"), for a RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or
-    /// 2"), for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
+    /// and nonnegative"), for a RendererOptions::shadow_caster_threshold that is not finite, is negative or is at
+    /// least 1 ("Shadow caster threshold must be finite, at least 0 and below 1"), for a
+    /// RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or 2"), for a
+    /// RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
     /// RendererOptions::render_scale that is not finite or lies outside min_render_scale to max_render_scale ("Render
     /// scale must be finite and from 0.25 to 2"), or without asset support is not 1 ("Render scale requires asset
     /// support"), and for a null @p window; RendererUnavailableError when no driver or device can present to the
@@ -665,6 +673,25 @@ class VulkanRenderer {
     /// draw the levels the view chose. Throws `std::invalid_argument` unless @p pixels is finite and nonnegative
     /// ("LOD threshold must be finite and nonnegative"), keeping the previous threshold.
     void set_lod_threshold(float pixels);
+    /// Sets the shadow caster threshold from the next draw(): the share of each shadow cascade's radius
+    /// (ShadowCascade::radius) that a caster's radius must reach for the cascade to draw it, as Unreal's
+    /// `r.Shadow.RadiusThreshold` culls casters by a share of their shadow's radius. It starts as
+    /// RendererOptions::shadow_caster_threshold, and at 0 each cascade draws every caster that it holds.
+    ///
+    /// A caster's radius is half the diagonal of its bounds. Each draw of an object without placements is a caster,
+    /// measured by its world bounds (Scene::Instance::primitive_bounds). With placements, each placement cluster's
+    /// copies are one, measured by the mesh's rest bounds (Mesh::rest_bounds()) times the largest axis scales, the
+    /// longest of the first three columns, of the object's world matrix and of the cluster's placements
+    /// (MeshPlacements::Cluster::scale), so a cluster is skipped only when every copy is small; under a matrix with
+    /// shear, that can understate a copy's radius. A cascade draws no caster whose radius is below the threshold times
+    /// the cascade's radius, and extends its depth toward the sun only over draws with a caster that reaches that
+    /// radius; the detail region (DirectionalShadow) draws every caster. A far cascade's texels are wide, so a small
+    /// caster shades few of them: a threshold such as 0.01 saves the far cascades the vertex work of grass and small
+    /// props, at the cost of those casters' shadows where the far cascades shade, while the nearer cascades, whose
+    /// radii are smaller, still draw them. ResourceStats::shadow_draw_calls and ResourceStats::shadow_submitted_indices
+    /// count what the shadow passes draw. Throws `std::invalid_argument` unless @p share is finite, at least 0 and
+    /// below 1 ("Shadow caster threshold must be finite, at least 0 and below 1"), keeping the previous threshold.
+    void set_shadow_caster_threshold(float share);
     /// Requests @p mode for presentation; it starts as RendererOptions::present_mode. When @p mode differs from the
     /// current request, the next draw() recreates the swapchain, as after request_resize(), in @p mode where the
     /// surface offers it and otherwise in PresentMode::fifo, which Vulkan requires every surface to offer;

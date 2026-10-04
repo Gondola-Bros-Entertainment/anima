@@ -471,6 +471,19 @@ static double nearest_distance(Vec3 eye, Vec3 minimum, Vec3 maximum) {
 static double axis_scale(const Mat4 &m) {
     return std::max({double(length(axis_x(m))), double(length(axis_y(m))), double(length(axis_z(m)))});
 }
+// Half the diagonal of @p bounds, the radius of the sphere around them, which a shadow pass compares with its least
+// caster radius (ShadowPass::min_caster_radius).
+static double bounds_radius(const RenderBounds &bounds) {
+    const double x = double(bounds.maximum.x) - bounds.minimum.x, y = double(bounds.maximum.y) - bounds.minimum.y,
+                 z = double(bounds.maximum.z) - bounds.minimum.z;
+    return std::sqrt(x * x + y * y + z * z) / 2;
+}
+// The radius of a copy of @p render_instance, an object with placements, under a placement whose largest axis scale is
+// 1: half the diagonal of its mesh's rest bounds times the largest axis scale of its world matrix. Each cluster's
+// copies reach at most that times MeshPlacements::Cluster::scale, for matrices of translation, rotation and scale.
+static double copy_radius(const Scene::Instance &render_instance) {
+    return bounds_radius(render_instance.asset->rest_bounds()) * axis_scale(render_instance.world);
+}
 // The distances from @p eye to the nearest and to the farthest point of the box from @p minimum to @p maximum.
 static std::pair<double, double> distance_span(Vec3 eye, Vec3 minimum, Vec3 maximum) {
     double nearest = 0, farthest = 0;
@@ -584,10 +597,12 @@ const VisibilityRange *culling_range(const Scene::Instance &render_instance) con
 }
 Vec3 eye() const { return {view_origin[0], view_origin[1], view_origin[2]}; }
 // Fills placement_runs with one run for each of @p render_instance's placement clusters that @p frustum, when given,
-// contains and its visibility range can draw, by the cluster bounds that prepare_resources() computed for the frame;
+// contains and its visibility range can draw, by the cluster bounds that prepare_resources() computed for the frame,
+// and whose largest copy reaches @p min_caster_radius, a shadow pass's least caster radius (copy_radius());
 // record_indexed() merges adjacent runs that draw the same level through the same pipeline. Without placements the
 // single copy is one run, whose draws' view_pipeline() already holds its orientation and visibility range.
-void find_placement_runs(const ResourceInstance &render_instance, const RenderFrustum *frustum) {
+void find_placement_runs(const ResourceInstance &render_instance, const RenderFrustum *frustum,
+                         double min_caster_radius = 0) {
     placement_runs.clear();
     if (!render_instance.placements) {
         placement_runs.push_back({0, 1});
@@ -595,16 +610,27 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
     }
     const auto *range = culling_range(*render_instance.source);
     const auto world_scale = axis_scale(render_instance.source->world);
+    const auto unit_copy = min_caster_radius > 0 ? copy_radius(*render_instance.source) : 0;
     const auto clusters = render_instance.placements->source->clusters();
     for (std::size_t i = 0; i < clusters.size(); ++i) {
         const auto &cluster = clusters[i];
         const auto &bounds = resource_cluster_bounds[render_instance.first_cluster + i];
+        if (unit_copy * cluster.scale < min_caster_radius)
+            continue;
         if (cluster_visible(bounds, frustum, range, eye()))
             placement_runs.push_back({cluster.first, cluster.count,
                                       nearest_distance(eye(), bounds.minimum, bounds.maximum),
                                       world_scale * cluster.scale, render_instance.placements->orientations[i],
                                       range && may_dissolve(*range, eye(), bounds.minimum, bounds.maximum)});
     }
+}
+// Whether shadow pass @p shadow draws draw @p draw_index of @p render_instance, a caster: its world bounds, which cover
+// every copy, reach the pass's frustum and, without placements, their radius reaches the pass's least caster radius.
+// find_placement_runs() compares placed copies by cluster instead.
+static bool shadow_holds(const ShadowPass &shadow, const ResourceInstance &render_instance, std::size_t draw_index) {
+    const auto &bounds = render_instance.source->primitive_bounds[draw_index];
+    return shadow.frustum.intersects(bounds) &&
+           (render_instance.placements || bounds_radius(bounds) >= shadow.min_caster_radius);
 }
 std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, RendererFailureStage failure,
                                     const MeshPreparation *prepared = nullptr) {
@@ -708,6 +734,21 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                        first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size(),
                        first_level = draw_levels.size();
             bool candidate = false;
+            // The radius that a cascade with a least caster radius compares: a draw's own without placements, and with
+            // them the object's largest copy, computed for the first draw that needs it, since a cascade that skips
+            // the largest copy skips every cluster as its pass records them.
+            double largest_copy = -1;
+            const auto caster_radius = [&](const RenderBounds &bounds) {
+                if (!render_instance.placements)
+                    return bounds_radius(bounds);
+                if (largest_copy < 0) {
+                    float scale = 0;
+                    for (const auto &cluster : render_instance.placements->clusters())
+                        scale = std::max(scale, cluster.scale);
+                    largest_copy = copy_radius(render_instance) * scale;
+                }
+                return largest_copy;
+            };
             const auto source_draws = render_instance.asset->draws();
             const bool cull = use_frustum && options.frustum_culling;
             const bool outside = cull && !resource_frustum.intersects(render_instance.bounds);
@@ -745,9 +786,12 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 bool cast = false;
                 if (casts && render_instance.casts_shadows) {
                     cast = environment.detail_shadow.enabled && detail_pass.frustum.intersects(bounds);
-                    // Every cascade that the draw may shadow extends its depth over it.
+                    // Every cascade that the draw may shadow extends its depth over it, unless it is too small for the
+                    // cascade to draw.
                     for (std::uint32_t c = 0; c < cascade_fits.count; ++c)
-                        cast = cascade_casts(c, bounds) || cast;
+                        if (const auto least = cascade_passes[c].min_caster_radius;
+                            least <= 0 || caster_radius(bounds) >= least)
+                            cast = cascade_casts(c, bounds) || cast;
                 }
                 if (cast) {
                     if (custom)
@@ -1184,7 +1228,7 @@ void record_resources(const ShadowPass *shadow = nullptr) {
                        upper_end = group == MeshGroup::opaque ? split : last;
             if (lower == lower_end && upper == upper_end)
                 continue;
-            find_placement_runs(render_instance, frustum);
+            find_placement_runs(render_instance, frustum, shadow ? shadow->min_caster_radius : 0);
             if (placement_runs.empty())
                 continue;
             if (!bound && group_pipeline)
@@ -1205,7 +1249,7 @@ void record_resources(const ShadowPass *shadow = nullptr) {
                     continue;
                 }
                 const auto draw_index = resource_shadow_draws[i];
-                if (!shadow->frustum.intersects(render_instance.source->primitive_bounds[draw_index]))
+                if (!shadow_holds(*shadow, render_instance, draw_index))
                     continue;
                 record_draw(render_instance, draw_index, view, true, material_set);
             }
@@ -1213,8 +1257,7 @@ void record_resources(const ShadowPass *shadow = nullptr) {
                 render_instance.deferred_runs = deferred;
         }
     }
-    record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, frustum,
-                        shadow != nullptr);
+    record_custom_draws(shadow ? resource_custom_shadow_draws : resource_custom_draws, view, frustum, shadow);
     if (shadow)
         return;
     record_sky();

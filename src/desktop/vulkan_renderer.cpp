@@ -50,6 +50,11 @@ void validate_render_scale(float scale) {
     if (!std::isfinite(scale) || scale < VulkanRenderer::min_render_scale || scale > VulkanRenderer::max_render_scale)
         throw std::invalid_argument("Render scale must be finite and from 0.25 to 2");
 }
+// Throws `std::invalid_argument` unless @p share is finite, at least 0 and below 1.
+void validate_shadow_caster_threshold(float share) {
+    if (!std::isfinite(share) || share < 0 || share >= 1)
+        throw std::invalid_argument("Shadow caster threshold must be finite, at least 0 and below 1");
+}
 // What construction and VulkanRenderer::set_render_scale() report for a render scale without asset support.
 [[maybe_unused]] constexpr auto render_scale_without_assets = "Render scale requires asset support";
 constexpr std::uint32_t vertex_code[] =
@@ -493,6 +498,7 @@ struct VulkanRenderer::Impl {
             throw std::invalid_argument("Maximum anisotropy must be finite and at least 1");
         if (!std::isfinite(options.lod_threshold) || options.lod_threshold < 0)
             throw std::invalid_argument("LOD threshold must be finite and nonnegative");
+        validate_shadow_caster_threshold(options.shadow_caster_threshold);
         if (options.frames_in_flight < 1 || options.frames_in_flight > max_frames_in_flight)
             throw std::invalid_argument("Frames in flight must be 1 or 2");
         (void)vulkan_present_mode(options.present_mode);
@@ -2584,6 +2590,11 @@ void VulkanRenderer::set_lod_threshold(float pixels) {
     if (!std::isfinite(pixels) || pixels < 0)
         throw std::invalid_argument("LOD threshold must be finite and nonnegative");
     impl_->options.lod_threshold = pixels;
+}
+void VulkanRenderer::set_shadow_caster_threshold(float share) {
+    impl_->running();
+    validate_shadow_caster_threshold(share);
+    impl_->options.shadow_caster_threshold = share;
 }
 void VulkanRenderer::set_render_scale(float scale) {
     impl_->running();

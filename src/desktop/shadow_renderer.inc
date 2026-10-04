@@ -23,10 +23,13 @@ struct ShadowTarget {
             vmaDestroyImage(allocator, texture.image, texture.allocation);
     }
 };
-// One shadow pass: the view-projection that its casters draw through, and the frustum that culls them.
+// One shadow pass: the view-projection that its casters draw through, the frustum that culls them, and the least
+// radius of a caster that it draws, a cascade's radius times RendererOptions::shadow_caster_threshold; 0 draws every
+// caster, as the detail region always does.
 struct ShadowPass {
     Mat4 view = identity();
     RenderFrustum frustum;
+    double min_caster_radius{};
 };
 std::unique_ptr<ShadowTarget> cascade_target;
 std::unique_ptr<ShadowTarget> detail_shadow_target;
@@ -161,15 +164,19 @@ void ensure_shadow_targets() {
     slot.shadow_generation = shadow_generation;
 }
 // Fits the cascades to the current view, each with its depth beginning where its sphere faces the sun, which
-// prepare_resources() extends toward its casters.
+// prepare_resources() extends toward its casters, and with the least radius of a caster that it draws, which
+// prepare_resources() and every recording of its pass compare.
 void fit_shadow_cascades() {
     cascade_fits = {};
     if (!environment.shadow_cascades.enabled || !view_set)
         return;
     sun_axes = detail::sun_axes(environment.sun.direction);
     cascade_fits = detail::fit_cascades(environment, view_projection, sun_axes);
-    for (std::uint32_t i = 0; i < cascade_fits.count; ++i)
-        cascade_near[i] = cascade_fits.cascades[i].depth - cascade_fits.cascades[i].radius;
+    for (std::uint32_t i = 0; i < cascade_fits.count; ++i) {
+        const auto &fit = cascade_fits.cascades[i];
+        cascade_near[i] = fit.depth - fit.radius;
+        cascade_passes[i].min_caster_radius = options.shadow_caster_threshold * fit.radius;
+    }
 }
 // Whether @p bounds reach into the column toward the sun of cascade @p index's square, and so may shadow what the
 // cascade holds; if so, extends the cascade's depth toward the sun over them. Comparing the box's projected extent with
