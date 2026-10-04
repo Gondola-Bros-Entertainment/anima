@@ -13,27 +13,6 @@ namespace anima {
 /// component payloads; it never adds, deletes, reparents or rekeys objects.
 class PrefabVariant {
   public:
-    /// Complete replacement of an object's renderer.
-    ///
-    /// A null #mesh removes the renderer and requires the other fields at their defaults. With a
-    /// mesh, an empty #pose uses its rest pose and empty arrays keep its defaults, as in
-    /// Prefab::Node.
-    struct Renderer {
-        /// No mesh, so applying it removes the renderer.
-        Renderer() : visible(true), casts_shadows(true) {}
-        std::shared_ptr<const Mesh> mesh;
-        std::optional<Pose> pose;
-        bool visible;
-        std::vector<Vec3> material_factors;
-        /// As Prefab::Node::custom_materials.
-        std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
-        std::vector<bool> primitive_visible;
-        bool casts_shadows;
-        /// As Prefab::Node::placements.
-        std::shared_ptr<const MeshPlacements> placements;
-        /// As Prefab::Node::visibility_range.
-        VisibilityRange visibility_range;
-    };
     /// Changes to one base object; absent fields inherit from the base.
     struct Override {
         /// Nonzero authored key of the base object, never the key of an instantiated object.
@@ -42,8 +21,8 @@ class PrefabVariant {
         std::optional<Mat4> local;
         std::optional<bool> active;
         /// Absent inherits the whole base renderer, including later changes to the base; present
-        /// replaces every renderer field together.
-        std::optional<Renderer> renderer;
+        /// replaces every renderer field together, and a null RendererState::mesh removes the renderer.
+        std::optional<RendererState> renderer;
         /// Complete payloads by codec type key: each replaces the base component of its type in
         /// place, or is appended in this order when the base has none.
         std::vector<ComponentData> set_components;

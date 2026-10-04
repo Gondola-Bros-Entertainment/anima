@@ -55,6 +55,41 @@ class Prefab;
 /// operation.
 using PrefabResolver = std::function<std::shared_ptr<const Prefab>(std::string_view)>;
 
+/// Renderer of an authored object (Prefab::Node::renderer), or the one that a prefab variant puts in
+/// its place (PrefabVariant::Override::renderer). Copies share the mesh, custom materials and
+/// placements, which are immutable.
+///
+/// A null #mesh means no renderer, and then every other field keeps its default: #pose empty,
+/// #placements null, every array empty, #visible and #casts_shadows true and #visibility_range the
+/// default. The constructors of Prefab and PrefabVariant check these rules and the counts that the
+/// mesh sets, and throw `std::invalid_argument`, each with its own messages.
+struct RendererState {
+    /// Shared mesh, or null for no renderer.
+    std::shared_ptr<const Mesh> mesh;
+    /// Initial Pose::world matrices, one per mesh node; empty uses the mesh's rest pose.
+    std::optional<Pose> pose;
+    /// Renderer visibility.
+    bool visible = true;
+    /// One factor per mesh material, each channel in [0, 1]; empty keeps the authored factors.
+    std::vector<Vec3> material_factors;
+    /// One custom material per mesh material, each null to keep the mesh's Material
+    /// (Scene::set_custom_material); empty keeps every Material. Prefab::capture leaves it empty
+    /// when no slot has a custom material.
+    std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
+    /// One flag per mesh primitive; empty shows every primitive.
+    std::vector<bool> primitive_visible;
+    /// Whether the renderer casts shadows (Scene::Instance::casts_shadows).
+    bool casts_shadows = true;
+    /// Copies drawn in place of the one at the object (Scene::set_placements), or null; they must
+    /// copy #mesh, and #pose must be empty.
+    std::shared_ptr<const MeshPlacements> placements;
+    /// Distances at which the renderer draws (Scene::set_visibility_range).
+    VisibilityRange visibility_range;
+    /// Compares every field: #mesh, each custom material and #placements by address, the others by
+    /// value with `float` `==`, so `-0` equals `0` and a NaN equals nothing.
+    bool operator==(const RendererState &) const = default;
+};
+
 /// Immutable description of an object hierarchy, instantiated as independent copies.
 ///
 /// A prefab owns its nodes and a copy of the ComponentCodecs it was given; ordinary instantiation
@@ -72,29 +107,8 @@ class Prefab {
         std::optional<std::size_t> parent;
         /// Matrix relative to the parent; the root's is multiplied by the instantiation placement.
         Mat4 local = identity();
-        /// Optional shared mesh; without one, #pose, #material_factors, #custom_materials,
-        /// #primitive_visible and #placements must be empty, #visible and #casts_shadows true, and
-        /// #visibility_range the default.
-        std::shared_ptr<const Mesh> mesh;
-        /// Initial Pose::world matrices, one per mesh node; empty uses the mesh's rest pose.
-        std::optional<Pose> pose;
-        /// Renderer visibility.
-        bool visible = true;
-        /// One factor per mesh material, each channel in [0, 1]; empty keeps the authored factors.
-        std::vector<Vec3> material_factors;
-        /// One custom material per mesh material, each null to keep the mesh's Material
-        /// (Scene::set_custom_material); empty keeps every Material. Capture leaves it empty when no
-        /// slot has a custom material.
-        std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
-        /// One flag per mesh primitive; empty shows every primitive.
-        std::vector<bool> primitive_visible;
-        /// Whether the renderer casts shadows (Scene::Instance::casts_shadows).
-        bool casts_shadows = true;
-        /// Copies drawn in place of the one at the object (Scene::set_placements), or null; they must copy
-        /// #mesh, and #pose must be empty.
-        std::shared_ptr<const MeshPlacements> placements;
-        /// Distances at which the renderer draws (Scene::set_visibility_range).
-        VisibilityRange visibility_range;
+        /// Renderer created with the object; the default, without a mesh, creates none.
+        RendererState renderer;
         /// Encoded components, at most 1,024, each type at most once.
         std::vector<ComponentData> components;
         /// Authored activation (GameObject::active_self), independent of the parent.
@@ -163,7 +177,7 @@ class Prefab {
 /// - `local`: 16 finite numbers, column-major;
 /// - `mesh`: null or a mesh key;
 ///
-/// and these settings, whose defaults are Prefab::Node's:
+/// and these settings, whose defaults are those of Prefab::Node and its RendererState:
 /// - `pose`: null, the default, or one 16-number Pose::world matrix per mesh node;
 /// - `visible`, `active` and `casts_shadows`: booleans, true by default;
 /// - `material_factors`: empty, the default, or one `[r, g, b]` per mesh material, each in [0, 1];
@@ -201,13 +215,13 @@ class StagedScene {
     StagedScene(const StagedScene &) = default;
     StagedScene &operator=(const StagedScene &) = default;
     /// Bytes of decoded data held, excluding container overhead and the meshes and custom materials, which
-    /// are shared: for each object, `sizeof(Prefab::Node)`, the bytes of its name, `sizeof(Mat4)` per pose
-    /// matrix, `sizeof(Vec3)` per material factor, `sizeof(std::shared_ptr<const CustomMaterial>)` per custom
-    /// material slot, null or not, one byte per eight primitive visibility flags, rounded up, for each
-    /// component `sizeof(ComponentData)` and the bytes of its type and payload, and for the MeshPlacements that
-    /// staging built from its placements, `sizeof(MeshPlacements)`, `sizeof(Mat4)` per placement,
-    /// `sizeof(MeshPlacements::Cluster)` per cluster and `sizeof(RenderBounds)` per mesh draw. Copies share these
-    /// bytes.
+    /// are shared: for each object, `sizeof(Prefab::Node)`, which includes its RendererState, the bytes of its
+    /// name, `sizeof(Mat4)` per pose matrix, `sizeof(Vec3)` per material factor,
+    /// `sizeof(std::shared_ptr<const CustomMaterial>)` per custom material slot, null or not, one byte per eight
+    /// primitive visibility flags, rounded up, for each component `sizeof(ComponentData)` and the bytes of its
+    /// type and payload, and for the MeshPlacements that staging built from its placements,
+    /// `sizeof(MeshPlacements)`, `sizeof(Mat4)` per placement, `sizeof(MeshPlacements::Cluster)` per cluster and
+    /// `sizeof(RenderBounds)` per mesh draw. Copies share these bytes.
     [[nodiscard]] std::size_t retained_bytes() const noexcept;
 
   private:

@@ -290,13 +290,13 @@ TEST_CASE("Shadow casting persists through scene documents and prefabs") {
     const auto loaded = anima::load_scene(document, resolve);
     CHECK_FALSE(loaded->instance(loaded->roots().front().id()).casts_shadows);
     const auto prefab = anima::Prefab::capture(caster);
-    CHECK_FALSE(prefab.nodes().front().casts_shadows);
+    CHECK_FALSE(prefab.nodes().front().renderer.casts_shadows);
     anima::Scene destination;
     const auto copy = prefab.instantiate(destination);
     CHECK_FALSE(destination.instance(copy.id()).casts_shadows);
     // Without a mesh there is no renderer to stop casting.
     anima::Prefab::Node empty;
-    empty.casts_shadows = false;
+    empty.renderer.casts_shadows = false;
     CHECK_THROWS_WITH_AS(anima::Prefab({empty}), "Empty scene object has renderer state", std::invalid_argument);
 }
 

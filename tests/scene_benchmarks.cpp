@@ -164,7 +164,7 @@ double prefab_rollback(std::size_t count, const std::shared_ptr<const Mesh> &mes
         });
     std::vector<Prefab::Node> nodes(count);
     for (std::size_t i = 0; i < count; ++i) {
-        nodes[i].mesh = mesh;
+        nodes[i].renderer.mesh = mesh;
         if (i)
             nodes[i].parent = 0;
     }
