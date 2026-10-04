@@ -596,6 +596,22 @@ static bool shadow_holds(const ShadowPass &shadow, const ResourceInstance &rende
     return shadow.frustum.intersects(bounds) &&
            (render_instance.placements || bounds_radius(bounds) >= shadow.min_caster_radius);
 }
+// The levels that @p mesh's mipmapped material textures drop from their tops at upload: RendererOptions'
+// texture_mip_skip, as VulkanRenderer::set_texture_mip_skip() last set it. The impostor shaders find a frame's texels
+// from the first level of the atlas (impostor_sample.glsl's frameTexels) and read no level coarser than one whose
+// texels each lie within a frame, or than four texels across one. So an impostor's atlas drops only as many levels as
+// leave its first level such a level: each frame a whole number of texels, at least 4, across.
+std::uint32_t mesh_mip_skip(const Mesh &mesh) const {
+    const auto *impostor = mesh.impostor();
+    if (!impostor)
+        return options.texture_mip_skip;
+    // compile_impostor() requires every image of the atlas to be a square of the same size divisible into the frames.
+    const auto frame = mesh.description()->textures.front().image->width / impostor->frames_per_side;
+    // Halving keeps a whole number of texels across a frame as long as the frame's size stays even, and at least 4
+    // texels while it stays at least 8.
+    const int whole = std::countr_zero(frame), wide = static_cast<int>(std::bit_width(frame)) - 3;
+    return std::min(options.texture_mip_skip, static_cast<std::uint32_t>(std::max(std::min(whole, wide), 0)));
+}
 std::shared_ptr<GpuMesh> gpu_mesh(const std::shared_ptr<const Mesh> &mesh, RendererFailureStage failure,
                                   const MeshPreparation *prepared = nullptr) {
     if (auto found = resource_cache.find(mesh.get()); found != resource_cache.end())
@@ -644,7 +660,7 @@ std::shared_ptr<GpuMesh> gpu_mesh(const std::shared_ptr<const Mesh> &mesh, Rende
             upload_resource_buffer(*value->indices, mesh->indices().data(), VK_ACCESS_INDEX_READ_BIT);
         inject_scene(failure, RendererFailureStage::index, false);
         UploadBatch upload{device, allocator, &fatal, &errors, graphics_family};
-        upload_textures(*value->materials, upload, failure, false, texels, prepared);
+        upload_textures(*value->materials, upload, failure, false, mesh_mip_skip(*mesh), texels, prepared);
     }
     resource_cache.emplace(mesh.get(), value);
     ++resources.mesh_uploads;
