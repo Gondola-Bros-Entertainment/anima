@@ -2,8 +2,11 @@
 #include "../detail/scene_driver.hpp"
 #include "../detail/scene_orientation.hpp"
 #include <anima/lighting.hpp>
+#include <array>
 #include <limits>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace anima {
 namespace {
@@ -76,38 +79,70 @@ std::uint32_t positive_integer(const Json &j, const std::string &name) {
         throw std::invalid_argument(name + " exceeds its range");
     return static_cast<std::uint32_t>(value);
 }
+Json bias_json(const ShadowBias &b) { return Json{{"constant", b.constant}, {"slope", b.slope}}; }
+ShadowBias bias(const Json &j) {
+    detail::json_fields(j, {"constant", "slope"});
+    return {number(j.at("constant")), number(j.at("slope"))};
+}
 Json cascades_json(const ShadowCascades &c) {
-    return Json{{"enabled", c.enabled},
-                {"count", c.count},
-                {"distance", c.distance},
-                {"logarithmic_split", c.logarithmic_split},
-                {"blend", c.blend},
-                {"resolution", c.resolution},
-                {"constant_bias", c.constant_bias},
-                {"slope_bias", c.slope_bias}};
+    return Json{{"enabled", c.enabled},     {"count", c.count},
+                {"distance", c.distance},   {"logarithmic_split", c.logarithmic_split},
+                {"blend", c.blend},         {"resolution", c.resolution},
+                {"bias", bias_json(c.bias)}};
 }
 ShadowCascades cascades(const Json &j) {
-    detail::json_fields(
-        j, {"enabled", "count", "distance", "logarithmic_split", "blend", "resolution", "constant_bias", "slope_bias"});
-    return {boolean(j.at("enabled")),      positive_integer(j.at("count"), "Shadow cascade count"),
-            number(j.at("distance")),      number(j.at("logarithmic_split")),
-            number(j.at("blend")),         positive_integer(j.at("resolution"), "Shadow resolution"),
-            number(j.at("constant_bias")), number(j.at("slope_bias"))};
+    detail::json_fields(j, {"enabled", "count", "distance", "logarithmic_split", "blend", "resolution", "bias"});
+    return {boolean(j.at("enabled")), positive_integer(j.at("count"), "Shadow cascade count"),
+            number(j.at("distance")), number(j.at("logarithmic_split")),
+            number(j.at("blend")),    positive_integer(j.at("resolution"), "Shadow resolution"),
+            bias(j.at("bias"))};
 }
 Json shadow_json(const DirectionalShadow &s) {
-    return Json{{"enabled", s.enabled},      {"center", vector_json(s.center)}, {"extent", s.extent},
-                {"depth", s.depth},          {"resolution", s.resolution},      {"constant_bias", s.constant_bias},
-                {"slope_bias", s.slope_bias}};
+    return Json{{"enabled", s.enabled}, {"center", vector_json(s.center)}, {"extent", s.extent},
+                {"depth", s.depth},     {"resolution", s.resolution},      {"bias", bias_json(s.bias)}};
 }
 DirectionalShadow shadow(const Json &j) {
-    detail::json_fields(j, {"enabled", "center", "extent", "depth", "resolution", "constant_bias", "slope_bias"});
+    detail::json_fields(j, {"enabled", "center", "extent", "depth", "resolution", "bias"});
     return {boolean(j.at("enabled")),
             vector(j.at("center")),
             number(j.at("extent")),
             number(j.at("depth")),
             positive_integer(j.at("resolution"), "Shadow resolution"),
-            number(j.at("constant_bias")),
-            number(j.at("slope_bias"))};
+            bias(j.at("bias"))};
+}
+Json fog_json(const HeightFog &f) {
+    return Json{{"color", vector_json(f.color)},
+                {"density", f.density},
+                {"height", f.height},
+                {"falloff", f.falloff},
+                {"sun_scattering", vector_json(f.sun_scattering)},
+                {"sun_anisotropy", f.sun_anisotropy},
+                {"sky_distance", f.sky_distance}};
+}
+HeightFog fog(const Json &j) {
+    detail::json_fields(j,
+                        {"color", "density", "height", "falloff", "sun_scattering", "sun_anisotropy", "sky_distance"});
+    return {vector(j.at("color")),       number(j.at("density")),        number(j.at("height")),
+            number(j.at("falloff")),     vector(j.at("sun_scattering")), number(j.at("sun_anisotropy")),
+            number(j.at("sky_distance"))};
+}
+// Each ToneMapping enumerator with the name that the payload stores it under.
+constexpr std::array<std::pair<ToneMapping, std::string_view>, 2> tone_mappings{
+    {{ToneMapping::none, "none"}, {ToneMapping::reinhard, "reinhard"}}};
+Json tone_mapping_json(ToneMapping mapping) {
+    for (const auto &[value, name] : tone_mappings)
+        if (value == mapping)
+            return std::string(name);
+    throw std::invalid_argument("Unknown tone mapping");
+}
+ToneMapping tone_mapping(const Json &j) {
+    if (!j.is_string())
+        throw std::invalid_argument("Lighting field requires a string");
+    const auto &text = j.get_ref<const std::string &>();
+    for (const auto &[value, name] : tone_mappings)
+        if (text == name)
+            return value;
+    throw std::invalid_argument("Unknown tone mapping");
 }
 Json atmosphere_json(const Atmosphere &a) {
     return Json{{"enabled", a.enabled},
@@ -154,36 +189,25 @@ Json settings_json(const EnvironmentSettings &s) {
                 {"ambient_ground", vector_json(s.ambient_ground)},
                 {"ambient_specular", vector_json(s.ambient_specular)},
                 {"atmosphere", atmosphere_json(s.atmosphere)},
-                {"fog_color", vector_json(s.fog_color)},
-                {"fog_density", s.fog_density},
-                {"fog_height", s.fog_height},
-                {"fog_falloff", s.fog_falloff},
-                {"fog_sun_scattering", vector_json(s.fog_sun_scattering)},
-                {"fog_sun_anisotropy", s.fog_sun_anisotropy},
-                {"fog_sky_distance", s.fog_sky_distance},
+                {"background", vector_json(s.background)},
+                {"fog", fog_json(s.fog)},
                 {"exposure", s.exposure},
-                {"tone_mapping", s.tone_mapping},
+                {"tone_mapping", tone_mapping_json(s.tone_mapping)},
                 {"shadow_cascades", cascades_json(s.shadow_cascades)},
                 {"detail_shadow", shadow_json(s.detail_shadow)}};
 }
 EnvironmentSettings settings(const Json &j) {
-    detail::json_fields(j, {"ambient_sky", "ambient_ground", "ambient_specular", "atmosphere", "fog_color",
-                            "fog_density", "fog_height", "fog_falloff", "fog_sun_scattering", "fog_sun_anisotropy",
-                            "fog_sky_distance", "exposure", "tone_mapping", "shadow_cascades", "detail_shadow"});
+    detail::json_fields(j, {"ambient_sky", "ambient_ground", "ambient_specular", "atmosphere", "background", "fog",
+                            "exposure", "tone_mapping", "shadow_cascades", "detail_shadow"});
     EnvironmentSettings result;
     result.ambient_sky = vector(j.at("ambient_sky"));
     result.ambient_ground = vector(j.at("ambient_ground"));
     result.ambient_specular = vector(j.at("ambient_specular"));
     result.atmosphere = atmosphere(j.at("atmosphere"));
-    result.fog_color = vector(j.at("fog_color"));
-    result.fog_density = number(j.at("fog_density"));
-    result.fog_height = number(j.at("fog_height"));
-    result.fog_falloff = number(j.at("fog_falloff"));
-    result.fog_sun_scattering = vector(j.at("fog_sun_scattering"));
-    result.fog_sun_anisotropy = number(j.at("fog_sun_anisotropy"));
-    result.fog_sky_distance = number(j.at("fog_sky_distance"));
+    result.background = vector(j.at("background"));
+    result.fog = fog(j.at("fog"));
     result.exposure = number(j.at("exposure"));
-    result.tone_mapping = boolean(j.at("tone_mapping"));
+    result.tone_mapping = tone_mapping(j.at("tone_mapping"));
     result.shadow_cascades = cascades(j.at("shadow_cascades"));
     result.detail_shadow = shadow(j.at("detail_shadow"));
     return result;
@@ -221,7 +245,7 @@ void add_lighting_component_codecs(ComponentCodecs &codecs) {
             object.add_component<DirectionalLightComponent>(vector(j.at("irradiance")));
         });
     pending.add<SceneEnvironment>(
-        "anima.scene-environment.v3",
+        "anima.scene-environment.v4",
         [](const SceneEnvironment &environment, const ObjectReferences &references) {
             return Json{{"sun", references.key(environment.sun).string()},
                         {"fill", references.key(environment.fill).string()},

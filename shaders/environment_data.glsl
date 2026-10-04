@@ -6,12 +6,14 @@ layout(set = 1, binding = 0, std140) uniform EnvironmentData {
     // The atmosphere's Rayleigh scattering per meter with its scale height in w, its Mie scattering with its scale
     // height, and its Mie absorption with the Mie phase function's asymmetry.
     vec4 atmosphereRayleigh, atmosphereMie, atmosphereMieAbsorption;
+    // The fog's color with its density in w; and the exposure, with the tone mapping's ToneMapping value in y.
     vec4 fog, controls;
     // Takes a pixel's normalized device coordinates (x, y, 0, 1) to a vector along its ray from the eye in a
     // perspective view, formed relative to the eye so that its distance from the world's origin costs no precision.
     mat4 viewRays;
     vec4 viewOrigin;
-    // The sun's shadow cascades fitted to the view: each one's view-projection,
+    // The sun's shadow cascades fitted to the view, at most anima::ShadowCascades::max_count: each one's
+    // view-projection,
     mat4 cascadeView[4];
     // the view depth where each one ends,
     vec4 cascadeEnd;
@@ -33,5 +35,7 @@ layout(set = 1, binding = 0, std140) uniform EnvironmentData {
     // radius; the ground's albedo with the eye's altitude; and
     // the sun's irradiance above the atmosphere, with 1 in w while the atmosphere is enabled.
     vec4 atmosphereOzone, atmosphereShape, atmosphereGround, atmosphereSun;
+    // The linear radiance behind the scene while the atmosphere is disabled.
+    vec4 background;
 }
 environment;

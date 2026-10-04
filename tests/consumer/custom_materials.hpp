@@ -283,13 +283,13 @@ inline void check_inputs(Harness &harness) {
     environment.ambient_sky = {.11F, .22F, .33F};
     environment.ambient_ground = {.3F, .2F, .1F};
     environment.ambient_specular = {.05F, .1F, .15F};
-    environment.fog_color = {.4F, .5F, .6F};
-    environment.fog_density = .07F;
-    environment.fog_height = .3F;
-    environment.fog_falloff = .4F;
-    environment.fog_sky_distance = .5F;
-    environment.fog_sun_anisotropy = .45F;
-    environment.fog_sun_scattering = {.5F, .25F, 1};
+    environment.fog.color = {.4F, .5F, .6F};
+    environment.fog.density = .07F;
+    environment.fog.height = .3F;
+    environment.fog.falloff = .4F;
+    environment.fog.sky_distance = .5F;
+    environment.fog.sun_anisotropy = .45F;
+    environment.fog.sun_scattering = {.5F, .25F, 1};
     const auto color = [](anima::Vec3 value) { return Color{value.x, value.y, value.z}; };
     const auto direction = [](anima::Vec3 value) {
         const auto unit = anima::normalized(value);
@@ -302,19 +302,19 @@ inline void check_inputs(Harness &harness) {
         {"ambient sky", color(environment.ambient_sky)},
         {"ambient ground", color(environment.ambient_ground)},
         {"ambient specular", color(environment.ambient_specular)},
-        {"fog color", color(environment.fog_color)},
-        {"fog density and viewport", {environment.fog_density, aspect / 2, 1 / aspect}},
+        {"fog color", color(environment.fog.color)},
+        {"fog density and viewport", {environment.fog.density, aspect / 2, 1 / aspect}},
         {"sun direction", direction(environment.sun.direction)},
         {"fill direction", direction(environment.fill.direction)},
         {"view origin", {eye.x * .1 + .25, eye.y * .1 + .25, eye.z * .1 + .25}},
         {"view-projection and its inverse", {.25, 0, .5}},
         {"fog height, falloff and sky distance",
-         {environment.fog_height, environment.fog_falloff, environment.fog_sky_distance}},
+         {environment.fog.height, environment.fog.falloff, environment.fog.sky_distance}},
         {"fog sunlight",
-         {double(environment.fog_sun_scattering.x) * environment.sun.irradiance.x,
-          double(environment.fog_sun_scattering.y) * environment.sun.irradiance.y,
-          double(environment.fog_sun_scattering.z) * environment.sun.irradiance.z}},
-        {"fog phase asymmetry, and sunlight w", {environment.fog_sun_anisotropy, .25, .5}}};
+         {double(environment.fog.sun_scattering.x) * environment.sun.irradiance.x,
+          double(environment.fog.sun_scattering.y) * environment.sun.irradiance.y,
+          double(environment.fog.sun_scattering.z) * environment.sun.irradiance.z}},
+        {"fog phase asymmetry, and sunlight w", {environment.fog.sun_anisotropy, .25, .5}}};
     auto scene = std::make_shared<anima::Scene>();
     std::vector<anima::Vec3> centers;
     for (std::uint32_t i = 0; i < inputs.size(); ++i) {

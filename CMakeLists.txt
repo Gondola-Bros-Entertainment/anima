@@ -466,9 +466,9 @@ if(ANIMA_BUILD_DESKTOP)
     set(shader_outputs)
     set(shader_sources triangle.vert triangle.frag)
     if(ANIMA_BUILD_ASSETS)
-        list(APPEND shader_sources mesh.frag resource.vert sky.vert sky.frag shadow-resource.vert shadow.frag resolve.frag
-            impostor.vert impostor.frag impostor-shadow.frag atmosphere-transmittance.comp atmosphere-scattering.comp
-            atmosphere-sky.comp)
+        list(APPEND shader_sources mesh.frag resource.vert sky.vert sky.frag background.frag shadow-resource.vert
+            shadow.frag resolve.frag impostor.vert impostor.frag impostor-shadow.frag atmosphere-transmittance.comp
+            atmosphere-scattering.comp atmosphere-sky.comp)
     endif()
     if(ANIMA_BUILD_UI)
         list(APPEND shader_sources ui.vert ui.frag)

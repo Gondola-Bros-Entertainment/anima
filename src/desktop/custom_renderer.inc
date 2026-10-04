@@ -178,7 +178,7 @@ void update_custom_frame() {
                                   vec(e.ambient_sky),
                                   vec(e.ambient_ground),
                                   vec(e.ambient_specular),
-                                  {e.fog_color.x, e.fog_color.y, e.fog_color.z, e.fog_density},
+                                  {e.fog.color.x, e.fog.color.y, e.fog.color.z, e.fog.density},
                                   {width, height, 1 / width, 1 / height},
                                   shader_time,
                                   {},

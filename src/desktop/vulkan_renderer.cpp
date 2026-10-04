@@ -79,6 +79,9 @@ constexpr std::uint32_t sky_vertex_code[] =
 constexpr std::uint32_t sky_fragment_code[] =
 #include "sky.frag.inc"
     ;
+constexpr std::uint32_t background_fragment_code[] =
+#include "background.frag.inc"
+    ;
 constexpr std::uint32_t resolve_fragment_code[] =
 #include "resolve.frag.inc"
     ;
@@ -846,6 +849,7 @@ struct VulkanRenderer::Impl {
         };
         make_fragment(mesh_fragment_code, mesh_fragment_shader);
         make_fragment(resolve_fragment_code, resolve_fragment_shader);
+        make_fragment(background_fragment_code, background_fragment_shader);
         create_world_layout();
         std::array<VkDescriptorSetLayoutBinding, material_texture_count + 1> bindings{};
         for (unsigned i = 0; i < bindings.size(); ++i)
@@ -1066,6 +1070,7 @@ struct VulkanRenderer::Impl {
             create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
         }
         create_pipeline(PipelineKind::sky, sky_pipeline);
+        create_pipeline(PipelineKind::background, background_pipeline);
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
             auto &image = images[i];
@@ -1185,6 +1190,7 @@ struct VulkanRenderer::Impl {
         opaque_resource,
         blended_resource,
         sky,
+        background,
         shadow_opaque,
         shadow_masked,
         impostor,
@@ -1204,7 +1210,8 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         const bool resource = view_mesh || shadow || impostor;
 #endif
-        const bool ui = mode == PipelineKind::ui, sky = mode == PipelineKind::sky;
+        // The sky and the background draw over the view at the far plane.
+        const bool ui = mode == PipelineKind::ui, sky = mode == PipelineKind::sky || mode == PipelineKind::background;
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (auto &stage : stages) {
             stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1239,7 +1246,7 @@ struct VulkanRenderer::Impl {
             stages[1].pSpecializationInfo = &fragment_specialization;
         if (sky) {
             stages[0].module = sky_vertex_shader;
-            stages[1].module = sky_fragment_shader;
+            stages[1].module = mode == PipelineKind::sky ? sky_fragment_shader : background_fragment_shader;
         }
         if (shadow) {
             stages[0].module = shadow_resource_vertex_shader;
@@ -2134,10 +2141,15 @@ struct VulkanRenderer::Impl {
         record_shadow();
 #endif
         timestamp(TimingQuery::after_shadows);
-        // The fixed background wherever neither the sky nor a mesh is drawn.
-        constexpr VkClearColorValue clear_color{{0.018F, 0.027F, 0.041F, 1.0F}};
+        // The background wherever neither the sky nor a mesh draws: the environment's, or without asset support the
+        // default environment's.
+#ifdef ANIMA_HAS_ASSETS
+        const auto background = environment.background;
+#else
+        const auto background = EnvironmentSettings{}.background;
+#endif
         std::array<VkClearValue, 2> clear{};
-        clear[0].color = clear_color;
+        clear[0].color = {{background.x, background.y, background.z, 1.0F}};
         // The far plane in reversed depth.
         clear[1].depthStencil = {0, 0};
         VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -2356,9 +2368,11 @@ struct VulkanRenderer::Impl {
             destroy_pair(pipelines);
         destroy_pair(blended_resource_pipelines);
         destroy_pair(impostor_pipelines);
-        if (sky_pipeline)
-            vkDestroyPipeline(device, sky_pipeline, nullptr);
-        sky_pipeline = VK_NULL_HANDLE;
+        for (auto *value : {&sky_pipeline, &background_pipeline}) {
+            if (*value)
+                vkDestroyPipeline(device, *value, nullptr);
+            *value = VK_NULL_HANDLE;
+        }
 #endif
         if (pipeline)
             vkDestroyPipeline(device, pipeline, nullptr);
@@ -2456,6 +2470,8 @@ struct VulkanRenderer::Impl {
                 vkDestroyShaderModule(device, sky_vertex_shader, nullptr);
             if (sky_fragment_shader)
                 vkDestroyShaderModule(device, sky_fragment_shader, nullptr);
+            if (background_fragment_shader)
+                vkDestroyShaderModule(device, background_fragment_shader, nullptr);
 #endif
 #ifdef ANIMA_UI
             ui_images.clear();

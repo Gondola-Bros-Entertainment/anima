@@ -19,9 +19,9 @@
 ///
 /// Part of the optional `anima::desktop` target (`ANIMA_BUILD_DESKTOP=ON`); no Vulkan type appears in the
 /// public API. Scenes, environments and mesh preparation also need asset support (`ANIMA_BUILD_ASSETS=ON`).
-/// Without it anima::VulkanRenderer draws only its clear color and the diagnostic triangle, with a UiContext's UI
-/// composited over them; its set_scenes, prepare_meshes and prepare_mesh members throw `std::logic_error`, and
-/// set_environment and set_time validate their arguments, then throw `std::logic_error`.
+/// Without it anima::VulkanRenderer draws only the default EnvironmentSettings::background and the diagnostic
+/// triangle, with a UiContext's UI composited over them; its set_scenes, prepare_meshes and prepare_mesh members throw
+/// `std::logic_error`, and set_environment and set_time validate their arguments, then throw `std::logic_error`.
 
 struct SDL_Window;
 
@@ -77,7 +77,7 @@ struct RendererOptions {
     /// empty, or construction throws `std::invalid_argument`.
     std::vector<std::shared_ptr<const Scene>> scenes;
     /// Draws a built-in triangle while no scene is selected, even without asset support. A selected scene
-    /// with no instances shows only the background.
+    /// with no instances shows only the sky or EnvironmentSettings::background.
     bool diagnostic_triangle = false;
     /// Enables FrameProfile timings, with six GPU timestamp queries when the graphics queue supports
     /// them, calibrated timestamps where the device also offers them (see VulkanRenderer::measures_gpu_idle), and
@@ -522,7 +522,7 @@ struct ResourceStats {
 /// shades the straight (unpremultiplied) albedo as it shades an opaque material, fog included, which applies at the
 /// surface's own distance, then writes its color times alpha with that alpha, blended as `ONE, ONE_MINUS_SRC_ALPHA`:
 /// the glTF "over" operator, applied to the whole shaded color, emission included, in linear light. Since the fog's
-/// light depends only on a path's direction (EnvironmentSettings::fog_density), fogging each surface before blending
+/// light depends only on a path's direction (HeightFog::density), fogging each surface before blending
 /// equals fogging the path from the eye through it to what lies behind.
 /// Exposure scales the composite, so it commutes with blending; tone mapping, which is not linear, applies to the
 /// composite. Texels stay straight alpha: mip chains of blended base-color maps weight color by alpha
