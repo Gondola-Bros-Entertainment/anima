@@ -52,6 +52,15 @@ void validate_render_scale(float scale) {
 }
 // What construction and VulkanRenderer::set_render_scale() report for a render scale without asset support.
 [[maybe_unused]] constexpr auto render_scale_without_assets = "Render scale requires asset support";
+// Throws `std::invalid_argument` for a value that is not a ShadowFilter enumerator.
+void validate_shadow_filter(ShadowFilter filter) {
+    switch (filter) {
+    case ShadowFilter::kernel_4x4:
+    case ShadowFilter::bilinear_2x2:
+        return;
+    }
+    throw std::invalid_argument("Unknown shadow filter");
+}
 constexpr std::uint32_t vertex_code[] =
 #include "triangle.vert.inc"
     ;
@@ -502,6 +511,7 @@ struct VulkanRenderer::Impl {
         if (options.render_scale != 1)
             throw std::invalid_argument(render_scale_without_assets);
 #endif
+        validate_shadow_filter(options.shadow_filter);
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -1058,14 +1068,10 @@ struct VulkanRenderer::Impl {
 #endif
         create_pipeline(PipelineKind::diagnostic, pipeline);
 #ifdef ANIMA_HAS_ASSETS
-        for (const bool height_fog : {false, true}) {
-            for (std::size_t mesh = 0; mesh < mesh_pipeline_count; ++mesh)
-                create_pipeline(MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
-                                                                               : PipelineKind::opaque_resource,
-                                resource_pipelines[mesh][height_fog], height_fog, mesh_pipeline_culling[mesh]);
-            create_pipeline(PipelineKind::blended_resource, blended_resource_pipelines[height_fog], height_fog);
-            create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
-        }
+        for_each_view_pipeline([&](VkPipeline &output, PipelineKind kind, bool height_fog, VkCullModeFlags cull_mode) {
+            create_pipeline(kind, output, height_fog, cull_mode);
+        });
+        compiled_shadow_filter = options.shadow_filter;
         create_pipeline(PipelineKind::sky, sky_pipeline);
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
@@ -1192,7 +1198,8 @@ struct VulkanRenderer::Impl {
         shadow_impostor
     };
     // Creates the pipeline of @p mode in @p output, culling the faces that @p cull_mode names; one that draws the view
-    // with mesh.frag or impostor.frag compiles the height fog's code only with @p height_fog.
+    // with mesh.frag or impostor.frag compiles the height fog's code only with @p height_fog, and the shadow filter
+    // that RendererOptions::shadow_filter requests.
     void create_pipeline(PipelineKind mode, VkPipeline &output, [[maybe_unused]] bool height_fog = true,
                          VkCullModeFlags cull_mode = VK_CULL_MODE_NONE) {
         const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
@@ -1227,12 +1234,16 @@ struct VulkanRenderer::Impl {
         const VkSpecializationMapEntry constant_entry{0, 0, sizeof(enabled)};
         const VkSpecializationInfo constant_enabled{1, &constant_entry, sizeof(enabled), &enabled};
         // The view's fragment constants: mesh.frag's 0 selects premultiplied output, 1 (environment.glsl) the height
-        // fog's code, in mesh.frag and impostor.frag, and mesh.frag's 2 keeps its discards.
-        const std::array<VkBool32, 3> fragment_constants{blended ? VK_TRUE : VK_FALSE, height_fog ? VK_TRUE : VK_FALSE,
-                                                         mode == PipelineKind::opaque_resource ? VK_FALSE : VK_TRUE};
-        const std::array<VkSpecializationMapEntry, 3> fragment_entries{{{0, 0, sizeof(VkBool32)},
+        // fog's code, in mesh.frag and impostor.frag, mesh.frag's 2 keeps its discards, and 3 (environment.glsl)
+        // selects ShadowFilter::bilinear_2x2, in both.
+        const std::array<VkBool32, 4> fragment_constants{
+            blended ? VK_TRUE : VK_FALSE, height_fog ? VK_TRUE : VK_FALSE,
+            mode == PipelineKind::opaque_resource ? VK_FALSE : VK_TRUE,
+            options.shadow_filter == ShadowFilter::bilinear_2x2 ? VK_TRUE : VK_FALSE};
+        const std::array<VkSpecializationMapEntry, 4> fragment_entries{{{0, 0, sizeof(VkBool32)},
                                                                         {1, sizeof(VkBool32), sizeof(VkBool32)},
-                                                                        {2, 2 * sizeof(VkBool32), sizeof(VkBool32)}}};
+                                                                        {2, 2 * sizeof(VkBool32), sizeof(VkBool32)},
+                                                                        {3, 3 * sizeof(VkBool32), sizeof(VkBool32)}}};
         const VkSpecializationInfo fragment_specialization{static_cast<std::uint32_t>(fragment_entries.size()),
                                                            fragment_entries.data(), sizeof(fragment_constants),
                                                            fragment_constants.data()};
@@ -1361,6 +1372,54 @@ struct VulkanRenderer::Impl {
         check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &output),
               "Create graphics pipeline");
     }
+#ifdef ANIMA_HAS_ASSETS
+    // Calls @p visit with each of the view's pipelines that draw with mesh.frag or impostor.frag, which compile the
+    // shadow filter, followed by the mode, height fog and culling that create_pipeline() creates it with: the opaque
+    // and masked mesh pipelines by MeshPipeline, the blended mesh pipeline and the impostor pipeline, without and then
+    // with the height fog's code.
+    template <class Visit> void for_each_view_pipeline(Visit &&visit) {
+        for (const bool height_fog : {false, true}) {
+            for (std::size_t mesh = 0; mesh < mesh_pipeline_count; ++mesh)
+                visit(resource_pipelines[mesh][height_fog],
+                      MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
+                                                                     : PipelineKind::opaque_resource,
+                      height_fog, mesh_pipeline_culling[mesh]);
+            visit(blended_resource_pipelines[height_fog], PipelineKind::blended_resource, height_fog,
+                  VK_CULL_MODE_NONE);
+            visit(impostor_pipelines[height_fog], PipelineKind::impostor, height_fog, VK_CULL_MODE_NONE);
+        }
+    }
+    // Pipelines that are destroyed with their holder, which release_after_frames() keeps while frames may use them.
+    struct OwnedPipelines {
+        VkDevice device{};
+        std::vector<VkPipeline> handles;
+        ~OwnedPipelines() {
+            for (const auto handle : handles)
+                if (handle)
+                    vkDestroyPipeline(device, handle, nullptr);
+        }
+    };
+    // Compiles the view's pipelines for RendererOptions::shadow_filter when they were compiled for another, as
+    // VulkanRenderer::set_shadow_filter() describes. Every replacement is created before any pipeline is replaced, so a
+    // failure destroys the replacements created so far and keeps the current pipelines, and the next call tries again.
+    // The replaced pipelines are destroyed once no frame in flight can use them.
+    void ensure_shadow_filter() {
+        if (compiled_shadow_filter == options.shadow_filter)
+            return;
+        auto pipelines = std::make_shared<OwnedPipelines>();
+        pipelines->device = device;
+        for_each_view_pipeline([&](VkPipeline &, PipelineKind mode, bool height_fog, VkCullModeFlags cull_mode) {
+            create_pipeline(mode, pipelines->handles.emplace_back(), height_fog, cull_mode);
+        });
+        // The holder takes the replaced pipelines in their place.
+        std::size_t next = 0;
+        for_each_view_pipeline([&](VkPipeline &current, PipelineKind, bool, VkCullModeFlags) {
+            std::swap(current, pipelines->handles[next++]);
+        });
+        compiled_shadow_filter = options.shadow_filter;
+        release_after_frames(std::move(pipelines));
+    }
+#endif
     // Creates @p info's image in device-local memory from the allocator, bound, and returns the size of its
     // allocation. Throws `std::runtime_error` naming @p action when creation, allocation or binding fails.
     VkDeviceSize create_image(const VkImageCreateInfo &info, VkImage &image, VmaAllocation &allocation,
@@ -1974,6 +2033,7 @@ struct VulkanRenderer::Impl {
         try {
             // Before the custom materials' frame block, which holds the scene targets' size.
             ensure_scene_targets();
+            ensure_shadow_filter();
             ensure_shadow_targets();
             fit_shadow_cascades();
             update_custom_frame();
@@ -2597,6 +2657,13 @@ void VulkanRenderer::set_render_scale(float scale) {
 #endif
 }
 float VulkanRenderer::render_scale() const noexcept { return impl_->options.render_scale; }
+void VulkanRenderer::set_shadow_filter(ShadowFilter filter) {
+    impl_->running();
+    validate_shadow_filter(filter);
+    // The next draw() that prepares a frame compiles the view's pipelines for it, once it has waited for its frame.
+    impl_->options.shadow_filter = filter;
+}
+ShadowFilter VulkanRenderer::shadow_filter() const noexcept { return impl_->options.shadow_filter; }
 void VulkanRenderer::set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions options) {
 #ifdef ANIMA_HAS_ASSETS
     impl_->set_scenes(std::move(sources), std::move(options));
