@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 using namespace anima;
 namespace {
@@ -62,6 +63,28 @@ TEST_CASE("A mistyped document field is rejected as std::invalid_argument") {
     document.replace(at, name_field.size(), R"("name": 5)");
     REQUIRE_THROWS_WITH_AS(Prefab::deserialize(document, {}, codecs),
                            "[json.exception.type_error.302] type must be string, but is number", std::invalid_argument);
+}
+
+TEST_CASE("Scene and prefab documents reject renderer state without a mesh under the scene messages") {
+    const std::string object =
+        R"({"key":"1","name":"a","parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null})";
+    const auto scene = [](const std::string &value) {
+        return R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[)" + value + "]}";
+    };
+    const auto prefab = [](const std::string &value) {
+        return R"({"version":3,"kind":"anima.prefab","objects":[)" + value + "]}";
+    };
+    CHECK_NOTHROW((void)load_scene(scene(object), {}));
+    CHECK_NOTHROW((void)Prefab::deserialize(prefab(object), {}));
+    for (const auto &[setting, reason] :
+         {std::pair{R"("mesh":null,"visible":false)", "Empty scene object has renderer state"},
+          std::pair{R"("mesh":null,"primitive_visible":[true])", "Empty scene object has renderer state"},
+          std::pair{R"("mesh":null,"placements":[[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]])",
+                    "Scene placements must copy the object's mesh, which has no pose"}}) {
+        const auto document = changed(object, R"("mesh":null)", setting);
+        CHECK_THROWS_WITH_AS((void)load_scene(scene(document), {}), reason, std::invalid_argument);
+        CHECK_THROWS_WITH_AS((void)Prefab::deserialize(prefab(document), {}), reason, std::invalid_argument);
+    }
 }
 
 TEST_CASE("Component state that is not UTF-8 is rejected on output as std::invalid_argument") {

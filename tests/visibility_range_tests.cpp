@@ -147,7 +147,7 @@ TEST_CASE("Scene documents and prefabs keep visibility ranges") {
     CHECK(ranges == std::vector<VisibilityRange>{{0, 60, 0, 8}, {40, infinity, 5, 0}, {}});
 
     const auto prefab = Prefab::capture(near);
-    CHECK(prefab.nodes()[0].visibility_range == VisibilityRange{0, 60, 0, 8});
+    CHECK(prefab.nodes()[0].renderer.visibility_range == VisibilityRange{0, 60, 0, 8});
     Scene target;
     CHECK(prefab.instantiate(target).renderer().visibility_range() == VisibilityRange{0, 60, 0, 8});
 }
@@ -174,14 +174,14 @@ TEST_CASE("Documents reject malformed visibility ranges") {
         "Unknown JSON field: fade", std::invalid_argument);
 
     Prefab::Node empty;
-    empty.visibility_range = {0, 10, 0, 0};
+    empty.renderer.visibility_range = {0, 10, 0, 0};
     CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{empty}), "Empty scene object has renderer state",
                          std::invalid_argument);
     Prefab::Node invalid;
-    invalid.mesh = mesh;
-    invalid.visibility_range = {0, 10, 6, 5};
+    invalid.renderer.mesh = mesh;
+    invalid.renderer.visibility_range = {0, 10, 6, 5};
     CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{invalid}), invalid_range, std::invalid_argument);
-    invalid.visibility_range = {0, infinity, 0, 5};
+    invalid.renderer.visibility_range = {0, infinity, 0, 5};
     CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{invalid}), endless_margin, std::invalid_argument);
 }
 
@@ -189,20 +189,20 @@ TEST_CASE("Prefab variants replace visibility ranges with the rest of a renderer
     const auto mesh = triangle();
     Prefab::Node root;
     root.key = ObjectKey{1};
-    root.mesh = mesh;
+    root.renderer.mesh = mesh;
     const auto base = std::make_shared<const Prefab>(std::vector<Prefab::Node>{root});
-    PrefabVariant::Renderer renderer;
+    RendererState renderer;
     renderer.mesh = mesh;
     renderer.visibility_range = {3, 120, 2, 20};
     const PrefabVariant variant("base", {{ObjectKey{1}, {}, {}, {}, renderer, {}, {}}});
-    CHECK(variant.resolve([&](std::string_view) { return base; }, {}).nodes()[0].visibility_range ==
+    CHECK(variant.resolve([&](std::string_view) { return base; }, {}).nodes()[0].renderer.visibility_range ==
           VisibilityRange{3, 120, 2, 20});
     const MeshName name = [](const std::shared_ptr<const Mesh> &) { return std::string("triangle"); };
     const auto read = PrefabVariant::deserialize(variant.serialize(name), [&](std::string_view) { return mesh; });
-    CHECK(read.resolve([&](std::string_view) { return base; }, {}).nodes()[0].visibility_range ==
+    CHECK(read.resolve([&](std::string_view) { return base; }, {}).nodes()[0].renderer.visibility_range ==
           VisibilityRange{3, 120, 2, 20});
 
-    PrefabVariant::Renderer empty;
+    RendererState empty;
     empty.visibility_range = {0, 10, 0, 0};
     CHECK_THROWS_WITH_AS(PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, empty, {}, {}}}),
                          "Empty prefab variant renderer has state", std::invalid_argument);
@@ -214,7 +214,7 @@ TEST_CASE("Prefab variants replace visibility ranges with the rest of a renderer
                          std::invalid_argument);
 
     // A variant document's field follows the rules of scene documents, under the variant's own message.
-    PrefabVariant::Renderer plain;
+    RendererState plain;
     plain.mesh = mesh;
     const auto text = PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, plain, {}, {}}}).serialize(name);
     const auto with_range = [&](const std::string &range) {

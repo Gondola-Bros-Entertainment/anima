@@ -19,6 +19,8 @@ namespace anima {
 /// Three-component float vector for positions, directions and scales.
 struct Vec3 {
     float x{}, y{}, z{};
+    /// Compares the components with `float` `==`, so `-0` equals `0` and a NaN component equals nothing.
+    bool operator==(const Vec3 &) const = default;
 };
 inline Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 inline Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }

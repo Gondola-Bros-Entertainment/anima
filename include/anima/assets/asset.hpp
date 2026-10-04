@@ -385,6 +385,9 @@ struct Pose {
     std::vector<Transform> local;
     /// Model-space matrix per node: the parent's world matrix times the node's local matrix.
     std::vector<Mat4> world;
+    /// Compares #local and #world element by element with `float` `==`, so `-0` equals `0` and a NaN element
+    /// equals nothing.
+    bool operator==(const Pose &) const = default;
 };
 /// Reads the GLB file at @p path, 1 byte to 64 MiB, and imports it as
 /// load_asset(std::span<const std::byte>, const StagingOptions &) does. The read is one more step of

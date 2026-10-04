@@ -283,7 +283,7 @@ TEST_CASE("Scene documents and prefabs keep placements") {
 
     // A prefab captures the placements by reference and its instances draw them.
     const auto prefab = Prefab::capture(object);
-    CHECK(prefab.nodes()[0].placements == placements);
+    CHECK(prefab.nodes()[0].renderer.placements == placements);
     Scene target;
     const auto instance = prefab.instantiate(target);
     CHECK(instance.renderer().placements() == placements);
@@ -339,15 +339,15 @@ TEST_CASE("Documents reject placements that a renderer cannot draw") {
 
     // Prefab nodes follow the same rules.
     Prefab::Node node;
-    node.mesh = mesh;
-    node.placements = MeshPlacements::create(triangle(), std::vector<Mat4>{identity()});
+    node.renderer.mesh = mesh;
+    node.renderer.placements = MeshPlacements::create(triangle(), std::vector<Mat4>{identity()});
     CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{node}),
                          "Scene placements must copy the object's mesh, which has no pose", std::invalid_argument);
-    node.placements = MeshPlacements::create(mesh, std::vector<Mat4>{identity()});
-    node.pose = mesh->rest_pose();
+    node.renderer.placements = MeshPlacements::create(mesh, std::vector<Mat4>{identity()});
+    node.renderer.pose = mesh->rest_pose();
     CHECK_THROWS_WITH_AS(Prefab(std::vector<Prefab::Node>{node}),
                          "Scene placements must copy the object's mesh, which has no pose", std::invalid_argument);
-    node.pose.reset();
+    node.renderer.pose.reset();
     CHECK_NOTHROW(Prefab(std::vector<Prefab::Node>{node}));
 }
 
@@ -356,18 +356,18 @@ TEST_CASE("Prefab variants replace placements with the rest of a renderer") {
     const auto placements = MeshPlacements::create(mesh, grid(3, 4));
     Prefab::Node root;
     root.key = ObjectKey{1};
-    root.mesh = mesh;
+    root.renderer.mesh = mesh;
     const auto base = std::make_shared<const Prefab>(std::vector<Prefab::Node>{root});
-    PrefabVariant::Renderer renderer;
+    RendererState renderer;
     renderer.mesh = mesh;
     renderer.placements = placements;
     const PrefabVariant variant("base", {{ObjectKey{1}, {}, {}, {}, renderer, {}, {}}});
     const auto resolved = variant.resolve([&](std::string_view) { return base; }, {});
-    CHECK(resolved.nodes()[0].placements == placements);
+    CHECK(resolved.nodes()[0].renderer.placements == placements);
 
     const MeshName name = [](const std::shared_ptr<const Mesh> &) { return std::string("triangle"); };
     const auto read = PrefabVariant::deserialize(variant.serialize(name), [&](std::string_view) { return mesh; });
-    const auto copied = read.resolve([&](std::string_view) { return base; }, {}).nodes()[0].placements;
+    const auto copied = read.resolve([&](std::string_view) { return base; }, {}).nodes()[0].renderer.placements;
     REQUIRE(copied);
     REQUIRE(copied->transforms().size() == placements->transforms().size());
     for (std::size_t i = 0; i < copied->transforms().size(); ++i)
@@ -377,7 +377,7 @@ TEST_CASE("Prefab variants replace placements with the rest of a renderer") {
     CHECK_THROWS_WITH_AS(PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, renderer, {}, {}}}),
                          "Prefab variant placements must copy the renderer's mesh, which has no pose",
                          std::invalid_argument);
-    PrefabVariant::Renderer empty;
+    RendererState empty;
     empty.placements = placements;
     CHECK_THROWS_WITH_AS(PrefabVariant("base", {{ObjectKey{1}, {}, {}, {}, empty, {}, {}}}),
                          "Empty prefab variant renderer has state", std::invalid_argument);

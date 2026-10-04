@@ -1,5 +1,5 @@
 #include "../detail/json.hpp"
-#include "../detail/visibility_range_json.hpp"
+#include "../detail/renderer_state.hpp"
 #include <algorithm>
 #include <anima/prefab_variant.hpp>
 #include <cmath>
@@ -35,17 +35,31 @@ Mat4 matrix_value(const Json &value) {
         result[i] = scalar(value[i]);
     return result;
 }
+constexpr detail::RendererFormat renderer_format{
+    .empty_state = "Empty prefab variant renderer has state",
+    .placements = "Prefab variant placements must copy the renderer's mesh, which has no pose",
+    .mesh_naming = "Prefab variant serialization needs a mesh naming callback",
+    .written_mesh_key = "Invalid prefab variant resource or component key",
+    .shared_mesh_key = "Different meshes share a prefab variant resource key",
+    .read_mesh_key = "Invalid prefab variant resource or component key",
+    .mesh_resolver = "Prefab variant loading needs a mesh resolver",
+    .unresolved_mesh = "Prefab variant mesh key could not be resolved",
+    .pose = "Prefab variant pose does not match the mesh",
+    .material_factors = "Invalid prefab variant material factors",
+    .material_factor = "Prefab variant material factor requires RGB",
+    .custom_materials = "Invalid prefab variant custom materials",
+    .custom_material_name = "Invalid prefab variant custom material name",
+    .unresolved_custom_material = "Prefab variant custom material name could not be resolved",
+    .renamed_custom_material = "Prefab variant custom material resolved to a material of another name",
+    .visibility_range = "Invalid prefab variant visibility range",
+    .scalar = scalar,
+    .matrix = matrix_value,
+};
+static_assert(detail::maximum_mesh_key_bytes == maximum_key_bytes, "A mesh key is a resource key");
 void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     const auto *renderer = value.renderer ? &*value.renderer : nullptr;
-    require(!renderer || renderer->mesh ||
-                (!renderer->pose && renderer->visible && renderer->material_factors.empty() &&
-                 renderer->custom_materials.empty() && renderer->primitive_visible.empty() && renderer->casts_shadows &&
-                 !renderer->placements && renderer->visibility_range == VisibilityRange{}),
-            "Empty prefab variant renderer has state");
-    require(!renderer || !renderer->placements || (renderer->placements->mesh() == renderer->mesh && !renderer->pose),
-            "Prefab variant placements must copy the renderer's mesh, which has no pose");
     if (renderer)
-        validate_visibility_range(renderer->visibility_range);
+        detail::validate_renderer_state(*renderer, renderer_format);
     auto object = validation.create();
     if (value.local)
         object.set_local_matrix(*value.local);
@@ -73,136 +87,6 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
         for (auto channel : {factor.x, factor.y, factor.z})
             require(std::isfinite(channel) && channel >= 0 && channel <= 1, "Invalid prefab variant material factor");
     object.destroy();
-}
-// Names written into one document.
-struct ResourceNames {
-    std::map<const Mesh *, std::string> names;
-    std::map<std::string, const Mesh *, std::less<>> identities;
-    std::map<std::string, const CustomMaterial *, std::less<>> materials;
-};
-Json encode_renderer(const PrefabVariant::Renderer &renderer, const MeshName &name, ResourceNames &resources) {
-    Json mesh = nullptr, pose = nullptr, placements = nullptr;
-    if (renderer.placements)
-        placements = renderer.placements->transforms();
-    if (renderer.mesh) {
-        if (!resources.names.contains(renderer.mesh.get())) {
-            require(bool(name), "Prefab variant serialization needs a mesh naming callback");
-            auto key = name(renderer.mesh);
-            validate_key(key);
-            const auto [existing, inserted] = resources.identities.emplace(key, renderer.mesh.get());
-            require(inserted || existing->second == renderer.mesh.get(),
-                    "Different meshes share a prefab variant resource key");
-            resources.names.emplace(renderer.mesh.get(), std::move(key));
-        }
-        mesh = resources.names.at(renderer.mesh.get());
-    }
-    if (renderer.pose)
-        pose = renderer.pose->world;
-    auto factors = Json::array();
-    for (auto factor : renderer.material_factors)
-        factors.push_back({factor.x, factor.y, factor.z});
-    auto custom = Json::array();
-    for (const auto &material : renderer.custom_materials) {
-        if (!material) {
-            custom.push_back(nullptr);
-            continue;
-        }
-        const auto [existing, inserted] = resources.materials.emplace(material->name(), material.get());
-        require(inserted || existing->second == material.get(), "Different custom materials share a document name");
-        custom.push_back(material->name());
-    }
-    return {{"mesh", mesh},
-            {"pose", pose},
-            {"visible", renderer.visible},
-            {"material_factors", factors},
-            {"custom_materials", custom},
-            {"primitive_visible", renderer.primitive_visible},
-            {"casts_shadows", renderer.casts_shadows},
-            {"placements", placements},
-            {"visibility_range", detail::encode_visibility_range(renderer.visibility_range)}};
-}
-// Resources resolved while reading one document, each once per key or name.
-struct Resources {
-    std::map<std::string, std::shared_ptr<const Mesh>, std::less<>> meshes;
-    std::map<std::string, std::shared_ptr<const CustomMaterial>, std::less<>> materials;
-};
-PrefabVariant::Renderer decode_renderer(const Json &value, const MeshResolver &resolve,
-                                        const CustomMaterialResolver &materials, Resources &resources) {
-    // An omitted setting takes the default that PrefabVariant::Renderer declares.
-    detail::json_fields(value, {"mesh"},
-                        {"pose", "visible", "material_factors", "custom_materials", "primitive_visible",
-                         "casts_shadows", "placements", "visibility_range"});
-    PrefabVariant::Renderer renderer;
-    const auto &mesh = value.at("mesh");
-    if (!mesh.is_null()) {
-        const auto key = mesh.get<std::string>();
-        validate_key(key);
-        require(bool(resolve), "Prefab variant loading needs a mesh resolver");
-        auto found = resources.meshes.find(key);
-        if (found == resources.meshes.end()) {
-            auto resource = resolve(key);
-            require(bool(resource), "Prefab variant mesh key could not be resolved");
-            found = resources.meshes.emplace(key, std::move(resource)).first;
-        }
-        renderer.mesh = found->second;
-    }
-    static const Json omitted;
-    const auto &pose = value.contains("pose") ? value.at("pose") : omitted;
-    if (!pose.is_null()) {
-        require(pose.is_array() && renderer.mesh && pose.size() == renderer.mesh->rest_pose().world.size(),
-                "Prefab variant pose does not match the mesh");
-        renderer.pose.emplace();
-        for (const auto &world : pose)
-            renderer.pose->world.push_back(matrix_value(world));
-    }
-    renderer.visible = value.value("visible", renderer.visible);
-    if (value.contains("material_factors")) {
-        const auto &factors = value.at("material_factors");
-        require(factors.is_array(), "Invalid prefab variant material factors");
-        for (const auto &factor : factors) {
-            require(factor.is_array() && factor.size() == 3, "Prefab variant material factor requires RGB");
-            renderer.material_factors.push_back({scalar(factor[0]), scalar(factor[1]), scalar(factor[2])});
-        }
-    }
-    if (value.contains("custom_materials")) {
-        const auto &custom = value.at("custom_materials");
-        require(custom.is_array(), "Invalid prefab variant custom materials");
-        for (const auto &entry : custom) {
-            if (entry.is_null()) {
-                renderer.custom_materials.emplace_back();
-                continue;
-            }
-            const auto name = entry.get<std::string>();
-            require(!name.empty() && name.size() <= CustomMaterial::max_name_bytes,
-                    "Invalid prefab variant custom material name");
-            auto found = resources.materials.find(name);
-            if (found == resources.materials.end()) {
-                auto material = materials ? materials(name) : nullptr;
-                require(bool(material), "Prefab variant custom material name could not be resolved");
-                require(material->name() == name,
-                        "Prefab variant custom material resolved to a material of another name");
-                found = resources.materials.emplace(name, std::move(material)).first;
-            }
-            renderer.custom_materials.push_back(found->second);
-        }
-    }
-    if (value.contains("primitive_visible"))
-        renderer.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
-    renderer.casts_shadows = value.value("casts_shadows", renderer.casts_shadows);
-    const auto &placements = value.contains("placements") ? value.at("placements") : omitted;
-    if (!placements.is_null()) {
-        require(placements.is_array() && renderer.mesh && !renderer.pose,
-                "Prefab variant placements must copy the renderer's mesh, which has no pose");
-        std::vector<Mat4> transforms;
-        transforms.reserve(placements.size());
-        for (const auto &transform : placements)
-            transforms.push_back(matrix_value(transform));
-        renderer.placements = MeshPlacements::create(renderer.mesh, transforms);
-    }
-    renderer.visibility_range =
-        detail::decode_visibility_range(value.contains("visibility_range") ? value.at("visibility_range") : omitted,
-                                        "Invalid prefab variant visibility range");
-    return renderer;
 }
 } // namespace
 
@@ -251,18 +135,8 @@ Prefab PrefabVariant::resolve(const PrefabResolver &resolver, ComponentCodecs co
             node.local = *value.local;
         if (value.active)
             node.active = *value.active;
-        if (value.renderer) {
-            const auto &renderer = *value.renderer;
-            node.mesh = renderer.mesh;
-            node.pose = renderer.pose;
-            node.visible = renderer.visible;
-            node.material_factors = renderer.material_factors;
-            node.custom_materials = renderer.custom_materials;
-            node.primitive_visible = renderer.primitive_visible;
-            node.casts_shadows = renderer.casts_shadows;
-            node.placements = renderer.placements;
-            node.visibility_range = renderer.visibility_range;
-        }
+        if (value.renderer)
+            node.renderer = *value.renderer;
         for (const auto &type : value.remove_components) {
             const auto component = std::find_if(node.components.begin(), node.components.end(),
                                                 [&](const auto &data) { return data.type == type; });
@@ -282,7 +156,7 @@ Prefab PrefabVariant::resolve(const PrefabResolver &resolver, ComponentCodecs co
 }
 
 std::string PrefabVariant::serialize(const MeshName &name) const {
-    ResourceNames resources;
+    detail::ResourceNames resources;
     auto overrides = Json::array();
     for (const auto &value : overrides_) {
         Json node_name = nullptr, local = nullptr, active = nullptr, renderer = nullptr;
@@ -293,7 +167,7 @@ std::string PrefabVariant::serialize(const MeshName &name) const {
         if (value.active)
             active = *value.active;
         if (value.renderer)
-            renderer = encode_renderer(*value.renderer, name, resources);
+            renderer = detail::encode_renderer_state(*value.renderer, name, resources, renderer_format);
         auto components = Json::array();
         for (const auto &component : value.set_components)
             components.push_back(
@@ -329,7 +203,7 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
     require(values.is_array() && values.size() <= maximum_overrides, "Invalid prefab variant override count");
     std::vector<Override> overrides;
     overrides.reserve(values.size());
-    Resources resources;
+    detail::Resources resources;
     for (const auto &value : values) {
         // An omitted change inherits from the base, as null does.
         detail::json_fields(value, {"key"},
@@ -343,8 +217,15 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
             result.local = matrix_value(value.at("local"));
         if (given("active"))
             result.active = value.at("active").get<bool>();
-        if (given("renderer"))
-            result.renderer = decode_renderer(value.at("renderer"), resolve, materials, resources);
+        if (given("renderer")) {
+            const auto &renderer = value.at("renderer");
+            // An omitted setting takes the default that RendererState declares.
+            detail::json_fields(renderer, {"mesh"},
+                                {"pose", "visible", "material_factors", "custom_materials", "primitive_visible",
+                                 "casts_shadows", "placements", "visibility_range"});
+            result.renderer =
+                detail::decode_renderer_state(renderer, resolve, materials, resources, {}, renderer_format);
+        }
         if (value.contains("set_components")) {
             const auto &components = value.at("set_components");
             require(components.is_array() && components.size() <= maximum_components,

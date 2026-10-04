@@ -49,10 +49,10 @@ inline void native_and_resources() {
     nodes[2].key = {700};
     nodes[2].parent = 0;
     for (auto &value : nodes)
-        value.mesh = original_mesh;
+        value.renderer.mesh = original_mesh;
     auto base = std::make_shared<const Prefab>(nodes);
     const auto before = base->serialize([](const auto &) { return "base-mesh"; });
-    PrefabVariant::Renderer renderer;
+    RendererState renderer;
     renderer.mesh = replacement_mesh;
     renderer.pose = replacement_mesh->rest_pose();
     renderer.pose->world[0][12] = 4;
@@ -100,11 +100,10 @@ inline void native_and_resources() {
     check(bases == 1 && base->serialize([](const auto &) { return "base-mesh"; }) == before &&
               result.nodes().size() == nodes.size() && node(result, {41}).name == "variant root" &&
               node(result, {41}).local[12] == 5 && node(result, {41}).active &&
-              node(result, {41}).mesh == replacement_mesh && node(result, {41}).pose &&
-              node(result, {41}).pose->world[0][12] == 4 && !node(result, {99}).mesh &&
+              node(result, {41}).renderer.mesh == replacement_mesh && node(result, {41}).renderer.pose &&
+              node(result, {41}).renderer.pose->world[0][12] == 4 && !node(result, {41}).renderer.casts_shadows &&
               node(result, {99}).name == "base child" && node(result, {99}).parent == nodes[1].parent &&
-              node(result, {700}).parent == nodes[2].parent && !node(result, {41}).casts_shadows &&
-              node(result, {99}).casts_shadows,
+              node(result, {700}).parent == nodes[2].parent && node(result, {99}).renderer == RendererState{},
           "Variant changed its base or lost typed overrides, authored keys or topology");
     Scene scene;
     auto placement = identity();
@@ -339,7 +338,7 @@ inline void composed_transforms() {
     // The tiny inherited parent makes the large authored child scale finite in
     // world space. A root-level renderer validation would reject its bounds.
     nodes[1].local = *child.local;
-    nodes[1].mesh = child.renderer->mesh;
+    nodes[1].renderer.mesh = child.renderer->mesh;
     const Prefab expected(nodes);
     Scene direct_scene, variant_scene;
     const auto direct = expected.instantiate(direct_scene);
@@ -357,7 +356,7 @@ inline void composed_transforms() {
     child.renderer->pose = child.renderer->mesh->rest_pose();
     child.renderer->pose->world[0][0] = std::numeric_limits<float>::max();
     nodes[1].local = identity();
-    nodes[1].pose = child.renderer->pose;
+    nodes[1].renderer.pose = child.renderer->pose;
     const Prefab expected_pose(nodes);
     const auto direct_pose = expected_pose.instantiate(direct_scene);
     const auto expected_pose_bounds = direct_pose.children()[0].renderer().bounds();
@@ -365,8 +364,8 @@ inline void composed_transforms() {
     const auto posed_instance = posed.instantiate(variant_scene);
     const auto posed_bounds = posed_instance.children()[0].renderer().bounds();
     check(posed_bounds.valid && std::isfinite(posed_bounds.maximum.x) &&
-              posed_bounds.maximum.x == expected_pose_bounds.maximum.x && node(posed, {99}).pose &&
-              node(posed, {99}).pose->world[0][0] == std::numeric_limits<float>::max(),
+              posed_bounds.maximum.x == expected_pose_bounds.maximum.x && node(posed, {99}).renderer.pose &&
+              node(posed, {99}).renderer.pose->world[0][0] == std::numeric_limits<float>::max(),
           "Variant validated a mesh pose outside its inherited hierarchy or changed its authored scale");
     auto unscaled_nodes = std::vector<Prefab::Node>(base->nodes().begin(), base->nodes().end());
     unscaled_nodes[0].local = identity();
@@ -400,7 +399,7 @@ inline void deferred_renderer_bounds() {
     const PrefabVariant overflowing("base", {change});
     rejects<std::invalid_argument>([&] { (void)overflowing.resolve([&](auto) { return base; }, {}); },
                                    "Non-finite render bounds");
-    check(instance.valid() && scene.size() == 1 && !base->nodes()[0].mesh,
+    check(instance.valid() && scene.size() == 1 && !base->nodes()[0].renderer.mesh,
           "Deferred variant bounds validation accepted overflow or changed existing authored/runtime state");
 }
 inline void run() {

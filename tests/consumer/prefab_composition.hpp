@@ -259,10 +259,10 @@ inline void composed_bounds() {
     mount.key = {41};
     mount.local[0] = std::numeric_limits<float>::max();
     auto anchor = std::make_shared<const Prefab>(std::vector{mount});
-    Prefab::Node renderer;
-    renderer.key = {41};
-    renderer.mesh = Mesh::compile(asset);
-    const auto visual = std::make_shared<const Prefab>(std::vector{renderer});
+    Prefab::Node drawn;
+    drawn.key = {41};
+    drawn.renderer.mesh = Mesh::compile(asset);
+    const auto visual = std::make_shared<const Prefab>(std::vector{drawn});
     const PrefabResolver resolve = [&](std::string_view key) { return key == "anchor" ? anchor : visual; };
     auto small = identity();
     small[0] = 1e-20F;
@@ -315,9 +315,9 @@ inline void composed_bounds() {
 
     // Here the authored mesh pose supplies the compensation. Staging the rest
     // pose first would overflow despite the valid complete initial renderer.
-    renderer.pose = renderer.mesh->rest_pose();
-    renderer.pose->world[0][0] = small[0];
-    const auto posed_visual = std::make_shared<const Prefab>(std::vector{renderer});
+    drawn.renderer.pose = drawn.renderer.mesh->rest_pose();
+    drawn.renderer.pose->world[0][0] = small[0];
+    const auto posed_visual = std::make_shared<const Prefab>(std::vector{drawn});
     const auto direct_pose = posed_visual->instantiate(parent);
     const auto composed_pose = single.instantiate(parent, [&](auto) { return posed_visual; }, {});
     const auto direct_bounds = direct_pose.renderer().bounds(),
