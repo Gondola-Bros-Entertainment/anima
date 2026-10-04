@@ -18,8 +18,8 @@ namespace anima {
 /// nonuniform scale is allowed, but zero or parallel axes are rejected.
 struct AudioListener {};
 
-/// Voice configuration of an AudioSource, with the ranges of the Sound setters. Distances are in
-/// world units; object scale does not change them.
+/// Voice configuration of an AudioSource, with the ranges of the Sound setters. The defaults are a
+/// new Sound's.
 struct AudioSourceSettings {
     /// Voice gain, in [0, 16].
     float volume = 1;
@@ -27,21 +27,16 @@ struct AudioSourceSettings {
     float pitch = 1;
     /// Pan of a nonspatial source, in [-1, 1].
     float pan = 0;
-    /// Distance up to which a spatial source plays at full gain; at least 0, and positive for
-    /// AudioRolloff::inverse.
-    float minimum_distance = 1;
-    /// Distance from which a spatial source's gain stops falling, silent with linear rolloff;
-    /// greater than #minimum_distance and at most 1,000,000,000.
-    float maximum_distance = 100;
+    /// How a spatial source's gain falls with distance. Its distances are in world units; object
+    /// scale does not change them.
+    AudioAttenuation attenuation{};
     bool looping = false;
-    /// Plays at the object's world position; see Sound::spatial.
+    /// Plays at the object's world position; see Sound::set_spatial.
     bool spatial = false;
     /// Requests playback once after construction or loading; see AudioSource::play.
     bool play_on_start = false;
     /// Priority when the engine's voice limit is reached, in [0, 255]; see Sound::play.
-    int priority = 128;
-    /// How a spatial source's gain falls between the two distances; see AudioRolloff.
-    AudioRolloff rolloff = AudioRolloff::linear;
+    int priority = default_audio_priority;
 };
 
 /// Component that owns one voice for an immutable clip, like Unity's AudioSource or Unreal's audio
@@ -103,11 +98,12 @@ class AudioSource {
 /// that is not finite or exceeds 1,000,000,000 in magnitude. Activity is ComponentRef::active():
 /// component enablement and inherited object activation.
 ///
-/// The active listener then sets Audio::listener; without one, the listener returns to the origin
-/// facing -Z with +Y up. Active sources take their object's world position when spatial, and play
-/// when play() or AudioSourceSettings::play_on_start requested it or when they were playing before
-/// becoming inactive; each such request is consumed, whether or not the voice limit admits the
-/// voice. Inactive sources pause, keeping their cursor. Enablement changes take effect only here.
+/// The active listener then places the engine's listener (see Audio::set_listener); without one, the
+/// listener returns to the origin facing -Z with +Y up. Active sources take their object's world
+/// position when spatial, and play when play() or AudioSourceSettings::play_on_start requested it or
+/// when they were playing before becoming inactive; each such request is consumed, whether or not
+/// the voice limit admits the voice. Inactive sources pause, keeping their cursor. Enablement
+/// changes take effect only here.
 ///
 /// Call it after the application's transform changes. An engine with a device mixes what it
 /// publishes from its next block, and one without in its next Audio::render(). It runs no
@@ -124,7 +120,7 @@ void synchronize_audio(SceneSet &scenes, Audio &audio);
 using AudioClipName = std::function<std::string(const std::shared_ptr<const AudioClip> &)>;
 /// Returns the clip for a persistent key when a source is restored.
 using AudioClipResolver = std::function<std::shared_ptr<const AudioClip>(std::string_view)>;
-/// Registers the `anima.audio-listener.v1` and `anima.audio-source.v1` component codecs.
+/// Registers the `anima.audio-listener.v1` and `anima.audio-source.v2` component codecs.
 ///
 /// The codecs retain the engine of @p audio and @p bus, which must belong to that engine: with a
 /// foreign bus, every source restore throws. Each restored source gets its own stopped voice on
@@ -132,14 +128,15 @@ using AudioClipResolver = std::function<std::shared_ptr<const AudioClip>(std::st
 /// request waits for synchronize_audio().
 ///
 /// The listener payload is `{}`. The source payload is a JSON object of at most 64 KiB with `clip`
-/// (the key), `volume`, `pitch`, `pan`, `minimum_distance`, `maximum_distance`, `looping`, `spatial`
-/// and `play_on_start`, and optionally `priority` (an integer) and `rolloff` (`"linear"` or
-/// `"inverse"`), as in AudioSourceSettings; the optional fields default as there, and captures
-/// write every field. Unknown, missing or duplicate fields, wrong types and invalid values are
-/// rejected, as is a null clip from @p resolve. Keys must be nonempty, at most 4,096 bytes and free
-/// of NUL, both when captured and when restored. The scene or prefab stores transforms and
-/// component enablement; cursors, playback state, pending requests and bus settings are not
-/// persisted.
+/// (the key), `volume`, `pitch`, `pan`, `attenuation`, `looping`, `spatial`, `play_on_start` and
+/// `priority` (an integer), as in AudioSourceSettings; `attenuation` is an object with
+/// `minimum_distance`, `maximum_distance` and `rolloff` (`"linear"` or `"inverse"`), as in
+/// AudioAttenuation. Every field is required: a missing one throws `std::invalid_argument` with
+/// "Missing JSON field: " followed by its name. Unknown or duplicate fields, wrong types and invalid
+/// values are rejected too, as is a null clip from @p resolve. Keys must be nonempty, at most 4,096
+/// bytes and free of NUL, both when captured and when restored. The scene or prefab stores
+/// transforms and component enablement; cursors, playback state, pending requests and bus settings
+/// are not persisted.
 ///
 /// Neither callback may mutate scenes, components or the engine. Throws `std::invalid_argument` for
 /// an empty callback, a @p bus of another engine, or when @p codecs already has a codec for either

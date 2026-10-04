@@ -102,8 +102,7 @@ inline void frame_cadence() {
     auto reference2 = reference_plane.create(settings2);
     AudioSourceSettings sound;
     sound.spatial = sound.looping = sound.play_on_start = true;
-    sound.minimum_distance = 0;
-    sound.maximum_distance = 4;
+    sound.attenuation = {0, 4};
     auto source =
         emitter.add_component<AudioSource>(audio, AudioClip::pcm(std::vector<float>(16, .25F), 1, 8000), sound);
     FixedStepClock clock(10ms, 4);
@@ -515,8 +514,7 @@ inline void run() {
     auto clip = AudioClip::pcm(std::vector<float>(16, sample_value), 1, 8000);
     AudioSourceSettings sound;
     sound.spatial = sound.looping = sound.play_on_start = true;
-    sound.minimum_distance = 0;
-    sound.maximum_distance = 4;
+    sound.attenuation = {0, 4};
     auto source = emitter.add_component<AudioSource>(audio, clip, sound);
     synchronize_audio(scenes, audio);
     check(source->playing() && source->cursor() == 0, "Audio synchronization advanced time or missed playback");

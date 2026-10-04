@@ -20,7 +20,6 @@ namespace {
 constexpr unsigned minimum_sample_rate = 8000, maximum_sample_rate = 192000;
 constexpr unsigned maximum_voice_count = 4096, maximum_bus_depth = 16;
 constexpr double maximum_fade_seconds = 24 * 60 * 60;
-constexpr int default_priority = 128;
 // Engine output is interleaved stereo.
 constexpr ma_uint32 output_channels = 2;
 constexpr std::size_t not_playing = std::numeric_limits<std::size_t>::max();
@@ -300,7 +299,7 @@ struct VoiceState {
     float pitch_from = 1, pitch_to = 1;
     std::uint64_t pitch_elapsed = 0, pitch_frames = 0;
     float pan = 0;
-    int priority = default_priority;
+    int priority = default_audio_priority;
     bool spatial = false;
     std::uint64_t admitted = 0;     // The admission order of play(), for the voice limit's tie rule.
     std::size_t slot = not_playing; // Index in AudioState::playing.
@@ -341,6 +340,13 @@ struct VoiceState {
         pitch_from = pitch_to = value;
         pitch_elapsed = pitch_frames = 0;
         ma_sound_set_pitch(&sound, value);
+    }
+    // The sound's spatializer holds the attenuation, which Sound::attenuation reads back from it.
+    void apply_attenuation(const AudioAttenuation &value) {
+        ma_sound_set_attenuation_model(&sound, value.rolloff == AudioRolloff::inverse ? ma_attenuation_model_inverse
+                                                                                      : ma_attenuation_model_linear);
+        ma_sound_set_min_distance(&sound, value.minimum_distance);
+        ma_sound_set_max_distance(&sound, value.maximum_distance);
     }
     // Frames of the clip the voice has taken for mixing: those its data source has delivered, less those its sound
     // still caches, modulo the clip when that crosses a loop.
@@ -542,14 +548,19 @@ std::size_t Audio::voice_count() const {
     const std::lock_guard lock(s.mutex);
     return s.voices;
 }
-void Audio::volume(float value) {
+void Audio::set_volume(float value) {
     detail::audio_gain(value);
     auto &s = state();
     const std::lock_guard lock(s.mutex);
     s.volume = value;
     s.master.ramp_gain(value, s.ramp(s.master), false);
 }
-void Audio::listener(Vec3 position, Vec3 forward, Vec3 up) {
+float Audio::volume() const {
+    auto &s = state();
+    const std::lock_guard lock(s.mutex);
+    return s.volume;
+}
+void Audio::set_listener(Vec3 position, Vec3 forward, Vec3 up) {
     detail::audio_location(position);
     (void)detail::audio_right(forward, up);
     auto &s = state();
@@ -573,7 +584,7 @@ AudioBus Audio::bus(const AudioBus &parent) {
     result.state_ = std::move(created);
     return result;
 }
-void AudioBus::volume(float value) {
+void AudioBus::set_volume(float value) {
     detail::audio_gain(value);
     if (!state_)
         throw std::logic_error("Empty audio bus");
@@ -582,13 +593,25 @@ void AudioBus::volume(float value) {
     state_->volume = value;
     state_->node.ramp_gain(state_->muted ? 0 : value, audio.ramp(state_->node), false);
 }
-void AudioBus::muted(bool value) {
+float AudioBus::volume() const {
+    if (!state_)
+        throw std::logic_error("Empty audio bus");
+    const std::lock_guard lock(state_->audio->mutex);
+    return state_->volume;
+}
+void AudioBus::set_muted(bool value) {
     if (!state_)
         throw std::logic_error("Empty audio bus");
     auto &audio = *state_->audio;
     const std::lock_guard lock(audio.mutex);
     state_->muted = value;
     state_->node.ramp_gain(value ? 0 : state_->volume, audio.ramp(state_->node), false);
+}
+bool AudioBus::muted() const {
+    if (!state_)
+        throw std::logic_error("Empty audio bus");
+    const std::lock_guard lock(state_->audio->mutex);
+    return state_->muted;
 }
 Sound Audio::sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus) {
     auto &s = state();
@@ -632,9 +655,7 @@ Sound Audio::sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus) {
     detail::check_audio(ma_node_attach_output_bus(&voice->sound, 0, &voice->output, 0), "Connect an audio voice");
     ma_sound_set_spatialization_enabled(&voice->sound, MA_FALSE);
     ma_sound_set_doppler_factor(&voice->sound, 0);
-    ma_sound_set_attenuation_model(&voice->sound, ma_attenuation_model_linear);
-    ma_sound_set_min_distance(&voice->sound, 1);
-    ma_sound_set_max_distance(&voice->sound, 100);
+    voice->apply_attenuation({});
     voice->output.ramp_factors(detail::pan_factors(0, data.channels()), 0);
     ++s.voices;
     voice->counted = true;
@@ -725,18 +746,28 @@ void Sound::seek(double seconds) {
     const std::lock_guard lock(voice.audio->mutex);
     voice.seek(frame);
 }
-void Sound::looping(bool value) {
+void Sound::set_looping(bool value) {
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
     ma_sound_set_looping(&voice.sound, value ? MA_TRUE : MA_FALSE);
 }
-void Sound::volume(float value) {
+bool Sound::looping() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return ma_sound_is_looping(&voice.sound) != MA_FALSE;
+}
+void Sound::set_volume(float value) {
     detail::audio_gain(value);
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
     voice.output.ramp_gain(value, voice.ramp(), false);
 }
-void Sound::pitch(float value) {
+float Sound::volume() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return static_cast<float>(voice.output.gain_to);
+}
+void Sound::set_pitch(float value) {
     detail::audio_pitch(value);
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
@@ -749,7 +780,12 @@ void Sound::pitch(float value) {
         voice.apply_pitch(value);
     }
 }
-void Sound::pan(float value) {
+float Sound::pitch() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return voice.pitch_to;
+}
+void Sound::set_pan(float value) {
     detail::audio_pan(value);
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
@@ -757,13 +793,23 @@ void Sound::pan(float value) {
     if (!voice.spatial)
         voice.output.ramp_factors(detail::pan_factors(value, voice.clip->channels()), voice.ramp());
 }
-void Sound::priority(int value) {
+float Sound::pan() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return voice.pan;
+}
+void Sound::set_priority(int value) {
     detail::audio_priority(value);
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
     voice.priority = value;
 }
-void Sound::spatial(bool value) {
+int Sound::priority() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return voice.priority;
+}
+void Sound::set_spatial(bool value) {
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
     if (voice.spatial == value)
@@ -774,20 +820,35 @@ void Sound::spatial(bool value) {
     if (value)
         voice.audio->prime(voice);
 }
-void Sound::position(Vec3 value) {
+bool Sound::spatial() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return voice.spatial;
+}
+void Sound::set_position(Vec3 value) {
     detail::audio_location(value);
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
     ma_sound_set_position(&voice.sound, value.x, value.y, value.z);
 }
-void Sound::attenuation(float minimum, float maximum, AudioRolloff rolloff) {
-    detail::audio_attenuation(minimum, maximum, rolloff);
+Vec3 Sound::position() const {
     auto &voice = state();
     const std::lock_guard lock(voice.audio->mutex);
-    ma_sound_set_attenuation_model(&voice.sound, rolloff == AudioRolloff::inverse ? ma_attenuation_model_inverse
-                                                                                  : ma_attenuation_model_linear);
-    ma_sound_set_min_distance(&voice.sound, minimum);
-    ma_sound_set_max_distance(&voice.sound, maximum);
+    const auto value = ma_sound_get_position(&voice.sound);
+    return {value.x, value.y, value.z};
+}
+void Sound::set_attenuation(const AudioAttenuation &value) {
+    detail::audio_attenuation(value);
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    voice.apply_attenuation(value);
+}
+AudioAttenuation Sound::attenuation() const {
+    auto &voice = state();
+    const std::lock_guard lock(voice.audio->mutex);
+    return {ma_sound_get_min_distance(&voice.sound), ma_sound_get_max_distance(&voice.sound),
+            ma_sound_get_attenuation_model(&voice.sound) == ma_attenuation_model_inverse ? AudioRolloff::inverse
+                                                                                         : AudioRolloff::linear};
 }
 void Sound::fade(float target, double seconds) {
     detail::audio_gain(target);

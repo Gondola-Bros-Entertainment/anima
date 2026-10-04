@@ -20,8 +20,9 @@
 /// mixes on miniaudio's device thread: every member of Audio, AudioBus and Sound locks the engine while it runs,
 /// and the device thread holds the same lock while it mixes each block of at most anima::audio_block_frames frames.
 /// Each call is therefore safe while the device plays, may wait for the block being mixed, and takes effect from the
-/// next block; getters report the state after the latest mixed block. An engine without a device mixes only in
-/// Audio::render, on the calling thread.
+/// next block; getters of playback, such as Sound::playing and Sound::cursor, report the state after the latest mixed
+/// block, and getters of settings the value last set. An engine without a device mixes only in Audio::render, on the
+/// calling thread.
 ///
 /// Invalid arguments throw `std::invalid_argument`, and calling a member of a moved-from Audio or of an empty
 /// AudioBus or Sound throws `std::logic_error`, unless a member states otherwise. A failure that miniaudio reports
@@ -51,7 +52,7 @@ enum class AudioLoadMode {
 };
 
 /// How a spatial voice's gain falls with its distance d from the listener, between the minimum and maximum
-/// attenuation distances of Sound::attenuation. Nearer than the minimum distance, a voice plays at full gain.
+/// distances of its AudioAttenuation. Nearer than the minimum distance, a voice plays at full gain.
 enum class AudioRolloff {
     /// `1 - (d - minimum) / (maximum - minimum)`, silent from the maximum distance on, like Unity's Linear
     /// Rolloff and Unreal's linear attenuation.
@@ -60,6 +61,22 @@ enum class AudioRolloff {
     /// model with a rolloff factor of 1. Requires a positive minimum distance.
     inverse,
 };
+
+/// A spatial voice's distance range and how its gain falls within it, as Sound::set_attenuation applies it.
+/// Distances are in the units of positions. The defaults are a new voice's.
+struct AudioAttenuation {
+    /// Distance up to which a spatial voice plays at full gain: at least 0, and positive for AudioRolloff::inverse.
+    float minimum_distance = 1;
+    /// Distance from which the gain stops falling, silent with linear rolloff: greater than #minimum_distance and at
+    /// most 1,000,000,000.
+    float maximum_distance = 100;
+    /// How the gain falls between the two distances.
+    AudioRolloff rolloff = AudioRolloff::linear;
+    bool operator==(const AudioAttenuation &) const = default;
+};
+
+/// Priority of a new voice, in the [0, 255] range of Sound::set_priority.
+inline constexpr int default_audio_priority = 128;
 
 /// Where Audio::open_device sends its output.
 enum class AudioBackend {
@@ -143,11 +160,16 @@ class AudioClip {
 class AudioBus {
   public:
     AudioBus() = default;
-    /// Sets the bus gain, in [0, 16], reached as #audio_smoothing_seconds describes.
-    void volume(float gain);
+    /// Sets the bus gain, in [0, 16], reached as #audio_smoothing_seconds describes. Throws
+    /// `std::invalid_argument` with "Audio gain must be in [0, 16]" otherwise.
+    void set_volume(float gain);
+    /// The gain of the latest set_volume(), or 1 for a new bus, even while the bus is muted or still ramps to it.
+    [[nodiscard]] float volume() const;
     /// Silences the bus and its descendants, as a gain of 0 would, without pausing their voices, whose cursors and
-    /// fades keep advancing. Unmuting restores the gain of volume().
-    void muted(bool value);
+    /// fades keep advancing. Unmuting restores the gain of set_volume().
+    void set_muted(bool value);
+    /// Whether the latest set_muted() muted the bus; false for a new bus.
+    [[nodiscard]] bool muted() const;
 
   private:
     friend class Audio;
@@ -157,8 +179,9 @@ class AudioBus {
 /// Move-only owner of one voice: one playing instance of a clip, like a Unity AudioSource's playback or an Unreal
 /// active sound.
 ///
-/// A new voice is stopped at the start of its clip, with gain 1, pitch 1, pan 0, priority 128, attenuation
-/// distances 1 to 100 with linear rolloff, looping and spatial mode off and its position at the origin. Only a
+/// A new voice is stopped at the start of its clip, with gain 1, pitch 1, pan 0, priority #default_audio_priority,
+/// the attenuation of a default AudioAttenuation, looping and spatial mode off and its position at the origin. Each
+/// getter of these settings reports the value last set, which a playing voice may still be ramping to. Only a
 /// playing voice counts against the engine's voice limit. Destroying or reassigning the Sound stops and releases
 /// the voice. The voice retains its clip, bus chain and engine, so it never refers to a destroyed Audio.
 class Sound {
@@ -193,46 +216,70 @@ class Sound {
     /// clip frames ahead of its latest mixed output, held by its linear resampler.
     [[nodiscard]] double cursor() const;
     /// Loops playback, continuing from the start at the end of the clip.
-    void looping(bool value);
+    void set_looping(bool value);
+    /// Whether the voice loops; false for a new voice.
+    [[nodiscard]] bool looping() const;
     /// Sets the voice gain, in [0, 16], and replaces any fade; a playing voice reaches it as
-    /// #audio_smoothing_seconds describes.
-    void volume(float gain);
+    /// #audio_smoothing_seconds describes. Throws `std::invalid_argument` with "Audio gain must be in [0, 16]"
+    /// otherwise.
+    void set_volume(float gain);
+    /// The gain the voice has or ramps to: that of the latest set_volume() or fade(), or the gain at which stop()
+    /// cancelled a fade; 1 for a new voice.
+    [[nodiscard]] float volume() const;
     /// Sets the playback-rate multiplier, in [0.01, 8], which scales both pitch and duration; a playing voice
     /// reaches it as #audio_smoothing_seconds and #audio_block_frames describe. Clips are resampled linearly to the
-    /// output rate, without low-pass filtering.
-    void pitch(float rate);
-    /// Sets the pan of a nonspatial voice, in [-1, 1] from left to right, reached like volume().
+    /// output rate, without low-pass filtering. Throws `std::invalid_argument` with "Audio pitch must be in [0.01,
+    /// 8]" otherwise.
+    void set_pitch(float rate);
+    /// The playback-rate multiplier of the latest set_pitch(); 1 for a new voice.
+    [[nodiscard]] float pitch() const;
+    /// Sets the pan of a nonspatial voice, in [-1, 1] from left to right, reached like set_volume(). Throws
+    /// `std::invalid_argument` with "Audio pan must be in [-1, 1]" otherwise.
     ///
     /// Mono clips use equal-power gains, -3 dB on each channel at center: `sqrt((1 - pan) / 2)` on the left and
     /// `sqrt((1 + pan) / 2)` on the right. Stereo clips keep both channels unchanged at center and attenuate the
-    /// opposite channel by `sqrt(1 - |pan|)` as they pan.
-    void pan(float value);
+    /// opposite channel by `sqrt(1 - |pan|)` as they pan. A spatial voice keeps its pan for when it stops being
+    /// spatial.
+    void set_pan(float value);
+    /// The pan of the latest set_pan(), also while the voice is spatial; 0 for a new voice.
+    [[nodiscard]] float pan() const;
     /// Sets the priority that play() compares when the voice limit is reached, in [0, 255]; higher values are more
-    /// important, as in Unreal (Unity's AudioSource.priority runs the other way).
-    void priority(int value);
-    /// Places the voice relative to the listener (see Audio::listener) instead of panning it; switching mode
+    /// important, as in Unreal (Unity's AudioSource.priority runs the other way). Throws `std::invalid_argument`
+    /// with "Audio priority must be in [0, 255]" otherwise.
+    void set_priority(int value);
+    /// The priority of the latest set_priority(); #default_audio_priority for a new voice.
+    [[nodiscard]] int priority() const;
+    /// Places the voice relative to the listener (see Audio::set_listener) instead of panning it; switching mode
     /// applies at once.
     ///
-    /// A spatial voice's gain falls with distance as attenuation() sets, and its output channels are weighted by
-    /// direction: with c the cosine between the listener's right vector and the direction from the listener to the
-    /// voice, the left channel takes `max(0.2, (1 - c) / 2)` and the right `max(0.2, (1 + c) / 2)`, so a voice
+    /// A spatial voice's gain falls with distance as set_attenuation() sets, and its output channels are weighted
+    /// by direction: with c the cosine between the listener's right vector and the direction from the listener to
+    /// the voice, the left channel takes `max(0.2, (1 - c) / 2)` and the right `max(0.2, (1 + c) / 2)`, so a voice
     /// straight ahead plays at half gain on both sides. Within 0.001 of the listener, neither is weighted. A mono
     /// clip feeds both channels and a stereo clip keeps its own. While the voice plays, these gains follow
     /// position, attenuation and listener changes through a linear ramp across one block of
     /// anima::audio_block_frames frames, reaching the new values by the end of the first whole block after the
     /// change; they take their current values at once when the voice starts, resumes or becomes spatial.
-    /// Nonspatial voices ignore position() and attenuation().
-    void spatial(bool value);
-    /// Position of a spatial voice, in the same space as the listener.
-    void position(Vec3 value);
-    /// Sets the spatial distance range and how gain falls within it. @p minimum_distance must be at least 0, and
-    /// positive for AudioRolloff::inverse, and less than @p maximum_distance, which must be at most
-    /// 1,000,000,000.
-    void attenuation(float minimum_distance, float maximum_distance, AudioRolloff rolloff = AudioRolloff::linear);
+    /// Nonspatial voices ignore their position and attenuation.
+    void set_spatial(bool value);
+    /// Whether the voice is spatial; false for a new voice.
+    [[nodiscard]] bool spatial() const;
+    /// Sets the position of a spatial voice, in the same space as the listener. Throws `std::invalid_argument`
+    /// with "Audio coordinates must be finite and within one billion units" otherwise.
+    void set_position(Vec3 value);
+    /// The position of the latest set_position(); the origin for a new voice.
+    [[nodiscard]] Vec3 position() const;
+    /// Sets the spatial distance range and how gain falls within it. Throws `std::invalid_argument` with "Invalid
+    /// audio rolloff" for a rolloff that is not an AudioRolloff enumerator, then "Invalid audio attenuation
+    /// distances" for a distance that is not finite or outside the ranges AudioAttenuation states.
+    void set_attenuation(const AudioAttenuation &value);
+    /// The attenuation of the latest set_attenuation(); a default AudioAttenuation for a new voice.
+    [[nodiscard]] AudioAttenuation attenuation() const;
     /// Changes the voice gain linearly from its current value to @p target_gain, in [0, 16], over @p seconds of
-    /// mixed output, in [0, 86,400]; zero applies it at once.
+    /// mixed output, in [0, 86,400]; zero applies it at once. Throws `std::invalid_argument` with "Audio gain must
+    /// be in [0, 16]" or "Invalid audio fade duration" otherwise.
     ///
-    /// The fade advances only while the voice plays, independent of pitch. A new fade replaces it, volume()
+    /// The fade advances only while the voice plays, independent of pitch. A new fade replaces it, set_volume()
     /// replaces it with its own ramp, and stop() cancels it.
     void fade(float target_gain, double seconds);
 
@@ -278,15 +325,20 @@ class Audio {
     /// Whether this engine can route to @p bus: the master output (an empty handle) or a bus it created. False
     /// for every bus of a moved-from engine.
     [[nodiscard]] bool owns(const AudioBus &bus) const noexcept;
-    /// Sets the master gain, in [0, 16], reached as #audio_smoothing_seconds describes.
-    void volume(float gain);
+    /// Sets the master gain, in [0, 16], reached as #audio_smoothing_seconds describes. Throws
+    /// `std::invalid_argument` with "Audio gain must be in [0, 16]" otherwise.
+    void set_volume(float gain);
+    /// The master gain of the latest set_volume(); 1 for a new engine.
+    [[nodiscard]] float volume() const;
     /// Places the listener that spatial voices pan and attenuate against.
     ///
     /// Right-handed, as for cameras: the default -Z forward with +Y up puts +X on the listener's right, and facing
     /// +Z swaps left and right. Only @p position and the right vector, `cross(forward, up)` normalized, affect the
-    /// mix, so it does not distinguish front from back or above from below. Throws when @p forward or @p up is
-    /// shorter than 0.000001 or the two are parallel.
-    void listener(Vec3 position, Vec3 forward = view_forward, Vec3 up = world_up);
+    /// mix, so it does not distinguish front from back or above from below. Throws `std::invalid_argument` with
+    /// "Audio coordinates must be finite and within one billion units" for a coordinate of any argument that is
+    /// not, "Invalid audio listener orientation" when @p forward or @p up is shorter than 0.000001, and "Parallel
+    /// audio listener orientation vectors" when the two are parallel.
+    void set_listener(Vec3 position, Vec3 forward = view_forward, Vec3 up = world_up);
     /// Output rate in frames per second: the constructor's, or the device's.
     [[nodiscard]] unsigned sample_rate() const;
     /// How many voices may play at once; see Sound::play.
@@ -300,7 +352,7 @@ class Audio {
     /// @p output holds interleaved left and right samples, so its size must be even. Voices, fades and ramps
     /// advance by the mixed frames, not wall-clock time, and changes made before the call apply from its first
     /// frame. With no changes in between, rendering the same frames in one call or in several produces identical
-    /// samples on the same platform, except while spatial gains ramp (see Sound::spatial); cross-platform bitwise
+    /// samples on the same platform, except while spatial gains ramp (see Sound::set_spatial); cross-platform bitwise
     /// equality is not promised.
     void render(std::span<float> output);
 

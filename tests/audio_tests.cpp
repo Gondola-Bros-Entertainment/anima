@@ -90,7 +90,7 @@ TEST_CASE("A voice plays, finishes, loops, pauses and restarts") {
     Audio audio(rate, 2);
     const auto clip = AudioClip::pcm(std::vector<float>(16, 1), 1, rate);
     auto sound = audio.sound(clip);
-    sound.pan(-1);
+    sound.set_pan(-1);
     CHECK(sound.play());
     auto output = render(audio, 32);
     // The resampler delays the clip by one frame; the left channel then carries it at full gain.
@@ -104,7 +104,7 @@ TEST_CASE("A voice plays, finishes, loops, pauses and restarts") {
     // The voice stopped at the end of the clip, with its cursor there.
     CHECK_FALSE(sound.playing());
     CHECK(sound.cursor() == Near{clip->duration(), tolerance});
-    sound.looping(true);
+    sound.set_looping(true);
     CHECK(sound.play()); // Playing from the end restarts the clip.
     output = render(audio, 40);
     CHECK(sound.playing());
@@ -120,7 +120,7 @@ TEST_CASE("A voice plays, finishes, loops, pauses and restarts") {
     CHECK(sound.cursor() == 0);
     sound.seek(clip->duration());
     CHECK(sound.cursor() == Near{clip->duration(), tolerance});
-    sound.looping(false);
+    sound.set_looping(false);
     CHECK(sound.play());
     CHECK(sound.cursor() == 0);
     output = render(audio, 2);
@@ -136,8 +136,8 @@ TEST_CASE("A full voice limit stops the lowest priority, then the voice admitted
     const auto clip = AudioClip::pcm(std::vector<float>(rate, .5F), 1, rate);
     auto first = audio.sound(clip), second = audio.sound(clip), low = audio.sound(clip), high = audio.sound(clip);
     CHECK(audio.voice_count() == 4u);
-    low.priority(100);
-    high.priority(200);
+    low.set_priority(100);
+    high.set_priority(200);
     CHECK(first.play());
     CHECK(second.play());
     (void)render(audio, 64);
@@ -152,7 +152,7 @@ TEST_CASE("A full voice limit stops the lowest priority, then the voice admitted
     CHECK(first.play()); // The second voice now ranks lowest, and an equal priority stops it.
     CHECK_FALSE(second.playing());
     CHECK(high.playing());
-    second.priority(255);
+    second.set_priority(255);
     CHECK(second.play()); // The first voice, admitted last, now ranks lowest and stops.
     CHECK_FALSE(first.playing());
     first.pause();
@@ -163,7 +163,7 @@ TEST_CASE("A full voice limit stops the lowest priority, then the voice admitted
     {
         const auto one_shot = AudioClip::pcm(std::vector<float>(4, .5F), 1, rate);
         auto brief = audio.sound(one_shot);
-        brief.priority(0);
+        brief.set_priority(0);
         first.stop();
         CHECK(brief.play());
         (void)render(audio, 64); // A voice that reached its end holds no place either.
@@ -178,20 +178,20 @@ TEST_CASE("Gain, pan and fades ramp linearly while a voice plays, and apply at o
     Audio audio(rate);
     const auto clip = AudioClip::pcm(std::vector<float>(16, 1), 1, rate);
     auto sound = audio.sound(clip);
-    sound.looping(true);
-    sound.pan(-1);
-    sound.volume(.5F); // Stopped: at once.
+    sound.set_looping(true);
+    sound.set_pan(-1);
+    sound.set_volume(.5F); // Stopped: at once.
     CHECK(sound.play());
     auto output = render(audio, 64);
     CHECK(output[2] == Near{.5, tolerance});
-    sound.volume(1);
+    sound.set_volume(1);
     output = render(audio, 2 * smoothing);
     for (std::size_t frame = 0; frame <= smoothing; frame += 40) {
         CAPTURE(frame);
         CHECK(output[2 * frame] == Near{.5 + .5 * double(frame) / smoothing, 1e-5});
     }
     CHECK(output[2 * (2 * smoothing - 1)] == Near{1, tolerance});
-    sound.pan(1); // The equal-power gains move linearly between the two sides.
+    sound.set_pan(1); // The equal-power gains move linearly between the two sides.
     output = render(audio, 2 * smoothing);
     CHECK(output[0] == Near{1, tolerance});
     CHECK(output[1] == Near{0, tolerance});
@@ -221,7 +221,7 @@ TEST_CASE("Gain, pan and fades ramp linearly while a voice plays, and apply at o
     output = render(audio, 2);
     CHECK(output[1] == Near{1, tolerance});
     sound.stop();
-    sound.pan(-1); // Stopped: at once.
+    sound.set_pan(-1); // Stopped: at once.
     sound.play();
     output = render(audio, 2);
     CHECK(output[2] == Near{1, tolerance});
@@ -232,15 +232,15 @@ TEST_CASE("Pitch ramps in steps at the start of each block while a voice plays")
     Audio audio(rate);
     const auto clip = AudioClip::pcm(std::vector<float>(rate, .5F), 1, rate);
     auto sound = audio.sound(clip);
-    sound.pitch(2); // Stopped: at once.
+    sound.set_pitch(2); // Stopped: at once.
     CHECK(sound.play());
     (void)render(audio, audio_block_frames);
     CHECK(sound.cursor() == Near{2. * audio_block_frames / rate, 2. / rate});
     sound.stop();
-    sound.pitch(1);
+    sound.set_pitch(1);
     CHECK(sound.play());
     (void)render(audio, audio_block_frames);
-    sound.pitch(2);
+    sound.set_pitch(2);
     // The ramp covers 160 frames: blocks starting 64 and 128 frames into it play at 1.4 and 1.8, and then 2.
     for (const double pitch : {1.4, 1.8, 2., 2.}) {
         CAPTURE(pitch);
@@ -253,34 +253,34 @@ TEST_CASE("Pitch ramps in steps at the start of each block while a voice plays")
 TEST_CASE("Bus and master gains compose, ramp while audio passes and apply at once while idle") {
     Audio audio(rate);
     auto parent = audio.bus();
-    parent.volume(.5F);
+    parent.set_volume(.5F);
     auto child = audio.bus(parent);
-    child.volume(.5F);
+    child.set_volume(.5F);
     auto sound = audio.sound(AudioClip::pcm({1, 1}, 1, rate), child);
-    sound.pan(-1);
-    sound.looping(true);
+    sound.set_pan(-1);
+    sound.set_looping(true);
     sound.play();
     auto output = render(audio, 64);
     CHECK(output[2] == Near{.25, tolerance});
-    parent.muted(true); // The parent's mute reaches the child, over the smoothing time.
+    parent.set_muted(true); // The parent's mute reaches the child, over the smoothing time.
     output = render(audio, 2 * smoothing);
     CHECK(output[smoothing] == Near{.125, 1e-5});
     CHECK(output.back() == 0);
     CHECK(output[2 * (2 * smoothing - 1)] == 0);
-    parent.muted(false);
-    parent.volume(1);
-    child.volume(1);
-    audio.volume(.5F);
+    parent.set_muted(false);
+    parent.set_volume(1);
+    child.set_volume(1);
+    audio.set_volume(.5F);
     (void)settle(audio);
     CHECK(settle(audio)[0] == Near{.5, tolerance});
     sound.pause();
     (void)render(audio, 1);
-    audio.volume(1); // Nothing passes through the master now, so the gain applies at once.
-    child.volume(.25F);
+    audio.set_volume(1); // Nothing passes through the master now, so the gain applies at once.
+    child.set_volume(.25F);
     sound.play();
     output = render(audio, 2);
     CHECK(output[2] == Near{.25, tolerance});
-    child.volume(.5F); // Ramping, since the voice plays through the bus.
+    child.set_volume(.5F); // Ramping, since the voice plays through the bus.
     sound.pause();
     (void)render(audio, smoothing); // Bus ramps advance with output time, even with nothing passing.
     sound.play();
@@ -291,56 +291,134 @@ TEST_CASE("Bus and master gains compose, ramp while audio passes and apply at on
     CHECK(settle(audio)[0] == Near{.5, tolerance}); // The voice retains its bus chain.
 }
 
+TEST_CASE("Getters report a new voice's defaults, then the values last set rather than those ramps reached") {
+    Audio audio(rate);
+    auto bus = audio.bus();
+    const auto clip = AudioClip::pcm(std::vector<float>(rate, .5F), 1, rate);
+    auto sound = audio.sound(clip, bus);
+    CHECK(audio.volume() == 1);
+    CHECK(bus.volume() == 1);
+    CHECK_FALSE(bus.muted());
+    CHECK(sound.volume() == 1);
+    CHECK(sound.pitch() == 1);
+    CHECK(sound.pan() == 0);
+    CHECK(sound.priority() == default_audio_priority);
+    CHECK(default_audio_priority == 128);
+    CHECK_FALSE(sound.looping());
+    CHECK_FALSE(sound.spatial());
+    CHECK(sound.position().x == 0);
+    CHECK(sound.position().y == 0);
+    CHECK(sound.position().z == 0);
+    CHECK(sound.attenuation() == AudioAttenuation{});
+    CHECK(AudioAttenuation{} == AudioAttenuation{1, 100, AudioRolloff::linear});
+
+    audio.set_volume(.5F);
+    bus.set_volume(.25F);
+    bus.set_muted(true);
+    sound.set_volume(2);
+    sound.set_pitch(1.5F);
+    sound.set_pan(-.5F);
+    sound.set_priority(7);
+    sound.set_looping(true);
+    sound.set_spatial(true);
+    sound.set_position({1, 2, -3});
+    sound.set_attenuation({.5F, 20, AudioRolloff::inverse});
+    CHECK(audio.volume() == .5F);
+    CHECK(bus.volume() == .25F); // The gain set, which muting does not change.
+    CHECK(bus.muted());
+    CHECK(sound.volume() == 2);
+    CHECK(sound.pitch() == 1.5F);
+    CHECK(sound.pan() == -.5F); // Kept while the voice is spatial.
+    CHECK(sound.priority() == 7);
+    CHECK(sound.looping());
+    CHECK(sound.spatial());
+    CHECK(sound.position().x == 1);
+    CHECK(sound.position().y == 2);
+    CHECK(sound.position().z == -3);
+    CHECK(sound.attenuation() == AudioAttenuation{.5F, 20, AudioRolloff::inverse});
+    // Rejected values leave the settings unchanged.
+    CHECK_THROWS_WITH_AS(sound.set_attenuation({4, 2}), "Invalid audio attenuation distances", std::invalid_argument);
+    CHECK(sound.attenuation() == AudioAttenuation{.5F, 20, AudioRolloff::inverse});
+    CHECK_THROWS_WITH_AS(sound.set_priority(256), "Audio priority must be in [0, 255]", std::invalid_argument);
+    CHECK(sound.priority() == 7);
+
+    // A playing voice reports the targets of its ramps, and stop() keeps the gain a fade had reached.
+    bus.set_muted(false);
+    CHECK_FALSE(bus.muted());
+    auto ramped = audio.sound(clip, bus);
+    CHECK(ramped.play());
+    (void)render(audio, audio_block_frames);
+    ramped.set_volume(.5F);
+    ramped.set_pitch(2);
+    CHECK(ramped.volume() == .5F);
+    CHECK(ramped.pitch() == 2);
+    ramped.fade(0, 80. / rate); // From the gain of 1 that the voice still plays at.
+    CHECK(ramped.volume() == 0);
+    (void)render(audio, 40);
+    ramped.stop();
+    CHECK(ramped.volume() == Near{.5, tolerance});
+    CHECK(ramped.pitch() == 2);
+
+    Sound empty;
+    CHECK_THROWS_WITH_AS((void)empty.volume(), "Empty audio voice", std::logic_error);
+    CHECK_THROWS_WITH_AS((void)empty.attenuation(), "Empty audio voice", std::logic_error);
+    CHECK_THROWS_WITH_AS((void)AudioBus().volume(), "Empty audio bus", std::logic_error);
+    CHECK_THROWS_WITH_AS((void)AudioBus().muted(), "Empty audio bus", std::logic_error);
+    Audio moved(std::move(audio));
+    CHECK(moved.volume() == .5F);
+    CHECK_THROWS_WITH_AS((void)audio.volume(), "Moved-from audio mixer", std::logic_error);
+}
+
 TEST_CASE("Spatial voices attenuate with distance and weight channels by direction from the listener") {
     Audio audio(rate);
     auto sound = audio.sound(AudioClip::pcm({1, 1}, 1, rate));
-    sound.looping(true);
-    sound.spatial(true);
-    sound.attenuation(0, 4);
-    sound.position({2, 0, 0});
+    sound.set_looping(true);
+    sound.set_spatial(true);
+    sound.set_attenuation({0, 4});
+    sound.set_position({2, 0, 0});
     sound.play();
     // Half gain at half the linear range; the right side takes it all and the left its floor of 0.2.
     auto frame = settle(audio);
     CHECK(frame[0] == Near{.1, 1e-4});
     CHECK(frame[1] == Near{.5, 1e-4});
-    sound.position({0, 0, -2}); // Straight ahead, each side takes half.
+    sound.set_position({0, 0, -2}); // Straight ahead, each side takes half.
     frame = settle(audio);
     CHECK(frame[0] == Near{.25, 1e-4});
     CHECK(frame[1] == Near{.25, 1e-4});
     // Silent from the maximum distance, once the block the change lands in and one whole block have mixed.
-    sound.position({4, 0, 0});
+    sound.set_position({4, 0, 0});
     auto moved = render(audio, 2 * audio_block_frames);
     CHECK(moved[moved.size() - 2] == Near{0, 1e-6});
     CHECK(moved.back() == Near{0, 1e-6});
-    sound.position({1, 0, 0});
-    audio.listener({}, {0, 0, 1}); // Facing +Z puts +X on the listener's left.
+    sound.set_position({1, 0, 0});
+    audio.set_listener({}, {0, 0, 1}); // Facing +Z puts +X on the listener's left.
     frame = settle(audio);
     CHECK(frame[0] == Near{.75, 1e-4});
     CHECK(frame[1] == Near{.15, 1e-4});
-    audio.listener({}, {0, 0, -1}, {0, -1, 0}); // Upside down, facing -Z, also puts +X on the left.
+    audio.set_listener({}, {0, 0, -1}, {0, -1, 0}); // Upside down, facing -Z, also puts +X on the left.
     frame = settle(audio);
     CHECK(frame[0] == Near{.75, 1e-4});
-    audio.listener({2, 0, 0}); // Within 0.001 of the listener, neither side is weighted.
-    sound.position({2, 0, 0});
+    audio.set_listener({2, 0, 0}); // Within 0.001 of the listener, neither side is weighted.
+    sound.set_position({2, 0, 0});
     frame = settle(audio);
     CHECK(frame[0] == Near{1, 1e-4});
     CHECK(frame[1] == Near{1, 1e-4});
-    audio.listener({});
-    sound.attenuation(1, 10, AudioRolloff::inverse);
-    sound.position({4, 0, 0}); // A quarter at four times the minimum distance.
+    audio.set_listener({});
+    sound.set_attenuation({1, 10, AudioRolloff::inverse});
+    sound.set_position({4, 0, 0}); // A quarter at four times the minimum distance.
     frame = settle(audio);
     CHECK(frame[1] == Near{.25, 1e-4});
-    sound.position({40, 0, 0}); // Held at minimum / maximum beyond the maximum distance.
+    sound.set_position({40, 0, 0}); // Held at minimum / maximum beyond the maximum distance.
     frame = settle(audio);
     CHECK(frame[1] == Near{.1, 1e-4});
     // A voice that starts takes its current gains at once rather than ramping from its last output.
     sound.pause();
-    sound.position({-2, 0, 0});
+    sound.set_position({-2, 0, 0});
     sound.play();
     const auto output = render(audio, 2);
     CHECK(output[2] == Near{.5, 1e-4});
     CHECK(output[3] == Near{.1, 1e-4});
-    sound.spatial(false); // Nonspatial: equal-power center pan, at once.
+    sound.set_spatial(false); // Nonspatial: equal-power center pan, at once.
     const auto centered = render(audio, 1);
     CHECK(centered[0] == Near{std::sqrt(.5), 1e-5});
 }
@@ -349,10 +427,10 @@ TEST_CASE("Spatial changes ramp linearly across the block they land in") {
     constexpr std::size_t block = audio_block_frames;
     Audio audio(rate);
     auto sound = audio.sound(AudioClip::pcm({1, 1}, 1, rate));
-    sound.looping(true);
-    sound.spatial(true);
-    sound.attenuation(0, 4);
-    sound.position({0, 0, -2}); // A quarter on each side.
+    sound.set_looping(true);
+    sound.set_spatial(true);
+    sound.set_attenuation({0, 4});
+    sound.set_position({0, 0, -2}); // A quarter on each side.
     sound.play();
     (void)render(audio, 4 * block); // Whole blocks, so that the next change lands at the start of one.
     // Frame k of the block has moved k / audio_block_frames of the way to the new gains.
@@ -362,12 +440,12 @@ TEST_CASE("Spatial changes ramp linearly across the block they land in") {
         CHECK(output[2 * frame] == Near{expected, tolerance});
         CHECK(output[2 * frame + 1] == Near{expected, tolerance});
     };
-    sound.position({4, 0, 0}); // Silent.
+    sound.set_position({4, 0, 0}); // Silent.
     auto output = render(audio, block);
     for (const std::size_t frame : {std::size_t{1}, block / 2, block - 1})
         check(output, frame, .25, 0);
     // A render that ends partway through a block ends the block early, here after an odd number of frames.
-    sound.position({0, 0, -2});
+    sound.set_position({0, 0, -2});
     output = render(audio, block / 2 + 1);
     for (const std::size_t frame : {block / 2 - 1, block / 2})
         check(output, frame, 0, .25);
@@ -376,7 +454,7 @@ TEST_CASE("Spatial changes ramp linearly across the block they land in") {
 TEST_CASE("Clips resample linearly and the mix is limited") {
     Audio audio(16000);
     auto sound = audio.sound(AudioClip::pcm({0, 1, 0, -1}, 1, rate));
-    sound.pan(-1);
+    sound.set_pan(-1);
     sound.play();
     auto output = render(audio, 8);
     // Doubling the rate interpolates halfway between the clip's samples, two output frames late.
@@ -386,7 +464,7 @@ TEST_CASE("Clips resample linearly and the mix is limited") {
         CHECK(output[2 * i] == Near{expected[i], tolerance});
     }
     auto stereo = audio.sound(AudioClip::pcm({.25F, -.5F, .25F, -.5F}, 2, 16000));
-    stereo.volume(16);
+    stereo.set_volume(16);
     stereo.play();
     output = render(audio, 2);
     CHECK(output[2] == 1);
@@ -398,8 +476,8 @@ TEST_CASE("Rendering in several calls matches one call, and voices outlive their
     const auto clip = AudioClip::pcm({0, .2F, -.4F, .7F, -.9F}, 1, rate);
     auto x = a.sound(clip), y = b.sound(clip);
     for (auto *sound : {&x, &y}) {
-        sound->looping(true);
-        sound->pitch(1.3F);
+        sound->set_looping(true);
+        sound->set_pitch(1.3F);
         sound->fade(.2F, .01);
         sound->play();
     }
@@ -439,25 +517,25 @@ TEST_CASE("Invalid engines, voices and arguments are rejected") {
     CHECK_THROWS_WITH_AS(foreign.sound(clip, audio.bus()), "Missing audio clip or foreign bus", std::invalid_argument);
     CHECK_THROWS_WITH_AS(audio.sound(nullptr), "Missing audio clip or foreign bus", std::invalid_argument);
     CHECK_THROWS_WITH_AS(moved.seek(-1), "Audio seek lies outside the clip", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.volume(std::numeric_limits<float>::quiet_NaN()), "Audio gain must be in [0, 16]",
+    CHECK_THROWS_WITH_AS(moved.set_volume(std::numeric_limits<float>::quiet_NaN()), "Audio gain must be in [0, 16]",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.pitch(0), "Audio pitch must be in [0.01, 8]", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.pan(1.5F), "Audio pan must be in [-1, 1]", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.priority(256), "Audio priority must be in [0, 255]", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.priority(-1), "Audio priority must be in [0, 255]", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.attenuation(5, 2), "Invalid audio attenuation distances", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.attenuation(0, 2, AudioRolloff::inverse), "Invalid audio attenuation distances",
+    CHECK_THROWS_WITH_AS(moved.set_pitch(0), "Audio pitch must be in [0.01, 8]", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(moved.set_pan(1.5F), "Audio pan must be in [-1, 1]", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(moved.set_priority(256), "Audio priority must be in [0, 255]", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(moved.set_priority(-1), "Audio priority must be in [0, 255]", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(moved.set_attenuation({5, 2}), "Invalid audio attenuation distances", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(moved.set_attenuation({0, 2, AudioRolloff::inverse}), "Invalid audio attenuation distances",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.attenuation(1, 2, static_cast<AudioRolloff>(2)), "Invalid audio rolloff",
+    CHECK_THROWS_WITH_AS(moved.set_attenuation({1, 2, static_cast<AudioRolloff>(2)}), "Invalid audio rolloff",
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(moved.fade(1, -1), "Invalid audio fade duration", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(moved.position({2e9F, 0, 0}), "Audio coordinates must be finite and within one billion units",
+    CHECK_THROWS_WITH_AS(moved.set_position({2e9F, 0, 0}),
+                         "Audio coordinates must be finite and within one billion units", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(audio.set_listener({}, {}, {0, 1, 0}), "Invalid audio listener orientation",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(audio.listener({}, {}, {0, 1, 0}), "Invalid audio listener orientation",
+    CHECK_THROWS_WITH_AS(audio.set_listener({}, {0, 1, 0}, {0, 2, 0}), "Parallel audio listener orientation vectors",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(audio.listener({}, {0, 1, 0}, {0, 2, 0}), "Parallel audio listener orientation vectors",
-                         std::invalid_argument);
-    CHECK_THROWS_WITH_AS(AudioBus().volume(1), "Empty audio bus", std::logic_error);
+    CHECK_THROWS_WITH_AS(AudioBus().set_volume(1), "Empty audio bus", std::logic_error);
     std::array<float, 3> odd{};
     CHECK_THROWS_WITH_AS(audio.render(odd), "Audio output must contain whole stereo frames", std::invalid_argument);
 }
@@ -482,7 +560,7 @@ TEST_CASE("WAV, FLAC, MP3 and Vorbis clips decode") {
     Audio audio(rate);
     const auto play = [&](const std::shared_ptr<const AudioClip> &clip) {
         auto sound = audio.sound(clip);
-        sound.pan(-1);
+        sound.set_pan(-1);
         sound.play();
         const auto output = render(audio, clip->frames() + 1);
         std::vector<float> left;
@@ -517,10 +595,10 @@ TEST_CASE("Streamed clips play without being decoded whole, and match their deco
         CHECK(streamed->frames() == decoded->frames());
         CHECK(streamed->memory_bytes() == bytes.size()); // The encoded copy, not the samples.
         auto a = audio.sound(decoded), b = audio.sound(streamed);
-        a.pan(-1);
-        b.pan(1);
-        a.looping(true);
-        b.looping(true);
+        a.set_pan(-1);
+        b.set_pan(1);
+        a.set_looping(true);
+        b.set_looping(true);
         const auto check_same = [&](std::size_t frames) {
             const auto output = render(audio, frames);
             bool same = true;
@@ -542,7 +620,7 @@ TEST_CASE("Streamed clips play without being decoded whole, and match their deco
     const auto bytes = wave({.5F, std::numeric_limits<float>::quiet_NaN(), .5F, .5F}, 1, rate, true);
     CHECK_THROWS_WITH_AS(AudioClip::decode(bytes), "Decoded audio samples must be finite", std::invalid_argument);
     auto sound = audio.sound(AudioClip::decode(bytes, AudioLoadMode::stream));
-    sound.pan(-1);
+    sound.set_pan(-1);
     sound.play();
     const auto output = render(audio, 4);
     CHECK(output[2] == Near{.5, tolerance});
@@ -593,7 +671,7 @@ TEST_CASE("A device on the null backend mixes on its own thread, so a stalled ca
     // A quarter-second one-shot finishes while this thread makes no calls at all.
     auto brief = audio.sound(AudioClip::pcm(std::vector<float>(rate / 4, .25F), 1, rate));
     auto music = audio.sound(AudioClip::decode(read_asset("tone.ogg"), AudioLoadMode::stream));
-    music.looping(true);
+    music.set_looping(true);
     CHECK(brief.play());
     CHECK(music.play());
     std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -623,13 +701,13 @@ TEST_CASE("Voices, buses and the listener change safely while the device thread 
         if (voices.size() < 6)
             voices.push_back(audio.sound(step % 2 ? streamed : decoded, step % 3 ? bus : AudioBus{}));
         auto &voice = voices[static_cast<std::size_t>(step) % voices.size()];
-        voice.looping(step % 4 == 0);
-        voice.priority(step % 256);
-        voice.volume(float(step % 5) / 4);
-        voice.pan(float(step % 3) - 1);
-        voice.pitch(.5F + float(step % 4) / 2);
-        voice.spatial(step % 7 == 0);
-        voice.position({float(step % 9) - 4, 0, -1});
+        voice.set_looping(step % 4 == 0);
+        voice.set_priority(step % 256);
+        voice.set_volume(float(step % 5) / 4);
+        voice.set_pan(float(step % 3) - 1);
+        voice.set_pitch(.5F + float(step % 4) / 2);
+        voice.set_spatial(step % 7 == 0);
+        voice.set_position({float(step % 9) - 4, 0, -1});
         voice.fade(.5F, .01);
         (void)voice.play();
         if (step % 5 == 0)
@@ -637,10 +715,16 @@ TEST_CASE("Voices, buses and the listener change safely while the device thread 
         if (step % 11 == 0)
             voice.stop();
         (void)voice.cursor();
-        bus.volume(float(step % 3) / 2);
-        bus.muted(step % 17 == 0);
-        audio.volume(1);
-        audio.listener({float(step % 5), 0, 0}, {0, 0, -1});
+        (void)voice.volume();
+        (void)voice.looping();
+        (void)voice.position();
+        (void)voice.attenuation();
+        bus.set_volume(float(step % 3) / 2);
+        bus.set_muted(step % 17 == 0);
+        (void)bus.muted();
+        audio.set_volume(1);
+        (void)audio.volume();
+        audio.set_listener({float(step % 5), 0, 0}, {0, 0, -1});
         if (step % 13 == 0)
             voices.erase(voices.begin());
         std::this_thread::sleep_for(std::chrono::microseconds(500));
