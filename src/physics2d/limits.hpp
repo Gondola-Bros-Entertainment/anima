@@ -2,7 +2,7 @@
 #include "../detail/physics_limits.hpp"
 
 namespace anima::physics2d::detail {
-using anima::detail::all_layers;
+using anima::detail::all_collision_layers;
 using anima::detail::collision_layer_count;
 using anima::detail::maximum_body_mass;
 using anima::detail::maximum_damping;

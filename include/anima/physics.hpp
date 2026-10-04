@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/core/transform.hpp>
+#include <anima/physics_layers.hpp>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -137,7 +138,8 @@ struct BodySettings {
     float friction = .5F;
     /// Restitution in [0, 1].
     float restitution = 0;
-    /// Collision layer in [0, 15]; see World::set_layer_collision.
+    /// Collision layer in [0, 15], below anima::collision_layer_count; see
+    /// World::set_layer_collision.
     std::uint8_t layer = 0;
     /// Sensors report contact events but never resolve penetration. An overlap with any body,
     /// another sensor included, is reported when at least one of the two bodies is kinematic or
@@ -245,8 +247,9 @@ class Body {
 };
 /// Selects which bodies a query considers.
 struct QueryFilter {
-    /// Bit mask of collision layers to include.
-    std::uint16_t layers = 0xffff;
+    /// Bit mask of collision layers to include, regardless of World::set_layer_collision; build
+    /// one with anima::collision_layer_mask.
+    std::uint16_t layers = all_collision_layers;
     /// Whether sensor bodies can be hit.
     bool sensors = false;
     /// A body of the queried world to skip; an invalid handle skips nothing, and the query
@@ -322,9 +325,14 @@ class World {
     [[nodiscard]] std::size_t size() const noexcept;
     /// Whether @p body is a valid body of this world.
     [[nodiscard]] bool owns(const Body &body) const noexcept;
-    /// Enables or disables contacts between two layers, symmetrically. All pairs collide
-    /// initially. Throws `std::logic_error` once the world has bodies.
+    /// Enables or disables contacts between layers @p a and @p b, in [0, 15], symmetrically. All
+    /// pairs collide initially. Throws `std::invalid_argument` ("Physics layer must be in [0,15]")
+    /// for a layer out of range and `std::logic_error` once the world has bodies.
     void set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide);
+    /// Whether bodies of layers @p a and @p b, in [0, 15], make contacts, as set by
+    /// set_layer_collision; the answer is symmetric. Throws `std::invalid_argument` ("Physics layer
+    /// must be in [0,15]") for a layer out of range.
+    [[nodiscard]] bool layers_collide(std::uint8_t a, std::uint8_t b) const;
     /// Advances one simulation step of @p seconds, in [0.000001, 0.1]. Drive it from a fixed
     /// cadence such as anima::FixedStepClock. A step longer than 1/60 s runs one collision step per
     /// started 1/60 s, which Jolt needs to stay stable. Throws `std::runtime_error` when contacts
