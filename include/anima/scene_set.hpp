@@ -69,7 +69,7 @@ class StagedSceneSet {
     explicit StagedSceneSet(std::shared_ptr<const detail::SceneSetStage> data) : data_(std::move(data)) {}
     std::shared_ptr<const detail::SceneSetStage> data_;
 };
-/// Parses and validates an `anima.scene-set` version 1 document, as SceneSet::restore does, and resolves each
+/// Parses and validates an `anima.scene-set` version 2 document, as SceneSet::restore does, and resolves each
 /// distinct mesh key and custom material name of the whole document once, without creating a scene or decoding
 /// any component.
 ///
@@ -202,12 +202,12 @@ class SceneSet {
     /// for an `anima.scene-set` document, with the same guarantees and exceptions. Every member's component
     /// types are checked against @p codecs before any object is created.
     [[nodiscard]] SceneRef replace(SceneRef target, const StagedSceneSet &staged, const ComponentCodecs &codecs = {});
-    /// Writes every member into one `anima.scene-set` version 1 JSON document, with the rules of
+    /// Writes every member into one `anima.scene-set` version 2 JSON document, with the rules of
     /// serialize_scene and @p codecs borrowed for this call.
     ///
     /// Components encode object links through one ObjectReferences covering the whole set, so links
     /// between members persist; a link to a stale object or one outside the set is rejected. The
-    /// document has exactly `version` (`1`), `kind`, `active` (a namespace, or null exactly when the
+    /// document has exactly `version` (`2`), `kind`, `active` (a namespace, or null exactly when the
     /// set is empty), `scenes` and `references`. Each scene has exactly `key` (its namespace),
     /// `next_key` and `objects`, as in serialize_scene. Each reference row has exactly `key` (a
     /// document-wide key, numbered from 1), `scene` and `object` (the key within that scene), and

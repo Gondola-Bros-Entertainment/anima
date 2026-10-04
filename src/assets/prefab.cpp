@@ -77,11 +77,11 @@ struct ScenePersistence {
 } // namespace detail
 namespace {
 using Json = nlohmann::json;
-constexpr unsigned document_version = 3;
+constexpr unsigned document_version = 4;
 constexpr std::string_view scene_kind = "anima.scene", prefab_kind = "anima.prefab";
 constexpr std::size_t maximum_objects = 65'536, maximum_document_bytes = 16 * 1024 * 1024;
 constexpr std::size_t maximum_components = 1024;
-constexpr unsigned scene_set_version = 1;
+constexpr unsigned scene_set_version = 2;
 constexpr std::string_view scene_set_kind = "anima.scene-set";
 constexpr std::size_t maximum_scenes = 1024, maximum_namespace_bytes = 4096;
 void require(bool accepted, const char *reason) {
@@ -281,14 +281,12 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
     // Resource resolution is explicit and cached once per key. No scene is mutated here.
     for (const auto &value : objects) {
         steps.check();
-        // An omitted setting takes the default that Prefab::Node or its RendererState declares.
-        anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh"},
-                                   {"pose", "visible", "active", "material_factors", "custom_materials",
-                                    "primitive_visible", "casts_shadows", "placements", "visibility_range",
-                                    "components"});
+        anima::detail::json_fields(value, {"key", "name", "parent", "local", "mesh", "pose", "visible", "active",
+                                           "material_factors", "custom_materials", "primitive_visible", "casts_shadows",
+                                           "placements", "visibility_range", "components"});
         Prefab::Node node;
         node.key = ObjectKey::parse(value.at("key").get<std::string>());
-        node.active = value.value("active", node.active);
+        node.active = value.at("active").get<bool>();
         node.name = value.at("name").get<std::string>();
         const auto &parent = value.at("parent");
         if (!parent.is_null()) {
@@ -300,16 +298,12 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
         }
         node.local = matrix_value(value.at("local"));
         node.renderer = detail::decode_renderer_state(value, resolve, materials, resources, steps, renderer_format);
-        if (value.contains("components")) {
-            const auto &components = value.at("components");
-            require(components.is_array() && components.size() <= maximum_components,
-                    "Invalid serialized component count");
-            for (const auto &component : components) {
-                anima::detail::json_fields(component, {"type", "state", "enabled"});
-                node.components.push_back({component.at("type").get<std::string>(),
-                                           component.at("state").get<std::string>(),
-                                           component.at("enabled").get<bool>()});
-            }
+        const auto &components = value.at("components");
+        require(components.is_array() && components.size() <= maximum_components, "Invalid serialized component count");
+        for (const auto &component : components) {
+            anima::detail::json_fields(component, {"type", "state", "enabled"});
+            node.components.push_back({component.at("type").get<std::string>(),
+                                       component.at("state").get<std::string>(), component.at("enabled").get<bool>()});
         }
         nodes.push_back(std::move(node));
         steps.complete();

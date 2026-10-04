@@ -229,13 +229,13 @@ inline void templates(const std::shared_ptr<const anima::Asset> &asset,
         [&] { (void)load_scene(document, [](auto) { return std::shared_ptr<const Mesh>{}; }); },
         "Scene mesh key could not be resolved");
     auto invalid_version = document;
-    const auto version = invalid_version.find("\"version\": 3");
+    const auto version = invalid_version.find("\"version\": 4");
     require(version != std::string::npos, "Missing serialized scene version");
     invalid_version.replace(version, 12, "\"version\": null");
     rejects<std::invalid_argument>([&] { (void)load_scene(invalid_version, resolve); },
                                    "Unsupported scene document version");
     auto duplicate_version = document;
-    duplicate_version.replace(version, 12, "\"version\": 3, \"version\": 3");
+    duplicate_version.replace(version, 12, "\"version\": 4, \"version\": 4");
     rejects<std::invalid_argument>([&] { (void)load_scene(duplicate_version, resolve); },
                                    "Duplicate JSON document field");
     auto cyclic = saved;

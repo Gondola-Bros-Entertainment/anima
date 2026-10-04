@@ -109,10 +109,10 @@ inline nlohmann::json encode_renderer_state(const RendererState &state, const Me
             {"visibility_range", encode_visibility_range(state.visibility_range)}};
 }
 
-// Reads the renderer fields of the object @p value, whose field set the caller has checked; an omitted field other than
-// `mesh` takes its RendererState default. @p resolve and @p materials run once per distinct mesh key and custom
-// material name in @p resources, each as a step of @p steps, which is checked before it. Throws
-// `std::invalid_argument` with @p format's messages, and as validate_visibility_range() and MeshPlacements::create do.
+// Reads the renderer fields of the object @p value, which the caller has checked with json_fields() to have all of
+// them. @p resolve and @p materials run once per distinct mesh key and custom material name in @p resources, each as
+// a step of @p steps, which is checked before it. Throws `std::invalid_argument` with @p format's messages, and as
+// decode_visibility_range() and MeshPlacements::create do.
 inline RendererState decode_renderer_state(const nlohmann::json &value, const MeshResolver &resolve,
                                            const CustomMaterialResolver &materials, Resources &resources,
                                            const StagingSteps &steps, const RendererFormat &format) {
@@ -132,8 +132,7 @@ inline RendererState decode_renderer_state(const nlohmann::json &value, const Me
         }
         state.mesh = found->second;
     }
-    static const nlohmann::json omitted;
-    const auto &pose = value.contains("pose") ? value.at("pose") : omitted;
+    const auto &pose = value.at("pose");
     if (!pose.is_null()) {
         require_renderer(pose.is_array() && state.mesh && pose.size() == state.mesh->rest_pose().world.size(),
                          format.pose);
@@ -141,43 +140,37 @@ inline RendererState decode_renderer_state(const nlohmann::json &value, const Me
         for (const auto &world : pose)
             state.pose->world.push_back(format.matrix(world));
     }
-    state.visible = value.value("visible", state.visible);
-    if (value.contains("material_factors")) {
-        const auto &factors = value.at("material_factors");
-        require_renderer(factors.is_array(), format.material_factors);
-        for (const auto &factor : factors) {
-            require_renderer(factor.is_array() && factor.size() == 3, format.material_factor);
-            state.material_factors.push_back(
-                {format.scalar(factor[0]), format.scalar(factor[1]), format.scalar(factor[2])});
-        }
+    state.visible = value.at("visible").get<bool>();
+    const auto &factors = value.at("material_factors");
+    require_renderer(factors.is_array(), format.material_factors);
+    for (const auto &factor : factors) {
+        require_renderer(factor.is_array() && factor.size() == 3, format.material_factor);
+        state.material_factors.push_back(
+            {format.scalar(factor[0]), format.scalar(factor[1]), format.scalar(factor[2])});
     }
-    if (value.contains("custom_materials")) {
-        const auto &custom = value.at("custom_materials");
-        require_renderer(custom.is_array(), format.custom_materials);
-        for (const auto &entry : custom) {
-            if (entry.is_null()) {
-                state.custom_materials.emplace_back();
-                continue;
-            }
-            const auto name = entry.get<std::string>();
-            require_renderer(!name.empty() && name.size() <= CustomMaterial::max_name_bytes,
-                             format.custom_material_name);
-            auto found = resources.materials.find(name);
-            if (found == resources.materials.end()) {
-                steps.check();
-                auto material = materials ? materials(name) : nullptr;
-                require_renderer(bool(material), format.unresolved_custom_material);
-                require_renderer(material->name() == name, format.renamed_custom_material);
-                found = resources.materials.emplace(name, std::move(material)).first;
-                steps.complete();
-            }
-            state.custom_materials.push_back(found->second);
+    const auto &custom = value.at("custom_materials");
+    require_renderer(custom.is_array(), format.custom_materials);
+    for (const auto &entry : custom) {
+        if (entry.is_null()) {
+            state.custom_materials.emplace_back();
+            continue;
         }
+        const auto name = entry.get<std::string>();
+        require_renderer(!name.empty() && name.size() <= CustomMaterial::max_name_bytes, format.custom_material_name);
+        auto found = resources.materials.find(name);
+        if (found == resources.materials.end()) {
+            steps.check();
+            auto material = materials ? materials(name) : nullptr;
+            require_renderer(bool(material), format.unresolved_custom_material);
+            require_renderer(material->name() == name, format.renamed_custom_material);
+            found = resources.materials.emplace(name, std::move(material)).first;
+            steps.complete();
+        }
+        state.custom_materials.push_back(found->second);
     }
-    if (value.contains("primitive_visible"))
-        state.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
-    state.casts_shadows = value.value("casts_shadows", state.casts_shadows);
-    const auto &placements = value.contains("placements") ? value.at("placements") : omitted;
+    state.primitive_visible = value.at("primitive_visible").get<std::vector<bool>>();
+    state.casts_shadows = value.at("casts_shadows").get<bool>();
+    const auto &placements = value.at("placements");
     if (!placements.is_null()) {
         require_renderer(placements.is_array() && state.mesh && !state.pose, format.placements);
         std::vector<Mat4> transforms;
@@ -186,8 +179,7 @@ inline RendererState decode_renderer_state(const nlohmann::json &value, const Me
             transforms.push_back(format.matrix(transform));
         state.placements = MeshPlacements::create(state.mesh, transforms);
     }
-    state.visibility_range = decode_visibility_range(
-        value.contains("visibility_range") ? value.at("visibility_range") : omitted, format.visibility_range);
+    state.visibility_range = decode_visibility_range(value.at("visibility_range"), format.visibility_range);
     return state;
 }
 } // namespace anima::detail

@@ -6,10 +6,10 @@
 /// @file
 /// Prefabs and the strict JSON documents for prefabs and scenes. Part of the `anima::assets` target.
 ///
-/// Documents are JSON of at most 16 MiB, nested at most 16 deep, with the fields listed for their
-/// kind. A setting, listed with its default, may be omitted and then takes that default; writers
-/// write every field. Repeated fields (compared after unescaping) are rejected while parsing; then
-/// other versions or kinds, before the other fields; then missing required and unknown fields.
+/// Documents are JSON of at most 16 MiB, nested at most 16 deep, with exactly the fields listed for
+/// their kind, every one required; writers write every field. Repeated fields (compared after
+/// unescaping) are rejected while parsing; then other versions or kinds, before the other fields;
+/// then missing and unknown fields.
 /// ObjectKey values are written as canonical decimal strings. A mesh is stored
 /// as an application-owned key of 1 to 4,096 bytes: MeshName names each distinct mesh once per call
 /// and two meshes cannot share a key, and MeshResolver runs once per distinct key. A custom material
@@ -141,10 +141,10 @@ class Prefab {
     [[nodiscard]] GameObject instantiate(Scene &scene, const Mat4 &placement, const ComponentCodecs &codecs) const;
     /// Instantiates the prefab under @p parent with @p codecs, borrowed for this call.
     [[nodiscard]] GameObject instantiate(GameObject parent, const Mat4 &placement, const ComponentCodecs &codecs) const;
-    /// Writes an `anima.prefab` version 3 document: exactly `version`, `kind` and `objects`, with
+    /// Writes an `anima.prefab` version 4 document: exactly `version`, `kind` and `objects`, with
     /// objects as in serialize_scene and the root first. No codec runs.
     [[nodiscard]] std::string serialize(const MeshName &name) const;
-    /// Reads an `anima.prefab` version 3 document, in which every object key is explicit, resolving
+    /// Reads an `anima.prefab` version 4 document, in which every object key is explicit, resolving
     /// custom material names through @p materials, and constructs a prefab that keeps @p codecs.
     ///
     /// Calls may run concurrently on any thread. Each reads @p document and the C locale, neither of which
@@ -163,38 +163,36 @@ class Prefab {
                       const ComponentCodecs &codecs) const;
 };
 
-/// Writes every object of @p scene as an `anima.scene` version 3 document, borrowing @p codecs for
+/// Writes every object of @p scene as an `anima.scene` version 4 document, borrowing @p codecs for
 /// this call.
 ///
 /// Components encode object links through one ObjectReferences covering the whole scene, so links
 /// between roots persist and links outside the scene are rejected. Lifecycle notification state,
-/// runtime ids and GPU residency are not stored. The document has exactly `version` (`3`), `kind`
+/// runtime ids and GPU residency are not stored. The document has exactly `version` (`4`), `kind`
 /// (`"anima.scene"`), `next_key` (the key the scene allocates next, `"0"` once exhausted) and
-/// `objects`: at most 65,536, each after its parent, with these fields:
+/// `objects`: at most 65,536, each after its parent, with exactly these fields, the fields of
+/// Prefab::Node and its RendererState:
 /// - `key`: nonzero and unique;
 /// - `name`;
 /// - `parent`: null, or the index of an earlier object;
 /// - `local`: 16 finite numbers, column-major;
 /// - `mesh`: null or a mesh key;
-///
-/// and these settings, whose defaults are those of Prefab::Node and its RendererState:
-/// - `pose`: null, the default, or one 16-number Pose::world matrix per mesh node;
-/// - `visible`, `active` and `casts_shadows`: booleans, true by default;
-/// - `material_factors`: empty, the default, or one `[r, g, b]` per mesh material, each in [0, 1];
-/// - `custom_materials`: empty, the default, or one entry per mesh material, each null or a custom
+/// - `pose`: null for the rest pose, or one 16-number Pose::world matrix per mesh node;
+/// - `visible`, `active` and `casts_shadows`: booleans;
+/// - `material_factors`: empty, to keep the authored factors, or one `[r, g, b]` per mesh material, each in [0, 1];
+/// - `custom_materials`: empty, to keep every Material, or one entry per mesh material, each null or a custom
 ///   material name of 1 to 4,096 bytes;
-/// - `primitive_visible`: empty, the default, or one boolean per mesh primitive;
-/// - `placements`: null, the default, or 1 to 1,048,576 placements (MeshPlacements), each 16 numbers of an
+/// - `primitive_visible`: empty, to show every primitive, or one boolean per mesh primitive;
+/// - `placements`: null, or 1 to 1,048,576 placements (MeshPlacements), each 16 numbers of an
 ///   affine matrix, column-major, relative to the object, for an object with a mesh and a null `pose`. Written one
 ///   number to a line, as serialization indents the document, a placement takes about 380 bytes when it rotates
 ///   and scales and about 260 when it only translates by whole numbers, so the document byte limit holds about
 ///   44,000 of the first or 63,000 of the second. Writing keeps MeshPlacements::transforms() order, which reading
 ///   keeps. Objects that share one MeshPlacements are each written in full and read back with separate sets;
-/// - `visibility_range`: null, the default, for every distance, or an object with exactly `begin`, `end` (null for
+/// - `visibility_range`: null, to draw at every distance, or an object with exactly `begin`, `end` (null for
 ///   no end), `begin_margin` and `end_margin` that validate_visibility_range() accepts, so an object with a null
 ///   `end` has an `end_margin` of 0 (VisibilityRange);
-/// - `components`: empty, the default, or at most 1,024 objects with exactly `type`, `state` and
-///   `enabled` (ComponentData).
+/// - `components`: at most 1,024 objects with exactly `type`, `state` and `enabled` (ComponentData).
 ///
 /// An object without a mesh has null `pose`, `placements` and `visibility_range`, empty arrays, and `visible` and
 /// `casts_shadows` true. Throws `std::invalid_argument` when a component has no codec, a link leaves the scene, mesh
@@ -229,7 +227,7 @@ class StagedScene {
     explicit StagedScene(std::shared_ptr<const detail::SceneStage> data) : data_(std::move(data)) {}
     std::shared_ptr<const detail::SceneStage> data_;
 };
-/// Parses and validates an `anima.scene` version 3 document, as load_scene does, and resolves each distinct
+/// Parses and validates an `anima.scene` version 4 document, as load_scene does, and resolves each distinct
 /// mesh key and custom material name once, without creating a scene or decoding any component.
 ///
 /// Calls may run concurrently on any thread. Each reads @p document and the C locale, neither of which may
@@ -251,7 +249,7 @@ class StagedScene {
 /// call and must register every component type, which is checked before any object is created. The caller
 /// decides when to use the new scene. On failure no scene remains; side effects of decoders are not undone.
 [[nodiscard]] std::shared_ptr<Scene> load_scene(const StagedScene &staged, const ComponentCodecs &codecs = {});
-/// Builds a new scene from an `anima.scene` version 3 document, keeping its object keys and
+/// Builds a new scene from an `anima.scene` version 4 document, keeping its object keys and
 /// `next_key`, which must be `"0"` or greater than every object key. @p codecs is borrowed for this
 /// call and must register every component type, and @p materials resolves custom material names.
 /// The caller decides when to use the new scene.
