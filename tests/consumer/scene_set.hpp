@@ -248,10 +248,9 @@ inline void persistence() {
     check(restored_a.get_component<SetLink>()->target.id() == restored_b.id() &&
               restored_b.get_component<SetLink>()->target.id() == restored_a.id() &&
               restored_self.get_component<SetLink>()->target.id() == restored_self.id() &&
-              !restored_null.get_component<SetLink>()->target.valid() &&
-              restored_self.parent()->id() == restored_a.id() && restored_self.local_position().x == 2 &&
-              !restored_self.get_component<SetLink>().enabled() && !restored_b.active_self() &&
-              restored_a.renderer().mesh() == mesh && restored_b.renderer().mesh() == mesh,
+              !restored_null.get_component<SetLink>()->target.valid() && restored_self.parent() == restored_a &&
+              restored_self.local_position().x == 2 && !restored_self.get_component<SetLink>().enabled() &&
+              !restored_b.active_self() && restored_a.renderer().mesh() == mesh && restored_b.renderer().mesh() == mesh,
           "Set persistence lost linked identities, hierarchy, activation or shared resources");
     check(destination.find(old_address).id() == restored_a.id() && restored_a.id() != old_a.id() &&
               restored_counts.live == 2 && restored_counts.enabled == 0 &&

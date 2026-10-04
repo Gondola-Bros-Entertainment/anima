@@ -136,8 +136,8 @@ struct Linked {
         if (scenes.size() != 2 || !alpha.valid() || !beta.valid() || scenes.active().key() != "alpha")
             return false;
         scenes.set_active(beta);
-        const bool same = a.valid() && b.valid() && a.get_component<Follow>()->target.id() == b.id() &&
-                          b.get_component<Follow>()->target.id() == a.id() && scenes.serialize({}, codecs) == saved;
+        const bool same = a.valid() && b.valid() && a.get_component<Follow>()->target == b &&
+                          b.get_component<Follow>()->target == a && scenes.serialize({}, codecs) == saved;
         scenes.set_active(alpha);
         return same;
     }
@@ -238,6 +238,27 @@ TEST_CASE("Malformed or oversized scene set documents are rejected without chang
     }
 }
 
+TEST_CASE("Scene handles are equal when they refer to the same membership, or both to none") {
+    SceneSet scenes;
+    const auto alpha = scenes.create("alpha");
+    const auto beta = scenes.create("beta");
+    CHECK(scenes.find("alpha") == alpha);
+    CHECK(scenes.active() == alpha);
+    CHECK(scenes.scenes().back() == beta);
+    CHECK(alpha != beta);
+    CHECK(scenes.find("gamma") == SceneRef{});
+    CHECK(alpha != SceneRef{});
+
+    const auto copy = beta;
+    (void)scenes.unload(beta);
+    CHECK_FALSE(copy);
+    CHECK(copy == beta);
+    CHECK(beta != SceneRef{});
+    const auto again = scenes.create("beta");
+    CHECK(again != beta);
+    CHECK(scenes.find("beta") == again);
+}
+
 TEST_CASE("An exhausted key allocator rejects creation but keeps persisted identities") {
     const auto one =
         envelope(scene("alpha", node(), "0"), "{\"key\":\"7\",\"scene\":\"alpha\",\"object\":\"1\"}", "\"alpha\"");
@@ -329,8 +350,8 @@ TEST_CASE_FIXTURE(Linked, "Replacing a member from a set document keeps the link
     CHECK(scenes.scenes()[1].key() == "beta");
     CHECK(scenes.active().key() == "alpha");
     // The survivor's link rebinds by key, and the replacement's link resolves by address.
-    CHECK(a.get_component<Follow>()->target.id() == restored.id());
-    CHECK(restored.get_component<Follow>()->target.id() == a.id());
+    CHECK(a.get_component<Follow>()->target == restored);
+    CHECK(restored.get_component<Follow>()->target == a);
     // The old scene's cleanup already saw the rebound link.
     CHECK(seen == restored.id());
     scenes.set_active(replaced);
@@ -348,7 +369,7 @@ TEST_CASE_FIXTURE(Linked, "Replacing a member from a scene document rebinds the 
     const auto replaced = scenes.replace(beta, serialize_scene(authored, {}), {}, codecs);
     CHECK_FALSE(b.valid());
     CHECK(a.get_component<Follow>()->target.name() == "rebound");
-    CHECK(a.get_component<Follow>()->target.id() == replaced->find(b_key).id());
+    CHECK(a.get_component<Follow>()->target == replaced->find(b_key));
 }
 
 TEST_CASE_FIXTURE(Linked, "A replacement that lacks a linked key or target fails without changing the set") {
@@ -366,7 +387,7 @@ TEST_CASE_FIXTURE(Linked, "A replacement that lacks a linked key or target fails
     CHECK_THROWS_WITH_AS((void)scenes.replace(beta, saved, {}, codecs), unmapped_target, std::invalid_argument);
     CHECK(beta.valid());
     CHECK(b.valid());
-    CHECK(b.get_component<Follow>()->target.id() == a.id());
+    CHECK(b.get_component<Follow>()->target == a);
 }
 
 TEST_CASE_FIXTURE(Linked, "Unloading a member clears the links into it and reports them") {
@@ -381,14 +402,14 @@ TEST_CASE_FIXTURE(Linked, "Unloading a member clears the links into it and repor
     CHECK_FALSE(b.valid());
     REQUIRE(cleared.size() == 2);
     for (const auto &link : cleared) {
-        CHECK((link.owner.id() == a.id() || link.owner.id() == second.id()));
+        CHECK((link.owner == a || link.owner == second));
         CHECK(link.component == follow_key);
         CHECK(link.target == SceneAddress{"beta", b_key});
     }
     CHECK(cleared[0].owner.id() != cleared[1].owner.id());
-    CHECK(a.get_component<Follow>()->target.id() == Scene::Id{});
-    CHECK(second.get_component<Follow>()->target.id() == Scene::Id{});
-    CHECK(bystander.get_component<Follow>()->target.id() == second.id());
+    CHECK(a.get_component<Follow>()->target == GameObject{});
+    CHECK(second.get_component<Follow>()->target == GameObject{});
+    CHECK(bystander.get_component<Follow>()->target == second);
     CHECK(seen == Scene::Id{});
     // A cleared link persists as null.
     SceneSet restored;
@@ -401,7 +422,7 @@ TEST_CASE_FIXTURE(Linked, "Links that no codec reports expire with their scene")
     const auto replaced = scenes.replace(beta, saved, {}, silent);
     CHECK_FALSE(a.get_component<Follow>()->target.valid());
     // The replacement's own link still resolves by address.
-    CHECK(replaced->find(b_key).get_component<Follow>()->target.id() == a.id());
+    CHECK(replaced->find(b_key).get_component<Follow>()->target == a);
     CHECK_THROWS_WITH_AS(scenes.serialize({}, silent), stale_link, std::invalid_argument);
     a.get_component<Follow>()->target = replaced->find(b_key);
     CHECK(scenes.unload(replaced).empty());

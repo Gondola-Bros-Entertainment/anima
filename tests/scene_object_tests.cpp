@@ -8,6 +8,7 @@
 #include <memory>
 #include <set>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -41,6 +42,7 @@ struct CreateOnDisable {
         }
     }
 };
+struct Tag {};
 struct Spawner {
     explicit Spawner(GameObject object) : owner(object) {}
     GameObject owner;
@@ -60,7 +62,7 @@ TEST_CASE("A component reaches its scene through its object, and a stale handle 
     CHECK(spawned.valid());
     CHECK(&spawned.scene() == &scene);
     CHECK(spawned.name() == "Spawned");
-    CHECK_FALSE(spawned.parent().has_value());
+    CHECK_FALSE(spawned.parent());
     CHECK(scene.size() == 2);
 
     object.destroy();
@@ -70,6 +72,72 @@ TEST_CASE("A component reaches its scene through its object, and a stale handle 
     const auto left = orphan->create();
     orphan.reset();
     CHECK_THROWS_WITH_AS((void)left.scene(), "Expired GameObject handle", std::out_of_range);
+}
+
+TEST_CASE("Object handles compare and hash by identity, and a root's parent is an invalid handle") {
+    Scene scene, other;
+    const auto root = scene.create("Root");
+    auto child = scene.create("Child");
+    child.set_parent(root);
+    const auto stranger = other.create("Root");
+
+    const auto found = scene.find(child.key());
+    CHECK(found == child);
+    CHECK(std::hash<GameObject>{}(found) == std::hash<GameObject>{}(child));
+    CHECK(std::hash<Scene::Id>{}(found.id()) == std::hash<GameObject>{}(child));
+    CHECK(root != child);
+    // Objects of different scenes differ even where their slots and generations match.
+    REQUIRE(stranger.id().slot == root.id().slot);
+    REQUIRE(stranger.id().generation == root.id().generation);
+    CHECK(stranger != root);
+    CHECK(GameObject{} == GameObject{});
+    CHECK(GameObject{} != root);
+    const std::unordered_set<GameObject> handles{root, child, found, stranger};
+    CHECK(handles.size() == 3);
+    CHECK(handles.contains(scene.find(root.key())));
+
+    CHECK(child.parent() == root);
+    CHECK_FALSE(root.parent());
+    CHECK(root.parent() == GameObject{});
+    int parents = 0;
+    if (const auto parent = child.parent()) {
+        CHECK(parent == root);
+        ++parents;
+    }
+    if (root.parent())
+        ++parents;
+    CHECK(parents == 1);
+
+    // A destroyed object's handles stay equal to each other, and its reused slot names another object.
+    const auto copy = child;
+    child.destroy();
+    CHECK_FALSE(copy);
+    CHECK(copy == found);
+    const auto recycled = scene.create("Recycled");
+    REQUIRE(recycled.id().slot == copy.id().slot);
+    CHECK(recycled != copy);
+    CHECK_THROWS_WITH_AS((void)copy.parent(), "Expired GameObject handle", std::out_of_range);
+}
+
+TEST_CASE("Component handles are equal when they refer to the same attachment, or both to none") {
+    Scene scene;
+    auto object = scene.create();
+    const auto added = object.add_component<Tag>();
+    CHECK(object.get_component<Tag>() == added);
+    CHECK(object.get_component<ObjectTransform>() == object.get_component<ObjectTransform>());
+    CHECK(object.get_component<ObjectTransform>() != scene.create().get_component<ObjectTransform>());
+    CHECK(object.get_component<Spawner>() == ComponentRef<Spawner>{});
+    CHECK(added != ComponentRef<Tag>{});
+    CHECK(scene.create().add_component<Tag>() != added);
+
+    const auto copy = added;
+    CHECK(object.remove_component<Tag>());
+    CHECK_FALSE(copy);
+    CHECK(copy == added);
+    CHECK(added != ComponentRef<Tag>{});
+    const auto readded = object.add_component<Tag>();
+    CHECK(readded != added);
+    CHECK(object.get_component<Tag>() == readded);
 }
 
 TEST_CASE("Objects append in slot order, and recreated objects fill holes first-free with new generations") {
@@ -249,7 +317,7 @@ TEST_CASE("Reparenting rejects a parent inside the moved subtree and changes not
     branch.set_parent(sibling, ReparentMode::keep_local);
     CHECK(ids_of(root.children()) == ids_of({sibling}));
     CHECK(ids_of(sibling.children()) == ids_of({branch}));
-    CHECK(chain.back().parent()->id() == chain[chain.size() - 2].id());
+    CHECK(chain.back().parent() == chain[chain.size() - 2]);
 }
 
 TEST_CASE("Instances and snapshots keep the order renderers were added through removal and replacement") {

@@ -161,8 +161,8 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
             requested = true;
             // Moving an empty parent must update the child's GPU palette/bounds.
             auto parent = instances->object(left).parent();
-            require(parent.has_value(), "Consumer hierarchy lost its parent");
-            parent->transform().set_position({0, .1F, 0});
+            require(parent.valid(), "Consumer hierarchy lost its parent");
+            parent.transform().set_position({0, .1F, 0});
             if (!asset->animations.empty()) {
                 const auto &clip = asset->animations.back();
                 instances->object(left).renderer().set_pose(anima::sample_pose(*asset, &clip, clip.duration * .5));

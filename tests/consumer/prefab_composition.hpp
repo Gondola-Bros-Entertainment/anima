@@ -163,7 +163,7 @@ inline void linked_parts() {
     alternate_counts.expected_objects = 13;
     auto nested = composition.instantiate(parent, resolve, alternate, translated(13));
     check_graph(nested, 3);
-    check(nested.position().x == 37 && !nested.active_in_hierarchy() && nested.parent()->id() == parent.id() &&
+    check(nested.position().x == 37 && !nested.active_in_hierarchy() && nested.parent() == parent &&
               alternate_counts.live == 12 && alternate_counts.all_native_ready && resolutions == 3,
           "Composition ignored its external parent, placement or borrowed destination registry");
 
@@ -304,7 +304,7 @@ inline void composed_bounds() {
     const auto composed = single.instantiate(parent, resolve, {}, small);
     check(direct.renderer().bounds().valid && std::isfinite(direct.renderer().bounds().maximum.x) &&
               direct.renderer().bounds().maximum.x == composed.renderer().bounds().maximum.x &&
-              direct.parent()->id() == parent.id() && composed.parent()->id() == parent.id(),
+              direct.parent() == parent && composed.parent() == parent,
           "Prefab or composition staged renderer bounds before applying its external-parent placement");
     const auto external_before = external_scene.size();
     rejects<std::invalid_argument>([&] { (void)visual->instantiate(parent); }, "Non-finite render bounds");
@@ -323,8 +323,8 @@ inline void composed_bounds() {
     const auto direct_bounds = direct_pose.renderer().bounds(),
                composed_pose_bounds = composed_pose.renderer().bounds();
     check(direct_bounds.valid && composed_pose_bounds.valid && std::isfinite(direct_bounds.maximum.x) &&
-              direct_bounds.maximum.x == composed_pose_bounds.maximum.x && direct_pose.parent()->id() == parent.id() &&
-              composed_pose.parent()->id() == parent.id() && parent.children().size() == 4,
+              direct_bounds.maximum.x == composed_pose_bounds.maximum.x && direct_pose.parent() == parent &&
+              composed_pose.parent() == parent && parent.children().size() == 4,
           "Prefab or composition validated an intermediate rest pose instead of the complete authored renderer");
 }
 inline void run() {

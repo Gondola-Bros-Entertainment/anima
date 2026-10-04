@@ -5,6 +5,7 @@
 #include <anima/mesh_placements.hpp>
 #include <compare>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <span>
@@ -430,6 +431,12 @@ class GameObject {
     GameObject() = default;
     /// Whether the handle refers to a live object.
     [[nodiscard]] bool valid() const noexcept;
+    /// Same as valid().
+    explicit operator bool() const noexcept { return valid(); }
+    /// Whether @p a and @p b have the same id(): they name the same object, of the same scene, or are
+    /// both default handles. Ids are never reused, so a handle stays equal to its copies after the
+    /// object is destroyed and never equals a handle to another object, live or not.
+    friend bool operator==(const GameObject &a, const GameObject &b) noexcept { return a.id_ == b.id_; }
     /// Runtime identity, available even when the handle is invalid.
     [[nodiscard]] Scene::Id id() const noexcept { return id_; }
     /// Persistent identity within the scene.
@@ -467,8 +474,9 @@ class GameObject {
     void set_local_transform(const Transform &transform);
     /// Sets the matrix relative to the parent.
     void set_local_matrix(const Mat4 &local);
-    /// Parent handle, or empty for a root.
-    [[nodiscard]] std::optional<GameObject> parent() const;
+    /// Parent handle, or an invalid handle for a root. Throws `std::out_of_range` with "Expired
+    /// GameObject handle" for an invalid or stale handle, as scene() does.
+    [[nodiscard]] GameObject parent() const;
     /// Direct children, in the order they were attached.
     [[nodiscard]] std::vector<GameObject> children() const;
     /// Makes this object a child of @p parent, keeping the matrix that @p mode selects. Throws
@@ -642,4 +650,25 @@ class ObjectTransform {
     GameObject object_;
 };
 } // namespace anima
+
+namespace std {
+/// Hash of a Scene::Id that combines its owner number, generation and slot, so equal Ids hash equal.
+template <> struct hash<anima::Scene::Id> {
+    std::size_t operator()(const anima::Scene::Id &id) const noexcept {
+        auto seed = std::hash<std::uint64_t>{}(id.owner);
+        const auto combine = [&seed](std::size_t value) {
+            seed ^= value + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (seed << 6U) + (seed >> 2U);
+        };
+        combine(std::hash<std::uint64_t>{}(id.generation));
+        combine(std::hash<std::size_t>{}(id.slot));
+        return seed;
+    }
+};
+/// Hash of a GameObject: the hash of its GameObject::id(), consistent with its `operator==`.
+template <> struct hash<anima::GameObject> {
+    std::size_t operator()(const anima::GameObject &object) const noexcept {
+        return std::hash<anima::Scene::Id>{}(object.id());
+    }
+};
+} // namespace std
 #include <anima/components.hpp>

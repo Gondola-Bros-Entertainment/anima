@@ -174,7 +174,7 @@ TEST_CASE("A placement under a parent is relative to it, and the new root is the
     scene.create("earlier").set_parent(parent);
     const auto child = prefab->instantiate(parent, placement);
     REQUIRE(child.parent());
-    CHECK(child.parent()->id() == parent.id());
+    CHECK(child.parent() == parent);
     CHECK(parent.children().back().id() == child.id());
     CHECK(child.local_matrix() == placement * authored);
     CHECK(child.world_matrix() == parent_world * placement * authored);
