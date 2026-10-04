@@ -483,6 +483,13 @@ inline int run(int argc, char **argv) {
     renderer.request_resize();
     frame();
     capture("resized");
+    // Recreating the swapchain at the same size and format keeps the view's and display's pipelines, which must draw
+    // the same frame.
+    const auto resized_swapchains = renderer.stats().swapchain_generations;
+    renderer.request_resize();
+    capture("recreated");
+    require(renderer.stats().swapchain_generations > resized_swapchains,
+            "Requesting a resize did not recreate the swapchain");
     require(SDL_MinimizeWindow(window.get()), "Minimize failed");
     while (!(SDL_GetWindowFlags(window.get()) & SDL_WINDOW_MINIMIZED)) {
         pump();
@@ -522,7 +529,7 @@ inline int run(int argc, char **argv) {
     require(renderer.shutdown().captured == stats.captured, "A capture request after shutdown changed statistics");
     const unsigned imported = asset.empty() ? 0 : 1;
     constexpr unsigned expected_rollbacks = 7, expected_mutation_rejections = 3, expected_generations = 32,
-                       expected_captures = 18;
+                       expected_captures = 19;
     require(rollbacks == expected_rollbacks && mutation_rejections == expected_mutation_rejections &&
                 stats.scene_generations == expected_generations + imported && stats.swapchain_generations >= 2 &&
                 captures == expected_captures + imported && images.size() == captures,
@@ -541,6 +548,7 @@ inline int run(int argc, char **argv) {
     images.require_changed("scene-a", "updated", least_change, "Updating the instance had no visible effect");
     images.require_changed("scene-a", "scene-b", least_change, "Replacing the scene had no visible effect");
     images.require_same("scene-b", "scene-b-repeat", "Repeated replacement changed the scene's image");
+    images.require_same("resized", "recreated", "Recreating the swapchain changed the frame");
     images.require(!gpu_check::same_size(images["resized"], images["scene-a"]),
                    "The resized window kept its capture size", {"resized", "scene-a"});
     for (const auto *drawn : {"scene-a", "scene-b", "resized", "restored-window"})

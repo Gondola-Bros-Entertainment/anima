@@ -28,6 +28,9 @@ VkPipelineLayout post_pipeline_layout{};
 VkShaderModule resolve_fragment_shader{};
 VkRenderPass present_pass{};
 VkPipeline resolve_pipeline{};
+// The swapchain format that present_pass and the pipelines drawing into it were created for, or VK_FORMAT_UNDEFINED
+// while they do not exist.
+VkFormat display_format{};
 // The largest scene targets that the device can create and attach: its 2D image and framebuffer limits.
 VkExtent2D max_scene_extent{};
 // The push constant of resolve.frag: scene target pixels per window pixel along each axis.
@@ -268,13 +271,32 @@ void finish_world_writes() {
     vkCmdPipelineBarrier(frame().command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
-void destroy_world_targets() noexcept {
-    destroy_opaque_inputs();
-    world_target.reset();
-    if (resolve_pipeline)
-        vkDestroyPipeline(device, resolve_pipeline, nullptr);
+// Gives the swapchain's format a display pass and the pipelines that draw into it, unless that format's exist, so that
+// recreating the swapchain in the same format keeps them: the resolve pipeline, and the UI pipeline if UI drew with the
+// previous format's pass. Otherwise UI creates its pipeline on its first frame (prepare_ui()).
+void ensure_display() {
+    if (present_pass && display_format == format)
+        return;
+    const bool ui = ui_pipeline != VK_NULL_HANDLE;
+    destroy_display();
+    present_pass = create_display_pass();
+    create_display_pipeline();
+    if (ui)
+        create_pipeline(PipelineKind::ui, ui_pipeline);
+    display_format = format;
+}
+void destroy_display() noexcept {
+    for (auto *value : {&ui_pipeline, &resolve_pipeline}) {
+        if (*value)
+            vkDestroyPipeline(device, *value, nullptr);
+        *value = VK_NULL_HANDLE;
+    }
     if (present_pass)
         vkDestroyRenderPass(device, present_pass, nullptr);
-    resolve_pipeline = VK_NULL_HANDLE;
     present_pass = VK_NULL_HANDLE;
+    display_format = VK_FORMAT_UNDEFINED;
+}
+void destroy_world_targets() noexcept {
+    opaque_inputs.reset();
+    world_target.reset();
 }
