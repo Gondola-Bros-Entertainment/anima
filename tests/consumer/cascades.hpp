@@ -11,6 +11,7 @@
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -18,14 +19,34 @@
 
 // The sun's shadow cascades against what ShadowCascades states. The same plate casts an edge 4 m from the camera and
 // 60 m away, and each edge's lit-to-shadowed transition spans the texels of the cascade that fit_shadow_cascades() says
-// holds it, so the far edge widens by the ratio of their texels. Moving the camera by less than a texel leaves an edge
-// where it lies on the ground, since cascades move by whole texels. A wall's long edge stays where its geometry puts it
-// across every seam between cascades and within their blends, and a caster toward the sun beyond every cascade's sphere
-// still shadows the ground in view. A small caster, alone or placed, is drawn only by the cascades whose share of their
-// radius under the shadow caster threshold it reaches. Last, the cost of one to four cascades over a field of 10,000
-// copies, reported for comparison on one machine rather than checked.
+// holds it, so the far edge widens by the ratio of their texels. ShadowFilter::bilinear_2x2 narrows both edges to about
+// a third of that width in the same place, compiling the view's pipelines anew without recreating the swapchain, and
+// returning to ShadowFilter::kernel_4x4 draws the first frame again. Moving the camera by less than a texel leaves an
+// edge where it lies on the ground, since cascades move by whole texels. A wall's long edge stays where its geometry
+// puts it across every seam between cascades and within their blends, and a caster toward the sun beyond every
+// cascade's sphere still shadows the ground in view. A small caster, alone or placed, is drawn only by the cascades
+// whose share of their radius under the shadow caster threshold it reaches. Last, the cost of one to four cascades over
+// a field of 10,000 copies, reported for comparison on one machine rather than checked.
 namespace cascades_test {
 using gpu_check::Image;
+using rejection::rejects;
+// A value that names no ShadowFilter enumerator.
+constexpr auto unknown_filter = static_cast<anima::ShadowFilter>(-1);
+constexpr std::string_view unknown_filter_message = "Unknown shadow filter";
+/// Construction rejects a shadow filter that is not an enumerator, after the render scale and before the window.
+inline void reject_unknown_shadow_filter() {
+    const auto construct = [](anima::ShadowFilter filter, float render_scale) {
+        anima::RendererOptions options;
+        options.shadow_filter = filter;
+        options.render_scale = render_scale;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    rejects<std::invalid_argument>([&] { construct(unknown_filter, 1); }, unknown_filter_message);
+    for (const auto filter : {anima::ShadowFilter::kernel_4x4, anima::ShadowFilter::bilinear_2x2})
+        rejects<std::invalid_argument>([&] { construct(filter, 1); }, "Renderer requires an SDL window");
+    rejects<std::invalid_argument>([&] { construct(unknown_filter, 0); },
+                                   "Render scale must be finite and from 0.25 to 2");
+}
 // The camera's eye and target, 3 m above the ground looking along -Z, and a sun 31 degrees up in +X, so that shadows
 // fall toward -X, one texel of a cascade spanning 1 / 0.514 of its width on the ground across their edges.
 constexpr anima::Vec3 eye{0, 3, 0}, target{0, 0, -10}, sun{1, .6F, 0};
@@ -208,6 +229,41 @@ inline int run(int argc, char **argv) {
                      "The far edge widens by " + std::to_string(measured_ratio) +
                          " where the cascades' texels differ by " + std::to_string(stated_ratio),
                      {"plates"});
+
+    // The 2x2 filter weights the comparisons of the two texels either side of an edge bilinearly, which ramps a
+    // straight edge's light over 1 texel, so from 90 to 10 percent over 0.8, with its midpoint where the kernel's lies.
+    // The new pipelines replace the view's without a swapchain recreation, and returning to the kernel draws the same
+    // image as before. A rejected request keeps the previous one.
+    require(renderer.shadow_filter() == anima::ShadowFilter::kernel_4x4, "The renderer did not start with the kernel");
+    const auto swapchains = renderer.stats().swapchain_generations;
+    renderer.set_shadow_filter(anima::ShadowFilter::bilinear_2x2);
+    rejects<std::invalid_argument>([&] { renderer.set_shadow_filter(unknown_filter); }, unknown_filter_message);
+    require(renderer.shadow_filter() == anima::ShadowFilter::bilinear_2x2,
+            "A rejected shadow filter replaced the request");
+    (void)draw("plates-2x2");
+    const auto near_bilinear = measure("plates-2x2", view(), near_z, near_edge_x, near_cascade);
+    const auto far_bilinear = measure("plates-2x2", view(), far_z, far_edge_x, far_cascade);
+    renderer.set_shadow_filter(anima::ShadowFilter::kernel_4x4);
+    (void)draw("plates-restored");
+    require(renderer.stats().swapchain_generations == swapchains, "Changing the shadow filter recreated the swapchain");
+    const auto near_bilinear_texels = near_bilinear.width() / ground_texel(near_cascade),
+               far_bilinear_texels = far_bilinear.width() / ground_texel(far_cascade);
+    const auto near_offset = std::abs(near_bilinear.x50 - near_edge.x50) / ground_texel(near_cascade),
+               far_offset = std::abs(far_bilinear.x50 - far_edge.x50) / ground_texel(far_cascade);
+    std::cout << "CASCADES {\"bilinear_near_edge_texels\":" << near_bilinear_texels
+              << ",\"bilinear_far_edge_texels\":" << far_bilinear_texels
+              << ",\"bilinear_near_offset_texels\":" << near_offset << ",\"bilinear_far_offset_texels\":" << far_offset
+              << "}\n";
+    for (const auto texels : {near_bilinear_texels, far_bilinear_texels})
+        captures.require(texels > .5 && texels < 1.1,
+                         "A 2x2 filtered shadow edge spans " + std::to_string(texels) +
+                             " texels of its cascade, not about 0.8",
+                         {"plates", "plates-2x2"});
+    for (const auto offset : {near_offset, far_offset})
+        captures.require(offset < .25, "The 2x2 filter moved a shadow edge by " + std::to_string(offset) + " texels",
+                         {"plates", "plates-2x2"});
+    captures.require_same("plates", "plates-restored", "Returning to the 4x4 kernel changed the frame");
+    captures.discard({"plates-2x2", "plates-restored"});
 
     // Moving the camera by less than the near cascade's texel keeps the cascade's texels, and so the edge, in place.
     const anima::Vec3 step{.37F * near_cascade.texel, 0, -.21F * near_cascade.texel};
