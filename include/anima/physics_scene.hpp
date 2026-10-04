@@ -50,19 +50,26 @@ void step(Scene &scene, World &world, double seconds);
 /// Steps every scene of @p scenes as step(Scene &, World &, double) does, validating all of
 /// them before any changes. Also throws `std::logic_error` while the set is busy, as SceneSet describes.
 void step(SceneSet &scenes, World &world, double seconds);
-/// Registers the `anima.rigid-body.v2` component codec, bound weakly to @p world: the codec does
-/// not keep the world alive, and restoring after the world is destroyed throws
-/// `std::out_of_range`.
+/// Registers the `anima.rigid-body.v3` component codec, bound weakly to @p world: the codec does
+/// not keep the world alive. Restoring after the world is destroyed, or capturing a component
+/// whose body no longer exists, throws `std::out_of_range`. Throws `std::invalid_argument` if
+/// @p codecs already has a codec for RigidBody or this key.
 ///
-/// The payload stores collider geometry, motion, material, layer and flags, the optional local
-/// center of mass and current velocities; the scene or prefab transform stores the pose. It is
-/// a JSON object of at most 16 MiB with exactly these fields: `shape`, `extent`, `radius`,
-/// `half_height`, `vertices`, `indices`, `children`, `center_of_mass` (null or three numbers),
-/// `motion`, `velocity`, `angular_velocity`, `mass`, `friction`, `restitution`, `layer`,
-/// `sensor` and `continuous`. Each child has exactly `position`, `rotation` (four XYZW
-/// numbers), `shape`, `extent`, `radius`, `half_height` and `vertices`. `shape` and `motion`
-/// store the Shape and Motion enumerator values. Unknown, missing or duplicate fields and
-/// invalid geometry are rejected. The payload is scene state, not a deterministic solver
-/// snapshot.
+/// The payload stores collider geometry, motion, mass, damping, material, layer and flags, the
+/// optional local center of mass and current velocities; the scene or prefab transform stores the
+/// pose. It is a JSON object of at most 16 MiB with exactly these fields: `shape`,
+/// `half_extent`, `radius`, `half_height`, `vertices`, `indices`, `children`, `center_of_mass`
+/// (null or three numbers), `motion`, `velocity`, `angular_velocity`, `mass`, `linear_damping`,
+/// `angular_damping`, `friction`, `restitution`, `layer`, `sensor` and `continuous`. Each child
+/// has exactly `position`, `rotation` (four XYZW numbers), `shape`, `half_extent`, `radius`,
+/// `half_height` and `vertices`. `shape` stores the Shape's name, one of `"box"`, `"sphere"`,
+/// `"capsule"`, `"mesh"`, `"convex_hull"` and `"compound"`, and `motion` the Motion's, one of
+/// `"stationary"`, `"kinematic"` and `"dynamic"`. Unknown, missing or duplicate fields, other
+/// names and invalid geometry are rejected. The payload is scene state, not a deterministic
+/// solver snapshot.
+///
+/// Capturing a payload over 16 MiB throws `std::invalid_argument`. Vertices and indices are
+/// stored as text, so a mesh collider of a few hundred thousand vertices can reach that, and a
+/// scene document is itself limited to 16 MiB.
 void add_component_codec(ComponentCodecs &codecs, World &world);
 } // namespace anima::physics

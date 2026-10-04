@@ -104,6 +104,13 @@ struct BodySettings {
     /// Total dynamic mass, in [0.001, 1,000,000]. Automatic centers of mass and inertia assume
     /// uniform density; compound children contribute by volume, overlapping volumes separately.
     float mass = 1;
+    /// Linear damping c per second, in [0, 60]: a dynamic body's linear velocity decays about as
+    /// exp(-c t). Each collision step of dt seconds (see World::step) scales it by
+    /// max(0, 1 - c dt). Stationary and kinematic bodies are not damped.
+    float linear_damping = 0;
+    /// Angular damping per second, in [0, 60], applied to a dynamic body's angular velocity as
+    /// #linear_damping is to its linear velocity.
+    float angular_damping = 0;
     /// Friction coefficient in [0, 1].
     float friction = .5F;
     /// Restitution in [0, 1].
@@ -148,6 +155,9 @@ class Body {
     /// Linear velocity at the center of mass, not the authored origin.
     [[nodiscard]] Vec3 velocity() const;
     [[nodiscard]] Vec3 angular_velocity() const;
+    /// Mass of a dynamic body, enabled or disabled: BodySettings::mass, up to float rounding.
+    /// Throws `std::invalid_argument` for stationary and kinematic bodies.
+    [[nodiscard]] float mass() const;
     /// Moves the authored origin to @p pose immediately and wakes the body.
     void teleport(Pose pose);
     /// Sets linear velocity at the center of mass, clamped to the body's cap. Throws for

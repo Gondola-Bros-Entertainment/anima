@@ -56,18 +56,20 @@ void step(Scene &scene, World &world, double seconds);
 /// Steps every scene of @p scenes as step(Scene &, World &, double) does, validating all of them
 /// before any changes. Also throws `std::logic_error` while @p scenes is busy, as SceneSet describes.
 void step(SceneSet &scenes, World &world, double seconds);
-/// Registers the `anima.rigid-body-2d.v1` component codec, bound weakly to @p world: the codec
+/// Registers the `anima.rigid-body-2d.v2` component codec, bound weakly to @p world: the codec
 /// does not keep the world alive. Restoring after the world is destroyed, or capturing a component
 /// whose body no longer exists, throws `std::out_of_range`. Throws `std::invalid_argument` if
 /// @p codecs already has a codec for RigidBody or this key.
 ///
-/// The payload stores the collider, motion, material, layer, flags and current velocities; the
-/// scene or prefab transform stores the pose and depth, and the component data stores enablement.
-/// It is a JSON object of at most 8,192 bytes with exactly these fields: `shape`, `extent`,
-/// `radius`, `half_height`, `motion`, `velocity`, `angular_velocity`, `density`, `friction`,
-/// `restitution`, `layer`, `sensor`, `continuous` and `fixed_rotation`. `extent` and `velocity`
-/// hold two numbers; `shape` and `motion` store the Shape and Motion enumerator values. Unknown,
-/// missing or duplicate fields and invalid values are rejected, and restoring constructs a new
-/// RigidBody under its rules. The payload is scene state, not a deterministic solver snapshot.
+/// The payload stores the collider, motion, mass, damping, material, layer, flags and current
+/// velocities; the scene or prefab transform stores the pose and depth, and the component data
+/// stores enablement. It is a JSON object of at most 8,192 bytes with exactly these fields:
+/// `shape`, `half_extent`, `radius`, `half_height`, `motion`, `velocity`, `angular_velocity`,
+/// `mass`, `linear_damping`, `angular_damping`, `friction`, `restitution`, `layer`, `sensor`,
+/// `continuous` and `fixed_rotation`. `half_extent` and `velocity` hold two numbers; `shape`
+/// stores the Shape's name, one of `"box"`, `"circle"` and `"capsule"`, and `motion` the
+/// Motion's, one of `"stationary"`, `"kinematic"` and `"dynamic"`. Unknown, missing or duplicate
+/// fields, other names and invalid values are rejected, and restoring constructs a new RigidBody
+/// under its rules. The payload is scene state, not a deterministic solver snapshot.
 void add_component_codec(ComponentCodecs &codecs, World &world);
 } // namespace anima::physics2d

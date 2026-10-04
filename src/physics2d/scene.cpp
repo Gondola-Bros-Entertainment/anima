@@ -24,6 +24,14 @@ Pose planar_pose(GameObject object, Motion motion) {
     return {{position.x, position.y}, std::atan2(x.y, x.x)};
 }
 using Json = nlohmann::json;
+constexpr auto unknown_shape = "Unknown 2D rigid body shape";
+constexpr auto unknown_motion = "Unknown 2D rigid body motion";
+constexpr anima::detail::JsonNames<Shape, 3> shape_names{
+    {{Shape::box, "box"}, {Shape::circle, "circle"}, {Shape::capsule, "capsule"}}};
+static_assert(shape_names.size() == static_cast<std::size_t>(Shape::capsule) + 1, "Name every shape");
+constexpr anima::detail::JsonNames<Motion, 3> motion_names{
+    {{Motion::stationary, "stationary"}, {Motion::kinematic, "kinematic"}, {Motion::dynamic, "dynamic"}}};
+static_assert(motion_names.size() == static_cast<std::size_t>(Motion::dynamic) + 1, "Name every motion");
 Json vec(Vec2 v) { return Json::array({v.x, v.y}); }
 Vec2 vec(const Json &j) {
     if (!j.is_array() || j.size() != 2 || !j[0].is_number() || !j[1].is_number())
@@ -83,17 +91,19 @@ void step(SceneSet &scenes, World &world, double seconds) { step_scenes(scenes, 
 void add_component_codec(ComponentCodecs &codecs, World &world) {
     const std::weak_ptr<int> lifetime = world.lifetime_;
     codecs.add<RigidBody>(
-        "anima.rigid-body-2d.v1",
+        "anima.rigid-body-2d.v2",
         [](const RigidBody &component, const ObjectReferences &) {
             const auto &s = component.settings();
-            return Json{{"shape", static_cast<int>(s.collider.shape)},
-                        {"extent", vec(s.collider.half_extent)},
+            return Json{{"shape", anima::detail::json_name(shape_names, s.collider.shape, unknown_shape)},
+                        {"half_extent", vec(s.collider.half_extent)},
                         {"radius", s.collider.radius},
                         {"half_height", s.collider.half_height},
-                        {"motion", static_cast<int>(s.motion)},
+                        {"motion", anima::detail::json_name(motion_names, s.motion, unknown_motion)},
                         {"velocity", vec(component.body().velocity())},
                         {"angular_velocity", component.body().angular_velocity()},
-                        {"density", s.density},
+                        {"mass", s.mass},
+                        {"linear_damping", s.linear_damping},
+                        {"angular_damping", s.angular_damping},
                         {"friction", s.friction},
                         {"restitution", s.restitution},
                         {"layer", s.layer},
@@ -106,15 +116,9 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
             if (lifetime.expired())
                 throw std::out_of_range("2D rigid body codec world expired");
             const auto j = anima::detail::parse_json(data, 8192);
-            anima::detail::json_fields(j, {"shape", "extent", "radius", "half_height", "motion", "velocity",
-                                           "angular_velocity", "density", "friction", "restitution", "layer", "sensor",
-                                           "continuous", "fixed_rotation"});
-            const auto integer = [&](const char *key, unsigned maximum) {
-                const auto &v = j.at(key);
-                if (!v.is_number_integer() || v.get<std::int64_t>() < 0 || v.get<std::uint64_t>() > maximum)
-                    throw std::invalid_argument("Invalid 2D rigid body enum/layer");
-                return v.get<unsigned>();
-            };
+            anima::detail::json_fields(j, {"shape", "half_extent", "radius", "half_height", "motion", "velocity",
+                                           "angular_velocity", "mass", "linear_damping", "angular_damping", "friction",
+                                           "restitution", "layer", "sensor", "continuous", "fixed_rotation"});
             const auto number = [&](const char *key) {
                 if (!j.at(key).is_number())
                     throw std::invalid_argument("Invalid 2D physics scalar");
@@ -126,17 +130,23 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
                 return j.at(key).get<bool>();
             };
             BodySettings s;
-            s.collider.shape = static_cast<Shape>(integer("shape", 2));
-            s.collider.half_extent = vec(j.at("extent"));
+            s.collider.shape = anima::detail::json_enumerator(shape_names, j.at("shape"), unknown_shape);
+            s.collider.half_extent = vec(j.at("half_extent"));
             s.collider.radius = number("radius");
             s.collider.half_height = number("half_height");
-            s.motion = static_cast<Motion>(integer("motion", 2));
+            s.motion = anima::detail::json_enumerator(motion_names, j.at("motion"), unknown_motion);
             s.velocity = vec(j.at("velocity"));
             s.angular_velocity = number("angular_velocity");
-            s.density = number("density");
+            s.mass = number("mass");
+            s.linear_damping = number("linear_damping");
+            s.angular_damping = number("angular_damping");
             s.friction = number("friction");
             s.restitution = number("restitution");
-            s.layer = static_cast<std::uint8_t>(integer("layer", detail::collision_layer_count - 1));
+            const auto &layer = j.at("layer");
+            if (!layer.is_number_integer() || layer.get<std::int64_t>() < 0 ||
+                layer.get<std::uint64_t>() >= detail::collision_layer_count)
+                throw std::invalid_argument("Invalid 2D rigid body layer");
+            s.layer = layer.get<std::uint8_t>();
             s.sensor = boolean("sensor");
             s.continuous = boolean("continuous");
             s.fixed_rotation = boolean("fixed_rotation");

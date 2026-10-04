@@ -35,8 +35,6 @@ constexpr float minimum_collider_dimension = .001F;
 constexpr float maximum_collider_dimension = 1'000'000.F;
 constexpr double minimum_hull_span = .001;
 constexpr float hull_construction_tolerance = .0001F;
-constexpr float minimum_body_mass = .001F;
-constexpr float maximum_body_mass = 1'000'000.F;
 constexpr std::uint32_t maximum_world_bodies = 65'536;
 // A dynamic body's velocity caps, equal to Jolt's defaults. Jolt's clamping setters, impulses and steps shorten a
 // longer velocity to its cap, keeping its direction.
@@ -53,6 +51,8 @@ static_assert(maximum_kinematic_speed * maximum_kinematic_speed >
 // FixedStepClock's default, at one collision step.
 constexpr double collision_steps_per_second = 60;
 constexpr double collision_step_tolerance = 1e-6;
+static_assert(detail::maximum_damping == collision_steps_per_second,
+              "The damping bound assumes 1/60 s collision steps");
 // A mesh triangle whose unnormalized normal, the cross product of two edges, has a squared length at or
 // below this is degenerate.
 constexpr float minimum_squared_triangle_normal = 1e-12F;
@@ -369,6 +369,14 @@ Vec3 Body::angular_velocity() const {
     auto w = lock();
     return a(w->system.GetBodyInterface().GetAngularVelocity(w->entries.at(id_).id));
 }
+float Body::mass() const {
+    auto w = lock();
+    const auto &e = w->entries.at(id_);
+    require(e.motion == Motion::dynamic, "Only dynamic bodies have mass");
+    // A disabled body is outside the broadphase but still exists, so the lock succeeds.
+    const JPH::BodyLockRead body(w->system.GetBodyLockInterface(), e.id);
+    return 1 / body.GetBody().GetMotionProperties()->GetInverseMass();
+}
 void Body::set_angular_velocity(Vec3 velocity) {
     vector(velocity);
     auto w = lock();
@@ -451,10 +459,14 @@ Body World::create(const BodySettings &s) {
     require(s.motion >= Motion::stationary && s.motion <= Motion::dynamic && s.layer < detail::collision_layer_count,
             "Invalid body motion/layer");
     require(s.collider.shape != Shape::mesh || s.motion == Motion::stationary, "Mesh bodies must be stationary");
-    require(std::isfinite(s.mass) && s.mass >= minimum_body_mass && s.mass <= maximum_body_mass &&
+    require(std::isfinite(s.mass) && s.mass >= detail::minimum_body_mass && s.mass <= detail::maximum_body_mass &&
                 std::isfinite(s.friction) && s.friction >= 0 && s.friction <= 1 && std::isfinite(s.restitution) &&
                 s.restitution >= 0 && s.restitution <= 1,
             "Invalid body mass/material");
+    require(std::isfinite(s.linear_damping) && s.linear_damping >= 0 && s.linear_damping <= detail::maximum_damping &&
+                std::isfinite(s.angular_damping) && s.angular_damping >= 0 &&
+                s.angular_damping <= detail::maximum_damping,
+            "Invalid body damping");
     require(s.motion != Motion::stationary ||
                 (dot(s.velocity, s.velocity) == 0 && dot(s.angular_velocity, s.angular_velocity) == 0),
             "Static body has velocity");
@@ -493,6 +505,9 @@ Body World::create(const BodySettings &s) {
     // Only kinematic sensors pair with stationary and kinematic bodies, as in Box2D. Jolt reserves this costly
     // pairing for sensors.
     settings.mCollideKinematicVsNonDynamic = s.motion == Motion::kinematic && s.sensor;
+    // Jolt damps only dynamic bodies, and would otherwise apply its own default of 0.05 per second.
+    settings.mLinearDamping = s.linear_damping;
+    settings.mAngularDamping = s.angular_damping;
     settings.mFriction = s.friction;
     settings.mRestitution = s.restitution;
     settings.mIsSensor = s.sensor;

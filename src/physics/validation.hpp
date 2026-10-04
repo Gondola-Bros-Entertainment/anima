@@ -6,8 +6,11 @@ namespace anima::physics::detail {
 // Shared runtime/codec budgets. These are input limits, not precision guarantees.
 using anima::detail::all_layers;
 using anima::detail::collision_layer_count;
+using anima::detail::maximum_body_mass;
+using anima::detail::maximum_damping;
 using anima::detail::maximum_step_seconds;
 using anima::detail::maximum_vector_component;
+using anima::detail::minimum_body_mass;
 using anima::detail::minimum_squared_displacement;
 using anima::detail::minimum_step_seconds;
 inline constexpr std::size_t maximum_mesh_vertices = 1'000'000;

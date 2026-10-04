@@ -736,3 +736,74 @@ TEST_CASE("A disabled body stores pose and velocity writes until it is reenabled
     REQUIRE_MESSAGE((near(body.velocity(), velocity) && near(body.angular_velocity(), spin)),
                     "Reenabled body lost its stored velocities");
 }
+
+TEST_CASE("Damping slows only dynamic bodies, by the documented factor per collision step") {
+    constexpr int ticks = 60; // One second, one collision step per tick.
+    constexpr float damping = 1;
+    constexpr float decay_tolerance = 1e-4F; // Float rounding over the steps.
+    constexpr auto invalid_damping = "Invalid body damping";
+    World world(weightless(4));
+    const Vec3 velocity{1, 0, 0};
+    const Vec3 spin{0, 1, 0};
+    auto settings = box({}, {.5F, .5F, .5F}, Motion::dynamic);
+    settings.velocity = velocity;
+    settings.angular_velocity = spin;
+    auto undamped = world.create(settings);
+    settings.pose.position = {0, 5, 0};
+    settings.linear_damping = damping;
+    settings.angular_damping = damping;
+    auto damped = world.create(settings);
+    settings.pose.position = {0, 10, 0};
+    settings.motion = Motion::kinematic;
+    auto kinematic = world.create(settings);
+    for (int i = 0; i < ticks; ++i)
+        world.step(tick);
+    REQUIRE_MESSAGE((identical(undamped.velocity(), velocity) && identical(undamped.angular_velocity(), spin)),
+                    "An undamped body lost speed");
+    const auto factor = static_cast<float>(std::pow(1 - damping * tick, ticks));
+    REQUIRE_MESSAGE(length(damped.velocity() - velocity * factor) < decay_tolerance,
+                    "Linear damping did not scale the velocity by max(0, 1 - c dt) per step");
+    REQUIRE_MESSAGE(length(damped.angular_velocity() - spin * factor) < decay_tolerance,
+                    "Angular damping did not scale the angular velocity by max(0, 1 - c dt) per step");
+    REQUIRE_MESSAGE((identical(kinematic.velocity(), velocity) && identical(kinematic.angular_velocity(), spin)),
+                    "Damping slowed a kinematic body");
+    for (const float bad :
+         {-1.F, 61.F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        CAPTURE(bad);
+        auto linear = box({}, {.5F, .5F, .5F}, Motion::dynamic);
+        linear.linear_damping = bad;
+        REQUIRE_THROWS_WITH_AS(world.create(linear), invalid_damping, std::invalid_argument);
+        auto angular = box({}, {.5F, .5F, .5F}, Motion::dynamic);
+        angular.angular_damping = bad;
+        REQUIRE_THROWS_WITH_AS(world.create(angular), invalid_damping, std::invalid_argument);
+    }
+    settings.linear_damping = 60;
+    settings.angular_damping = 60;
+    (void)world.create(settings);
+    REQUIRE(world.size() == 4u);
+}
+
+TEST_CASE("A dynamic body reports its mass, which sets its response to impulses") {
+    constexpr float mass = 10;
+    constexpr float mass_tolerance = 1e-5F * mass; // A mass recovered from Jolt's inverse mass.
+    constexpr auto dynamic_only = "Only dynamic bodies have mass";
+    World world(weightless(4));
+    auto settings = box({}, {.5F, .25F, 1}, Motion::dynamic);
+    settings.mass = mass;
+    auto body = world.create(settings);
+    REQUIRE(std::abs(body.mass() - mass) < mass_tolerance);
+    body.add_impulse({mass, 0, 0});
+    REQUIRE_MESSAGE(near(body.velocity(), {1, 0, 0}), "An impulse did not change the velocity by impulse / mass");
+    body.set_enabled(false);
+    REQUIRE_MESSAGE(std::abs(body.mass() - mass) < mass_tolerance, "A disabled body lost its mass");
+    settings.pose.position = {0, 5, 0};
+    settings.collider = tetrahedron();
+    REQUIRE_MESSAGE(std::abs(world.create(settings).mass() - mass) < mass_tolerance,
+                    "A hull's mass did not follow BodySettings::mass");
+    REQUIRE_THROWS_WITH_AS((void)world.create(box({0, 10, 0}, {.5F, .5F, .5F})).mass(), dynamic_only,
+                           std::invalid_argument);
+    REQUIRE_THROWS_WITH_AS((void)world.create(box({0, 15, 0}, {.5F, .5F, .5F}, Motion::kinematic)).mass(), dynamic_only,
+                           std::invalid_argument);
+    body.remove();
+    REQUIRE_THROWS_WITH_AS((void)body.mass(), expired_body, std::out_of_range);
+}
