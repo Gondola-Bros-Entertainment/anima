@@ -167,13 +167,16 @@ void write_prop(const std::filesystem::path &file, bool animated) {
 // grip profile layers the side joint over the base clip instead. The spinner visual's model is animated but
 // declares no tracks, so it cannot load.
 std::string attachment_catalog() {
-    return std::string(R"({"schema_version":3,"units":"meters","empty_handling":"free",
-        "handling":[{"id":"free","socket":"","layer":""},
-                    {"id":"grip","socket":"grip","layer":"layer.limb","layer_overrides":{"base":"layer.side"}},
-                    {"id":"brace","socket":"grip","layer":"layer.limb"}],
+    constexpr auto unbound = R"("primary_node":null,"marker_nodes":{},"animation_tracks":{})";
+    return std::string(R"({"version":4,"units":"meters","empty_handling":"free",
+        "handling":[{"id":"free","socket":"","layer":"","layer_overrides":{},"support_contacts":[]},
+                    {"id":"grip","socket":"grip","layer":"layer.limb","layer_overrides":{"base":"layer.side"},
+                     "support_contacts":[]},
+                    {"id":"brace","socket":"grip","layer":"layer.limb","layer_overrides":{},"support_contacts":[]}],
         "visuals":[{"id":"prop","model":"prop.glb","primary_grip":)") +
-           identity_frame + R"(,"markers":{}},{"id":"spinner","model":"spinner.glb","primary_grip":)" + identity_frame +
-           R"(,"markers":{}}],
+           identity_frame + R"(,"markers":{},)" + unbound +
+           R"(},{"id":"spinner","model":"spinner.glb","primary_grip":)" + identity_frame + R"(,"markers":{},)" +
+           unbound + R"(}],
         "items":[{"id":"prop","visual":"prop","handling":"grip"},{"id":"brace","visual":"prop","handling":"brace"}]})";
 }
 // @p text with its first @p from replaced by @p to; the text must contain @p from.
@@ -182,33 +185,47 @@ std::string replaced(std::string text, std::string_view from, std::string_view t
     REQUIRE(at != std::string::npos);
     return text.replace(at, from.size(), to);
 }
+// @p text with its first field @p name renamed, so that the object holding it lacks it.
+std::string without(const std::string &text, std::string_view name) {
+    const auto key = "\"" + std::string(name) + "\":";
+    return replaced(text, key, "\"" + std::string(name) + "_renamed\":");
+}
 // attachment_catalog, with the brace held at a hold socket while a support contact puts the limb's end on the grip
 // socket, at the prop's support marker.
 std::string braced_catalog() {
-    return replaced(replaced(attachment_catalog(), R"({"id":"brace","socket":"grip","layer":"layer.limb"})",
-                             R"({"id":"brace","socket":"hold","layer":"","support_contacts":[
-                              {"chain":"limb","socket":"grip","marker":"support","pole":[0,0,2],"clips":["base"]}]})"),
-                    R"("markers":{})", std::string(R"("markers":{"support":)") + identity_frame + "}");
+    return replaced(
+        replaced(attachment_catalog(),
+                 R"({"id":"brace","socket":"grip","layer":"layer.limb","layer_overrides":{},"support_contacts":[]})",
+                 R"({"id":"brace","socket":"hold","layer":"","layer_overrides":{},"support_contacts":[
+                     {"chain":"limb","socket":"grip","marker":"support","pole":[0,0,2],"clips":["base"],
+                      "actions":[]}]})"),
+        R"("markers":{})", std::string(R"("markers":{"support":)") + identity_frame + "}");
 }
 // An interaction in which the child role is placed by its anchor socket on the parent's while a contact moves its
 // limb toward the parent's target socket.
-constexpr auto meeting = R"({"version":1,"id":"meet","phases":[{"id":"hold","duration":1}],
-    "roles":{"child":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}},
-             "parent":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}}},
+constexpr auto meeting = R"({"version":2,"id":"meet","phases":[{"id":"hold","duration":1,"held":false,"cues":[]}],
+    "roles":{"child":{"hold":{"layers":[{"clip":"base","mask":null,"interval":[0,1],"mode":"override",
+                                         "weight":[[0,1],[1,1]],"reference":null}]}},
+             "parent":{"hold":{"layers":[{"clip":"base","mask":null,"interval":[0,1],"mode":"override",
+                                          "weight":[[0,1],[1,1]],"reference":null}]}}},
     "attachments":[{"child":"child","parent":"parent","child_socket":"anchor","parent_socket":"anchor",
                     "weights":{"hold":[[0,1],[1,1]]}}],
     "contacts":[{"child":"child","parent":"parent","chain":"limb","target_socket":"target","pole":[0,0,2],
-                 "weights":{"hold":[[0,1],[1,1]]}}]})";
+                 "weights":{"hold":[[0,1],[1,1]]},"orientation":false}]})";
 
 // Two actions on the limb. reach needs a tool role held with the grip profile and may be performed with
 // either profile; twirl needs the tool's visual to have a spin track, which the prop lacks.
-constexpr auto action_catalog = R"({"schema_version":1,"actions":[
-    {"id":"reach","handling":["free","grip"],"roles":{"tool":["grip"]},"phases":[{"id":"extend","duration":0.5,
-      "layers":[{"clip":"layer.limb","mask":"limb","interval":[0,1]}],
-      "props":[{"role":"tool","track":"spin","interval":[0,1],"required":false}]}]},
-    {"id":"twirl","handling":["grip"],"phases":[{"id":"spin","duration":0.5,
-      "layers":[{"clip":"layer.limb","mask":"limb","interval":[0,1]}],
-      "props":[{"role":"tool","track":"spin","interval":[0,1]}]}]}]})";
+constexpr auto action_catalog = R"({"version":2,"actions":[
+    {"id":"reach","handling":["free","grip"],"roles":{"tool":["grip"]},"phases":[
+      {"id":"extend","duration":0.5,"held":false,
+       "layers":[{"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,1],[1,1]],
+                  "reference":null}],
+       "cues":[],"props":[{"role":"tool","track":"spin","interval":[0,1],"required":false}],"contacts":{}}]},
+    {"id":"twirl","handling":["grip"],"roles":{},"phases":[
+      {"id":"spin","duration":0.5,"held":false,
+       "layers":[{"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,1],[1,1]],
+                  "reference":null}],
+       "cues":[],"props":[{"role":"tool","track":"spin","interval":[0,1],"required":true}],"contacts":{}}]}]})";
 
 // A limb model bound to its motion: the motion GLB on disk, the manifest and the contract that names it, and
 // a prop model with a grip socket at the end of the limb.
@@ -216,7 +233,7 @@ struct MotionFixture {
     TempDirectory directory;
     std::shared_ptr<const Asset> body = std::make_shared<const Asset>(limb_model());
     Manifest manifest;
-    std::string contract = R"({"version":3,"skeleton":{"id":"test.rig","bind_signature":")" + rig_signature +
+    std::string contract = R"({"version":4,"skeleton":{"id":"test.rig","bind_signature":")" + rig_signature +
                            R"(","joint_count":)" + std::to_string(rig_joints) + R"(},"resource":"motion.glb",
         "evaluation":{"version":1,"id":"test.evaluation",
           "parents":{"root":null,"upper":"root","middle":"upper","end":"middle","side":"root","tip":"side",
@@ -224,7 +241,7 @@ struct MotionFixture {
           "masks":{"limb":["upper"],"side":["side"]},
           "chains":{"limb":{"joints":["upper","middle","end"],"minimum_angle":0,"maximum_angle":3.1},
                     "other":{"joints":["other.upper","other.middle","other.end"],"minimum_angle":0,"maximum_angle":3.1}}},
-        "clips":[{"name":"base","loop":true,"events":[]}],
+        "clips":[{"name":"base","loop":true,"reference_speed":null,"events":[]}],
         "layers":{"layer.limb":{"mask":"limb","owned_joints":["end","middle","upper"],"context_joints":["root"]},
                   "layer.side":{"mask":"side","owned_joints":["side","tip"],"context_joints":["root"]}}})";
     std::map<std::string, AttachmentSocket, std::less<>> sockets{{"grip", {3, identity()}}};
@@ -625,8 +642,8 @@ TEST_CASE("A requested duration rescales a timed action, and the sample's clock 
     const MotionFixture fixture;
     const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
     // twirl's single phase becomes held, so it keeps its declared timing.
-    const ActionRuntime actions(motion, replaced(action_catalog, R"("id":"spin","duration":0.5,)",
-                                                 R"("id":"spin","duration":0.5,"held":true,)"));
+    const ActionRuntime actions(motion, replaced(action_catalog, R"("id":"spin","duration":0.5,"held":false)",
+                                                 R"("id":"spin","duration":0.5,"held":true)"));
     CHECK(actions.scale({.action = "reach"}) == 1);
     CHECK(actions.scale({.action = "twirl"}) == 1);
     // reach declares 0.5 seconds, so lasting 1 second plays it at half rate.
@@ -652,9 +669,46 @@ TEST_CASE("An action layer that plays a layer clip uses that clip's mask") {
     constexpr auto wrong_mask = "Action layer must use its layer clip's mask";
     CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb")", R"("mask":"side")")),
                          wrong_mask, std::invalid_argument);
-    // Without a mask the layer is full-body, which a layer clip is not.
-    CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb",)", "")), wrong_mask,
-                         std::invalid_argument);
+    // A null mask makes the layer full-body, which a layer clip is not.
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb")", R"("mask":null)")),
+                         wrong_mask, std::invalid_argument);
+}
+
+TEST_CASE("An action catalog requires every field, with null, [] and {} declaring none") {
+    const MotionFixture fixture;
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    // Each name is first a field of reach, its phase, its layer or its prop track.
+    for (const auto *name :
+         {"roles", "held", "cues", "props", "contacts", "mask", "mode", "weight", "reference", "required"}) {
+        CAPTURE(name);
+        const auto missing = "Missing JSON field: " + std::string(name);
+        CHECK_THROWS_WITH_AS(ActionRuntime(motion, without(action_catalog, name)), missing.c_str(),
+                             std::invalid_argument);
+    }
+    const ActionRuntime actions(motion, action_catalog);
+    CHECK(actions.definition("twirl").required_roles.empty());
+    const auto &phase = actions.definition("reach").phases.at(0);
+    CHECK(phase.contacts.empty());
+    CHECK(actions.definition("reach").timeline.phases().at(0).cues.empty());
+    REQUIRE(phase.layers.size() == 1);
+    CHECK(phase.layers[0].mode == LayerMode::override_pose);
+    CHECK(phase.layers[0].reference.empty());
+    REQUIRE(phase.props.size() == 1);
+    CHECK_FALSE(phase.props[0].required);
+    // An additive layer names its reference pose, and an override's is null.
+    const auto additive = replaced(replaced(action_catalog, R"("mode":"override")", R"("mode":"additive")"),
+                                   R"("reference":null)", R"("reference":{"clip":"base","at":0.5})");
+    const ActionRuntime additive_actions(motion, additive);
+    const auto &layer = additive_actions.definition("reach").phases.at(0).layers.at(0);
+    CHECK(layer.mode == LayerMode::additive);
+    CHECK(layer.reference == "base");
+    CHECK(layer.reference_at == .5);
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("reference":null)",
+                                                        R"("reference":{"clip":"base","at":0.5})")),
+                         "Additive action layer needs exactly one reference pose", std::invalid_argument);
+    // null is the one spelling of a full-body layer's mask.
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb")", R"("mask":"")")),
+                         "Empty presentation identity/reference", std::invalid_argument);
 }
 
 TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership checks the chosen clips") {
@@ -673,13 +727,16 @@ TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership ch
                          "Motion layers have overlapping joint ownership", std::invalid_argument);
 }
 
-TEST_CASE("An attachment catalog accepts only version 3 and none of the removed fields") {
+TEST_CASE("An attachment catalog accepts only version 4 and none of the removed fields") {
     const MotionFixture fixture;
     const auto catalog = attachment_catalog();
     const auto decode = [&](const std::string &text) { (void)decode_attachment_catalog(text, fixture.directory.path); };
     // Another version is reported before the fields, so a removed field does not hide it.
-    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("schema_version":3)", R"("schema_version":2,"defaults":{})")),
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("version":4)", R"("version":3,"defaults":{})")),
                          "Unsupported attachment catalog version", std::invalid_argument);
+    // Version 3 named its version schema_version.
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("version":4)", R"("schema_version":3)")),
+                         "Missing JSON field: version", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("units":"meters")", R"("units":"feet")")),
                          "Unsupported attachment catalog units", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("empty_handling")", R"("defaults":{},"empty_handling")")),
@@ -692,6 +749,47 @@ TEST_CASE("An attachment catalog accepts only version 3 and none of the removed 
                          "Empty presentation identity/reference", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"({"base":"layer.side"})", R"({"":"layer.side"})")),
                          "Empty layer override base clip", std::invalid_argument);
+}
+
+TEST_CASE("An attachment catalog requires every field, with null, [] and {} declaring none") {
+    const MotionFixture fixture;
+    const auto decode = [&](const std::string &text) {
+        return decode_attachment_catalog(text, fixture.directory.path);
+    };
+    const auto catalog = braced_catalog();
+    // Each name is first a field of the free handling, the brace's contact or the prop's visual.
+    for (const auto *name :
+         {"layer_overrides", "support_contacts", "actions", "primary_node", "marker_nodes", "animation_tracks"}) {
+        CAPTURE(name);
+        const auto missing = "Missing JSON field: " + std::string(name);
+        CHECK_THROWS_WITH_AS(decode(without(catalog, name)), missing.c_str(), std::invalid_argument);
+    }
+    const auto decoded = decode(catalog);
+    const auto &free = decoded.motions.at("free");
+    CHECK(free.layer_overrides.empty());
+    CHECK(free.support_contacts.empty());
+    REQUIRE(decoded.motions.at("brace").support_contacts.size() == 1);
+    CHECK(decoded.motions.at("brace").support_contacts[0].actions.empty());
+    const auto &prop = decoded.visuals.at("prop");
+    CHECK(prop.primary_node.empty());
+    CHECK(prop.marker_nodes.empty());
+    CHECK(prop.animation_tracks.empty());
+    // A named primary node decodes as named, and null is the one spelling of none.
+    CHECK(decode(replaced(catalog, R"("primary_node":null)", R"("primary_node":"prop")"))
+              .visuals.at("prop")
+              .primary_node == "prop");
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("primary_node":null)", R"("primary_node":"")")),
+                         "Empty presentation identity/reference", std::invalid_argument);
+    constexpr auto contact_count = "Handling contacts require an array of at most four constraints";
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("support_contacts":[])", R"("support_contacts":{})")),
+                         contact_count, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(replaced(catalog, R"("support_contacts":[])", R"("support_contacts":[{},{},{},{},{}])")), contact_count,
+        std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("actions":[])", R"("actions":null)")),
+                         "Contact action coverage must be an array", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("marker_nodes":{})", R"("marker_nodes":null)")),
+                         "Prop bindings must be named references", std::invalid_argument);
 }
 
 TEST_CASE("A handling profile's layer overrides are an object keyed by base clip") {
@@ -771,8 +869,8 @@ TEST_CASE("Interaction roles take their model from their motion, and every socke
 TEST_CASE("An attachment socket document maps names to rest frames and to sockets") {
     const MotionFixture fixture;
     const auto document = [](const std::string &rest_joints, const std::string &sockets) {
-        return R"({"skeleton":"test.rig","bind_signature":")" + rig_signature + R"(","rest_joints":)" + rest_joints +
-               R"(,"sockets":)" + sockets + "}";
+        return R"({"version":1,"skeleton":"test.rig","bind_signature":")" + rig_signature + R"(","rest_joints":)" +
+               rest_joints + R"(,"sockets":)" + sockets + "}";
     };
     const auto decode = [&](const std::string &text) {
         return decode_attachment_sockets(text, fixture.manifest, *fixture.body);
@@ -780,9 +878,15 @@ TEST_CASE("An attachment socket document maps names to rest frames and to socket
     // The root rests at the origin, and the grip socket sits on it.
     const auto rest_joints = std::string(R"({"root":)") + identity_frame + "}";
     const auto grip = std::string(R"({"node":"root","local":)") + identity_frame + "}";
-    const auto sockets = decode(document(rest_joints, R"({"grip":)" + grip + "}"));
+    const auto valid = document(rest_joints, R"({"grip":)" + grip + "}");
+    const auto sockets = decode(valid);
     REQUIRE(sockets.size() == 1);
     CHECK(sockets.at("grip").node == 0);
+    // The version is checked first, so another version reports it rather than a field it lacks or adds.
+    CHECK_THROWS_WITH_AS(decode(replaced(valid, R"("version":1)", R"("version":2,"removed":0)")),
+                         "Unsupported attachment socket document version", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(valid, R"("version":1,)", "")), "Missing JSON field: version",
+                         std::invalid_argument);
     // Read as a map, a list would name its entries by their indices.
     CHECK_THROWS_WITH_AS(decode(document(rest_joints, "[" + grip + "]")), "JSON field must be an object: sockets",
                          std::invalid_argument);
@@ -804,9 +908,11 @@ TEST_CASE("A motion contract's maps are objects and its lists are arrays") {
             R"("other":{"joints":["other.upper","other.middle","other.end"],"minimum_angle":0,"maximum_angle":3.1}})",
             R"({"joints":["other.upper","other.middle","other.end"],"minimum_angle":0,"maximum_angle":3.1}])")),
         "JSON field must be an object: chains", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(contract(replaced(fixture.contract, R"("clips":[{"name":"base","loop":true,"events":[]}])",
-                                           R"("clips":{"base":{"name":"base","loop":true,"events":[]}})")),
-                         "JSON field must be an array: clips", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        contract(replaced(fixture.contract,
+                          R"("clips":[{"name":"base","loop":true,"reference_speed":null,"events":[]}])",
+                          R"("clips":{"base":{"name":"base","loop":true,"reference_speed":null,"events":[]}})")),
+        "JSON field must be an array: clips", std::invalid_argument);
     CHECK_THROWS_WITH_AS(contract(replaced(fixture.contract, R"("events":[])", R"("events":null)")),
                          "JSON field must be an array: events", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
@@ -816,24 +922,37 @@ TEST_CASE("A motion contract's maps are objects and its lists are arrays") {
         "JSON field must be an object: layers", std::invalid_argument);
 }
 
+TEST_CASE("A motion contract requires a reference speed for each base clip, null for none") {
+    const MotionFixture fixture;
+    CHECK_FALSE(fixture.runtime().metadata("base").reference_speed);
+    const MotionRuntime travel(fixture.body, fixture.manifest,
+                               replaced(fixture.contract, R"("reference_speed":null)", R"("reference_speed":2)"));
+    CHECK(travel.metadata("base").reference_speed == 2);
+    CHECK_THROWS_WITH_AS(MotionRuntime(fixture.body, fixture.manifest, without(fixture.contract, "reference_speed")),
+                         "Missing JSON field: reference_speed", std::invalid_argument);
+}
+
 TEST_CASE("Motion, action, actor and interaction documents report another version before their fields") {
     const MotionFixture fixture;
     // Each document also has a field that its version lacks, which must not hide the version.
     const auto contract = [&](const std::string &from, const std::string &to) {
         (void)MotionRuntime(fixture.body, fixture.manifest, replaced(fixture.contract, from, to));
     };
-    CHECK_THROWS_WITH_AS(contract(R"({"version":3,)", R"({"version":2,"removed":0,)"),
+    CHECK_THROWS_WITH_AS(contract(R"({"version":4,)", R"({"version":3,"removed":0,)"),
                          "Unsupported motion contract version", std::invalid_argument);
     CHECK_THROWS_WITH_AS(contract(R"("evaluation":{"version":1,)", R"("evaluation":{"version":2,"removed":0,)"),
                          "Unsupported motion evaluation version", std::invalid_argument);
     const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
-    CHECK_THROWS_WITH_AS(ActionRuntime(motion, R"({"schema_version":2,"removed":0,"actions":[]})"),
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, R"({"version":1,"removed":0,"actions":[]})"),
                          "Unsupported action catalog version", std::invalid_argument);
+    // Version 1 named its version schema_version.
+    CHECK_THROWS_WITH_AS(ActionRuntime(motion, R"({"schema_version":1,"actions":[]})"), "Missing JSON field: version",
+                         std::invalid_argument);
     const auto profile = fixture.directory.path / "actor.profile.json";
     std::ofstream(profile) << R"({"version":1,"capabilities":[]})";
     CHECK_THROWS_WITH_AS(ActorPresentation{profile}, "Unsupported actor presentation profile version",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(InteractionRuntime({}, R"({"version":2,"removed":0})"),
+    CHECK_THROWS_WITH_AS(InteractionRuntime({}, R"({"version":1,"removed":0})"),
                          "Unsupported coordinated interaction version", std::invalid_argument);
 }
 
@@ -841,14 +960,31 @@ TEST_CASE("Coordinated interaction phases and cues must be arrays") {
     // Phases are read before the roles' actors are checked, so an actor without a motion reaches them.
     const InteractionRuntime::Actors actors{{"lead", {}}};
     const auto document = [](const std::string &phases) {
-        return R"({"version":1,"id":"meet","phases":)" + phases +
+        return R"({"version":2,"id":"meet","phases":)" + phases +
                R"(,"roles":{"lead":{}},"attachments":[],"contacts":[]})";
     };
     CHECK_THROWS_WITH_AS(InteractionRuntime(actors, document(R"({"approach":{"duration":1}})")),
                          "Coordinated interaction phases must be an array", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(
-        InteractionRuntime(actors, document(R"([{"id":"approach","duration":1,"cues":{"id":"touch","at":0.5}}])")),
-        "Coordinated interaction cues must be an array", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(InteractionRuntime(actors, document(R"([{"id":"approach","duration":1,"held":false,
+                                                                  "cues":{"id":"touch","at":0.5}}])")),
+                         "Coordinated interaction cues must be an array", std::invalid_argument);
+}
+
+TEST_CASE("A coordinated interaction requires every field") {
+    constexpr std::size_t end = 3;
+    const MotionFixture fixture;
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    const InteractionRuntime::Actors actors{
+        {"child", {motion, {{"anchor", {0, identity()}}}}},
+        {"parent", {motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
+    CHECK_NOTHROW(InteractionRuntime(actors, meeting));
+    // Each name is first a field of the phase, the child's layer or the contact; role layers are action layers.
+    for (const auto *name : {"held", "cues", "mask", "orientation"}) {
+        CAPTURE(name);
+        const auto missing = "Missing JSON field: " + std::string(name);
+        CHECK_THROWS_WITH_AS(InteractionRuntime(actors, without(meeting, name)), missing.c_str(),
+                             std::invalid_argument);
+    }
 }
 
 TEST_CASE("An attachment instance replaces its item in a scene") {

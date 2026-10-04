@@ -14,6 +14,8 @@ inline constexpr float affine_tolerance = 1e-6F;
 inline constexpr float rigid_tolerance = 1e-4F;
 // Numbers in a document's 3D vector.
 inline constexpr std::size_t vector_components = 3;
+// The one action catalog version ActionRuntime accepts, which InteractionRuntime also writes for each role.
+inline constexpr int action_catalog_version = 2;
 using Json = nlohmann::json;
 inline std::string text(const Json &value) {
     const auto result = value.get<std::string>();

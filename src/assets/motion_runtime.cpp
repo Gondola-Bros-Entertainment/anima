@@ -5,6 +5,8 @@ namespace anima {
 namespace {
 // Nearest evaluation joint of a model node that has none at or above it.
 constexpr int no_joint = -1;
+// The one motion contract version MotionRuntime accepts.
+constexpr int motion_contract_version = 4;
 } // namespace
 struct MotionRuntime::Impl {
   public:
@@ -219,7 +221,7 @@ struct MotionRuntime::Impl {
     static std::vector<anima::EvaluationJoint> bind(const anima::Asset &asset, const anima::Manifest &manifest,
                                                     const nlohmann::json &data) {
         // Every object is checked for unknown fields, as the other presentation readers do.
-        detail::json_version(data, "version", 3, "Unsupported motion contract version");
+        detail::json_version(data, "version", motion_contract_version, "Unsupported motion contract version");
         detail::json_fields(data, {"version", "skeleton", "evaluation", "resource", "clips", "layers"});
         const auto &skeleton = data.at("skeleton");
         const auto &definition = data.at("evaluation");
@@ -272,12 +274,12 @@ struct MotionRuntime::Impl {
         for (std::size_t i = 0; i < rig_.size(); ++i)
             (void)anima::unique_node(*resource_, asset_->nodes[rig_.asset_node(i)].name);
         for (const auto &value : detail::json_array(document, "clips")) {
-            detail::json_fields(value, {"name", "loop", "events"}, {"reference_speed"});
+            detail::json_fields(value, {"name", "loop", "reference_speed", "events"});
             anima::ClipMetadata info;
             info.name = value.at("name").get<std::string>();
             info.loop = value.at("loop").get<bool>();
-            if (value.contains("reference_speed")) {
-                info.reference_speed = value.at("reference_speed").get<double>();
+            if (const auto &speed = value.at("reference_speed"); !speed.is_null()) {
+                info.reference_speed = speed.get<double>();
                 if (!std::isfinite(*info.reference_speed) || *info.reference_speed <= 0)
                     throw std::invalid_argument("Invalid motion reference speed");
             }
