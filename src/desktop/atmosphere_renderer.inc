@@ -20,20 +20,41 @@ VkDescriptorSet atmosphere_set{};
 VkPipelineLayout atmosphere_pipeline_layout{};
 std::array<VkShaderModule, 3> atmosphere_shaders{};
 std::array<VkPipeline, 3> atmosphere_pipelines{};
-// Whether the tables have left the undefined layout, and the medium that the transmittance and multiple scattering
-// tables hold.
+// The fields of an Atmosphere that the transmittance and multiple scattering tables depend on, which same_medium()
+// compares: those that atmosphere-transmittance.comp and atmosphere-scattering.comp read from the environment's uniform
+// block.
+static constexpr auto medium_fields =
+    std::tuple{&Atmosphere::planet_radius,         &Atmosphere::thickness,        &Atmosphere::rayleigh_scattering,
+               &Atmosphere::rayleigh_scale_height, &Atmosphere::mie_scattering,   &Atmosphere::mie_absorption,
+               &Atmosphere::mie_scale_height,      &Atmosphere::ozone_absorption, &Atmosphere::ozone_altitude,
+               &Atmosphere::ozone_width,           &Atmosphere::ground_albedo};
+// The fields that neither shader reads: `enabled`, which is true whenever the tables are built, and three that only the
+// sky view table and the sky read. The atmosphere GPU check, check_updates() in tests/consumer/atmosphere.hpp, changes
+// each field of both lists but `enabled`, and the sun's direction and radiance. It requires a medium field's change to
+// rebuild the tables, and the frame drawn after any other change to match one drawn after a rebuild.
+static constexpr auto unread_fields = std::tuple{&Atmosphere::enabled, &Atmosphere::ground_height,
+                                                 &Atmosphere::mie_anisotropy, &Atmosphere::sun_angular_radius};
+// The lists name every field of Atmosphere: removing or renaming one stops the build at its name, and adding one stops
+// it here, since Atmosphere then has more fields than both lists. A field listed twice in place of another is missed.
+static_assert(
+    has_fields<Atmosphere, std::tuple_size_v<decltype(medium_fields)> + std::tuple_size_v<decltype(unread_fields)>>,
+    "Sort each Atmosphere field into medium_fields or unread_fields");
+// Whether the tables have left the undefined layout, and the atmosphere whose medium the transmittance and multiple
+// scattering tables hold.
 bool atmosphere_ready{};
 std::optional<Atmosphere> atmosphere_built;
 
-// Whether @p a and @p b give the same transmittance and multiple scattering tables.
+// Whether @p a and @p b give the same transmittance and multiple scattering tables: whether they hold the same value in
+// each of medium_fields, every channel of a Vec3.
 static bool same_medium(const Atmosphere &a, const Atmosphere &b) {
-    const auto same = [](Vec3 x, Vec3 y) { return x.x == y.x && x.y == y.y && x.z == y.z; };
-    return a.planet_radius == b.planet_radius && a.thickness == b.thickness &&
-           same(a.rayleigh_scattering, b.rayleigh_scattering) && a.rayleigh_scale_height == b.rayleigh_scale_height &&
-           same(a.mie_scattering, b.mie_scattering) && same(a.mie_absorption, b.mie_absorption) &&
-           a.mie_scale_height == b.mie_scale_height && same(a.ozone_absorption, b.ozone_absorption) &&
-           a.ozone_altitude == b.ozone_altitude && a.ozone_width == b.ozone_width &&
-           same(a.ground_albedo, b.ground_albedo);
+    const auto same = [&](auto field) {
+        const auto &x = a.*field, &y = b.*field;
+        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(x)>, Vec3>)
+            return x.x == y.x && x.y == y.y && x.z == y.z;
+        else
+            return x == y;
+    };
+    return std::apply([&](auto... field) { return (same(field) && ...); }, medium_fields);
 }
 // Creates the tables, their compute pipelines and descriptors, and points bindings 3 and 4 of each frame slot's
 // environment set at the sky view and transmittance tables. Needs the environment sets. Throws `std::runtime_error`
