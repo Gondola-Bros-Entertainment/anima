@@ -104,6 +104,13 @@ Asset fixture() {
     asset.animations.push_back(clip);
     return asset;
 }
+// A clip whose keys all sit at time 0, as load_asset imports it: a pose of zero duration with the root at +3 X.
+Animation pose_clip() {
+    Animation clip;
+    clip.name = "brace";
+    clip.channels.push_back({0, ChannelPath::translation, Interpolation::linear, {0}, {{3, 0, 0, 0}}});
+    return clip;
+}
 } // namespace
 
 TEST_CASE("A manifest keeps its body, clip policy, travel speed and events") {
@@ -419,6 +426,89 @@ TEST_CASE("Looping playback crosses events in every loop and at the loop boundar
     CHECK(player.advance(.2).size() == 1);
     CHECK(player.advance(.8).size() == 2); // The end of one loop and the start of the next.
     CHECK(player.advance(.01).empty());
+}
+
+TEST_CASE("Playback names the metadata of another clip and rejects a negative or nonfinite duration") {
+    auto clip = fixture().animations[0];
+    Playback player;
+    CHECK_THROWS_WITH_AS(player.select(clip, {"other", false, {}}), "Clip metadata names another clip: other",
+                         std::invalid_argument);
+    for (const auto duration :
+         {-1., std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        CAPTURE(duration);
+        clip.duration = duration;
+        CHECK_THROWS_WITH_AS(player.select(clip, {"test", false, {}}),
+                             "Clip duration must be finite and nonnegative: test", std::invalid_argument);
+    }
+    const auto pose = pose_clip();
+    CHECK_THROWS_WITH_AS(player.select(pose, {"brace", false, {{.1, "late"}}}),
+                         "Preview event outside animation duration", std::invalid_argument);
+    CHECK_FALSE(player.animation());
+}
+
+TEST_CASE("A clip of zero duration plays as a pose that reports its events once") {
+    const auto clip = pose_clip();
+    Playback once;
+    once.select(clip, {"brace", false, {{0, "set"}, {0, "hold"}}});
+    CHECK(once.advance(0).empty());
+    CHECK(once.playing());
+    // The first nonzero step reports the events at 0, in their order, and ends a clip that does not loop.
+    const auto events = once.advance(.1);
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].name == "set");
+    CHECK(events[1].name == "hold");
+    CHECK(once.finished());
+    CHECK_FALSE(once.playing());
+    CHECK(once.time() == 0);
+    once.resume(); // Resuming a finished clip restarts it, so its events are reported again.
+    CHECK(once.advance(1e9).size() == 2);
+    CHECK(once.finished());
+    once.restart();
+    once.seek(0); // Its start is its end.
+    CHECK(once.finished());
+    CHECK_FALSE(once.playing());
+
+    // A looping pose holds time 0 through any finite step, without the loop bound, and reports its events once.
+    Playback looping;
+    looping.select(clip, {"brace", true, {{0, "set"}}});
+    CHECK(looping.advance(.1).size() == 1);
+    CHECK(looping.advance(1e9).empty());
+    CHECK(looping.time() == 0);
+    CHECK(looping.playing());
+    CHECK_FALSE(looping.finished());
+    looping.seek(2.5);
+    CHECK(looping.time() == 0);
+    CHECK(looping.playing());
+    looping.restart();
+    CHECK(looping.advance(.1).size() == 1);
+}
+
+TEST_CASE("An Animator plays a clip of zero duration as its pose") {
+    auto asset = fixture();
+    asset.animations.push_back(pose_clip());
+    const auto source = std::make_shared<const Asset>(std::move(asset));
+    Scene scene;
+    const auto object = scene.create("body", Mesh::compile(*source));
+    Animator animator(object, source);
+    // Root translation along X of the published pose, checked against what the renderer holds.
+    const auto root_x = [&] {
+        const auto published = animator.pose().world.at(0)[12];
+        CHECK(scene.instance(object.id()).palette.at(0)[12] == published);
+        return published;
+    };
+    CHECK(root_x() == Near{0, tolerance});
+    animator.play("brace", false);
+    CHECK(root_x() == Near{3, tolerance});
+    CHECK(animator.update(.5).empty());
+    CHECK(animator.playback().finished());
+    CHECK(root_x() == Near{3, tolerance});
+    animator.play("test");
+    (void)animator.update(.5);
+    CHECK(root_x() == Near{1, tolerance});
+    animator.play("brace");
+    CHECK(animator.update(.5).empty());
+    CHECK(animator.playback().playing());
+    CHECK(root_x() == Near{3, tolerance});
 }
 
 TEST_CASE("A fitted model binds to the body's joints by name") {

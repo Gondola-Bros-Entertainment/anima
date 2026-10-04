@@ -89,7 +89,8 @@ class AnimationStateMachine {
     struct Blend {
         /// Name of a float parameter.
         std::string parameter;
-        /// Two or more clips with strictly increasing thresholds, which all loop or all do not.
+        /// Two or more clips with strictly increasing thresholds, which all loop or all do not, and
+        /// which all have zero duration or all have a positive one.
         std::vector<BlendClip> clips;
     };
     /// A state: one clip, or a blend of clips, played at a rate.
@@ -170,8 +171,10 @@ class AnimationStateMachine {
     ///
     /// @p clips gives the playback policy of the clips that the states play (whether each loops, and
     /// its events), such as Manifest::clips. Each clip that a state names must be named by exactly one
-    /// entry of @p clips and by exactly one clip of @p source, whose duration must be positive and
-    /// finite with every event inside it, as Playback::select requires; unnamed entries are ignored.
+    /// entry of @p clips and by exactly one clip of @p source, whose duration must be finite and at
+    /// least 0 with every event inside it, as Playback::select requires; unnamed entries are ignored.
+    /// A clip of zero duration, as load_asset imports one whose keys all sit at time 0, is a pose
+    /// that its state holds; see StateMachineAnimator::update for its rate and events.
     ///
     /// Throws `std::invalid_argument` for a null @p source, two entries of @p clips with one name, or a
     /// @p definition that breaks a rule stated on its members, including a name that matches no
@@ -315,14 +318,17 @@ class StateMachineAnimator {
     ///
     /// Then every state that plays advances its normalized time by @p seconds times its rate:
     /// State::speed, times its speed parameter, divided by its duration, which is its clip's or its
-    /// blend's. A looping clip samples the fraction of its duration that the normalized time's
-    /// fractional part gives, and a clip that does not loop samples the fraction min(time, 1). Each
-    /// clip that advances reports the events that it crosses as Playback::advance does: those after
-    /// its previous position and at or before its new one, once per loop crossed, and on the first
-    /// advance of a nonzero amount after its state was entered, also those at its entry point. A
-    /// blend advances only its clips of nonzero weight. Events at equal offsets keep this order: the
-    /// outgoing state's before the entered state's, a blend's clips in threshold order, and a clip's
-    /// events in the order its ClipMetadata lists them.
+    /// blend's, or by one second when its clips have zero duration, so that such a state reaches its
+    /// exit times. A looping clip samples the fraction of its duration that the normalized time's
+    /// fractional part gives, and a clip that does not loop samples the fraction min(time, 1); a clip
+    /// of zero duration therefore holds its pose. Each clip that advances reports the events that it
+    /// crosses as Playback::advance does: those after its previous position and at or before its new
+    /// one, once per loop crossed, and on the first advance of a nonzero amount after its state was
+    /// entered, also those at its entry point. The events of a clip of zero duration lie at normalized
+    /// time 0, so a looping state crosses them once per pass. A blend advances only its clips of
+    /// nonzero weight. Events at equal offsets keep this order: the outgoing state's before the
+    /// entered state's, a blend's clips in threshold order, and a clip's events in the order its
+    /// ClipMetadata lists them.
     ///
     /// Throws `std::invalid_argument` for a negative or nonfinite step, a negative speed parameter of a
     /// state that plays, and a step longer than 10,000 passes of a looping state; `std::runtime_error`
