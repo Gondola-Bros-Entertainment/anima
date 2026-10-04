@@ -2,6 +2,8 @@
 #include <anima/assets/asset.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -129,8 +131,8 @@ struct CustomMaterialDefinition {
     /// The name that scene and prefab documents store, 1 to 4,096 bytes. Documents resolve it through a
     /// CustomMaterialResolver, and one document cannot name two different materials alike.
     std::string name;
-    /// SPIR-V words of the vertex shader, in host byte order, such as glslc writes with `-mfmt=c` or a `.spv`
-    /// file holds on a little-endian host.
+    /// SPIR-V words of the vertex shader, in host byte order, such as glslc writes with `-mfmt=c`, or
+    /// load_spirv() reads from a `.spv` file.
     std::vector<std::uint32_t> vertex_shader;
     /// SPIR-V words of the fragment shader.
     std::vector<std::uint32_t> fragment_shader;
@@ -227,4 +229,19 @@ class CustomMaterial {
     bool reads_opaque_depth_{}, reads_opaque_color_{};
     detail::TexelHoldPtr texels_;
 };
+
+/// Reads a SPIR-V module file of 1 byte to CustomMaterial::max_shader_bytes, such as glslc writes by default, as
+/// spirv_words() reads its bytes. Throws `std::runtime_error` also when the file cannot be opened ("Cannot open
+/// SPIR-V file") or read ("Cannot read SPIR-V file").
+[[nodiscard]] std::vector<std::uint32_t> load_spirv(const std::filesystem::path &path);
+/// The words of the SPIR-V module in @p bytes, in host byte order, for a CustomMaterialDefinition shader; @p bytes
+/// is not retained.
+///
+/// The module may be in either byte order: a first word that reads as the SPIR-V magic number in host order keeps
+/// every word as stored, and one that reads as its byte swap swaps every word. Nothing past the magic number is
+/// checked; CustomMaterial validates the module. Throws `std::runtime_error` for 0 bytes or more than
+/// CustomMaterial::max_shader_bytes ("SPIR-V module must be between 1 byte and 16 MiB"), for a size that is not a
+/// multiple of 4 ("SPIR-V module size must be a multiple of 4 bytes"), and for a first word that is neither ("SPIR-V
+/// module does not start with the SPIR-V magic number").
+[[nodiscard]] std::vector<std::uint32_t> spirv_words(std::span<const std::byte> bytes);
 } // namespace anima

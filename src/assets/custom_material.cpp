@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <anima/custom_material.hpp>
 #include <array>
+#include <cstring>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <span>
@@ -763,5 +765,35 @@ std::vector<std::shared_ptr<const Image>> CustomMaterial::texel_images() const {
 void CustomMaterial::release_texels() const noexcept {
     if (auto *hold = texels_.get())
         hold->release();
+}
+
+std::vector<std::uint32_t> spirv_words(std::span<const std::byte> bytes) {
+    static_assert(CustomMaterial::max_shader_bytes == 16 * 1024 * 1024, "the message states 16 MiB");
+    if (bytes.empty() || bytes.size() > CustomMaterial::max_shader_bytes)
+        throw std::runtime_error("SPIR-V module must be between 1 byte and 16 MiB");
+    if (bytes.size() % sizeof(std::uint32_t) != 0)
+        throw std::runtime_error("SPIR-V module size must be a multiple of 4 bytes");
+    std::vector<std::uint32_t> words(bytes.size() / sizeof(std::uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    if (words[0] == spv::swapped_magic)
+        for (auto &word : words)
+            word = (word >> 24) | ((word >> 8) & 0xFF00U) | ((word << 8) & 0xFF0000U) | (word << 24);
+    else if (words[0] != spv::magic)
+        throw std::runtime_error("SPIR-V module does not start with the SPIR-V magic number");
+    return words;
+}
+std::vector<std::uint32_t> load_spirv(const std::filesystem::path &path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+        throw std::runtime_error("Cannot open SPIR-V file");
+    const auto length = file.tellg();
+    if (length <= 0 || length > static_cast<std::streamoff>(CustomMaterial::max_shader_bytes))
+        throw std::runtime_error("SPIR-V module must be between 1 byte and 16 MiB");
+    std::vector<std::byte> bytes(static_cast<std::size_t>(length));
+    file.seekg(0);
+    file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!file)
+        throw std::runtime_error("Cannot read SPIR-V file");
+    return spirv_words(bytes);
 }
 } // namespace anima
