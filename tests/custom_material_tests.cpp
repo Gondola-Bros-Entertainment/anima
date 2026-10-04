@@ -9,8 +9,14 @@
 #include <anima/scene_set.hpp>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <map>
 #include <memory>
@@ -209,6 +215,33 @@ Texture texture() { return {std::make_shared<Image>(Image{1, 1, {255, 255, 255, 
 void rejects(const CustomMaterialDefinition &value, const std::string &message) {
     CHECK_THROWS_WITH_AS((void)CustomMaterial(value), message.c_str(), std::invalid_argument);
 }
+// The bytes of @p words as stored in host byte order, or with each word's bytes reversed.
+std::vector<std::byte> module_bytes(const std::vector<std::uint32_t> &words, bool swapped = false) {
+    std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+    std::memcpy(bytes.data(), words.data(), bytes.size());
+    if (swapped)
+        for (auto word = bytes.begin(); word != bytes.end(); word += sizeof(std::uint32_t))
+            std::reverse(word, word + sizeof(std::uint32_t));
+    return bytes;
+}
+// A file in the temporary directory, named uniquely within the process and removed on destruction.
+struct TempFile {
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() /
+        ("anima-custom-material-tests-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+         "-" + std::to_string(count++) + ".spv");
+    static inline std::atomic<unsigned> count;
+    explicit TempFile(const std::vector<std::byte> &bytes) {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    TempFile(const TempFile &) = delete;
+    TempFile &operator=(const TempFile &) = delete;
+    ~TempFile() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
 } // namespace
 
 TEST_CASE("A custom material records the interface that its shaders declare") {
@@ -372,6 +405,45 @@ TEST_CASE("Words that are not a well-framed SPIR-V module are rejected") {
     for (int level = 0; level < 64; ++level)
         innermost = nested.type(op::type_runtime_array, {innermost});
     rejects(definition(nested), "The vertex shader nests types more than 64 deep");
+}
+
+TEST_CASE("SPIR-V modules load from bytes and files in either byte order") {
+    const auto vertex = vertex_module().words(), fragment = fragment_module().words();
+    CHECK(spirv_words(module_bytes(vertex)) == vertex);
+    CHECK(spirv_words(module_bytes(vertex, true)) == vertex);
+    const TempFile vertex_file(module_bytes(vertex, true)), fragment_file(module_bytes(fragment));
+    auto value = definition();
+    value.vertex_shader = load_spirv(vertex_file.path);
+    value.fragment_shader = load_spirv(fragment_file.path);
+    CHECK(value.vertex_shader == vertex);
+    CHECK(value.fragment_shader == fragment);
+    CHECK_NOTHROW((void)CustomMaterial(value));
+}
+
+TEST_CASE("Bytes and files that cannot hold a SPIR-V module are rejected") {
+    const auto rejects_bytes = [](const std::vector<std::byte> &bytes, const char *message) {
+        CHECK_THROWS_WITH_AS((void)spirv_words(bytes), message, std::runtime_error);
+    };
+    const auto size = "SPIR-V module must be between 1 byte and 16 MiB";
+    rejects_bytes({}, size);
+    rejects_bytes(std::vector<std::byte>(CustomMaterial::max_shader_bytes + 4), size);
+    auto bytes = module_bytes(vertex_module().words());
+    bytes.pop_back();
+    rejects_bytes(bytes, "SPIR-V module size must be a multiple of 4 bytes");
+    rejects_bytes(module_bytes({0xDEADBEEF, 0x00010300, 0, 1, 0}),
+                  "SPIR-V module does not start with the SPIR-V magic number");
+
+    const TempFile absent({});
+    std::filesystem::remove(absent.path);
+    CHECK_THROWS_WITH_AS((void)load_spirv(absent.path), "Cannot open SPIR-V file", std::runtime_error);
+    const TempFile empty({});
+    CHECK_THROWS_WITH_AS((void)load_spirv(empty.path), size, std::runtime_error);
+    const TempFile large(module_bytes(vertex_module().words()));
+    std::filesystem::resize_file(large.path, CustomMaterial::max_shader_bytes + 4);
+    CHECK_THROWS_WITH_AS((void)load_spirv(large.path), size, std::runtime_error);
+    const TempFile odd(bytes);
+    CHECK_THROWS_WITH_AS((void)load_spirv(odd.path), "SPIR-V module size must be a multiple of 4 bytes",
+                         std::runtime_error);
 }
 
 TEST_CASE("Shader interfaces that differ from the documented one are rejected") {
