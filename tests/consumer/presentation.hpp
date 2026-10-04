@@ -596,7 +596,7 @@ inline void run() {
                 body.add_component<AttachmentFollower>(AttachmentSet::prepare(library, sockets, {{"probe", "probe"}}));
             const auto probe = follower->object("probe");
             const auto held = follower->attachments().roles.at("probe").binding;
-            check(probe.parent()->id() == body.id() &&
+            check(probe.parent() == body &&
                       probe.local_matrix() == attachment_placement(actor.render->rest_pose(), held),
                   "Attachment follower did not hold its item at the socket of the current pose");
             const auto later = motion->sample("drift", .75);

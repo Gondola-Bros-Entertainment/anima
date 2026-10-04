@@ -519,7 +519,7 @@ TEST_CASE("An attachment follower keeps its items on their sockets as the owner'
     const auto follower = owner.add_component<AttachmentFollower>(set);
     const auto item = follower->object("tool");
     REQUIRE(item.parent());
-    CHECK(item.parent()->id() == owner.id());
+    CHECK(item.parent() == owner);
     const auto rest = sample_pose(*fixture.body);
     CHECK(item.local_matrix() == attachment_placement(rest, binding));
     // Turning the limb moves its end, which carries the grip socket, and the late update moves the item with it.
