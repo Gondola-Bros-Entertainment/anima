@@ -1759,8 +1759,8 @@ struct VulkanRenderer::Impl {
     std::size_t present_index{};
     // Destroys @p retired, a pointer to an object that submitted frames may still use, once none can. Waiting for the
     // fence of the latest submitted frame covers every earlier submission too, since a fence signal operation includes
-    // every command submitted to the queue before it, so @p retired waits in that frame's release list until draw(),
-    // set_scenes() or prepare_meshes() waits for its fence, or is destroyed now when that wait has already happened.
+    // every command submitted to the queue before it, so @p retired waits in that frame's release list until draw() or
+    // set_scenes() waits for its fence, or is destroyed now when that wait has already happened.
     template <class Retired> void release_after_frames(Retired retired) {
         if (auto &latest = frames[latest_frame]; retired && latest.in_flight)
             latest.released.emplace_back(std::move(retired));

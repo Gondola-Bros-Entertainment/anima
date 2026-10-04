@@ -691,8 +691,11 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
             throw std::invalid_argument("Cannot prepare a null render asset");
     if (assets.empty())
         return;
+    // Nothing here waits for the frames in flight, since none of them uses anything that gpu_asset() changes: it
+    // returns a cached mesh as it is, and an upload writes only objects that it creates, sharing existing samplers
+    // unchanged. Each upload waits for its own copies, whose fences Vulkan signals only after every command submitted
+    // to the queue before them, so those waits also last until the frames in flight have finished.
     try {
-        wait_for_frames("Wait before resource preparation");
         for (const auto &asset : assets)
             (void)gpu_asset(asset, failure, prepared);
         inject_scene(failure, RendererFailureStage::ready, false);

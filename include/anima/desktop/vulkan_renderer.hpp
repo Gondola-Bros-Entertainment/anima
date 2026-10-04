@@ -659,8 +659,13 @@ class VulkanRenderer {
     /// Cached or repeated meshes are reused.
     ///
     /// Throws `std::invalid_argument` for a null pointer anywhere in @p assets before any upload; an empty span
-    /// does nothing. Waits for every frame in flight and leaves the selection, view and poses unchanged. Not
-    /// atomic: after a failure, meshes uploaded earlier stay cached while they have other owners. Throws
+    /// does nothing. Leaves the selection, view and poses unchanged. Does not wait for the frames in flight: a call
+    /// whose meshes are all cached submits no GPU work and returns without waiting, and the resources that earlier
+    /// calls released while frames that may use them were in flight stay until a later draw() or set_scenes() has
+    /// waited for those frames (ResourceStats::resident_material_samplers counts the samplers of such meshes). Each
+    /// mesh that it uploads waits for the fences of its own copies, which Vulkan signals only after every command
+    /// submitted to the queue before them, the frames in flight included. Not atomic: after a failure, meshes
+    /// uploaded earlier stay cached while they have other owners. Throws
     /// `std::invalid_argument` for a mesh beyond device limits, `std::logic_error` as Mesh::texel_images() does for
     /// texels that TexelRetention::until_upload let go, `std::runtime_error` for other upload failures,
     /// including failed Vulkan calls, InjectedRendererFailure as ResourcePreparationOptions::fail_after
@@ -669,7 +674,8 @@ class VulkanRenderer {
     /// Uploads MeshPreparation::asset() as prepare_meshes() does, using the preparation's mip chains and
     /// block-compressed images instead of reading texels from the Mesh, so it also uploads a Mesh whose
     /// TexelRetention::until_upload texels an earlier upload let go. Allocation and upload still run synchronously on
-    /// this thread. @p preparation is read only during the call, and not at all if the mesh is already cached.
+    /// this thread. @p preparation is read only during the call, and not at all if the mesh is already cached, in which
+    /// case the call returns without waiting, as prepare_meshes() describes.
     void prepare_mesh(const MeshPreparation &preparation, ResourcePreparationOptions options = {});
     /// Current cache and allocation sizes with the latest frame counters; all zero without asset support.
     [[nodiscard]] ResourceStats resource_stats() const noexcept;

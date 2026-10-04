@@ -365,8 +365,34 @@ inline int run(int argc, char **argv) {
             require(renderer.resource_stats().resident_material_samplers == samplers,
                     "Last-owner departure retained an unused sampler");
         }
+        // Preparing a cached mesh waits for no frame in flight, so it neither uploads nor destroys anything. With two
+        // frames in flight, the draw() that releases a mesh leaves the frame before it, which may draw the mesh, in
+        // flight; the mesh keeps its sampler through the call, until the next draw() has waited for that frame.
+        {
+            auto variant = *asset;
+            variant.textures.front().sampler.mag = anima::Filter::nearest;
+            const auto id = source->add(anima::Mesh::compile(variant));
+            frame();
+            source->remove(id);
+            frame();
+            const auto before_preparation = renderer.resource_stats();
+            require(before_preparation.resident_material_samplers == samplers + 1,
+                    "A released mesh's sampler did not outlast the frame in flight that may draw it");
+            const std::array cached{compiled};
+            renderer.prepare_meshes(cached);
+            const auto after_preparation = renderer.resource_stats();
+            require(after_preparation.mesh_uploads == before_preparation.mesh_uploads &&
+                        after_preparation.cached_assets == before_preparation.cached_assets,
+                    "Preparing a cached mesh uploaded it again");
+            require(after_preparation.resident_material_samplers == before_preparation.resident_material_samplers,
+                    "Preparing a cached mesh waited for the frames in flight");
+            frame();
+            require(renderer.resource_stats().resident_material_samplers == samplers,
+                    "The draw() after preparing a cached mesh retained a released sampler");
+        }
         std::cout << "PASS 600 distinct assets share " << samplers
-                  << " material samplers; seven policy variants retire correctly\n";
+                  << " material samplers; seven policy variants retire correctly; preparing a cached mesh waits for "
+                     "no frame in flight\n";
     }
     renderer.set_scenes({});
     capture("empty");
