@@ -320,13 +320,13 @@ inline int run(int argc, char **argv) {
                    cascade.radius;
         };
         auto bare = std::make_shared<anima::Scene>();
-        (void)bare->add(ground);
+        (void)bare->create({}, ground);
         auto alone = std::make_shared<anima::Scene>();
-        (void)alone->add(ground);
-        const auto stone = alone->add(pebble);
+        (void)alone->create({}, ground);
+        const auto stone = alone->create({}, pebble);
         auto world = anima::identity();
         anima::set_translation(world, spot);
-        alone->set_pose(stone, pebble->rest_pose(), world);
+        stone.renderer().set_pose(pebble->rest_pose(), world);
         // Copies 30 cm apart on a 4 by 4 grid around the spot, which form one cluster.
         std::vector<anima::Mat4> spots;
         for (int i = 0; i < 16; ++i) {
@@ -336,17 +336,17 @@ inline int run(int argc, char **argv) {
             spots.push_back(placement);
         }
         auto placed = std::make_shared<anima::Scene>();
-        (void)placed->add(ground);
-        const auto copies = placed->add(pebble);
-        placed->set_placements(copies, anima::MeshPlacements::create(pebble, spots));
+        (void)placed->create({}, ground);
+        const auto copies = placed->create({}, pebble);
+        copies.renderer().set_placements(anima::MeshPlacements::create(pebble, spots));
         const auto &first = cascades[0], &second = cascades[1];
         for (const auto *bounds :
-             {&alone->instance(stone).primitive_bounds[0], &placed->instance(copies).primitive_bounds[0]})
+             {&alone->instance(stone.id()).primitive_bounds[0], &placed->instance(copies.id()).primitive_bounds[0]})
             require(within(*bounds, first) && within(*bounds, second),
                     "A pebble lies outside the first two cascades' spheres");
         // The threshold measures the placed copies by the mesh's rest bounds, since neither the object nor the
         // placements scale them.
-        const auto stone_radius = radius_of(alone->instance(stone).primitive_bounds[0]),
+        const auto stone_radius = radius_of(alone->instance(stone.id()).primitive_bounds[0]),
                    copy_radius = radius_of(pebble->rest_bounds());
         const auto share = float(stone_radius / std::sqrt(double(first.radius) * second.radius));
         for (const auto radius : {stone_radius, copy_radius})
