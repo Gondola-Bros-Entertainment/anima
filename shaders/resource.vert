@@ -31,6 +31,11 @@ layout(push_constant) uniform Draw {
 }
 draw;
 #include "visibility.glsl"
+// The point @p p placed by this copy's placement, whose rows dot it as a homogeneous point.
+vec3 placePoint(vec3 p) {
+    vec4 h = vec4(p, 1.0);
+    return vec3(dot(placement0, h), dot(placement1, h), dot(placement2, h));
+}
 void main() {
     // indices: the draw's first palette matrix; whether it is skinned; with placements or a visibility range, the
     // object's world matrix, followed by a matrix whose first column is its range and whose second holds the center
@@ -38,38 +43,44 @@ void main() {
     // and 2 with a range.
     mat4 transform = poses.matrices[draw.indices.x];
     bool placed = (draw.indices.w & 1u) != 0u, ranged = (draw.indices.w & 2u) != 0u;
-    // The object's world matrix, or with placements this copy's.
-    mat4 object = placed || ranged ? poses.matrices[draw.indices.z] : mat4(1.0);
-    if (placed) {
-        object = object * transpose(mat4(placement0, placement1, placement2, vec4(0, 0, 0, 1)));
-        transform = object * transform;
-    } else if (draw.indices.y != 0) {
+    if (!placed && draw.indices.y != 0) {
         transform = mat4(0.0);
         for (uint i = 0; i < 4; ++i)
             if (weights[i] != 0.0)
                 transform += poses.matrices[draw.indices.x + joints[i]] * weights[i];
     }
-    // As the CPU's normal(): the cofactor matrix of the blended matrix, with its determinant's sign, has the
+    // Every matrix here is affine, so the world matrix composes as a mat3 and a translation; mat4 products would
+    // spend nearly twice the multiply-adds per vertex.
+    mat3 linear = mat3(transform);
+    vec3 translation = transform[3].xyz;
+    // The object's world matrix; with placements it places the mesh after the copy's placement.
+    mat4 object = placed || ranged ? poses.matrices[draw.indices.z] : mat4(1.0);
+    if (placed) {
+        linear = mat3(object) * transpose(mat3(placement0.xyz, placement1.xyz, placement2.xyz)) * linear;
+        translation = mat3(object) * placePoint(translation) + object[3].xyz;
+    }
+    // As the CPU's normal(): the cofactor matrix of the composed matrix, with its determinant's sign, has the
     // inverse transpose's direction and stays defined when an axis collapses, leaving the flattened surface's
     // normal. A normal with no direction left, or a nonfinite one, becomes +Y, so lighting never sees NaNs.
-    vec3 a = transform[0].xyz, b = transform[1].xyz, c = transform[2].xyz;
+    vec3 a = linear[0], b = linear[1], c = linear[2];
     float determinant = dot(a, cross(b, c));
     vec3 v = cross(b, c) * normal.x + cross(c, a) * normal.y + cross(a, b) * normal.z;
     float magnitude = length(v);
     worldNormal = magnitude > 1e-12 && !isinf(magnitude) && !isnan(magnitude)
                       ? v / (determinant < 0.0 ? -magnitude : magnitude)
                       : vec3(0, 1, 0);
-    worldTangent = vec4(mat3(transform) * tangent.xyz, tangent.w * (determinant < 0.0 ? -1.0 : 1.0));
+    worldTangent = vec4(linear * tangent.xyz, tangent.w * (determinant < 0.0 ? -1.0 : 1.0));
     // A negative determinant reverses winding, as glTF specifies for mirrored nodes, so the fragment shader
     // flips gl_FrontFacing by this sign. The provoking (first) vertex supplies it for the whole triangle.
     orientation = determinant < 0.0 ? -1.0 : 1.0;
     vertexAlpha = alpha;
-    worldPosition = mat3(transform) * position + transform[3].xyz;
+    worldPosition = linear * position + translation;
     gl_Position = draw.viewProjection * vec4(worldPosition, 1.0);
     visibility = 1.0;
     if (ranged) {
         mat4 range = poses.matrices[draw.indices.z + 1u];
-        visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0], draw.origin);
+        vec3 center = placed ? placePoint(range[1].xyz) : range[1].xyz;
+        visibility = visibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin);
     }
     // A copy that its range hides draws nothing: every corner leaves the view volume.
     if (visibility == 0.0)
