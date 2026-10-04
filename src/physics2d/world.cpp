@@ -104,6 +104,8 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
         auto def = b2DefaultWorldDef();
         def.gravity = b(s.gravity);
         def.enableSleep = s.sleeping;
+        // Every approaching contact the solver pushes on reports a hit, so a begin event can take its approach speed.
+        def.hitEventThreshold = 0;
         world = b2CreateWorld(&def);
         if (B2_IS_NULL(world))
             throw std::length_error("Box2D world capacity exhausted");
@@ -117,7 +119,8 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
     void forget(std::uint64_t id) {
         for (auto it = touching.begin(); it != touching.end();) {
             if (it->first.first == id || it->first.second == id) {
-                events.push_back({handle(it->first.first), handle(it->first.second), ContactPhase::end, it->second});
+                events.push_back(
+                    {handle(it->first.first), handle(it->first.second), ContactPhase::end, it->second, std::nullopt});
                 it = touching.erase(it);
             } else
                 ++it;
@@ -125,21 +128,46 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
     }
     void reconcile() {
         auto current = touching;
+        // Returns whether the pair now touches.
         const auto apply = [&](b2ShapeId a, b2ShapeId b, bool begin, bool sensor) {
             const auto x = identity(a), y = identity(b);
             if (!x || !y)
-                return; // End events can contain destroyed backend identities.
+                return false; // End events can contain destroyed backend identities.
             const Pair pair = std::minmax(x, y);
-            if (begin && entries.at(x).enabled && entries.at(y).enabled)
+            if (begin && entries.at(x).enabled && entries.at(y).enabled) {
                 current[pair] = sensor;
-            else
-                current.erase(pair);
+                return true;
+            }
+            current.erase(pair);
+            return false;
         };
         const auto contact = b2World_GetContactEvents(world);
         for (int i = 0; i < contact.endCount; ++i)
             apply(contact.endEvents[i].shapeIdA, contact.endEvents[i].shapeIdB, false, false);
-        for (int i = 0; i < contact.beginCount; ++i)
-            apply(contact.beginEvents[i].shapeIdA, contact.beginEvents[i].shapeIdB, true, false);
+        // Box2D copies a begin event's manifold before solving the step, so its points have no velocities yet. The
+        // step's hit events carry each contact's approach speed at the start of the step, measured at the points
+        // the solver pushed on.
+        std::map<Pair, ContactPoint> began;
+        for (int i = 0; i < contact.beginCount; ++i) {
+            const auto &event = contact.beginEvents[i];
+            if (!apply(event.shapeIdA, event.shapeIdB, true, false))
+                continue;
+            const auto &manifold = event.manifold;
+            b2Vec2 sum{};
+            for (int point = 0; point < manifold.pointCount; ++point) // Box2D begins a contact with a point.
+                sum = b2Add(sum, manifold.points[point].point);
+            const auto x = identity(event.shapeIdA), y = identity(event.shapeIdB);
+            // Box2D's normal points from shape A toward shape B.
+            began[std::minmax(x, y)] = {a(b2MulSV(1.F / static_cast<float>(manifold.pointCount), sum)),
+                                        a(x < y ? manifold.normal : b2Neg(manifold.normal)), 0};
+        }
+        if (!began.empty())
+            for (int i = 0; i < contact.hitCount; ++i) {
+                const auto &hit = contact.hitEvents[i];
+                const auto found = began.find(std::minmax(identity(hit.shapeIdA), identity(hit.shapeIdB)));
+                if (found != began.end())
+                    found->second.approach_speed = std::max(found->second.approach_speed, hit.approachSpeed);
+            }
         // Box2D retains sensor overlap history across a disable/re-enable between
         // steps, so a buffered begin event alone can miss re-entry after our
         // immediate disable/end notification. Reconcile sensors from the current
@@ -166,10 +194,13 @@ struct WorldState : std::enable_shared_from_this<WorldState> {
         }
         for (const auto &[pair, is_sensor] : touching)
             if (!current.contains(pair))
-                events.push_back({handle(pair.first), handle(pair.second), ContactPhase::end, is_sensor});
+                events.push_back({handle(pair.first), handle(pair.second), ContactPhase::end, is_sensor, std::nullopt});
         for (const auto &[pair, is_sensor] : current)
-            if (!touching.contains(pair))
-                events.push_back({handle(pair.first), handle(pair.second), ContactPhase::begin, is_sensor});
+            if (!touching.contains(pair)) {
+                const auto found = began.find(pair);
+                events.push_back({handle(pair.first), handle(pair.second), ContactPhase::begin, is_sensor,
+                                  found == began.end() ? std::optional<ContactPoint>{} : found->second});
+            }
         touching.swap(current);
     }
 };
@@ -357,6 +388,7 @@ Body World::create(const BodySettings &s) {
         shape_def.isSensor = s.sensor;
         shape_def.enableSensorEvents = true;
         shape_def.enableContactEvents = true;
+        shape_def.enableHitEvents = true;
         if (s.collider.shape == Shape::box) {
             const auto box = b2MakeBox(s.collider.half_extent.x, s.collider.half_extent.y);
             shape = b2CreatePolygonShape(body, &shape_def, &box);
