@@ -104,6 +104,7 @@ template <class Scenes> void detail::AudioSceneAccess::synchronize(Scenes &scene
             source.play_pending_ = source.resume_ = false;
         }
     }
+    audio.release_one_shots();
 }
 
 void synchronize_audio(Scene &scene, Audio &audio) { detail::AudioSceneAccess::synchronize(scene, audio); }

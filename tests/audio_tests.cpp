@@ -84,6 +84,13 @@ std::vector<std::byte> wave(const std::vector<float> &samples, unsigned channels
 }
 // The fixtures' reference signal: sample @p n of a 440 Hz sine at half scale and 8000 Hz.
 double tone(std::size_t n) { return .5 * std::sin(2 * std::numbers::pi * 440 * double(n) / rate); }
+
+// A temporary Sound releases its voice when the full expression ends, so `audio.sound(clip).play()` must not
+// compile; a named one plays.
+template <class T>
+concept plays = requires(T &&sound) { std::forward<T>(sound).play(); };
+static_assert(!plays<Sound>);
+static_assert(plays<Sound &>);
 } // namespace
 
 TEST_CASE("A voice plays, finishes, loops, pauses and restarts") {
@@ -128,6 +135,120 @@ TEST_CASE("A voice plays, finishes, loops, pauses and restarts") {
     sound.seek(8. / rate);
     CHECK(sound.cursor() == Near{8. / rate, tolerance});
     CHECK(sound.playing()); // Seeking keeps a playing voice playing.
+}
+
+TEST_CASE("A one-shot plays its clip once in a voice the engine owns, which render releases after it ends") {
+    Audio audio(rate, 2);
+    const auto clip = AudioClip::pcm(std::vector<float>(16, 1), 1, rate);
+    const auto held = audio.sound(clip);
+    audio.play_one_shot(clip, {.volume = .5F, .pan = -1});
+    CHECK(audio.voice_count() == 2u);
+    CHECK(clip.use_count() == 3);
+    auto output = render(audio, 8);
+    CHECK(output[0] == 0); // One frame late through the resampler, as a Sound plays.
+    CHECK(output[2] == Near{.5, tolerance});
+    CHECK(output[3] == 0);
+    CHECK(audio.voice_count() == 2u); // Still playing.
+    output = render(audio, 24);
+    for (std::size_t frame = 0; frame < 7; ++frame) {
+        CAPTURE(frame);
+        CHECK(output[2 * frame] == Near{.5, tolerance});
+    }
+    CHECK(output.back() == 0);
+    CHECK(audio.voice_count() == 1u); // The render that reached its end released it.
+    CHECK(clip.use_count() == 2);
+    // A temporary bus plays it too, as the one-shot retains its bus chain.
+    audio.play_one_shot(clip, {.pan = -1}, audio.bus());
+    CHECK(render(audio, 2)[2] == Near{1, tolerance});
+}
+
+TEST_CASE("A one-shot plays as a Sound given its settings does") {
+    std::vector<float> samples(400);
+    for (std::size_t n = 0; n < samples.size(); ++n)
+        samples[n] = static_cast<float>(tone(n));
+    const auto clip = AudioClip::pcm(samples, 1, rate);
+    for (const bool spatial : {false, true}) {
+        CAPTURE(spatial);
+        const AudioOneShot settings{.volume = .75F,
+                                    .pitch = 1.25F,
+                                    .pan = -.5F,
+                                    .spatial = spatial,
+                                    .position = {2, 0, -1},
+                                    .attenuation = {.5F, 8, AudioRolloff::inverse},
+                                    .priority = 7};
+        Audio fired(rate), held(rate);
+        auto bus = held.bus();
+        bus.set_volume(.5F);
+        auto sound = held.sound(clip, bus);
+        sound.set_volume(settings.volume);
+        sound.set_pitch(settings.pitch);
+        sound.set_pan(settings.pan);
+        sound.set_spatial(settings.spatial);
+        sound.set_position(settings.position);
+        sound.set_attenuation(settings.attenuation);
+        sound.set_priority(settings.priority);
+        CHECK(sound.play());
+        auto fired_bus = fired.bus();
+        fired_bus.set_volume(.5F);
+        fired.play_one_shot(clip, settings, fired_bus);
+        const auto expected = render(held, 400);
+        CHECK(render(fired, 400) == expected);
+        CHECK(std::ranges::any_of(expected, [](float sample) { return sample != 0; }));
+        CHECK(fired.voice_count() == 0u); // Played to its end, which the pitch reaches within the render.
+    }
+}
+
+TEST_CASE("One-shots count against the voice limit, which may refuse or stop them") {
+    Audio audio(rate, 1);
+    const auto clip = AudioClip::pcm(std::vector<float>(rate, .5F), 1, rate);
+    audio.play_one_shot(clip, {.priority = 100});
+    CHECK(audio.voice_count() == 1u);
+    auto low = audio.sound(clip), high = audio.sound(clip);
+    low.set_priority(99);
+    high.set_priority(100);
+    CHECK_FALSE(low.play());                     // The one-shot outranks it, so nothing stops.
+    audio.play_one_shot(clip, {.priority = 99}); // Refused the same way, and released at once.
+    CHECK(audio.voice_count() == 3u);
+    CHECK(high.play());               // An equal priority stops the one-shot, admitted longer ago.
+    CHECK(audio.voice_count() == 3u); // Stopped, it waits for a call on this thread to release it.
+    (void)render(audio, 1);
+    CHECK(audio.voice_count() == 2u);
+    CHECK(clip.use_count() == 3);
+    audio.play_one_shot(clip, {.priority = 101}); // A one-shot stops a Sound as a Sound would.
+    CHECK_FALSE(high.playing());
+    CHECK(audio.voice_count() == 3u);
+}
+
+TEST_CASE("An engine closes with its one-shots playing, as they retain their bus chain but not the engine") {
+    const auto clip = AudioClip::pcm(std::vector<float>(rate, .25F), 1, rate);
+    {
+        Audio audio(rate);
+        auto parent = audio.bus();
+        audio.play_one_shot(clip, {}, audio.bus(parent));
+        parent = {};
+        (void)render(audio, 64);
+        CHECK(clip.use_count() == 2);
+    }
+    CHECK(clip.use_count() == 1); // Destroying the wrapper closed the engine and released the one-shot.
+    {
+        auto audio = Audio::open_device(AudioBackend::null);
+        const auto bus = audio.bus();
+        audio.play_one_shot(clip, {}, bus);
+        CHECK(clip.use_count() == 2);
+    } // The device thread mixes the one-shot until the engine closes.
+    CHECK(clip.use_count() == 1);
+    // A bus handle can hold the last reference to its engine, which reassigning it closes after the bus.
+    AudioBus survivor;
+    {
+        Audio temporary(rate);
+        survivor = temporary.bus();
+        temporary.play_one_shot(clip, {}, survivor);
+    }
+    CHECK(clip.use_count() == 2);
+    Audio other(rate);
+    survivor = other.bus();
+    CHECK(clip.use_count() == 1);
+    CHECK(other.owns(survivor));
 }
 
 TEST_CASE("A full voice limit stops the lowest priority, then the voice admitted longest ago") {
@@ -516,6 +637,30 @@ TEST_CASE("Invalid engines, voices and arguments are rejected") {
     Audio foreign;
     CHECK_THROWS_WITH_AS(foreign.sound(clip, audio.bus()), "Missing audio clip or foreign bus", std::invalid_argument);
     CHECK_THROWS_WITH_AS(audio.sound(nullptr), "Missing audio clip or foreign bus", std::invalid_argument);
+    // A one-shot validates its settings in the order of their members, then its clip and bus, before any voice.
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    const std::array<std::pair<AudioOneShot, const char *>, 8> invalid_one_shots{{
+        {{.volume = 17, .pitch = 0}, "Audio gain must be in [0, 16]"},
+        {{.pitch = 0, .pan = 2}, "Audio pitch must be in [0.01, 8]"},
+        {{.pan = nan, .position = {nan, 0, 0}}, "Audio pan must be in [-1, 1]"},
+        {{.position = {0, -2e9F, 0}, .attenuation = {2, 1}},
+         "Audio coordinates must be finite and within one billion units"},
+        {{.attenuation = {2, 1}, .priority = 256}, "Invalid audio attenuation distances"},
+        {{.attenuation = {1, 2, static_cast<AudioRolloff>(2)}}, "Invalid audio rolloff"},
+        {{.priority = -1}, "Audio priority must be in [0, 255]"},
+        {{.priority = 256}, "Audio priority must be in [0, 255]"},
+    }};
+    for (const auto &[settings, message] : invalid_one_shots) {
+        CAPTURE(message);
+        CHECK_THROWS_WITH_AS(audio.play_one_shot(nullptr, settings), message, std::invalid_argument);
+    }
+    CHECK_THROWS_WITH_AS(audio.play_one_shot(nullptr), "Missing audio clip or foreign bus", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(foreign.play_one_shot(clip, {}, audio.bus()), "Missing audio clip or foreign bus",
+                         std::invalid_argument);
+    CHECK(audio.voice_count() == 1u);
+    CHECK(foreign.voice_count() == 0u);
+    Audio retired(std::move(foreign));
+    CHECK_THROWS_WITH_AS(foreign.play_one_shot(clip), "Moved-from audio mixer", std::logic_error);
     CHECK_THROWS_WITH_AS(moved.seek(-1), "Audio seek lies outside the clip", std::invalid_argument);
     CHECK_THROWS_WITH_AS(moved.set_volume(std::numeric_limits<float>::quiet_NaN()), "Audio gain must be in [0, 16]",
                          std::invalid_argument);
@@ -688,6 +833,30 @@ TEST_CASE("A device on the null backend mixes on its own thread, so a stalled ca
     for (int wait = 0; wait < 200 && survivor.cursor() == 0; ++wait)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     CHECK(survivor.cursor() > 0);
+}
+
+// Run under ThreadSanitizer, this also checks that one-shots start, end and are released safely while the device
+// thread mixes.
+TEST_CASE("A device's one-shots end on its thread and are released on the calling thread") {
+    auto audio = Audio::open_device(AudioBackend::null, 4);
+    const auto brief = AudioClip::pcm(std::vector<float>(rate / 50, .25F), 1, rate);
+    const auto streamed = AudioClip::decode(read_asset("tone.ogg"), AudioLoadMode::stream);
+    const auto bus = audio.bus();
+    for (int step = 0; step < 40; ++step) {
+        audio.play_one_shot(step % 2 ? brief : streamed,
+                            {.pan = float(step % 3) - 1, .spatial = step % 5 == 0, .priority = step % 7},
+                            step % 3 ? bus : AudioBus{});
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // Each ends within 0.2 s of output, and a later call releases it: here one that plays a single frame.
+    const auto tick = AudioClip::pcm({0}, 1, rate);
+    for (int wait = 0; wait < 200 && (brief.use_count() > 1 || streamed.use_count() > 1); ++wait) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        audio.play_one_shot(tick);
+    }
+    CHECK(brief.use_count() == 1);
+    CHECK(streamed.use_count() == 1);
+    CHECK(audio.voice_count() <= 1u); // At most the latest tick.
 }
 
 // Run under ThreadSanitizer, this also checks that every call is safe while the device thread mixes.

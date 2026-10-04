@@ -107,7 +107,8 @@ class AudioClip {
     /// Creates a decompressed clip from interleaved @p samples, which must hold whole frames of @p channels and be
     /// finite and in [-1, 1]. Throws `std::invalid_argument` with "Audio sample rate must be between 8000 and 192000
     /// Hz", "Invalid PCM channels or sample count" or "PCM samples must be finite and normalized to [-1, 1]".
-    static std::shared_ptr<const AudioClip> pcm(std::vector<float> samples, unsigned channels, unsigned sample_rate);
+    [[nodiscard]] static std::shared_ptr<const AudioClip> pcm(std::vector<float> samples, unsigned channels,
+                                                              unsigned sample_rate);
     /// Creates a clip from a complete WAV, FLAC, MP3 or Ogg Vorbis file of at most 128 MiB.
     ///
     /// The leading bytes choose the decoder: `RIFF`, `RIFX`, `RF64` or `riff` (Wave64) for WAV, `fLaC` for FLAC
@@ -123,8 +124,8 @@ class AudioClip {
     /// read its format and length, then copies it. Its length is the one the decoder reports from the file's header,
     /// or for MP3 from its Xing or Info tag or else its frame headers; an input without one is decoded once to count
     /// its frames. A voice that meets malformed data later ends there, and non-finite samples play as silence.
-    static std::shared_ptr<const AudioClip> decode(std::span<const std::byte> encoded,
-                                                   AudioLoadMode mode = AudioLoadMode::decompress);
+    [[nodiscard]] static std::shared_ptr<const AudioClip> decode(std::span<const std::byte> encoded,
+                                                                 AudioLoadMode mode = AudioLoadMode::decompress);
     /// Channels per frame: 1 or 2.
     [[nodiscard]] unsigned channels() const noexcept { return channels_; }
     /// Frames per second.
@@ -156,10 +157,21 @@ class AudioClip {
 ///
 /// An empty handle (default-constructed or moved-from) stands for the master output when passed as a parent or
 /// target bus. A bus starts at gain 1, unmuted, and applies to every voice routed to it or to its descendants.
-/// Voices and child buses retain their whole parent chain, so dropping the application's handles changes nothing.
+/// Voices, one-shots and child buses retain their whole parent chain, so dropping the application's handles changes
+/// nothing.
 class AudioBus {
   public:
     AudioBus() = default;
+    AudioBus(const AudioBus &) = default;
+    AudioBus(AudioBus &&) noexcept = default;
+    /// Makes this handle share @p other's bus, or empty when @p other is.
+    AudioBus &operator=(AudioBus other) noexcept {
+        // `other` takes the previous bus and engine, and releases the bus first, in the order of the members.
+        audio_.swap(other.audio_);
+        state_.swap(other.state_);
+        return *this;
+    }
+    ~AudioBus() = default;
     /// Sets the bus gain, in [0, 16], reached as #audio_smoothing_seconds describes. Throws
     /// `std::invalid_argument` with "Audio gain must be in [0, 16]" otherwise.
     void set_volume(float gain);
@@ -173,6 +185,9 @@ class AudioBus {
 
   private:
     friend class Audio;
+    // A bus refers to its engine without owning it, so that a one-shot holding its bus chain never keeps the engine
+    // open; its handles retain the engine instead, declared first so that the bus is released before it.
+    std::shared_ptr<detail::AudioState> audio_;
     std::shared_ptr<detail::AudioBusState> state_;
 };
 
@@ -195,10 +210,14 @@ class Sound {
     /// clip restarts from the beginning.
     ///
     /// When the engine already plays Audio::maximum_voices other voices, the one with the lowest priority stops as
-    /// stop() stops it; among equal priorities, the one admitted by play() longest ago stops. When that voice's
-    /// priority is higher than this one's, nothing stops, this voice stays stopped and play() returns false. This
-    /// is Unreal's "stop lowest priority" concurrency rule; a stolen voice reports playing() as false.
-    bool play();
+    /// stop() stops it; among equal priorities, the one admitted by play() or Audio::play_one_shot longest ago
+    /// stops. When that voice's priority is higher than this one's, nothing stops, this voice stays stopped and
+    /// play() returns false. This is Unreal's "stop lowest priority" concurrency rule; a stolen voice reports
+    /// playing() as false.
+    bool play() &;
+    /// Deleted: a temporary Sound releases its voice when the full expression ends, so `audio.sound(clip).play()`
+    /// would play nothing. Audio::play_one_shot plays a voice that the engine owns instead.
+    bool play() && = delete;
     /// Stops playback, keeping the cursor, the gain and any fade in progress.
     void pause();
     /// Stops playback, rewinds to the start and cancels any fade at its current gain; a gain, pan or pitch ramp
@@ -289,12 +308,31 @@ class Sound {
     std::shared_ptr<detail::VoiceState> state_;
 };
 
+/// The voice settings of Audio::play_one_shot, with the ranges of the Sound setters. The defaults are a new Sound's.
+struct AudioOneShot {
+    /// Voice gain, in [0, 16]; see Sound::set_volume.
+    float volume = 1;
+    /// Playback-rate multiplier, in [0.01, 8]; see Sound::set_pitch.
+    float pitch = 1;
+    /// Pan of a nonspatial one-shot, in [-1, 1]; see Sound::set_pan.
+    float pan = 0;
+    /// Plays at #position relative to the listener instead of panning; see Sound::set_spatial.
+    bool spatial = false;
+    /// Position of a spatial one-shot, with every coordinate finite and within 1,000,000,000 of zero.
+    Vec3 position{};
+    /// How a spatial one-shot's gain falls with distance; see Sound::set_attenuation.
+    AudioAttenuation attenuation{};
+    /// Priority when the voice limit is reached, in [0, 255]; see Sound::play.
+    int priority = default_audio_priority;
+};
+
 /// An audio engine: a miniaudio engine with its buses, voices, listener and output, in the role of Unity's audio
 /// settings and listener or Unreal's audio device.
 ///
 /// Moving an Audio transfers the engine to the destination. Voices, buses, anima::AudioSource and the codecs of
 /// anima::add_audio_component_codecs retain the engine, so moving or destroying the wrapper never invalidates
-/// them; the engine and its device close when the last of them is destroyed.
+/// them; the engine and its device close when the last of them is destroyed. One-shots do not retain it: those
+/// still playing then stop with it.
 class Audio {
   public:
     /// Creates an engine without a device, which mixes only in render(), for tests and offline or headless
@@ -314,11 +352,29 @@ class Audio {
     Audio &operator=(Audio &&) noexcept = default;
     /// Creates a bus under @p parent, or under the master output when @p parent is empty. The parent must belong
     /// to this engine and never changes; bus chains are at most 16 deep.
-    AudioBus bus(const AudioBus &parent = {});
+    [[nodiscard]] AudioBus bus(const AudioBus &parent = {});
     /// Creates a stopped voice for @p clip on @p bus, or on the master output when @p bus is empty. Throws
-    /// `std::invalid_argument` for a null clip or another engine's bus. The voice of a streamed clip opens its own
-    /// decoder over the clip's bytes.
-    Sound sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus = {});
+    /// `std::invalid_argument` with "Missing audio clip or foreign bus" for a null clip or another engine's bus.
+    /// The voice of a streamed clip opens its own decoder over the clip's bytes.
+    [[nodiscard]] Sound sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus = {});
+    /// Plays @p clip once on @p bus, or on the master output when @p bus is empty, in a voice that the engine owns:
+    /// fire and forget, like Unity's AudioSource.PlayOneShot or Unreal's UGameplayStatics::PlaySound2D.
+    ///
+    /// The voice starts as a new Sound given @p settings through its setters would start on Sound::play(), under
+    /// the same voice limit: when every playing voice outranks it, nothing plays, and a later voice can stop it as
+    /// it stops a Sound. It plays the clip once, without looping, and ends there or when the voice limit stops it;
+    /// nothing can pause, change or query it. It retains its clip and bus chain but not the engine, so one still
+    /// playing when the engine closes stops with it.
+    ///
+    /// The engine releases a one-shot's voice in its first play_one_shot(), render() or anima::synchronize_audio()
+    /// after the voice stops, on the thread making that call and never on the device thread, or when the engine
+    /// closes; until then voice_count() counts it.
+    ///
+    /// Throws `std::invalid_argument`, before creating a voice, with the message of the Sound setter for the first
+    /// setting outside its range in the order of AudioOneShot's members, then with that of sound() for a null clip
+    /// or another engine's bus.
+    void play_one_shot(std::shared_ptr<const AudioClip> clip, const AudioOneShot &settings = {},
+                       const AudioBus &bus = {});
     /// Whether @p sound holds a voice created by this engine, including after either was moved. False for an
     /// empty Sound or a moved-from engine.
     [[nodiscard]] bool owns(const Sound &sound) const noexcept;
@@ -341,10 +397,10 @@ class Audio {
     void set_listener(Vec3 position, Vec3 forward = view_forward, Vec3 up = world_up);
     /// Output rate in frames per second: the constructor's, or the device's.
     [[nodiscard]] unsigned sample_rate() const;
-    /// How many voices may play at once; see Sound::play.
+    /// How many voices, one-shots included, may play at once; see Sound::play.
     [[nodiscard]] unsigned maximum_voices() const;
     /// Voices of this engine that exist, playing or not: every Sound it created that has not been destroyed,
-    /// including those of AudioSource components.
+    /// including those of AudioSource components, and every one-shot it has not yet released (see play_one_shot()).
     [[nodiscard]] std::size_t voice_count() const;
     /// Mixes the next `output.size() / 2` stereo frames into @p output, overwriting it. An engine with a device
     /// mixes on its device thread instead, and throws `std::logic_error` here.
@@ -360,6 +416,8 @@ class Audio {
     friend struct detail::AudioSceneAccess;
     explicit Audio(std::shared_ptr<detail::AudioState> state) : state_(std::move(state)) {}
     detail::AudioState &state() const;
+    // Releases the voices of one-shots that stopped, as play_one_shot() describes.
+    void release_one_shots();
     std::shared_ptr<detail::AudioState> state_;
 };
 } // namespace anima

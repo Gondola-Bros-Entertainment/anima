@@ -14,6 +14,12 @@
 // an Audio with a device runs its own ma_device, whose callback mixes through the same AudioState::mix as
 // Audio::render. AudioState::mutex guards every miniaudio object of an engine and every field below that the mixing
 // thread reads, and mix() holds it for each block, so miniaudio's own cross-thread mechanisms are never relied on.
+//
+// Handles own the engine: Audio, AudioBus and the voice of each Sound retain its AudioState. The engine owns its
+// one-shots, which own their bus chains, so neither a one-shot nor a bus retains the engine, and a one-shot can never
+// keep it open. A bus refers to its engine through a plain pointer, which every holder of the bus keeps valid: its
+// handles and Sound voices retain the engine and release the bus first, and the engine releases its one-shots, the
+// only other holders, before it closes.
 namespace anima {
 namespace detail {
 namespace {
@@ -249,6 +255,9 @@ struct AudioState {
     float volume = 1;
     std::vector<VoiceState *> playing;  // Voices admitted and not yet stopped; its capacity is the voice limit.
     std::vector<float> silence, primed; // Spatializer input and output for prime().
+    // The voices of Audio::play_one_shot. Only the thread that uses the engine reads or changes the list, which the
+    // mixing thread never sees, and a voice leaves it only on that thread, by release_one_shots().
+    std::vector<std::shared_ptr<VoiceState>> one_shots;
 
     AudioState() = default;
     AudioState(const AudioState &) = delete;
@@ -261,13 +270,14 @@ struct AudioState {
     [[nodiscard]] std::uint64_t ramp(const GainNode &stage) const { return stage.active() ? smoothing_frames : 0; }
     void step_pitches();
     void retire_finished();
+    void release_one_shots();
     void withdraw(VoiceState &voice);
     void halt(VoiceState &voice);
     void prime(VoiceState &voice);
 };
 
 struct AudioBusState {
-    std::shared_ptr<AudioState> audio;
+    AudioState *audio = nullptr; // Kept open by every holder of the bus; see the comment at the top.
     std::shared_ptr<AudioBusState> parent;
     unsigned depth{};
     GainNode node{};
@@ -287,8 +297,9 @@ struct AudioBusState {
 };
 
 struct VoiceState {
-    std::shared_ptr<AudioState> audio;
-    std::shared_ptr<AudioBusState> bus;
+    std::shared_ptr<AudioState> retained; // The engine for a Sound's voice; null for a one-shot, which it owns.
+    AudioState *audio = nullptr;
+    std::shared_ptr<AudioBusState> bus; // Released before retained, as destroying a bus locks the engine.
     std::shared_ptr<const AudioClip> clip;
     ma_audio_buffer_ref buffer{};
     StreamSource stream{};
@@ -388,9 +399,11 @@ struct VoiceState {
 };
 
 AudioState::~AudioState() {
-    // Stopping the device first ends the callback that uses the rest.
+    // Stopping the device first ends the callback that uses the rest. One-shots still playing then leave the graph
+    // while the engine and master stage remain, each taking the lock, which nothing holds any longer.
     if (device_open)
         ma_device_uninit(&device);
+    one_shots.clear();
     if (master_open)
         ma_node_uninit(&master, nullptr);
     if (engine_open)
@@ -455,6 +468,19 @@ void AudioState::retire_finished() {
             ++i;
         else
             withdraw(*playing[i]);
+}
+// Releases the one-shots that stopped, on the thread that uses the engine. Only finding them needs the lock, as the
+// mixing thread withdraws a voice that ends, and nothing plays a stopped one-shot again. They are destroyed after
+// it is released, never in mix(): each takes the lock itself to leave the graph, as may a bus that it releases.
+void AudioState::release_one_shots() {
+    std::ptrdiff_t kept = 0;
+    {
+        const std::lock_guard lock(mutex);
+        const auto stopped =
+            std::ranges::partition(one_shots, [](const auto &voice) { return voice->slot != not_playing; });
+        kept = stopped.begin() - one_shots.begin();
+    }
+    one_shots.erase(one_shots.begin() + kept, one_shots.end());
 }
 void AudioState::withdraw(VoiceState &voice) {
     if (voice.slot == not_playing)
@@ -574,13 +600,14 @@ AudioBus Audio::bus(const AudioBus &parent) {
     if (!owns(parent) || (parent.state_ && parent.state_->depth >= detail::maximum_bus_depth))
         throw std::invalid_argument("Foreign audio bus or bus depth exceeded");
     auto created = std::make_shared<detail::AudioBusState>();
-    created->audio = state_;
+    created->audio = &s;
     created->parent = parent.state_;
     created->depth = parent.state_ ? parent.state_->depth + 1 : 1;
     const std::lock_guard lock(s.mutex);
     detail::open_gain(created->node, s.engine, s.blocks, parent.state_ ? &parent.state_->node : &s.master);
     created->node_open = true;
     AudioBus result;
+    result.audio_ = state_;
     result.state_ = std::move(created);
     return result;
 }
@@ -618,7 +645,8 @@ Sound Audio::sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus) {
     if (!clip || !owns(bus))
         throw std::invalid_argument("Missing audio clip or foreign bus");
     auto voice = std::make_shared<detail::VoiceState>();
-    voice->audio = state_;
+    voice->retained = state_;
+    voice->audio = &s;
     voice->bus = bus.state_;
     voice->clip = std::move(clip);
     const auto &data = *voice->clip;
@@ -663,8 +691,37 @@ Sound Audio::sound(std::shared_ptr<const AudioClip> clip, const AudioBus &bus) {
     result.state_ = std::move(voice);
     return result;
 }
-bool Audio::owns(const Sound &sound) const noexcept { return state_ && sound.state_ && sound.state_->audio == state_; }
-bool Audio::owns(const AudioBus &bus) const noexcept { return state_ && (!bus.state_ || bus.state_->audio == state_); }
+void Audio::play_one_shot(std::shared_ptr<const AudioClip> clip, const AudioOneShot &settings, const AudioBus &bus) {
+    detail::audio_gain(settings.volume);
+    detail::audio_pitch(settings.pitch);
+    detail::audio_pan(settings.pan);
+    detail::audio_location(settings.position);
+    detail::audio_attenuation(settings.attenuation);
+    detail::audio_priority(settings.priority);
+    auto voice = sound(std::move(clip), bus);
+    voice.set_volume(settings.volume);
+    voice.set_pitch(settings.pitch);
+    voice.set_pan(settings.pan);
+    voice.set_spatial(settings.spatial);
+    voice.set_position(settings.position);
+    voice.set_attenuation(settings.attenuation);
+    voice.set_priority(settings.priority);
+    auto &s = *state_;
+    if (voice.play()) {
+        // The engine takes the voice, which stops retaining it; a refused voice is released with the Sound.
+        s.one_shots.push_back(voice.state_);
+        voice.state_->retained.reset();
+        voice.state_.reset();
+    }
+    s.release_one_shots();
+}
+void Audio::release_one_shots() { state().release_one_shots(); }
+bool Audio::owns(const Sound &sound) const noexcept {
+    return state_ && sound.state_ && sound.state_->audio == state_.get();
+}
+bool Audio::owns(const AudioBus &bus) const noexcept {
+    return state_ && (!bus.state_ || bus.state_->audio == state_.get());
+}
 void Audio::render(std::span<float> output) {
     auto &s = state();
     if (s.device_open)
@@ -672,9 +729,10 @@ void Audio::render(std::span<float> output) {
     if (output.size() % detail::output_channels)
         throw std::invalid_argument("Audio output must contain whole stereo frames");
     s.mix(output.data(), output.size() / detail::output_channels);
+    s.release_one_shots();
 }
 
-bool Sound::play() {
+bool Sound::play() & {
     auto &voice = state();
     auto &audio = *voice.audio;
     const std::lock_guard lock(audio.mutex);

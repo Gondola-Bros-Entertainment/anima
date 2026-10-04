@@ -181,6 +181,21 @@ TEST_CASE("A source's priority decides which source the voice limit stops") {
     CHECK_FALSE(low->playing());
 }
 
+TEST_CASE("Synchronization releases the engine's one-shots that stopped, including those its sources stop") {
+    Audio audio(8000, 1);
+    Scene scene;
+    const auto tone = clip();
+    audio.play_one_shot(tone);
+    AudioSourceSettings important;
+    important.priority = 200;
+    important.play_on_start = true;
+    scene.create().add_component<AudioSource>(audio, tone, important);
+    CHECK(audio.voice_count() == 2u);
+    synchronize_audio(scene, audio); // The source stops the one-shot, and the same call releases it.
+    CHECK(audio.voice_count() == 1u);
+    CHECK(tone.use_count() == 3); // Here, in the source and in its voice.
+}
+
 TEST_CASE("Synchronization validates the whole scene before publishing any change") {
     Audio audio(8000), foreign(8000);
     Scene scene;
