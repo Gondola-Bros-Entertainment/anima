@@ -36,10 +36,19 @@
 
 namespace anima {
 namespace {
-constexpr std::uint64_t fence_timeout = 5'000'000'000ULL;
-// Longest that a frame waits for the present of an earlier one, in nanoseconds. That wait only paces frames, so a
-// present that never completes, as to a window the system does not show, holds a frame back no longer than this.
-constexpr std::uint64_t present_wait_timeout = 100'000'000ULL;
+// Longest wait for a fence, after which the operation that waits fails with VK_TIMEOUT.
+constexpr std::chrono::nanoseconds fence_timeout = std::chrono::seconds{5};
+// Longest that draw() waits to acquire a swapchain image before it skips the frame.
+constexpr std::chrono::nanoseconds acquire_timeout = std::chrono::milliseconds{100};
+// Longest that a frame waits for the present of an earlier one. That wait only paces frames, so a present that never
+// completes, as to a window the system does not show, holds a frame back no longer than this.
+constexpr std::chrono::nanoseconds present_wait_timeout = std::chrono::milliseconds{100};
+// The timeout that makes a Vulkan wait return only when what it waits for happens.
+constexpr std::uint64_t no_timeout = UINT64_MAX;
+// The nanosecond count that Vulkan's waits take for @p timeout, which must not be negative.
+constexpr std::uint64_t vulkan_timeout(std::chrono::nanoseconds timeout) noexcept {
+    return static_cast<std::uint64_t>(timeout.count());
+}
 // Display times that one call reads from VK_GOOGLE_display_timing before asking for more.
 constexpr std::uint32_t display_time_batch = 16;
 // Most frames that RendererOptions::frames_in_flight allows.
@@ -362,7 +371,8 @@ struct VulkanRenderer::Impl {
             staging_allocation = VK_NULL_HANDLE;
         }
         void wait() {
-            check(vkWaitForFences(device, 1, &fence, VK_TRUE, fence_timeout), "Wait for texture upload");
+            check(vkWaitForFences(device, 1, &fence, VK_TRUE, vulkan_timeout(fence_timeout)),
+                  "Wait for texture upload");
             pending = false;
         }
         ~UploadBatch() {
@@ -370,7 +380,7 @@ struct VulkanRenderer::Impl {
             // Retire it before the candidate unwinds, even if that needs the process
             // watchdog. Device loss also ends pending use; it is never recoverable.
             if (pending) {
-                const auto result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+                const auto result = vkWaitForFences(device, 1, &fence, VK_TRUE, no_timeout);
                 if ((result == VK_ERROR_DEVICE_LOST || simulate_device_loss) && fatal)
                     *fatal = true;
                 if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
@@ -923,7 +933,7 @@ struct VulkanRenderer::Impl {
         pixels = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
         return true;
     }
-    void wait_for_presentation(std::uint64_t timeout = fence_timeout) {
+    void wait_for_presentation(std::uint64_t timeout = vulkan_timeout(fence_timeout)) {
         for (auto &image : images) {
             if (image.present_pending) {
                 check(vkWaitForFences(device, 1, &image.presented, VK_TRUE, timeout), "Wait for presentation fence");
@@ -1821,7 +1831,8 @@ struct VulkanRenderer::Impl {
         // Consume the request first, so a file that cannot be written is reported by one draw, not every draw.
         const auto path = std::exchange(options.capture, {});
         const bool to_memory = std::exchange(capture_to_memory, false);
-        check(vkWaitForFences(device, 1, &frames[latest_frame].fence, VK_TRUE, fence_timeout), "Wait for capture");
+        check(vkWaitForFences(device, 1, &frames[latest_frame].fence, VK_TRUE, vulkan_timeout(fence_timeout)),
+              "Wait for capture");
         check(vmaInvalidateAllocation(allocator, capture_allocation, 0, VK_WHOLE_SIZE), "Invalidate readback memory");
         const auto *bytes = static_cast<const std::uint8_t *>(capture_mapping);
         const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
@@ -1923,7 +1934,8 @@ struct VulkanRenderer::Impl {
     // fails the wait for a submitted frame as a fence that does not signal within fence_timeout would.
     void wait_for_slot(FrameSlot &slot, const char *operation) {
         const bool injected = slot.in_flight && options.fail_after == RendererFailureStage::frame_wait;
-        check(injected ? VK_TIMEOUT : vkWaitForFences(device, 1, &slot.fence, VK_TRUE, fence_timeout), operation);
+        check(injected ? VK_TIMEOUT : vkWaitForFences(device, 1, &slot.fence, VK_TRUE, vulkan_timeout(fence_timeout)),
+              operation);
         slot.in_flight = false;
     }
     // Resets the commands of @p slot, whose frame has finished, and destroys what was retired while that frame was the
@@ -1960,7 +1972,7 @@ struct VulkanRenderer::Impl {
         if (id == 0)
             return;
         ++stats.present_waits;
-        const auto result = wait_for_present(device, swapchain, id, present_wait_timeout);
+        const auto result = wait_for_present(device, swapchain, id, vulkan_timeout(present_wait_timeout));
         if (result == VK_TIMEOUT)
             ++stats.present_wait_timeouts;
         else if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
@@ -2174,8 +2186,8 @@ struct VulkanRenderer::Impl {
         measure(profile.upload_ms);
         std::uint32_t index = 0;
         // The slot's fence ordered the last wait on its semaphore, so the semaphore has no pending operation.
-        const auto acquire =
-            vkAcquireNextImageKHR(device, swapchain, 100'000'000, slot.acquired, VK_NULL_HANDLE, &index);
+        const auto acquire = vkAcquireNextImageKHR(device, swapchain, vulkan_timeout(acquire_timeout), slot.acquired,
+                                                   VK_NULL_HANDLE, &index);
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
             resize = true;
             return false;
@@ -2187,7 +2199,7 @@ struct VulkanRenderer::Impl {
         measure(profile.acquire_ms);
         auto &image = images.at(index);
         if (image.present_pending) {
-            check(vkWaitForFences(device, 1, &image.presented, VK_TRUE, fence_timeout),
+            check(vkWaitForFences(device, 1, &image.presented, VK_TRUE, vulkan_timeout(fence_timeout)),
                   "Wait before reusing present fence");
             image.present_pending = false;
             check(vkResetFences(device, 1, &image.presented), "Reset present fence");
@@ -2484,7 +2496,7 @@ struct VulkanRenderer::Impl {
             // Never destroy presentation resources merely because a timed wait expired.
             // A hung driver during teardown needs an external process timeout.
             try {
-                wait_for_presentation(UINT64_MAX);
+                wait_for_presentation(no_timeout);
             } catch (const std::exception &error) {
                 ++errors;
                 std::fprintf(stderr, "%s\n", error.what());
