@@ -12,6 +12,8 @@ inline constexpr float affine_tolerance = 1e-6F;
 // A rigid frame's axes are unit length and orthogonal within this, and its handedness triple product is
 // within this of 1.
 inline constexpr float rigid_tolerance = 1e-4F;
+// Numbers in a document's 3D vector.
+inline constexpr std::size_t vector_components = 3;
 using Json = nlohmann::json;
 inline std::string text(const Json &value) {
     const auto result = value.get<std::string>();
@@ -33,14 +35,13 @@ inline Json read(const std::filesystem::path &path) {
         throw std::runtime_error("Cannot read presentation document");
     return parse(source);
 }
+// Reads a column-major frame; json_floats leaves every element finite.
 inline anima::Mat4 matrix(const Json &value, bool rigid) {
-    if (!value.is_array() || value.size() != 16)
-        throw std::invalid_argument("Presentation transform requires 16 column-major values");
-    auto result = value.get<anima::Mat4>();
-    if (std::any_of(result.begin(), result.end(), [](float x) { return !std::isfinite(x); }) ||
-        std::abs(result[3]) > affine_tolerance || std::abs(result[7]) > affine_tolerance ||
+    const auto result = detail::json_floats<std::tuple_size_v<anima::Mat4>>(
+        value, "Presentation transform requires 16 column-major values");
+    if (std::abs(result[3]) > affine_tolerance || std::abs(result[7]) > affine_tolerance ||
         std::abs(result[11]) > affine_tolerance || std::abs(result[15] - 1) > affine_tolerance)
-        throw std::invalid_argument("Presentation transform must be finite and affine");
+        throw std::invalid_argument("Presentation transform must be affine");
     (void)anima::inverse(result);
     if (rigid) {
         const auto x = anima::axis_x(result), y = anima::axis_y(result), z = anima::axis_z(result);
@@ -51,6 +52,12 @@ inline anima::Mat4 matrix(const Json &value, bool rigid) {
             throw std::invalid_argument("Grip markers require a rigid right-handed frame; apply model scale first");
     }
     return result;
+}
+// Reads a vector of three numbers, each finite as json_floats reads it. Throws std::invalid_argument with message
+// unless value is an array of three.
+inline anima::Vec3 vec3(const Json &value, const char *message) {
+    const auto [x, y, z] = detail::json_floats<vector_components>(value, message);
+    return {x, y, z};
 }
 template <class T> inline const auto &lookup(const T &values, std::string_view id) {
     const auto found = values.find(id);

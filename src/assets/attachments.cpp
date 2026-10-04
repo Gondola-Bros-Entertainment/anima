@@ -45,10 +45,7 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
                 contact.chain = text(value.at("chain"));
                 contact.socket = text(value.at("socket"));
                 contact.marker = text(value.at("marker"));
-                const auto pole = value.at("pole").get<std::array<float, 3>>();
-                if (std::any_of(pole.begin(), pole.end(), [](float x) { return !std::isfinite(x); }))
-                    throw std::invalid_argument("Non-finite support contact pole");
-                contact.pole = {pole[0], pole[1], pole[2]};
+                contact.pole = vec3(value.at("pole"), "Support contact pole requires three numbers");
                 if (contact.socket == motion.socket || !chains.insert(contact.chain).second)
                     throw std::invalid_argument("Support contacts need distinct chains and a secondary socket");
                 const auto &active = value.at("clips");
@@ -131,7 +128,8 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
     if (adapter.at("skeleton") != manifest.skeleton_id || adapter.at("bind_signature") != manifest.bind_signature)
         throw std::invalid_argument("Attachment sockets belong to a different body bind contract");
     const auto rest = anima::sample_pose(body);
-    for (const auto &[name, value] : adapter.at("rest_joints").items()) {
+    const auto &rest_joints = anima::detail::json_object(adapter, "rest_joints");
+    for (const auto &[name, value] : rest_joints.items()) {
         const auto expected = matrix(value, false);
         const auto &actual = rest.world.at(anima::unique_node(body, name));
         for (std::size_t i = 0; i < actual.size(); ++i)
@@ -139,10 +137,10 @@ decode_sockets(std::string_view document, const anima::Manifest &manifest, const
                 throw std::invalid_argument("Body attachment rest frame changed: " + name);
     }
     std::map<std::string, AttachmentSocket, std::less<>> result;
-    for (const auto &[name, value] : adapter.at("sockets").items()) {
+    for (const auto &[name, value] : anima::detail::json_object(adapter, "sockets").items()) {
         anima::detail::json_fields(value, {"node", "local"});
         const auto bone = text(value.at("node"));
-        if (name.empty() || !adapter.at("rest_joints").contains(bone))
+        if (name.empty() || !rest_joints.contains(bone))
             throw std::invalid_argument("Socket requires a named, checked rest joint");
         result.emplace(name, AttachmentSocket{anima::unique_node(body, bone), matrix(value.at("local"), false)});
     }

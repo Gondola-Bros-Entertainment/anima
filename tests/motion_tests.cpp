@@ -179,6 +179,23 @@ std::string replaced(std::string text, std::string_view from, std::string_view t
     REQUIRE(at != std::string::npos);
     return text.replace(at, from.size(), to);
 }
+// attachment_catalog, with the brace held at a hold socket while a support contact puts the limb's end on the grip
+// socket, at the prop's support marker.
+std::string braced_catalog() {
+    return replaced(replaced(attachment_catalog(), R"({"id":"brace","socket":"grip","layer":"layer.limb"})",
+                             R"({"id":"brace","socket":"hold","layer":"","support_contacts":[
+                              {"chain":"limb","socket":"grip","marker":"support","pole":[0,0,2],"clips":["base"]}]})"),
+                    R"("markers":{})", std::string(R"("markers":{"support":)") + identity_frame + "}");
+}
+// An interaction in which the child role is placed by its anchor socket on the parent's while a contact moves its
+// limb toward the parent's target socket.
+constexpr auto meeting = R"({"version":1,"id":"meet","phases":[{"id":"hold","duration":1}],
+    "roles":{"child":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}},
+             "parent":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}}},
+    "attachments":[{"child":"child","parent":"parent","child_socket":"anchor","parent_socket":"anchor",
+                    "weights":{"hold":[[0,1],[1,1]]}}],
+    "contacts":[{"child":"child","parent":"parent","chain":"limb","target_socket":"target","pole":[0,0,2],
+                 "weights":{"hold":[[0,1],[1,1]]}}]})";
 
 // Two actions on the limb. reach needs a tool role held with the grip profile and may be performed with
 // either profile; twirl needs the tool's visual to have a spin track, which the prop lacks.
@@ -467,12 +484,7 @@ TEST_CASE("Attachment and interaction sockets outside the evaluation rig pass un
     const MotionFixture fixture;
     const auto body = std::make_shared<const Asset>(helper_model());
     const auto motion = std::make_shared<const MotionRuntime>(body, fixture.manifest, fixture.contract);
-    // The brace is held at a hold socket while a support contact puts the limb's end on the grip socket.
-    const auto catalog =
-        replaced(replaced(attachment_catalog(), R"({"id":"brace","socket":"grip","layer":"layer.limb"})",
-                          R"({"id":"brace","socket":"hold","layer":"","support_contacts":[
-                              {"chain":"limb","socket":"grip","marker":"support","pole":[0,0,2],"clips":["base"]}]})"),
-                 R"("markers":{})", std::string(R"("markers":{"support":)") + identity_frame + "}");
+    const auto catalog = braced_catalog();
     const auto other_contact =
         replaced(catalog, R"("chain":"limb","socket":"grip")", R"("chain":"other","socket":"other.grip")");
     const auto ownership = [&](const std::string &document, std::size_t hold) {
@@ -486,14 +498,6 @@ TEST_CASE("Attachment and interaction sockets outside the evaluation rig pass un
                          std::invalid_argument);
     CHECK_NOTHROW(ownership(other_contact, helper_socket));
     CHECK_NOTHROW(ownership(catalog, helper_marker));
-    // The child is placed by its anchor socket on the parent's while a contact moves its limb toward the parent's end.
-    constexpr auto meeting = R"({"version":1,"id":"meet","phases":[{"id":"hold","duration":1}],
-        "roles":{"child":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}},
-                 "parent":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}}},
-        "attachments":[{"child":"child","parent":"parent","child_socket":"anchor","parent_socket":"anchor",
-                        "weights":{"hold":[[0,1],[1,1]]}}],
-        "contacts":[{"child":"child","parent":"parent","chain":"limb","target_socket":"target","pole":[0,0,2],
-                     "weights":{"hold":[[0,1],[1,1]]}}]})";
     const auto parent_motion = std::make_shared<const MotionRuntime>(fixture.runtime());
     const auto interaction = [&](const std::string &document, std::size_t anchor) {
         const InteractionRuntime::Actors actors{
@@ -590,6 +594,86 @@ TEST_CASE("A handling profile's layer overrides are an object keyed by base clip
         decode_attachment_catalog(replaced(attachment_catalog(), R"({"base":"layer.side"})", R"(["layer.side"])"),
                                   fixture.directory.path),
         "Layer overrides must map base clips to layer clips", std::invalid_argument);
+}
+
+TEST_CASE("Presentation frames and poles hold exactly their count of numbers, each within the float range") {
+    constexpr std::size_t end = 3;
+    const MotionFixture fixture;
+    const auto decode = [&](const std::string &text) { (void)decode_attachment_catalog(text, fixture.directory.path); };
+    const auto catalog = braced_catalog();
+    CHECK_NOTHROW(decode(catalog));
+    // nlohmann's own conversion reads true as 1, so this grip would be the identity.
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("primary_grip":[1,)", R"("primary_grip":[true,)")),
+                         "JSON value must be a number", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("primary_grip":[1,)", R"("primary_grip":[1e39,)")),
+                         "JSON number outside the float range", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("primary_grip":[1,)", R"("primary_grip":[1,1,)")),
+                         "Presentation transform requires 16 column-major values", std::invalid_argument);
+    // nlohmann's own conversion ignores numbers past the third.
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("pole":[0,0,2])", R"("pole":[0,0,2,0])")),
+                         "Support contact pole requires three numbers", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("pole":[0,0,2])", R"("pole":[0,0,true])")),
+                         "JSON value must be a number", std::invalid_argument);
+
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    // The limb's chain starts below the root, so solving it leaves the child's anchor in place.
+    const InteractionRuntime::Actors actors{
+        {"child", {fixture.body, motion, {{"anchor", {0, identity()}}}}},
+        {"parent", {fixture.body, motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
+    const auto interaction = [&](const std::string &document) { (void)InteractionRuntime(actors, document); };
+    CHECK_NOTHROW(interaction(meeting));
+    CHECK_THROWS_WITH_AS(interaction(replaced(meeting, R"("pole":[0,0,2])", R"("pole":[0,0,true])")),
+                         "JSON value must be a number", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(interaction(replaced(meeting, R"("pole":[0,0,2])", R"("pole":[0,0,2,0])")),
+                         "Interaction pole requires three coordinates", std::invalid_argument);
+}
+
+TEST_CASE("An attachment socket document maps names to rest frames and to sockets") {
+    const MotionFixture fixture;
+    const auto document = [](const std::string &rest_joints, const std::string &sockets) {
+        return R"({"skeleton":"test.rig","bind_signature":")" + rig_signature + R"(","rest_joints":)" + rest_joints +
+               R"(,"sockets":)" + sockets + "}";
+    };
+    const auto decode = [&](const std::string &text) {
+        return decode_attachment_sockets(text, fixture.manifest, *fixture.body);
+    };
+    // The root rests at the origin, and the grip socket sits on it.
+    const auto rest_joints = std::string(R"({"root":)") + identity_frame + "}";
+    const auto grip = std::string(R"({"node":"root","local":)") + identity_frame + "}";
+    const auto sockets = decode(document(rest_joints, R"({"grip":)" + grip + "}"));
+    REQUIRE(sockets.size() == 1);
+    CHECK(sockets.at("grip").node == 0);
+    // Read as a map, a list would name its entries by their indices.
+    CHECK_THROWS_WITH_AS(decode(document(rest_joints, "[" + grip + "]")), "JSON field must be an object: sockets",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(document(std::string("[") + identity_frame + "]", R"({"grip":)" + grip + "}")),
+                         "JSON field must be an object: rest_joints", std::invalid_argument);
+}
+
+TEST_CASE("A motion contract's maps are objects and its lists are arrays") {
+    const MotionFixture fixture;
+    const auto contract = [&](const std::string &text) { (void)MotionRuntime(fixture.body, fixture.manifest, text); };
+    // Read as a map, a list would name its entries by their indices; read as a list, a map would yield its values, and
+    // either would read null as empty.
+    CHECK_THROWS_WITH_AS(contract(replaced(fixture.contract, R"("masks":{"limb":["upper"],"side":["side"]})",
+                                           R"("masks":[["upper"],["side"]])")),
+                         "JSON field must be an object: masks", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        contract(replaced(
+            replaced(fixture.contract, R"("chains":{"limb":{)", R"("chains":[{)"),
+            R"("other":{"joints":["other.upper","other.middle","other.end"],"minimum_angle":0,"maximum_angle":3.1}})",
+            R"({"joints":["other.upper","other.middle","other.end"],"minimum_angle":0,"maximum_angle":3.1}])")),
+        "JSON field must be an object: chains", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(contract(replaced(fixture.contract, R"("clips":[{"name":"base","loop":true,"events":[]}])",
+                                           R"("clips":{"base":{"name":"base","loop":true,"events":[]}})")),
+                         "JSON field must be an array: clips", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(contract(replaced(fixture.contract, R"("events":[])", R"("events":null)")),
+                         "JSON field must be an array: events", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        contract(replaced(replaced(fixture.contract, R"("layers":{"layer.limb":{)", R"("layers":[{)"),
+                          R"("layer.side":{"mask":"side","owned_joints":["side","tip"],"context_joints":["root"]}})",
+                          R"({"mask":"side","owned_joints":["side","tip"],"context_joints":["root"]}])")),
+        "JSON field must be an object: layers", std::invalid_argument);
 }
 
 TEST_CASE("Motion, action, actor and interaction documents report another version before their fields") {

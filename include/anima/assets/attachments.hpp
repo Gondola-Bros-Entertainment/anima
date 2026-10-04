@@ -110,12 +110,12 @@ struct AttachmentSocket {
 /// The document has `empty_handling` and nonempty `handling`, `visuals` and `items` arrays. A
 /// handling entry has `id`, `socket`, `layer` (a layer clip name, or empty) and optional
 /// `layer_overrides` (base clip name to nonempty layer clip name) and `support_contacts`: 1 to 4
-/// entries of `chain`, `socket`, `marker`, `pole`, `clips` and optional `actions`, each active for
-/// at least one clip or action. A visual has `id`, `model`, `primary_grip`, `markers` and optional
-/// `primary_node`, `marker_nodes` and `animation_tracks`. An item has `id`, `visual` and
-/// `handling`; its visual must have every marker that its handling's contacts use. Frames are 16
-/// column-major numbers. Layer clips and chains are checked against a MotionRuntime by
-/// validate_attachment_ownership, not here.
+/// entries of `chain`, `socket`, `marker`, `pole` (three numbers in body model space), `clips` and
+/// optional `actions`, each active for at least one clip or action. A visual has `id`, `model`,
+/// `primary_grip`, `markers` and optional `primary_node`, `marker_nodes` and `animation_tracks`. An
+/// item has `id`, `visual` and `handling`; its visual must have every marker that its handling's
+/// contacts use. Frames are 16 column-major numbers. Layer clips and chains are checked against a
+/// MotionRuntime by validate_attachment_ownership, not here.
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory);
 /// Decodes the body sockets of @p body, the model of @p manifest.
 ///

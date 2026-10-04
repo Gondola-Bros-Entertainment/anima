@@ -73,11 +73,13 @@ struct InteractionRuntime::Impl {
         for (const auto &entry : document.at("contacts")) {
             anima::detail::json_fields(entry, {"child", "parent", "chain", "target_socket", "pole", "weights"},
                                        {"orientation"});
-            Contact contact{
-                text(entry.at("child")),          text(entry.at("parent")),
-                text(entry.at("chain")),          socket(text(entry.at("parent")), text(entry.at("target_socket"))),
-                vector(entry.at("pole")),         weights(entry.at("weights")),
-                entry.value("orientation", false)};
+            Contact contact{text(entry.at("child")),
+                            text(entry.at("parent")),
+                            text(entry.at("chain")),
+                            socket(text(entry.at("parent")), text(entry.at("target_socket"))),
+                            vec3(entry.at("pole"), "Interaction pole requires three coordinates"),
+                            weights(entry.at("weights")),
+                            entry.value("orientation", false)};
             const auto &child = actors_.at(contact.child);
             if (!child.motion || !owned_chains.emplace(contact.child, contact.chain).second)
                 throw std::invalid_argument("Contact needs one owner and a compatible evaluation rig");
@@ -166,14 +168,6 @@ struct InteractionRuntime::Impl {
         for (const auto &phase : timeline_->phases())
             result.push_back(ActionRuntime::weight(value.at(phase.id).dump()));
         return result;
-    }
-    static anima::Vec3 vector(const nlohmann::json &value) {
-        if (!value.is_array() || value.size() != 3)
-            throw std::invalid_argument("Interaction pole requires three coordinates");
-        const auto coordinates = value.get<std::array<float, 3>>();
-        if (!std::all_of(coordinates.begin(), coordinates.end(), [](float n) { return std::isfinite(n); }))
-            throw std::invalid_argument("Interaction pole must be finite");
-        return {coordinates[0], coordinates[1], coordinates[2]};
     }
     Actors actors_;
     std::string id_;
