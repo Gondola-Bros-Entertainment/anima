@@ -490,8 +490,8 @@ inline void run() {
         const auto resource = library.load("instrument");
         const auto rest_prop = sample_attachment_pose(*resource, visual);
         const auto end_prop = sample_attachment_pose(*resource, visual, "pulse", 1);
-        const auto tip0 = point(attachment_marker(visual, resource->source.get(), &rest_prop, "tip"), {});
-        const auto tip1 = point(attachment_marker(visual, resource->source.get(), &end_prop, "tip"), {});
+        const auto tip0 = point(attachment_marker(visual, "tip", PropPose{*resource->source, rest_prop}), {});
+        const auto tip1 = point(attachment_marker(visual, "tip", PropPose{*resource->source, end_prop}), {});
         check(std::abs(tip1.z - tip0.z - .25F) < 1e-5F, "Animated attachment marker did not move");
         rejects<std::invalid_argument>([&] { sample_attachment_pose(*resource, visual, "missing", .5); },
                                        "Attachment visual lacks required track: missing");
