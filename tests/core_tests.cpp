@@ -86,6 +86,39 @@ TEST_CASE("Vectors of any finite length normalize, and nonfinite or tiny ones fa
     }
 }
 
+TEST_CASE("Two-component vectors add, subtract, scale, measure and normalize") {
+    const anima::Vec2 a{1, 2}, b{3, -4};
+    const auto sum = a + b;
+    CHECK(sum.x == 4);
+    CHECK(sum.y == -2);
+    const auto difference = a - b;
+    CHECK(difference.x == -2);
+    CHECK(difference.y == 6);
+    const auto negated = -a;
+    CHECK(negated.x == -1);
+    CHECK(negated.y == -2);
+    const auto scaled = b * .5F;
+    CHECK(scaled.x == 1.5F);
+    CHECK(scaled.y == -2);
+    CHECK(dot(a, b) == -5);
+    CHECK(length(b) == 5);
+    const auto unit = normalized(b);
+    CHECK(unit.x == doctest::Approx(.6F));
+    CHECK(unit.y == doctest::Approx(-.8F));
+    // Squared in float, a component of 1e20 would overflow to infinity.
+    constexpr float huge = 1e20F;
+    CHECK(length(anima::Vec2{huge, 0}) == huge);
+    const auto large = normalized(anima::Vec2{-huge, 0});
+    CHECK(large.x == -1);
+    CHECK(large.y == 0);
+    for (const anima::Vec2 v : {anima::Vec2{std::numeric_limits<float>::infinity(), 0},
+                                anima::Vec2{0, std::numeric_limits<float>::quiet_NaN()}, anima::Vec2{1e-13F, 0}}) {
+        const auto fallback = normalized(v);
+        CHECK(fallback.x == 0);
+        CHECK(fallback.y == 1);
+    }
+}
+
 TEST_CASE("Normals keep their direction through mirroring and stay defined when an axis collapses") {
     using anima::identity;
     using anima::normal;
