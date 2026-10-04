@@ -49,7 +49,9 @@ class PrefabComposition {
     /// must only read, and other side effects of application callbacks are not undone.
     [[nodiscard]] GameObject instantiate(Scene &scene, const PrefabResolver &resolve, const ComponentCodecs &codecs,
                                          const Mat4 &placement = identity()) const;
-    /// Instantiates every part under @p parent, as the Scene overload does.
+    /// Instantiates every part as the Scene overload does, but with the first part's root as the
+    /// last child of @p parent. @p placement is relative to @p parent, not a world pose: that root's
+    /// local matrix is @p placement times the part's placement and prefab root matrix.
     [[nodiscard]] GameObject instantiate(GameObject parent, const PrefabResolver &resolve,
                                          const ComponentCodecs &codecs, const Mat4 &placement = identity()) const;
     /// Writes an `anima.prefab-composition` version 1 document: exactly `version`, `kind` and
