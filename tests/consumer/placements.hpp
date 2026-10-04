@@ -149,6 +149,20 @@ inline int run(int argc, char **argv) {
                   << ",\"placed_shadow_draw_calls\":" << together.shadow_draw_calls << "}\n";
         return std::pair{apart, together};
     };
+    // Draws @p scene alone, then clears the selection and draws again, and requires the second frame to count no
+    // main-view draw, copy, level, culled cluster or range-culled object. Returns the first frame's statistics.
+    const auto draw_then_clear = [&](const std::shared_ptr<anima::Scene> &scene) {
+        renderer.set_scenes({scene});
+        present();
+        const auto drawn = renderer.resource_stats();
+        renderer.set_scenes({});
+        present();
+        const auto cleared = renderer.resource_stats();
+        require(!cleared.draw_calls && !cleared.submitted_indices && !cleared.drawn_copies && !cleared.lod_draws &&
+                    !cleared.culled_clusters && !cleared.range_culled,
+                "Clearing the selection kept the previous frame's main-view counters");
+        return drawn;
+    };
 
     // The whole field, every copy drawn by one call per run of clusters.
     view({24, 55, 85}, {24, 0, 20});
@@ -169,6 +183,10 @@ inline int run(int argc, char **argv) {
             "Clusters out of view were not culled");
     // A cluster's bounds hold its copies' bounds, so cluster culling keeps every copy that object culling keeps.
     require(corner.drawn_copies >= corner_apart.drawn_copies, "Cluster culling dropped a copy in view");
+    // Clearing the selection after a frame that culls clusters leaves none of its counters behind.
+    const auto corner_cleared = draw_then_clear(placed);
+    require(corner_cleared.culled_clusters > 0 && corner_cleared.drawn_copies > 0,
+            "The corner culled no cluster before the selection was cleared");
 
     // Beside the field, where no copy is in view but their shadows fall: the shadow pass draws placements that the
     // view culls.
@@ -200,6 +218,9 @@ inline int run(int argc, char **argv) {
     captures.require_changed("moved-placed", "ranged-placed", .002, "The visibility range hid no copy");
     std::cout << "RANGE {\"separate_range_culled\":" << ranged_apart.range_culled
               << ",\"placed_range_culled\":" << ranged.range_culled << "}\n";
+    // Nor after a frame that culls objects by their visibility range.
+    require(draw_then_clear(separate).range_culled > 0,
+            "No separate object fell outside the visibility range before the selection was cleared");
     for (const auto id : copies)
         separate->set_visibility_range(id, {});
     field_object.renderer().set_visibility_range({});

@@ -615,6 +615,10 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     resources.culled_clusters = culled_clusters;
     resources.range_culled = range_culled;
 }
+// Zeroes the main view's draw counters, which record_indexed() accumulates as the main view records.
+void clear_main_view_counters() noexcept {
+    resources.draw_calls = resources.submitted_indices = resources.drawn_copies = resources.lod_draws = 0;
+}
 void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions settings,
                 bool initial = false) {
     running();
@@ -649,7 +653,9 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
             resources.pose_uploaded_bytes = resources.instances = 0;
             resources.candidate_instances = resources.culled_instances = 0;
             resources.candidate_draws = resources.culled_draws = 0;
-            resources.draw_calls = resources.submitted_indices = 0;
+            resources.culled_clusters = resources.range_culled = 0;
+            // A draw without scenes records no main view, so nothing else would clear the previous frame's counts.
+            clear_main_view_counters();
             resources.shadow_draw_calls = resources.shadow_submitted_indices = 0;
         }
     } catch (const VulkanFailure &error) {
@@ -804,12 +810,8 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
 // opaque casters before their masked ones.
 void record_resources(const ShadowPass *shadow = nullptr) {
     const auto command = frame().command;
-    if (!shadow) {
-        resources.draw_calls = 0;
-        resources.submitted_indices = 0;
-        resources.drawn_copies = 0;
-        resources.lod_draws = 0;
-    }
+    if (!shadow)
+        clear_main_view_counters();
     const auto &view = shadow ? shadow->view : view_projection;
     const auto *frustum = shadow ? &shadow->frustum : options.frustum_culling ? &resource_frustum : nullptr;
     // Meshes, then impostors, each through their pipeline, bound once their first draw records. A shadow pass draws
