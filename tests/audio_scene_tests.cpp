@@ -79,8 +79,7 @@ TEST_CASE("Sources follow the listener's world pose, their enablement and playba
     emitter.set_local_position({2, 0, 0});
     AudioSourceSettings settings;
     settings.spatial = settings.looping = settings.play_on_start = true;
-    settings.minimum_distance = 0;
-    settings.maximum_distance = 4;
+    settings.attenuation = {0, 4};
     auto source = emitter.add_component<AudioSource>(audio, clip(), settings);
     CHECK_FALSE(source->playing()); // Construction waits for synchronization.
     CHECK(frame(audio)[1] == 0);
@@ -233,18 +232,17 @@ TEST_CASE("Invalid source settings, clips and buses are rejected without changin
     AudioSourceSettings settings;
     settings.spatial = settings.looping = true;
     auto source = scene.create().add_component<AudioSource>(audio, clip(), settings);
-    const std::array<std::pair<float AudioSourceSettings::*, const char *>, 5> fields{{
-        {&AudioSourceSettings::volume, "Audio gain must be in [0, 16]"},
-        {&AudioSourceSettings::pitch, pitch_range},
-        {&AudioSourceSettings::pan, "Audio pan must be in [-1, 1]"},
-        {&AudioSourceSettings::minimum_distance, distances},
-        {&AudioSourceSettings::maximum_distance, distances},
+    constexpr auto not_a_number = std::numeric_limits<float>::quiet_NaN();
+    const std::array<std::pair<AudioSourceSettings, const char *>, 5> invalids{{
+        {{.volume = not_a_number}, "Audio gain must be in [0, 16]"},
+        {{.pitch = not_a_number}, pitch_range},
+        {{.pan = not_a_number}, "Audio pan must be in [-1, 1]"},
+        {{.attenuation = {.minimum_distance = not_a_number}}, distances},
+        {{.attenuation = {.maximum_distance = not_a_number}}, distances},
     }};
-    for (std::size_t i = 0; i < fields.size(); ++i) {
+    for (std::size_t i = 0; i < invalids.size(); ++i) {
         CAPTURE(i);
-        auto invalid = settings;
-        invalid.*fields[i].first = std::numeric_limits<float>::quiet_NaN();
-        CHECK_THROWS_WITH_AS(source->configure(invalid), fields[i].second, std::invalid_argument);
+        CHECK_THROWS_WITH_AS(source->configure(invalids[i].first), invalids[i].second, std::invalid_argument);
         CHECK(source->settings().volume == 1);
         CHECK(source->settings().looping);
     }
@@ -252,16 +250,15 @@ TEST_CASE("Invalid source settings, clips and buses are rejected without changin
     invalid.pitch = 0;
     CHECK_THROWS_WITH_AS(source->configure(invalid), pitch_range, std::invalid_argument);
     invalid = settings;
-    invalid.minimum_distance = invalid.maximum_distance;
+    invalid.attenuation.minimum_distance = invalid.attenuation.maximum_distance;
     CHECK_THROWS_WITH_AS(source->configure(invalid), distances, std::invalid_argument);
     invalid = settings;
-    invalid.minimum_distance = 0;
-    invalid.rolloff = AudioRolloff::inverse;
+    invalid.attenuation = {0, 4, AudioRolloff::inverse};
     CHECK_THROWS_WITH_AS(source->configure(invalid), distances, std::invalid_argument);
     invalid = settings;
     invalid.priority = 256;
     CHECK_THROWS_WITH_AS(source->configure(invalid), "Audio priority must be in [0, 255]", std::invalid_argument);
-    CHECK(source->settings().priority == 128);
+    CHECK(source->settings().priority == default_audio_priority);
     CHECK_THROWS_WITH_AS(source->seek(-1), "Audio seek lies outside the clip", std::invalid_argument);
     auto empty = scene.create();
     CHECK_THROWS_WITH_AS(empty.add_component<AudioSource>(audio, nullptr), missing_or_foreign, std::invalid_argument);
@@ -292,12 +289,12 @@ TEST_CASE("Prefabs and scenes persist source settings and enablement, not playba
     Audio audio(8000, 8);
     auto tone = clip();
     auto bus = audio.bus();
-    bus.volume(.5F);
+    bus.set_volume(.5F);
     auto codecs = codecs_for(audio, tone, bus);
     Scene scene;
     auto root = scene.create("emitter");
     root.set_position({3, 0, 0});
-    AudioSourceSettings settings{.5F, 2, -1, 2, 20, true, false, true, 7, AudioRolloff::inverse};
+    AudioSourceSettings settings{.5F, 2, -1, {2, 20, AudioRolloff::inverse}, true, false, true, 7};
     auto original = root.add_component<AudioSource>(audio, tone, settings);
     auto child = scene.create("listener");
     child.set_parent(root, ReparentMode::keep_local);
@@ -320,13 +317,11 @@ TEST_CASE("Prefabs and scenes persist source settings and enablement, not playba
     CHECK(restored_settings.volume == .5F);
     CHECK(restored_settings.pitch == 2);
     CHECK(restored_settings.pan == -1);
-    CHECK(restored_settings.minimum_distance == 2);
-    CHECK(restored_settings.maximum_distance == 20);
+    CHECK(restored_settings.attenuation == AudioAttenuation{2, 20, AudioRolloff::inverse});
     CHECK(restored_settings.looping);
     CHECK_FALSE(restored_settings.spatial);
     CHECK(restored_settings.play_on_start);
     CHECK(restored_settings.priority == 7);
-    CHECK(restored_settings.rolloff == AudioRolloff::inverse);
     REQUIRE(copy_object.children().size() == 1u);
     CHECK_FALSE(copy_object.children()[0].get_component<AudioListener>().enabled());
     synchronize_audio(scene, audio);
@@ -362,26 +357,70 @@ TEST_CASE("Prefabs and scenes persist source settings and enablement, not playba
     CHECK(codecs.capture(again, {}).size() == count); // The failed registration changed nothing.
 }
 
-TEST_CASE("A source payload may omit its priority and rolloff, which then take their defaults") {
+TEST_CASE("A source payload requires every field, including each field of its attenuation") {
     Audio audio(8000);
     auto tone = clip();
     auto codecs = codecs_for(audio, tone);
     Scene scene;
     auto object = scene.create();
-    AudioSourceSettings settings;
-    settings.priority = 3;
-    settings.rolloff = AudioRolloff::inverse;
-    object.add_component<AudioSource>(audio, tone, settings);
+    object.add_component<AudioSource>(audio, tone);
     const auto prefab = Prefab::capture(object, codecs);
     auto nodes = std::vector<Prefab::Node>(prefab.nodes().begin(), prefab.nodes().end());
-    auto &state = nodes[0].components[0].state;
-    REQUIRE(state.find(R"(,"priority":3)") != std::string::npos);
-    state.erase(state.find(R"(,"priority":3)"), std::string_view(R"(,"priority":3)").size());
-    REQUIRE(state.find(R"(,"rolloff":"inverse")") != std::string::npos);
-    state.erase(state.find(R"(,"rolloff":"inverse")"), std::string_view(R"(,"rolloff":"inverse")").size());
+    REQUIRE(nodes[0].components.size() == 1u);
+    CHECK(nodes[0].components[0].type == "anima.audio-source.v2");
+    const auto valid = nodes[0].components[0].state;
+    CHECK(valid == R"({"attenuation":{"maximum_distance":100.0,"minimum_distance":1.0,"rolloff":"linear"},)"
+                   R"("clip":"tone","looping":false,"pan":0.0,"pitch":1.0,"play_on_start":false,"priority":128,)"
+                   R"("spatial":false,"volume":1.0})");
+    // The valid payload without a field and its value. Each field name occurs once, and only the attenuation's
+    // value holds a comma or a brace.
+    const auto without = [&](std::string_view field) {
+        auto payload = valid;
+        const auto key = "\"" + std::string(field) + "\":";
+        auto begin = payload.find(key);
+        REQUIRE(begin != std::string::npos);
+        auto end = begin + key.size();
+        end = payload[end] == '{' ? payload.find('}', end) + 1 : payload.find_first_of(",}", end);
+        // Also remove the comma that separates the field from the next one, or else from the previous one.
+        if (payload[end] == ',')
+            ++end;
+        else if (payload[begin - 1] == ',')
+            --begin;
+        return payload.erase(begin, end - begin);
+    };
+    for (const auto *field : {"clip", "volume", "pitch", "pan", "attenuation", "minimum_distance", "maximum_distance",
+                              "rolloff", "looping", "spatial", "play_on_start", "priority"}) {
+        CAPTURE(field);
+        nodes[0].components[0].state = without(field);
+        const auto error = "Missing JSON field: " + std::string(field);
+        CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), error.c_str(), std::invalid_argument);
+        CHECK(scene.size() == 1u);
+        CHECK(audio.voice_count() == 1u);
+    }
+    // The attenuation is an object with no other fields.
+    const auto replaced = [&](std::string_view from, std::string_view to) {
+        auto payload = valid;
+        const auto at = payload.find(from);
+        REQUIRE(at != std::string::npos);
+        return payload.replace(at, from.size(), to);
+    };
+    nodes[0].components[0].state =
+        replaced(R"({"maximum_distance":100.0,"minimum_distance":1.0,"rolloff":"linear"})", R"([100.0,1.0,"linear"])");
+    CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), "JSON field must be an object: attenuation",
+                         std::invalid_argument);
+    nodes[0].components[0].state = replaced(R"("rolloff":"linear")", R"("rolloff":"linear","unexpected":0)");
+    CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), "Unknown JSON field: unexpected",
+                         std::invalid_argument);
+    nodes[0].components[0].state = replaced(R"("maximum_distance":100.0)", R"("maximum_distance":"100")");
+    CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), "Invalid audio source number",
+                         std::invalid_argument);
+    nodes[0].components[0].state = replaced(R"("minimum_distance":1.0)", R"("minimum_distance":100.0)");
+    CHECK_THROWS_WITH_AS(Prefab(nodes, codecs).instantiate(scene), distances, std::invalid_argument);
+    CHECK(scene.size() == 1u);
+    nodes[0].components[0].state = valid;
     auto restored = Prefab(nodes, codecs).instantiate(scene).get_component<AudioSource>();
-    CHECK(restored->settings().priority == 128);
-    CHECK(restored->settings().rolloff == AudioRolloff::linear);
+    CHECK(restored->settings().attenuation == AudioAttenuation{});
+    CHECK(restored->settings().priority == default_audio_priority);
 }
 
 TEST_CASE("A failed restore rolls back its objects and voices, and teardown releases voices") {

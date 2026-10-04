@@ -65,12 +65,12 @@ inline void run() {
     anima::Audio offline(8000, 1);
     std::vector<float> first(512), second(512);
     auto voice = offline.sound(decoded);
-    voice.pan(-1);
+    voice.set_pan(-1);
     check(voice.play(), "Independent offline voice did not start");
     offline.render(first);
     auto stream = offline.sound(streamed);
-    stream.pan(-1);
-    stream.priority(200); // Outranks the playing voice for the engine's only voice.
+    stream.set_pan(-1);
+    stream.set_priority(200); // Outranks the playing voice for the engine's only voice.
     voice.play();
     check(stream.play() && !voice.playing(), "Independent voice limit did not steal the lower priority");
     offline.render(second);
@@ -82,9 +82,9 @@ inline void run() {
     // A device on the null backend mixes on its own thread while this one sleeps.
     auto device = anima::Audio::open_device(anima::AudioBackend::null);
     auto bus = device.bus();
-    bus.volume(.5F);
+    bus.set_volume(.5F);
     auto looping = device.sound(streamed, bus);
-    looping.looping(true);
+    looping.set_looping(true);
     check(looping.play(), "Independent device voice did not start");
     auto observed = looping.cursor();
     for (int wait = 0; wait < 200 && looping.cursor() == observed; ++wait)

@@ -20,7 +20,7 @@ void validate(const AudioSourceSettings &s) {
     detail::audio_gain(s.volume);
     detail::audio_pitch(s.pitch);
     detail::audio_pan(s.pan);
-    detail::audio_attenuation(s.minimum_distance, s.maximum_distance, s.rolloff);
+    detail::audio_attenuation(s.attenuation);
     detail::audio_priority(s.priority);
 }
 constexpr std::string_view linear_rolloff = "linear", inverse_rolloff = "inverse";
@@ -39,13 +39,13 @@ AudioSource::AudioSource(Audio &audio, std::shared_ptr<const AudioClip> clip, Au
 }
 void AudioSource::configure(AudioSourceSettings settings) {
     validate(settings);
-    sound_.volume(settings.volume);
-    sound_.pitch(settings.pitch);
-    sound_.pan(settings.pan);
-    sound_.attenuation(settings.minimum_distance, settings.maximum_distance, settings.rolloff);
-    sound_.looping(settings.looping);
-    sound_.spatial(settings.spatial);
-    sound_.priority(settings.priority);
+    sound_.set_volume(settings.volume);
+    sound_.set_pitch(settings.pitch);
+    sound_.set_pan(settings.pan);
+    sound_.set_attenuation(settings.attenuation);
+    sound_.set_looping(settings.looping);
+    sound_.set_spatial(settings.spatial);
+    sound_.set_priority(settings.priority);
     settings_ = settings;
 }
 void AudioSource::play() { play_pending_ = true; }
@@ -90,7 +90,7 @@ template <class Scenes> void detail::AudioSceneAccess::synchronize(Scenes &scene
         pending.push_back({source, p});
     }
     // No callbacks, allocation or remaining validation failures during publication.
-    audio.listener(position, forward, up);
+    audio.set_listener(position, forward, up);
     for (auto &update : pending) {
         auto &source = update.component.get();
         if (!update.component.active()) {
@@ -98,7 +98,7 @@ template <class Scenes> void detail::AudioSceneAccess::synchronize(Scenes &scene
             source.sound_.pause();
             continue;
         }
-        source.sound_.position(update.position);
+        source.sound_.set_position(update.position);
         if (source.play_pending_ || source.resume_) {
             source.sound_.play();
             source.play_pending_ = source.resume_ = false;
@@ -128,36 +128,38 @@ void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClip
             object.add_component<AudioListener>();
         });
     pending.add<AudioSource>(
-        "anima.audio-source.v1",
+        "anima.audio-source.v2",
         [name = std::move(name)](const AudioSource &source, const ObjectReferences &) {
             const auto clip = name(source.clip());
             key(clip);
             const auto &s = source.settings();
+            const auto &a = s.attenuation;
             return Json{{"clip", clip},
                         {"volume", s.volume},
                         {"pitch", s.pitch},
                         {"pan", s.pan},
-                        {"minimum_distance", s.minimum_distance},
-                        {"maximum_distance", s.maximum_distance},
+                        {"attenuation",
+                         {{"minimum_distance", a.minimum_distance},
+                          {"maximum_distance", a.maximum_distance},
+                          {"rolloff", a.rolloff == AudioRolloff::inverse ? inverse_rolloff : linear_rolloff}}},
                         {"looping", s.looping},
                         {"spatial", s.spatial},
                         {"play_on_start", s.play_on_start},
-                        {"priority", s.priority},
-                        {"rolloff", s.rolloff == AudioRolloff::inverse ? inverse_rolloff : linear_rolloff}}
+                        {"priority", s.priority}}
                 .dump();
         },
         [mixer, bus, resolve = std::move(resolve)](GameObject object, std::string_view data, const ObjectReferences &) {
             const auto j = detail::parse_json(data, maximum_component_bytes);
-            detail::json_fields(j,
-                                {"clip", "volume", "pitch", "pan", "minimum_distance", "maximum_distance", "looping",
-                                 "spatial", "play_on_start"},
-                                {"priority", "rolloff"});
+            detail::json_fields(j, {"clip", "volume", "pitch", "pan", "attenuation", "looping", "spatial",
+                                    "play_on_start", "priority"});
             if (!j.at("clip").is_string())
                 throw std::invalid_argument("Invalid audio source fields");
-            const auto number = [&](const char *field) {
-                if (!j.at(field).is_number())
+            const auto &attenuation = detail::json_object(j, "attenuation");
+            detail::json_fields(attenuation, {"minimum_distance", "maximum_distance", "rolloff"});
+            const auto number = [](const Json &parent, const char *field) {
+                if (!parent.at(field).is_number())
                     throw std::invalid_argument("Invalid audio source number");
-                return detail::json_float(j.at(field));
+                return detail::json_float(parent.at(field));
             };
             const auto flag = [&](const char *field) {
                 if (!j.at(field).is_boolean())
@@ -165,33 +167,29 @@ void add_audio_component_codecs(ComponentCodecs &codecs, Audio &audio, AudioClip
                 return j.at(field).get<bool>();
             };
             AudioSourceSettings s;
-            s.volume = number("volume");
-            s.pitch = number("pitch");
-            s.pan = number("pan");
-            s.minimum_distance = number("minimum_distance");
-            s.maximum_distance = number("maximum_distance");
+            s.volume = number(j, "volume");
+            s.pitch = number(j, "pitch");
+            s.pan = number(j, "pan");
+            s.attenuation.minimum_distance = number(attenuation, "minimum_distance");
+            s.attenuation.maximum_distance = number(attenuation, "maximum_distance");
+            // Compared as a std::string: comparing the JSON value with a string_view is ambiguous on MSVC.
+            const auto *rolloff = attenuation.at("rolloff").get_ptr<const std::string *>();
+            if (rolloff && *rolloff == linear_rolloff)
+                s.attenuation.rolloff = AudioRolloff::linear;
+            else if (rolloff && *rolloff == inverse_rolloff)
+                s.attenuation.rolloff = AudioRolloff::inverse;
+            else
+                throw std::invalid_argument("Invalid audio source rolloff");
             s.looping = flag("looping");
             s.spatial = flag("spatial");
             s.play_on_start = flag("play_on_start");
-            if (j.contains("priority")) {
-                const auto &priority = j.at("priority");
-                if (!priority.is_number_integer())
-                    throw std::invalid_argument("Invalid audio source priority");
-                // An unsigned JSON integer above INT64_MAX reads as negative, which the range check rejects too.
-                const auto value = priority.get<std::int64_t>();
-                detail::audio_priority(value);
-                s.priority = static_cast<int>(value);
-            }
-            if (j.contains("rolloff")) {
-                // Compared as a std::string: comparing the JSON value with a string_view is ambiguous on MSVC.
-                const auto *rolloff = j.at("rolloff").get_ptr<const std::string *>();
-                if (rolloff && *rolloff == linear_rolloff)
-                    s.rolloff = AudioRolloff::linear;
-                else if (rolloff && *rolloff == inverse_rolloff)
-                    s.rolloff = AudioRolloff::inverse;
-                else
-                    throw std::invalid_argument("Invalid audio source rolloff");
-            }
+            const auto &priority = j.at("priority");
+            if (!priority.is_number_integer())
+                throw std::invalid_argument("Invalid audio source priority");
+            // An unsigned JSON integer above INT64_MAX reads as negative, which the range check rejects too.
+            const auto value = priority.get<std::int64_t>();
+            detail::audio_priority(value);
+            s.priority = static_cast<int>(value);
             validate(s);
             const auto clip_key = j.at("clip").get<std::string>();
             key(clip_key);

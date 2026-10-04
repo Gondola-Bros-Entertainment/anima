@@ -29,7 +29,8 @@ inline void audio_priority(std::int64_t value) {
     if (value < 0 || value > maximum_audio_priority)
         throw std::invalid_argument("Audio priority must be in [0, 255]");
 }
-inline void audio_attenuation(float minimum, float maximum, AudioRolloff rolloff) {
+inline void audio_attenuation(const AudioAttenuation &value) {
+    const auto [minimum, maximum, rolloff] = value;
     if (rolloff != AudioRolloff::linear && rolloff != AudioRolloff::inverse)
         throw std::invalid_argument("Invalid audio rolloff");
     // The inverse model's gain, minimum / distance, would be silent everywhere with a zero minimum and undefined at
