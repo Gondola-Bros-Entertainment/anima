@@ -184,25 +184,25 @@ class Mesh {
     /// Compiles a static @p source into one or more meshes that together draw its geometry with the same node
     /// placement, to bound individual uploads.
     ///
-    /// With both limits in @p options zero this returns `{compile(source)}`. Otherwise it first shrinks oversized
-    /// textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at every material
-    /// change between consecutive primitives and whenever MeshCompileOptions::max_vertices would be exceeded, splitting
-    /// primitives between whole triangles; the draws of a split blended primitive sort separately in VulkanRenderer.
-    /// Each result keeps every node, Asset::mesh_nodes and Asset::notices, as compile() does, but only the materials
-    /// and textures it uses; a source without primitives gives one Mesh with no materials or textures. Throws
-    /// `std::invalid_argument` for an unknown MeshCompileOptions::texel_retention, a `max_vertices` of 1 or 2 or a
-    /// primitive that is not a nonempty list of whole triangles, and `std::runtime_error` when @p source has skins or
-    /// animations, before anything else. Otherwise invalid content anywhere in @p source, including materials and
-    /// textures that no primitive uses, fails as compile(source) would: its first defect in compile()'s order throws
-    /// the same exception. Limits on the size of one Mesh apply to each result. The results share the images of
-    /// @p source's textures, and each shrunk image among themselves, or hold them as
-    /// MeshCompileOptions::texel_retention says. Each result generates the levels of detail MeshCompileOptions::lods
-    /// asks for, as compile() does, and throws as compile() does for more than 8. Calls may run concurrently on any
-    /// thread, as compile() calls may.
+    /// With both limits in @p options zero this returns `{compile(source, options.texel_retention, options.lods)}`.
+    /// Otherwise it first shrinks oversized textures. Without a vertex limit it then returns one Mesh; with one, it
+    /// starts a new Mesh at every material change between consecutive primitives and whenever
+    /// MeshCompileOptions::max_vertices would be exceeded, splitting primitives between whole triangles; the draws of a
+    /// split blended primitive sort separately in VulkanRenderer. Each result keeps every node, Asset::mesh_nodes and
+    /// Asset::notices, as compile() does, but only the materials and textures it uses; a source without primitives
+    /// gives one Mesh with no materials or textures. Throws `std::invalid_argument` for an unknown
+    /// MeshCompileOptions::texel_retention, a `max_vertices` of 1 or 2 or a primitive that is not a nonempty list of
+    /// whole triangles, and `std::runtime_error` when @p source has skins or animations, before anything else.
+    /// Otherwise invalid content anywhere in @p source, including materials and textures that no primitive uses, fails
+    /// as compile(source) would: its first defect in compile()'s order throws the same exception. Limits on the size of
+    /// one Mesh apply to each result. The results share the images of @p source's textures, and each shrunk image among
+    /// themselves, or hold them as MeshCompileOptions::texel_retention says. Each result generates the levels of detail
+    /// MeshCompileOptions::lods asks for, as compile() does, and throws as compile() does for more than 8. Calls may
+    /// run concurrently on any thread, as compile() calls may.
     [[nodiscard]] static std::vector<std::shared_ptr<const Mesh>> compile_static(const Asset &source,
                                                                                  MeshCompileOptions options = {});
     /// Compiles @p atlas, from bake_impostor() or persisted from it, into a Mesh that VulkanRenderer draws as an
-    /// impostor, and that scenes place, range, cull and shade as any Mesh.
+    /// impostor, and that scenes place, range and cull as any Mesh.
     ///
     /// The Mesh has one node and one draw, a quad of two triangles whose corners span the cube of side
     /// `2 ImpostorFrames::radius` around ImpostorFrames::center, so its rest bounds share their center with its source
@@ -215,13 +215,19 @@ class Mesh {
     /// ImageFormat::rgba8 map and read as stored for a block-compressed one. An ImageFormat::rgba8 base color's mips
     /// keep its alpha coverage at 0.5, as a masked material's do. impostor() returns @p atlas's frames.
     ///
-    /// Throws `std::invalid_argument` for frames out of range ("Impostor frames must number from 2 to 32 per side, with
-    /// a finite center and a positive finite radius"), for an unknown layout ("Unknown impostor layout"), and for
+    /// A custom material assigned to the Mesh's material slot (Scene::set_custom_material) draws the quad's own
+    /// vertices instead of an impostor: positions at ImpostorFrames::center plus ImpostorFrames::radius times
+    /// (-1, -1, -1), (1, -1, 1), (1, 1, 1) and (-1, 1, -1), on a diagonal plane of the cube rather than facing the eye,
+    /// with uv (0, 0), (1, 0), (1, 1) and (0, 1) and normal (0, 0, 1). Its shaders receive no ImpostorFrames, so one
+    /// that draws the frames takes them, and the atlas's images, through its parameter block and textures.
+    ///
+    /// Throws `std::invalid_argument` for an unknown layout ("Unknown impostor layout"), for frames out of range
+    /// ("Impostor frames must number from 2 to 32 per side, with a finite center and a positive finite radius"), for
     /// images that are not square, equal in size and divisible into the frames, or whose textures use the wrong
     /// encoding ("Impostor images must be equal squares divisible into the frames, color and emission sRGB, normals
     /// and surface linear"), for an emission scale below 1 or not finite ("Impostor emission scale must be finite and
-    /// at least 1"), then as compile() does for its textures, and for an unknown @p texel_retention. Calls may run
-    /// concurrently on any thread.
+    /// at least 1"), then for an unknown @p texel_retention ("Unknown texel retention"), then as compile() does for its
+    /// textures. Calls may run concurrently on any thread.
     [[nodiscard]] static std::shared_ptr<const Mesh>
     compile_impostor(const ImpostorAtlas &atlas, TexelRetention texel_retention = TexelRetention::keep);
     /// Vertices that indices() refers to.

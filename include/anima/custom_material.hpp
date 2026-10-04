@@ -91,6 +91,11 @@
 /// volume, for example to (2, 2, 2, 1), while `abs(animaVisibility())` is at most 0.5. A material whose shaders do
 /// neither draws whole every copy that the renderer does not skip, including copies outside the range.
 ///
+/// On a Mesh compiled with Mesh::compile_impostor(), a custom material draws the quad's own vertices, not an impostor
+/// facing the eye: their positions lie on a diagonal plane of the cube around the sphere of Mesh::impostor(), and
+/// their uv run from (0, 0) to (1, 1), as Mesh::compile_impostor() states. No input carries the ImpostorFrames, so a
+/// shader that draws the frames takes them through the parameter block.
+///
 /// Stages pass values at locations 0 to 15 as 32-bit scalars or vectors, and every fragment shader input must be
 /// a vertex shader output of the same type. The fragment shader writes one `vec4` at location 0 into the linear
 /// `RGBA16F` scene target, whose display conversion applies exposure and tone mapping; the shadow fragment shader

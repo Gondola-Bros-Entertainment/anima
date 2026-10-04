@@ -386,6 +386,20 @@ TEST_CASE("Static compilation generates levels in every resulting mesh, which st
                          std::invalid_argument);
 }
 
+TEST_CASE("Static compilation without limits compiles with the options' retention and levels") {
+    MeshCompileOptions options;
+    options.texel_retention = TexelRetention::until_upload;
+    options.lods.levels = 2;
+    const auto pieces = Mesh::compile_static(sphere_asset(), options);
+    REQUIRE(pieces.size() == 1);
+    const auto expected = Mesh::compile(sphere_asset(), TexelRetention::until_upload, {2});
+    CHECK(pieces[0]->texel_retention() == TexelRetention::until_upload);
+    REQUIRE(pieces[0]->draws().size() == 1);
+    CHECK_FALSE(pieces[0]->draws()[0].levels.empty());
+    CHECK(pieces[0]->draws()[0].levels.size() == expected->draws()[0].levels.size());
+    CHECK(std::ranges::equal(pieces[0]->indices(), expected->indices()));
+}
+
 TEST_CASE("Snapshots budget each draw's own triangles, not its levels") {
     const auto mesh = Mesh::compile(sphere_asset(), TexelRetention::keep, {4});
     const auto corners = mesh->draws()[0].index_count;

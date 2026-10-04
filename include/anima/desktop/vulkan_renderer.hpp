@@ -489,7 +489,8 @@ struct ResourceStats {
 /// object's material factor, occlusion, roughness, metallic and emission, and shadows received without a receiver
 /// plane. Into the shadow maps the impostor draws along the sun with the frames nearest the sun's direction. A copy
 /// seen from inside its sphere draws nothing, and visibility ranges apply as to any copy. A custom material assigned to
-/// its material slot draws it as a quad instead.
+/// its material slot draws the quad's own vertices instead, which Mesh::compile_impostor() and custom_material.hpp
+/// describe.
 ///
 /// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`
