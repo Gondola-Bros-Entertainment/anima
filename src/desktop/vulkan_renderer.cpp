@@ -432,6 +432,17 @@ struct VulkanRenderer::Impl {
                 vkDestroyCommandPool(device, pool, nullptr);
         }
         UploadBatch() = default;
+        // A batch with its command pool, command buffer and fence created for the queue family. The constructor
+        // delegates so that, if create() throws, the destructor frees what it created.
+        UploadBatch(VkDevice batch_device, VmaAllocator batch_allocator, bool *fatal_flag,
+                    std::atomic<std::uint32_t> *error_count, std::uint32_t family)
+            : UploadBatch() {
+            device = batch_device;
+            allocator = batch_allocator;
+            fatal = fatal_flag;
+            errors = error_count;
+            create(family);
+        }
         UploadBatch(const UploadBatch &) = delete;
         UploadBatch &operator=(const UploadBatch &) = delete;
     };
@@ -2086,6 +2097,24 @@ struct VulkanRenderer::Impl {
                 latest_display = DisplayedFrame{timing.presentID, timing.actualPresentTime};
         }
     }
+#ifdef ANIMA_HAS_ASSETS
+    // Runs one step of draw()'s scene resource work and translates its failures. A Vulkan timeout or device loss, and
+    // any Vulkan failure once the renderer is fatal, propagates unchanged; another failure becomes RendererFatalError
+    // when the renderer is fatal, and SceneResourceError otherwise, with the failure's message.
+    template <class Step> void scene_resource_step(Step &&step) {
+        try {
+            std::forward<Step>(step)();
+        } catch (const VulkanFailure &error) {
+            if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
+                throw;
+            throw SceneResourceError(error.what());
+        } catch (const std::exception &error) {
+            if (fatal)
+                throw RendererFatalError(error.what());
+            throw SceneResourceError(error.what());
+        }
+    }
+#endif
     bool draw(const detail::UiFrame *ui_frame = nullptr) {
         running();
         using Clock = std::chrono::steady_clock;
@@ -2123,21 +2152,13 @@ struct VulkanRenderer::Impl {
             read_display_times();
 #ifdef ANIMA_HAS_ASSETS
         retire_resources();
-        try {
+        scene_resource_step([&] {
             // Before the custom materials' frame block, which holds the scene targets' size.
             ensure_scene_targets();
             ensure_shadow_targets();
             fit_shadow_cascades();
             update_custom_frame();
-        } catch (const VulkanFailure &error) {
-            if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
-                throw;
-            throw SceneResourceError(error.what());
-        } catch (const std::exception &error) {
-            if (fatal)
-                throw RendererFatalError(error.what());
-            throw SceneResourceError(error.what());
-        }
+        });
 #endif
         if (slot.timing_pending) {
             // With VK_QUERY_RESULT_64_BIT and VK_QUERY_RESULT_WITH_AVAILABILITY_BIT, each query writes its timestamp
@@ -2213,34 +2234,18 @@ struct VulkanRenderer::Impl {
         measure(profile.prepare_ms);
 #ifdef ANIMA_HAS_ASSETS
         if (!resource_scenes.empty()) {
-            try {
+            scene_resource_step([&] {
                 prepare_resources(resource_scenes);
                 if (resource_opaque_inputs)
                     ensure_opaque_inputs();
-            } catch (const VulkanFailure &error) {
-                if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
-                    throw;
-                throw SceneResourceError(error.what());
-            } catch (const std::exception &error) {
-                if (fatal)
-                    throw RendererFatalError(error.what());
-                throw SceneResourceError(error.what());
-            }
+            });
             profile.uploaded_bytes = resources.pose_uploaded_bytes;
         }
-        try {
+        scene_resource_step([&] {
             // Preparation extended each cascade's depth toward its casters.
             finish_shadow_cascades();
             update_environment();
-        } catch (const VulkanFailure &error) {
-            if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST)
-                throw;
-            throw SceneResourceError(error.what());
-        } catch (const std::exception &error) {
-            if (fatal)
-                throw RendererFatalError(error.what());
-            throw SceneResourceError(error.what());
-        }
+        });
 #endif
         measure(profile.upload_ms);
         std::uint32_t index = 0;
