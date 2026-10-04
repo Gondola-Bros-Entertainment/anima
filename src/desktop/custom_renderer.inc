@@ -348,13 +348,15 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     state.pass = shadow ? shadow_pass : render_pass;
     return create_graphics_pipeline(state, "Create custom material pipeline");
 }
-// Binds @p gpu's pipeline, or with @p shadow its depth-only variant's, with the frame, pose and material sets.
+// Binds @p gpu's pipeline, or with @p shadow its depth-only variant's, with the frame, pose and material sets, which
+// disturbs the sets bound through resource_pipeline_layout, so it clears resource_bound.
 void bind_custom(const GpuCustomMaterial &gpu, bool shadow) {
     const auto command = frame().command;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? gpu.shadow_pipeline : gpu.pipeline);
     const VkDescriptorSet sets[]{frame().custom_frame_set, frame().pose_set, gpu.set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, custom_pipeline_layout, 0,
                             static_cast<std::uint32_t>(std::size(sets)), sets, 0, nullptr);
+    resource_bound = {};
 }
 // Records draw @p draw_index of @p render_instance with the bound custom pipeline and geometry, through @p view, once
 // per run of placement_runs.
