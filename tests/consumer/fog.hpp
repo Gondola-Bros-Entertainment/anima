@@ -469,8 +469,8 @@ inline std::vector<std::string> render_gradients(blending_test::Harness &harness
     const auto view_projection = view(harness.aspect());
     auto environment = height_fog();
     environment.sun = {{.2F, .3F, -1}, {1.2F, 1.1F, 1}};
-    environment.fog_sun_scattering = {.3F, .25F, .2F};
-    environment.fog_sun_anisotropy = .7F;
+    environment.fog.sun_scattering = {.3F, .25F, .2F};
+    environment.fog.sun_anisotropy = .7F;
     const auto plates_name = "gradient-fog-" + suffix, sky_name = "gradient-sky-" + suffix;
     auto scene = plate_scene();
     (void)custom_material_test::add(*scene, custom_material_test::surface({-1.2F, .2F, -4.5F}, .3F, .3F),
@@ -480,10 +480,10 @@ inline std::vector<std::string> render_gradients(blending_test::Harness &harness
     environment = {};
     environment.atmosphere.enabled = true;
     environment.sun = {{0, .4F, 1}, {6, 6, 6}};
-    environment.fog_color = {.5F, .2F, .05F};
-    environment.fog_density = .004F;
-    environment.fog_falloff = .02F;
-    environment.fog_sky_distance = 250;
+    environment.fog.color = {.5F, .2F, .05F};
+    environment.fog.density = .004F;
+    environment.fog.falloff = .02F;
+    environment.fog.sky_distance = 250;
     harness.render(sky_name, {}, view_projection, environment);
     return {plates_name, sky_name};
 }
