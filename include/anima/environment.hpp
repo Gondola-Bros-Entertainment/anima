@@ -14,20 +14,21 @@
 /// Lighting environment values for anima::VulkanRenderer, with their validation and the sun's shadow projections.
 /// Header-only; needs only `anima::core`.
 ///
-/// Colors and radiance are linear RGB, and directions point from the surface toward the light. Validation
+/// Colors, radiance and irradiance are linear RGB, and directions point from the surface toward the light. Validation
 /// throws `std::invalid_argument`, or anima::MathError (derived from it) for a projection that cannot be inverted.
 
 namespace anima {
 /// One directional light of an Environment.
 ///
-/// Lit surfaces reflect `BRDF * radiance * max(dot(N, L), 0)`, where `L` is the normalized #direction,
+/// Lit surfaces reflect the radiance `BRDF * irradiance * max(dot(N, L), 0)`, where `L` is the normalized #direction,
 /// further scaled by shadow visibility for Environment::sun.
 struct DirectionalLight {
     /// Direction from the surface toward the light, normalized when used. Its squared length must be finite
     /// and at least `1e-12`.
     Vec3 direction{-.6F, .9F, .8F};
-    /// Finite, nonnegative radiance.
-    Vec3 radiance{std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2};
+    /// Finite, nonnegative linear RGB irradiance on a surface facing the light: a Lambertian surface of albedo `a`
+    /// facing it reflects the radiance `a * irradiance / pi`.
+    Vec3 irradiance{std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2};
 };
 /// The sun's shadow cascades, which the renderer fits to the view every frame as fit_shadow_cascades() does.
 ///
@@ -122,14 +123,14 @@ struct DirectionalShadow {
 /// each at its medium's densest. The defaults are Earth's, as the paper's reference implementation sets them;
 /// validate_atmosphere() defines the accepted values.
 ///
-/// The sky's radiance along a view ray, per unit of the sun's radiance above the atmosphere, integrates what the media
-/// scatter toward the eye, dimmed by the transmittance back to it: the sun transmitted to each point, zero where the
-/// ground blocks it, through Rayleigh's phase function and Cornette-Shanks' with #mie_anisotropy; plus the paper's
+/// The sky's radiance along a view ray, per unit of the sun's irradiance above the atmosphere, integrates what the
+/// media scatter toward the eye, dimmed by the transmittance back to it: the sun transmitted to each point, zero where
+/// the ground blocks it, through Rayleigh's phase function and Cornette-Shanks' with #mie_anisotropy; plus the paper's
 /// isotropic approximation of light scattered more than once, `L2 / (1 - f_ms)` per unit of scattering, with `L2` and
 /// `f_ms` averaged over every direction from the point and `f_ms` limited to 0.99, so that a dense medium that loses
 /// little light keeps the series finite; and, where the ray meets the ground, the ground's Lambertian reflection of
 /// the transmitted sun. The renderer tabulates it, so it matches this integral to within the tables' resolution and
-/// half-precision storage, which also limits the radiance to 65504 per unit of sunlight.
+/// half-precision storage, which also limits the radiance to 65504 per unit of the sun's irradiance.
 struct Atmosphere {
     /// Draws the sky from this atmosphere and lights the scene with the sun it transmits; see
     /// EnvironmentSettings::atmosphere.
@@ -162,7 +163,9 @@ struct Atmosphere {
     float mie_anisotropy = .8F;
     /// Albedo of the ground per channel, from 0 to 1, which reflects the transmitted sun into the sky.
     Vec3 ground_albedo{.3F, .3F, .3F};
-    /// Angular radius of the sun's disc, in radians, greater than 0 and less than pi / 2.
+    /// Angular radius `r` of the sun's disc, in radians, greater than 0 and less than pi / 2. The sky adds the disc in
+    /// the directions within `r` of the sun's: the radiance `irradiance / (2 * pi * (1 - cos(r)))` for the sun's
+    /// irradiance above the atmosphere, times the transmittance along the view ray, which is zero into the ground.
     float sun_angular_radius = .004675F;
 };
 /// Throws `std::invalid_argument("Invalid atmosphere")` unless @p a's radius, scale heights and ozone width are finite
@@ -201,11 +204,11 @@ struct EnvironmentSettings {
     Vec3 ambient_specular{.08F, .08F, .08F};
     /// The planet's atmosphere. While it is enabled, the renderer draws the sky from it behind the scene instead of
     /// the fixed clear color, with the sun's disc, and lights surfaces and fog with the sun as it reaches the ground,
-    /// atmosphere_sunlight(); the sky itself scatters the sun's radiance above the atmosphere. The sky is seen from the
-    /// eye's altitude above Atmosphere::ground_height, kept between 1 m and 1 m below the atmosphere's top, with the
-    /// planet's center straight below the eye, so that +Y is up wherever the eye moves; an orthographic view sees it
-    /// from 1 m above the ground. In perspective views fog applies to the sky as to a surface #fog_sky_distance along
-    /// each view ray. Disabled, nothing draws behind the scene and the sun keeps its radiance.
+    /// atmosphere_sunlight(); the sky itself scatters the sun's irradiance above the atmosphere. The sky is seen from
+    /// the eye's altitude above Atmosphere::ground_height, kept between 1 m and 1 m below the atmosphere's top, with
+    /// the planet's center straight below the eye, so that +Y is up wherever the eye moves; an orthographic view sees
+    /// it from 1 m above the ground. In perspective views fog applies to the sky as to a surface #fog_sky_distance
+    /// along each view ray. Disabled, nothing draws behind the scene and the sun keeps its irradiance.
     Atmosphere atmosphere;
     /// Ambient light that fog scatters toward the eye.
     Vec3 fog_color{.55F, .65F, .75F};
@@ -217,11 +220,11 @@ struct EnvironmentSettings {
     /// the falloff, `y` the height of the path's lower end and `r` the height between its ends, `t = fog_density * d *
     /// exp(-k * (y - fog_height)) * (1 - exp(-k * r)) / (k * r)`, where the last factor is 1 when `k * r` is zero,
     /// so that uniform fog keeps `exp(-fog_density * d)`. The fog's light is #fog_color plus Environment::sun's
-    /// radiance times #fog_sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 + g^2 -
-    /// 2 * g * c)^1.5)`, with `g` the #fog_sun_anisotropy and `c` the cosine of the angle between the path, from the
-    /// eye, and the direction toward the sun. It depends on the path's direction alone, not on its length, and each
-    /// of its channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor
-    /// the scene's own light reach the fog. Orthographic views are not fogged.
+    /// irradiance times #fog_sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 +
+    /// g^2 - 2 * g * c)^1.5)`, with `g` the #fog_sun_anisotropy and `c` the cosine of the angle between the path, from
+    /// the eye, and the direction toward the sun. It depends on the path's direction alone, not on its length, and each
+    /// of its channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor the
+    /// scene's own light reach the fog. Orthographic views are not fogged.
     float fog_density = 0;
     /// Height along +Y at which the fog's density is #fog_density; finite.
     float fog_height = 0;
@@ -294,12 +297,12 @@ inline void validate_environment_settings(const EnvironmentSettings &e) {
     validate_atmosphere(e.atmosphere);
 }
 /// Validates @p e as validate_environment_settings() does, and requires each light to have finite, nonnegative
-/// radiance and a direction whose squared length is finite and at least `1e-12`. Throws `std::invalid_argument`.
+/// irradiance and a direction whose squared length is finite and at least `1e-12`. Throws `std::invalid_argument`.
 inline void validate_environment(const Environment &e) {
     validate_environment_settings(e);
     for (const auto &l : {e.sun, e.fill}) {
         const auto square = dot(l.direction, l.direction);
-        const auto c = l.radiance;
+        const auto c = l.irradiance;
         if (!std::isfinite(square) || square < 1e-12F || !std::isfinite(c.x) || !std::isfinite(c.y) ||
             !std::isfinite(c.z) || c.x < 0 || c.y < 0 || c.z < 0)
             throw std::invalid_argument("Invalid directional light");
@@ -338,15 +341,16 @@ namespace detail {
 [[nodiscard]] inline Vec3 atmosphere_sunlight_of(const Environment &e) {
     const auto &a = e.atmosphere;
     if (!a.enabled)
-        return e.sun.radiance;
+        return e.sun.irradiance;
     const auto toward = normalized(e.sun.direction);
     const double elevation = std::asin(std::clamp(double(toward.y), -1.0, 1.0)), radius = a.sun_angular_radius;
     const double share = std::clamp((elevation + radius) / (2 * radius), 0.0, 1.0);
     if (share <= 0)
         return {0, 0, 0};
     const auto through = atmosphere_transmittance_of(a, 0, std::max(double(toward.y), 0.0));
-    return {float(double(e.sun.radiance.x) * through.x * share), float(double(e.sun.radiance.y) * through.y * share),
-            float(double(e.sun.radiance.z) * through.z * share)};
+    return {float(double(e.sun.irradiance.x) * through.x * share),
+            float(double(e.sun.irradiance.y) * through.y * share),
+            float(double(e.sun.irradiance.z) * through.z * share)};
 }
 } // namespace detail
 /// The share of light, per channel, that crosses @p a from @p altitude meters above the ground to its top, along the
@@ -363,11 +367,11 @@ namespace detail {
         throw std::invalid_argument("Invalid atmosphere sample");
     return detail::atmosphere_transmittance_of(a, altitude, cos_zenith);
 }
-/// The radiance of @p e's sun as it reaches the ground. With the atmosphere enabled, Environment::sun's radiance is
+/// The irradiance of @p e's sun as it reaches the ground. With the atmosphere enabled, Environment::sun's irradiance is
 /// the light above the atmosphere, and this is that times atmosphere_transmittance() from the ground toward the sun,
 /// along the horizon once the sun is below it, times the share of its disc above the horizon, `clamp((elevation +
 /// r) / (2 * r), 0, 1)` for the sun's elevation and angular radius `r`; so the sun dims and reddens toward the horizon
-/// and fades out across it. With the atmosphere disabled it is the sun's radiance. Throws `std::invalid_argument` as
+/// and fades out across it. With the atmosphere disabled it is the sun's irradiance. Throws `std::invalid_argument` as
 /// validate_environment() does.
 [[nodiscard]] inline Vec3 atmosphere_sunlight(const Environment &e) {
     validate_environment(e);

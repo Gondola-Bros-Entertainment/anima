@@ -24,18 +24,18 @@ class SceneSet;
 /// has no sun or fill role; SceneEnvironment assigns it.
 class DirectionalLightComponent {
   public:
-    /// Throws `std::invalid_argument` for an invalid @p radiance; see set_radiance().
-    explicit DirectionalLightComponent(Vec3 radiance = {std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2,
-                                                        std::numbers::pi_v<float> / 2});
-    /// Linear RGB radiance, as DirectionalLight::radiance.
-    [[nodiscard]] Vec3 radiance() const { return radiance_; }
-    /// Sets finite, nonnegative linear RGB radiance, or throws `std::invalid_argument` and keeps the previous
-    /// value. Zero gives no direct light, but the light must still resolve, and it disables neither the sky
-    /// nor the shadow maps.
-    void set_radiance(Vec3 radiance);
+    /// Throws `std::invalid_argument` for an invalid @p irradiance; see set_irradiance().
+    explicit DirectionalLightComponent(Vec3 irradiance = {std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2,
+                                                          std::numbers::pi_v<float> / 2});
+    /// Linear RGB irradiance on a surface facing the light, as DirectionalLight::irradiance.
+    [[nodiscard]] Vec3 irradiance() const { return irradiance_; }
+    /// Sets finite, nonnegative linear RGB irradiance, or throws `std::invalid_argument("Directional light irradiance
+    /// must be finite nonnegative linear RGB")` and keeps the previous value. Zero gives no direct light, but the light
+    /// must still resolve, and it disables neither the sky nor the shadow maps.
+    void set_irradiance(Vec3 irradiance);
 
   private:
-    Vec3 radiance_;
+    Vec3 irradiance_;
 };
 
 /// Component that selects the renderer's environment settings and its sun and fill lights.
@@ -86,10 +86,10 @@ class SceneEnvironment {
 /// describes.
 [[nodiscard]] Environment lighting_environment(SceneSet &scenes);
 
-/// Registers the `anima.directional-light.v1` and `anima.scene-environment.v3` component codecs together,
+/// Registers the `anima.directional-light.v2` and `anima.scene-environment.v3` component codecs together,
 /// or neither: throws `std::invalid_argument` if @p codecs already has either type or key.
 ///
-/// A directional-light payload is a JSON object with exactly `radiance`, three numbers. A scene-environment
+/// A directional-light payload is a JSON object with exactly `irradiance`, three numbers. A scene-environment
 /// payload has exactly `sun`, `fill` and `settings`. The links are object-key strings resolved through the
 /// document's ObjectReferences, with `"0"` for a null link. They may point anywhere in the same document, and
 /// each prefab instance maps them to its own objects; a link to a stale object or outside the captured

@@ -169,7 +169,7 @@ struct Measured {
 };
 // Draws every view of @p sky from @p eye, @p altitude above the ground, under a sun @p sun_elevation degrees up, each
 // exposed so that its brightest sample shows about half of display white, and requires each sample within the
-// tolerance of the reference. Returns the samples' radiance per unit of the sun's radiance, by view and sample.
+// tolerance of the reference. Returns the samples' radiance per unit of the sun's irradiance, by view and sample.
 inline std::vector<std::vector<Measured>> check_views(Rig &rig, const atmosphere_reference::Sky &sky,
                                                       anima::Environment environment, anima::Vec3 eye, double altitude,
                                                       double sun_elevation, const std::vector<View> &list,
@@ -191,7 +191,7 @@ inline std::vector<std::vector<Measured>> check_views(Rig &rig, const atmosphere
             const auto pixel = pixel_at(view_projection, at, width, height);
             const auto expected = sky.radiance(altitude, ray(inverse, eye, pixel, width, height), sun);
             for (std::size_t c = 0; c < 3; ++c)
-                brightest = std::max(brightest, expected[c] * channel(environment.sun.radiance, c));
+                brightest = std::max(brightest, expected[c] * channel(environment.sun.irradiance, c));
             measured.push_back({pixel, expected, {}});
         }
         environment.exposure = brightest > 0 ? float(.5 / brightest) : 1.F;
@@ -206,7 +206,7 @@ inline std::vector<std::vector<Measured>> check_views(Rig &rig, const atmosphere
                    << view.samples[s].azimuth << ": shows " << gpu_check::text(shown) << ", expected";
             double worst = 0;
             for (std::size_t c = 0; c < 3; ++c) {
-                const double scale = double(environment.exposure) * channel(environment.sun.radiance, c);
+                const double scale = double(environment.exposure) * channel(environment.sun.irradiance, c);
                 const double linear = m.expected[c] * scale;
                 const double low = blending_test::encoded(linear * (1 - relative)) - levels,
                              high = blending_test::encoded(linear * (1 + relative)) + levels;
@@ -230,8 +230,8 @@ inline std::vector<std::vector<Measured>> check_views(Rig &rig, const atmosphere
 inline anima::Environment earth() {
     anima::Environment environment;
     environment.atmosphere.enabled = true;
-    environment.sun.radiance = {1.2F, 1, .8F};
-    environment.fill.radiance = {0, 0, 0};
+    environment.sun.irradiance = {1.2F, 1, .8F};
+    environment.fill.irradiance = {0, 0, 0};
     environment.ambient_sky = environment.ambient_ground = environment.ambient_specular = {0, 0, 0};
     return environment;
 }
@@ -292,7 +292,7 @@ inline void check_haze(Rig &rig) {
 }
 
 // A lit quad facing a sun behind the eye shows atmosphere_sunlight(): the same pixels as with the atmosphere disabled
-// and the sun's radiance set to it, which differ from the sun's radiance itself.
+// and the sun's irradiance set to it, which differ from the sun's irradiance itself.
 inline void check_sunlight(Rig &rig) {
     const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 0, 0);
     auto scene = std::make_shared<anima::Scene>();
@@ -300,11 +300,11 @@ inline void check_sunlight(Rig &rig) {
     const anima::Vec3 center{0, 1.7F, -5};
     for (const double sun : {10.0, 2.0}) {
         auto enabled = earth();
-        enabled.sun.radiance = {3, 3, 3};
+        enabled.sun.irradiance = {3, 3, 3};
         enabled.sun.direction = vec(atmosphere_reference::direction(sun, 180));
         auto disabled = enabled;
         disabled.atmosphere.enabled = false;
-        disabled.sun.radiance = anima::atmosphere_sunlight(enabled);
+        disabled.sun.irradiance = anima::atmosphere_sunlight(enabled);
         auto unattenuated = enabled;
         unattenuated.atmosphere.enabled = false;
         const auto name = "sunlit-" + std::to_string(int(sun));
@@ -330,8 +330,8 @@ inline void check_sunlight(Rig &rig) {
 
 // The sun at the ground follows each input of atmosphere_sunlight() from the frame it changes: a lit quad drawn right
 // after a change shows the changed environment's sunlight, the same pixels as with the atmosphere disabled and the
-// sun's radiance set to it, and not the sunlight from before the change, which differs. The inputs are the sun's
-// direction and radiance, the sun's angular radius, which only a sun on the horizon shows, the medium, here its Mie
+// sun's irradiance set to it, and not the sunlight from before the change, which differs. The inputs are the sun's
+// direction and irradiance, the sun's angular radius, which only a sun on the horizon shows, the medium, here its Mie
 // scattering, and whether the atmosphere is enabled. The two frames that the changed one is compared with each follow
 // a frame that differs from them in every one of those inputs, so that even a renderer that misses one of them lights
 // them afresh. Setting the same environment again draws the same frame.
@@ -343,16 +343,16 @@ inline void check_sunlight_updates(Rig &rig) {
     // Behind the eye, so that the quad faces it.
     const auto behind = [](double elevation) { return vec(atmosphere_reference::direction(elevation, 180)); };
     auto high = earth();
-    high.sun.radiance = {3, 3, 3};
+    high.sun.irradiance = {3, 3, 3};
     high.sun.direction = behind(10);
     // A tenth of a degree below the horizon, where about a third of the disc shows, bright enough to light the quad.
     auto low = high;
     low.sun.direction = behind(-.1);
-    low.sun.radiance = {30, 30, 30};
+    low.sun.irradiance = {30, 30, 30};
     // Differs from every environment below in each input of the sunlight.
     auto other = earth();
     other.sun.direction = behind(30);
-    other.sun.radiance = {1, 1, 1};
+    other.sun.irradiance = {1, 1, 1};
     other.atmosphere.sun_angular_radius = .01F;
     other.atmosphere.mie_scattering = {1e-5F, 1e-5F, 1e-5F};
     rig.draw("first", view_projection, high, {scene});
@@ -367,7 +367,7 @@ inline void check_sunlight_updates(Rig &rig) {
     using anima::Environment;
     const Change changes[]{
         {"sun.direction", high, [](Environment &e) { e.sun.direction = vec(atmosphere_reference::direction(3, 180)); }},
-        {"sun.radiance", high, [](Environment &e) { e.sun.radiance = {2, 2, 2}; }},
+        {"sun.irradiance", high, [](Environment &e) { e.sun.irradiance = {2, 2, 2}; }},
         {"atmosphere.mie_scattering", high,
          [](Environment &e) { e.atmosphere.mie_scattering = {5e-5F, 5e-5F, 5e-5F}; }},
         {"atmosphere.sun_angular_radius", low, [](Environment &e) { e.atmosphere.sun_angular_radius = .02F; }},
@@ -376,11 +376,11 @@ inline void check_sunlight_updates(Rig &rig) {
     for (const auto &change : changes) {
         auto after = change.before;
         change.apply(after);
-        // The changed environment with the atmosphere disabled and the sun's radiance set to @p sunlight.
+        // The changed environment with the atmosphere disabled and the sun's irradiance set to @p sunlight.
         const auto lit_by = [&](anima::Vec3 sunlight) {
             auto disabled = after;
             disabled.atmosphere.enabled = false;
-            disabled.sun.radiance = sunlight;
+            disabled.sun.irradiance = sunlight;
             return disabled;
         };
         rig.draw("", view_projection, change.before, {scene});
@@ -417,7 +417,7 @@ enum class Reader { tables, sky };
 // medium that differs in a second field. Tables left stale would draw the new medium's sky view over the old medium's
 // tables, which differs, since each change is large and the sun low, where the tables weigh most. The same comparison
 // shows that the tables read none of the sky's other inputs, which do not rebuild them: the ground's height, through
-// the eye's altitude above it, Mie scattering's asymmetry, the sun's angular radius, and its direction and radiance.
+// the eye's altitude above it, Mie scattering's asymmetry, the sun's angular radius, and its direction and irradiance.
 // Since the renderer redraws the sky view table only on a frame that changes what it reads, the comparison also shows
 // that the eye's altitude, Mie scattering's asymmetry and the sun's direction each redraw it: a table left as it was
 // would show the sky from before the change. The changes cover every field of Atmosphere but `enabled`, which is true
@@ -459,7 +459,7 @@ inline void check_updates(Rig &rig) {
         {"atmosphere.sun_angular_radius", Reader::sky, [](Environment &e) { e.atmosphere.sun_angular_radius = .02F; }},
         {"sun.direction", Reader::sky,
          [](Environment &e) { e.sun.direction = vec(atmosphere_reference::direction(20, 0)); }},
-        {"sun.radiance", Reader::sky, [](Environment &e) { e.sun.radiance = {.6F, .5F, .4F}; }},
+        {"sun.irradiance", Reader::sky, [](Environment &e) { e.sun.irradiance = {.6F, .5F, .4F}; }},
     };
     rig.draw("first", view_projection, environment);
     for (const auto &change : changes) {

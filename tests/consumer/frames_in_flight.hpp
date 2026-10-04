@@ -82,7 +82,7 @@ class Sequence {
         renderer.set_view(anima::perspective(aspect, .1F, 100) * anima::look_at(eye, target));
         anima::Environment environment;
         environment.sun.direction = {std::cos(sun_rate * t), .7F, std::sin(sun_rate * t)};
-        environment.sun.radiance = {3, 3, 3};
+        environment.sun.irradiance = {3, 3, 3};
         environment.shadow_cascades.enabled = true;
         environment.shadow_cascades.count = 2;
         environment.shadow_cascades.resolution = frame < shadow_frame ? 512 : 1024;

@@ -14,10 +14,10 @@ void main() {
     vec3 color = vec3(1, 0, 1);
     switch (probe.select.x) {
     case 0u:
-        color = animaFrame.sunRadiance.rgb;
+        color = animaFrame.sunIrradiance.rgb;
         break;
     case 1u:
-        color = animaFrame.fillRadiance.rgb;
+        color = animaFrame.fillIrradiance.rgb;
         break;
     case 2u:
         color = animaFrame.ambientSky.rgb;

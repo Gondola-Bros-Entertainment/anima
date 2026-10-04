@@ -42,7 +42,7 @@ class Sky {
         tabulate_transmittance();
         tabulate_multiple_scattering();
     }
-    // The sky's radiance per unit of the sun's radiance above the atmosphere, seen from @p altitude along the unit
+    // The sky's radiance per unit of the sun's irradiance above the atmosphere, seen from @p altitude along the unit
     // direction @p view, with the sun toward the unit direction @p sun.
     [[nodiscard]] Rgb radiance(double altitude, const Direction &view, const Direction &sun) const {
         const double mu = view.y, along = dot(view, sun), r = ground_ + altitude;

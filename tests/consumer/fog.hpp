@@ -246,7 +246,7 @@ inline void check_sky(blending_test::Harness &harness) {
     // its own color the fog keeps shows plainly.
     environment.atmosphere = {};
     environment.atmosphere.enabled = true;
-    environment.sun.radiance = {6, 6, 6};
+    environment.sun.irradiance = {6, 6, 6};
     environment.fog_color = {.5F, .2F, .05F};
     harness.render("sky-unfogged", {}, view_projection, environment);
     const auto shown = gpu_check::pixel(harness.images["sky-unfogged"], sky_pixel[0], sky_pixel[1]);

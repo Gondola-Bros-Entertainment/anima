@@ -33,7 +33,7 @@ static constexpr auto medium_fields =
 // sky view table and the sky read: the ground's height, through the eye's altitude above it, Mie scattering's
 // asymmetry, which sky_view_inputs holds with that altitude, and the sun's angular radius, which only the sky reads.
 // The atmosphere GPU check, check_updates() in tests/consumer/atmosphere.hpp, changes each field of both lists but
-// `enabled`, and the sun's direction and radiance. It requires a medium field's change to rebuild the tables, and the
+// `enabled`, and the sun's direction and irradiance. It requires a medium field's change to rebuild the tables, and the
 // frame drawn after any other change to match one drawn after a rebuild.
 static constexpr auto unread_fields = std::tuple{&Atmosphere::enabled, &Atmosphere::ground_height,
                                                  &Atmosphere::mie_anisotropy, &Atmosphere::sun_angular_radius};
@@ -71,7 +71,7 @@ static bool same_medium(const Atmosphere &a, const Atmosphere &b) {
 [[nodiscard]] Vec3 ground_sunlight(const Environment &e) const {
     const auto same = [](Vec3 a, Vec3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
     const auto &held = environment.atmosphere, &next = e.atmosphere;
-    if (same(environment.sun.direction, e.sun.direction) && same(environment.sun.radiance, e.sun.radiance) &&
+    if (same(environment.sun.direction, e.sun.direction) && same(environment.sun.irradiance, e.sun.irradiance) &&
         held.enabled == next.enabled && held.sun_angular_radius == next.sun_angular_radius && same_medium(held, next))
         return sunlight;
     return detail::atmosphere_sunlight_of(e);

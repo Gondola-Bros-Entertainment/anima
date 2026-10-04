@@ -541,7 +541,7 @@ TEST_CASE("Invalid atmospheres and samples are rejected") {
 
 TEST_CASE("The sun reaches the ground through the atmosphere, and fades out across the horizon") {
     Environment env;
-    env.sun.radiance = {2, 3, 4};
+    env.sun.irradiance = {2, 3, 4};
     // Disabled, the atmosphere leaves the sun as it is.
     env.sun.direction = {0, .2F, -1};
     CHECK(atmosphere_sunlight(env).x == 2);
@@ -553,7 +553,7 @@ TEST_CASE("The sun reaches the ground through the atmosphere, and fades out acro
         env.sun.direction = {float(std::cos(angle)), float(std::sin(angle)), 0};
         return atmosphere_sunlight(env);
     };
-    // Above the disc's radius from the horizon, the radiance times the transmittance toward the sun.
+    // Above the disc's radius from the horizon, the irradiance times the transmittance toward the sun.
     for (const double degrees : {90.0, 30.0, 5.0}) {
         CAPTURE(degrees);
         const auto light = at(degrees);

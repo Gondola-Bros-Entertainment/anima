@@ -415,8 +415,8 @@ inline void check_shadows(Harness &harness) {
     }();
     anima::Environment lighting;
     lighting.sun.direction = {-.5F, 1, 0};
-    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
     // One cascade over the 15 m in view, with texels of about 1 cm.
     lighting.shadow_cascades.enabled = true;
