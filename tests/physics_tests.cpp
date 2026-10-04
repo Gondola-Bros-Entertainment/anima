@@ -581,6 +581,32 @@ TEST_CASE("Mesh decks support rays, sweeps and overlaps from above and below") {
     REQUIRE_THROWS_WITH_AS(world.create(mesh), "Mesh bodies must be stationary", std::invalid_argument);
 }
 
+TEST_CASE("Collision layer masks build from layers and the layer matrix reads back") {
+    static_assert(collision_layer_count == 16u);
+    static_assert(all_collision_layers == 0xffff);
+    static_assert(collision_layer_mask({}) == 0);
+    static_assert(collision_layer_mask({0, 3, 3, 15}) == 0x8009);
+    CHECK_THROWS_WITH_AS((void)collision_layer_mask({1, 16}), "Collision layer must be in [0,15]",
+                         std::invalid_argument);
+    CHECK(QueryFilter{}.layers == all_collision_layers);
+    World world(weightless(8));
+    CHECK(world.layers_collide(1, 2));
+    world.set_layer_collision(1, 2, false);
+    CHECK_FALSE(world.layers_collide(2, 1));
+    CHECK_FALSE(world.layers_collide(1, 2));
+    CHECK(world.layers_collide(1, 1));
+    CHECK(world.layers_collide(2, 2));
+    CHECK(world.layers_collide(2, 3));
+    world.set_layer_collision(2, 1, true);
+    CHECK(world.layers_collide(1, 2));
+    world.set_layer_collision(4, 4, false);
+    CHECK_FALSE(world.layers_collide(4, 4));
+    [[maybe_unused]] const auto body = world.create(box({}, {1, 1, 1}));
+    CHECK_FALSE_MESSAGE(world.layers_collide(4, 4), "The matrix is not readable once bodies exist");
+    CHECK_THROWS_WITH_AS((void)world.layers_collide(16, 0), "Physics layer must be in [0,15]", std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)world.layers_collide(0, 16), "Physics layer must be in [0,15]", std::invalid_argument);
+}
+
 TEST_CASE("Sensors, collision layers and query filters") {
     World world(weightless(8));
     world.set_layer_collision(0, 1, false);

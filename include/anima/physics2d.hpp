@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/core/math.hpp>
+#include <anima/physics_layers.hpp>
 
 #include <compare>
 #include <cstddef>
@@ -105,7 +106,8 @@ struct BodySettings {
     float friction = .5F;
     /// Restitution in [0, 1].
     float restitution{};
-    /// Collision layer in [0, 15]; see World::set_layer_collision.
+    /// Collision layer in [0, 15], below anima::collision_layer_count; see
+    /// World::set_layer_collision.
     std::uint8_t layer{};
     /// A sensor reports overlaps as contact events and never collides. An overlap with any body,
     /// another sensor included, is reported when at least one of the two bodies is kinematic or
@@ -219,8 +221,9 @@ class Body {
 };
 /// Selects which bodies a query considers. Queries never report disabled bodies.
 struct QueryFilter {
-    /// Bit mask of collision layers to include, regardless of World::set_layer_collision.
-    std::uint16_t layers = 0xffff;
+    /// Bit mask of collision layers to include, regardless of World::set_layer_collision; build
+    /// one with anima::collision_layer_mask.
+    std::uint16_t layers = anima::all_collision_layers;
     /// Whether sensor bodies can be hit.
     bool sensors{};
     /// A body of the queried world to skip; an invalid handle skips nothing, and the query
@@ -290,9 +293,14 @@ class World {
     /// Whether @p body is a valid body of this world.
     [[nodiscard]] bool owns(const Body &body) const noexcept;
     /// Enables or disables contacts and sensor overlaps between layers @p a and @p b, in [0, 15],
-    /// symmetrically. All pairs collide initially. Throws `std::logic_error` while the world has
-    /// bodies.
+    /// symmetrically. All pairs collide initially. Throws `std::invalid_argument` ("2D physics
+    /// layer must be in [0,15]") for a layer out of range and `std::logic_error` while the world
+    /// has bodies.
     void set_layer_collision(std::uint8_t a, std::uint8_t b, bool collide);
+    /// Whether bodies of layers @p a and @p b, in [0, 15], make contacts and sensor overlaps, as
+    /// set by set_layer_collision; the answer is symmetric. Throws `std::invalid_argument` ("2D
+    /// physics layer must be in [0,15]") for a layer out of range.
+    [[nodiscard]] bool layers_collide(std::uint8_t a, std::uint8_t b) const;
     /// Advances one simulation step of @p seconds, in [0.000001, 0.1]. Drive it from a fixed
     /// cadence such as anima::FixedStepClock.
     void step(double seconds);
