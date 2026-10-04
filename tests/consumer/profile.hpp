@@ -169,6 +169,8 @@ struct Summary {
     double steady_untimed{}, release_untimed{}, release_prepare{}, steady_prepare{};
     // Median fence_wait_ms of the steady calls, and of the calls that followed wait_for_frame().
     double steady_fence{}, waited_fence{};
+    // The fence_wait_ms of the call that recreated the swapchain, which includes the recreation.
+    double recreation_fence{};
     std::vector<double> idle, release_idle, interval;
     // Median contrast of the rebuilt frame's atmosphere time over the longest other one, where measured.
     std::optional<double> lag_contrast;
@@ -266,6 +268,21 @@ inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     require(summary.steady_untimed <= untimed_limit_ms,
             "The CPU fields leave " + std::to_string(summary.steady_untimed) + " ms of a typical draw() untimed");
 
+    // The draw() after request_resize() recreates the swapchain once, within its fence_wait_ms.
+    const auto swapchains = renderer.stats().swapchain_generations;
+    renderer.request_resize();
+    for (;;) {
+        const auto &call = check.draw();
+        if (renderer.stats().swapchain_generations == swapchains) {
+            SDL_Delay(5);
+            continue;
+        }
+        require(renderer.stats().swapchain_generations == swapchains + 1,
+                "A requested resize recreated the swapchain more than once");
+        summary.recreation_fence = call.profile.fence_wait_ms;
+        break;
+    }
+
     // Waiting for the frame slot first, as an application does before reading input, leaves draw() no frame to wait
     // for, so its fence wait returns at once.
     std::vector<double> waited;
@@ -361,6 +378,7 @@ inline int run(int argc, char **) {
         if (summary.steady_fence <= waited_fence_limit_ms)
             report << "which cannot show that wait_for_frame() waits, since draw() alone waits within the "
                    << waited_fence_limit_ms << " ms bound, ";
+        report << summary.recreation_fence << " ms on the draw() that recreated the swapchain, ";
         if (summary.lag_contrast) {
             report << "the call " << frames << " after an atmosphere rebuild reports it, ";
             if (std::isinf(*summary.lag_contrast))
