@@ -1,6 +1,7 @@
 #include "../detail/json.hpp"
 #include <algorithm>
 #include <anima/animation_state_machine.hpp>
+#include <anima/assets/motion_runtime.hpp>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -14,7 +15,7 @@ namespace detail {
 struct AnimationStateMachineData {
     struct Clip {
         std::string name;
-        // Borrowed from the machine's retained source asset.
+        // Borrowed from the machine's retained source asset, or from its retained motion runtime.
         const Animation *animation{};
         bool loop{};
         std::vector<ClipEvent> events;
@@ -47,6 +48,8 @@ struct AnimationStateMachineData {
         // Priority among the transitions that leave the same state, or among those from any state.
         std::size_t rank{};
     };
+    // The machine's retained motion runtime, which samples the clips, or null when the source asset does.
+    const MotionRuntime *motion{};
     std::vector<Clip> clips;
     std::vector<State> states;
     std::vector<Route> transitions;
@@ -449,7 +452,8 @@ Pose state_pose(const Data &data, const Asset &asset, const Playing &playing, co
     const auto fraction = state.loop ? playing.time - std::floor(playing.time) : std::min(playing.time, 1.);
     const auto sample = [&](std::size_t clip) {
         const auto &entry = data.clips[clip];
-        return sample_pose(asset, entry.animation, fraction * entry.animation->duration);
+        const auto time = fraction * entry.animation->duration;
+        return data.motion ? data.motion->sample(entry.name, time) : sample_pose(asset, entry.animation, time);
     };
     if (pair.weight <= 0)
         return sample(pair.a);
@@ -477,7 +481,20 @@ AnimationStateMachine::AnimationStateMachine(std::shared_ptr<const Asset> source
                                              Definition definition)
     : source_(std::move(source)), definition_(std::move(definition)) {
     require(bool(source_), "Animation state machine requires a source asset");
+    compile(clips);
+}
+AnimationStateMachine::AnimationStateMachine(std::shared_ptr<const MotionRuntime> motion, Definition definition)
+    : motion_(std::move(motion)), definition_(std::move(definition)) {
+    require(bool(motion_), "Animation state machine requires a motion runtime");
+    source_ = motion_->model();
+    std::vector<ClipMetadata> clips;
+    for (const auto &[name, metadata] : motion_->clips())
+        clips.push_back(metadata);
+    compile(clips);
+}
+void AnimationStateMachine::compile(std::span<const ClipMetadata> clips) {
     auto data = std::make_shared<Data>();
+    data->motion = motion_.get();
     std::map<std::string_view, const ClipMetadata *> policies;
     for (const auto &policy : clips)
         require(policies.emplace(policy.name, &policy).second, "Duplicate animation clip metadata: " + policy.name);
@@ -527,13 +544,18 @@ AnimationStateMachine::AnimationStateMachine(std::shared_ptr<const Asset> source
         const auto policy = policies.find(name);
         require(policy != policies.end(), "Animation clip has no metadata: " + name);
         const Animation *animation = nullptr;
-        std::size_t count = 0;
-        for (const auto &candidate : source_->animations)
-            if (candidate.name == name) {
-                animation = &candidate;
-                ++count;
-            }
-        require(count == 1, "Animation clip must name exactly one source clip: " + name);
+        if (motion_)
+            // The policies are the motion's base clips, each of which it holds exactly once.
+            animation = &motion_->clip(name);
+        else {
+            std::size_t count = 0;
+            for (const auto &candidate : source_->animations)
+                if (candidate.name == name) {
+                    animation = &candidate;
+                    ++count;
+                }
+            require(count == 1, "Animation clip must name exactly one source clip: " + name);
+        }
         require(std::isfinite(animation->duration) && animation->duration >= 0,
                 "Animation clip duration must be finite and nonnegative: " + name);
         for (const auto &event : policy->second->events)
@@ -657,6 +679,11 @@ AnimationStateMachine AnimationStateMachine::deserialize(std::shared_ptr<const A
     auto decoded = detail::json_step([&] { return decode_definition(document); });
     return AnimationStateMachine(std::move(source), clips, std::move(decoded));
 }
+AnimationStateMachine AnimationStateMachine::deserialize(std::shared_ptr<const MotionRuntime> motion,
+                                                         std::string_view document) {
+    auto decoded = detail::json_step([&] { return decode_definition(document); });
+    return AnimationStateMachine(std::move(motion), std::move(decoded));
+}
 
 StateMachineAnimator::StateMachineAnimator(GameObject object, std::shared_ptr<const AnimationStateMachine> machine)
     : object_(std::move(object)), mesh_(object_.renderer().mesh()), machine_(std::move(machine)) {
@@ -777,10 +804,17 @@ std::optional<AnimationCrossfade> StateMachineAnimator::crossfade() const {
 void StateMachineAnimator::commit(detail::AnimationStateRuntime next) {
     if (object_.renderer().mesh() != mesh_)
         throw std::logic_error(replaced_mesh);
-    auto published = evaluate(*machine_->data_, *machine_->source(), next);
-    object_.renderer().set_pose(published);
+    auto evaluated = evaluate(*machine_->data_, *machine_->source(), next);
+    // The filter works on a copy, so that crossfades keep blending the evaluated pose, which has local transforms.
+    std::optional<Pose> filtered;
+    if (filter_) {
+        filtered = evaluated;
+        filter_(*filtered);
+    }
+    object_.renderer().set_pose(filtered ? *filtered : evaluated);
     runtime_ = std::move(next);
-    pose_ = std::move(published);
+    pose_ = std::move(evaluated);
+    filtered_ = std::move(filtered);
 }
 
 void add_state_machine_animator_codec(ComponentCodecs &codecs, AnimationStateMachineName name,

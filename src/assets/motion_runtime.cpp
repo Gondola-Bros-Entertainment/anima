@@ -49,6 +49,7 @@ struct MotionRuntime::Impl {
             chains_.emplace(name, c);
         }
     }
+    const std::shared_ptr<const anima::Asset> &model() const { return asset_; }
     const anima::EvaluationRig &rig() const { return rig_; }
     bool has_mask(std::string_view name) const { return masks_.contains(name); }
     const std::vector<float> &mask_named(std::string_view name) const {
@@ -345,6 +346,7 @@ std::shared_ptr<const MotionRuntime> MotionRuntime::load(std::shared_ptr<const A
     return std::make_shared<MotionRuntime>(
         std::move(asset), manifest, presentation_data::read(manifest.directory / manifest.motion_contract).dump());
 }
+const std::shared_ptr<const Asset> &MotionRuntime::model() const noexcept { return impl_->model(); }
 const EvaluationRig &MotionRuntime::rig() const { return impl_->rig(); }
 bool MotionRuntime::has_mask(std::string_view name) const { return impl_->has_mask(name); }
 std::size_t MotionRuntime::contact_end_node(std::string_view chain) const { return impl_->contact_end_node(chain); }

@@ -1,9 +1,15 @@
 #include "near.hpp"
 #include <anima/animation_state_machine.hpp>
+#include <anima/assets/motion_runtime.hpp>
 #include <anima/prefab.hpp>
 #include <doctest/doctest.h>
 
+#include <bit>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -134,6 +140,134 @@ std::string changed(std::string text, std::string_view from, std::string_view to
     const auto at = text.find(from);
     REQUIRE(at != std::string::npos);
     return text.replace(at, from.size(), to);
+}
+
+// A directory in the temporary directory, removed on destruction.
+struct TempDirectory {
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() /
+        ("anima-state-machine-tests-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    TempDirectory() { std::filesystem::create_directory(path); }
+    TempDirectory(const TempDirectory &) = delete;
+    TempDirectory &operator=(const TempDirectory &) = delete;
+    ~TempDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+void append_u32(std::vector<char> &bytes, std::uint32_t number) {
+    for (unsigned i = 0; i < 4; ++i)
+        bytes.push_back(static_cast<char>((number >> (i * 8)) & 255));
+}
+// Writes a binary glTF file of @p json and one @p binary buffer.
+void write_glb(const std::filesystem::path &file, std::string json, const std::vector<char> &binary) {
+    while (json.size() % 4)
+        json += ' ';
+    std::vector<char> bytes;
+    append_u32(bytes, 0x46546c67); // "glTF"
+    append_u32(bytes, 2);
+    append_u32(bytes, static_cast<std::uint32_t>(28 + json.size() + binary.size()));
+    append_u32(bytes, static_cast<std::uint32_t>(json.size()));
+    append_u32(bytes, 0x4e4f534a); // "JSON"
+    bytes.insert(bytes.end(), json.begin(), json.end());
+    append_u32(bytes, static_cast<std::uint32_t>(binary.size()));
+    append_u32(bytes, 0x004e4942); // "BIN"
+    bytes.insert(bytes.end(), binary.begin(), binary.end());
+    std::ofstream output(file, std::ios::binary);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(bool(output));
+}
+// A model of a root node and a tip 1 unit above it, with a triangle on the tip, and its motion: a GLB of the same two
+// nodes whose base clips move the root over 1 s, glide from 0 to 1 along +X and rise held 2 units up +Y, and whose
+// layer clip layer.tip moves only the tip. The model carries clips of its own, glide and sway, which move the root
+// along -Z and which the motion runtime ignores.
+struct MotionActor {
+    TempDirectory directory;
+    std::shared_ptr<const Asset> model;
+    std::shared_ptr<const MotionRuntime> motion;
+    Scene scene;
+    GameObject object;
+    MotionActor() {
+        auto asset = std::make_shared<Asset>();
+        asset->nodes.resize(2);
+        asset->nodes[0].name = "root";
+        asset->nodes[1].name = "tip";
+        asset->nodes[1].parent = 0;
+        asset->nodes[1].rest.translation = {0, 1, 0};
+        Material surface;
+        surface.name = "surface";
+        asset->materials.push_back(surface);
+        SourcePrimitive primitive;
+        primitive.node = 1;
+        primitive.material = 0;
+        for (const auto corner : {Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}}) {
+            SourceVertex vertex;
+            vertex.position = corner;
+            vertex.normal = {0, 0, 1};
+            primitive.vertices.push_back(vertex);
+        }
+        asset->primitives.push_back(primitive);
+        for (const auto *name : {"glide", "sway"}) {
+            Animation own;
+            own.name = name;
+            own.duration = 1;
+            own.channels.push_back(
+                {0, ChannelPath::translation, Interpolation::linear, {0, 1}, {{0, 0, 0, 0}, {0, 0, -5, 0}}});
+            asset->animations.push_back(std::move(own));
+        }
+        model = asset;
+
+        std::vector<char> binary;
+        for (const float number :
+             {0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 2.F, 0.F, 0.F, 2.F, 0.F, 0.F, 1.F, 0.F, 0.F, 1.F, 1.F})
+            append_u32(binary, std::bit_cast<std::uint32_t>(number));
+        write_glb(directory.path / "motion.glb", R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+            "nodes":[{"name":"root","children":[1]},{"name":"tip","translation":[0,1,0]}],
+            "buffers":[{"byteLength":80}],
+            "bufferViews":[{"buffer":0,"byteLength":8},{"buffer":0,"byteOffset":8,"byteLength":24},
+                           {"buffer":0,"byteOffset":32,"byteLength":24},{"buffer":0,"byteOffset":56,"byteLength":24}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
+                         {"bufferView":1,"componentType":5126,"count":2,"type":"VEC3"},
+                         {"bufferView":2,"componentType":5126,"count":2,"type":"VEC3"},
+                         {"bufferView":3,"componentType":5126,"count":2,"type":"VEC3"}],
+            "animations":[
+              {"name":"glide","samplers":[{"input":0,"output":1}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]},
+              {"name":"rise","samplers":[{"input":0,"output":2}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]},
+              {"name":"layer.tip","samplers":[{"input":0,"output":3}],"channels":[{"sampler":0,"target":{"node":1,"path":"translation"}}]}]})",
+                  binary);
+        const std::string signature(64, 'a');
+        Manifest manifest;
+        manifest.directory = directory.path;
+        manifest.asset_id = "test.model";
+        manifest.model = "model.glb";
+        manifest.skeleton_id = "test.rig";
+        manifest.bind_signature = signature;
+        manifest.joint_count = 2;
+        manifest.motion_contract = "motion.json";
+        motion = std::make_shared<const MotionRuntime>(
+            model, manifest,
+            R"({"version":3,"skeleton":{"id":"test.rig","bind_signature":")" + signature +
+                R"(","joint_count":2},"resource":"motion.glb",
+            "evaluation":{"version":1,"id":"test.evaluation","parents":{"root":null,"tip":"root"},"masks":{"tip":["tip"]},
+                          "chains":{}},
+            "clips":[{"name":"glide","loop":true,"events":[{"time":0.5,"name":"step"}]},
+                     {"name":"rise","loop":false,"events":[]}],
+            "layers":{"layer.tip":{"mask":"tip","owned_joints":["tip"],"context_joints":["root"]}}})");
+        object = scene.create("mover", Mesh::compile(*model));
+    }
+    // World matrix of the root node that the renderer holds.
+    const Mat4 &root() const { return scene.instance(object.id()).palette.at(0); }
+};
+// Triggers up and down, and the states glide and rise of a motion actor. Up crossfades from glide to rise, and down
+// from any state to glide; down may interrupt the first crossfade, which admits the transitions of the state it enters.
+Machine::Definition motion_states() {
+    Machine::Definition definition;
+    definition.parameters = {parameter("up", ParameterType::trigger), parameter("down", ParameterType::trigger)};
+    definition.states = {clip_state("glide", "glide"), clip_state("rise", "rise")};
+    definition.transitions = {transition("glide", "rise", {condition("up", ConditionMode::is_true)}, .5),
+                              transition(std::nullopt, "glide", {condition("down", ConditionMode::is_true)}, .5)};
+    definition.transitions[0].interruption = Machine::Interruption::destination;
+    return definition;
 }
 } // namespace
 
@@ -1170,4 +1304,109 @@ TEST_CASE("The animator rejects invalid bindings, parameters, states and steps")
     CHECK_THROWS_WITH_AS(animator->play("walk"),
                          "StateMachineAnimator mesh was replaced; bind a new StateMachineAnimator explicitly",
                          std::logic_error);
+}
+
+TEST_CASE("A machine over a motion runtime plays the motion's base clips on the model's mesh") {
+    MotionActor actor;
+    const auto machine = std::make_shared<const Machine>(actor.motion, motion_states());
+    CHECK(actor.motion->model() == actor.model);
+    CHECK(machine->motion() == actor.motion);
+    CHECK(machine->source() == actor.model);
+    auto animator = actor.object.add_component<StateMachineAnimator>(machine);
+
+    // The motion's glide moves the root along +X and reports its event; the model's own glide, along -Z, is unused.
+    const auto events = animator->update(.5);
+    CHECK(actor.root()[12] == Near{.5, pose_tolerance});
+    CHECK(actor.root()[14] == Near{0, pose_tolerance});
+    CHECK(animator->pose().local.size() == 2);
+    CHECK(animator->pose().world == actor.motion->sample("glide", .5).world);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].clip == "glide");
+    CHECK(events[0].event.name == "step");
+    CHECK(events[0].offset == Near{.5, pose_tolerance});
+
+    // A crossfade blends two motion clips halfway: glide at 0.75 s and rise.
+    animator->set_trigger("up");
+    (void)animator->update(.25);
+    CHECK(animator->state() == "rise");
+    CHECK(actor.root()[12] == Near{.375, pose_tolerance});
+    CHECK(actor.root()[13] == Near{1, pose_tolerance});
+    // The tip, which no base clip moves, follows the root from its rest.
+    CHECK(actor.scene.instance(actor.object.id()).palette.at(1)[13] == Near{2, pose_tolerance});
+
+    // A document builds the same machine over the motion.
+    const auto document = std::string(R"({"version":1,"kind":"anima.animation-state-machine","parameters":[],
+        "states":[{"name":"glide","clip":"glide"}],"transitions":[]})");
+    CHECK(Machine::deserialize(actor.motion, document).motion() == actor.motion);
+    CHECK_THROWS_WITH_AS(
+        (void)Machine::deserialize(actor.motion, changed(document, R"("clip":"glide")", R"("clip":"sway")")),
+        "Animation clip has no metadata: sway", std::invalid_argument);
+
+    // Only base clips play: neither a layer clip nor a clip of the model alone has the motion's metadata.
+    auto layer = motion_states();
+    layer.states[1].clip = "layer.tip";
+    CHECK_THROWS_WITH_AS(Machine(actor.motion, layer), "Animation clip has no metadata: layer.tip",
+                         std::invalid_argument);
+    auto own = motion_states();
+    own.states[1].clip = "sway";
+    CHECK_THROWS_WITH_AS(Machine(actor.motion, own), "Animation clip has no metadata: sway", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(Machine(std::shared_ptr<const MotionRuntime>{}, motion_states()),
+                         "Animation state machine requires a motion runtime", std::invalid_argument);
+}
+
+TEST_CASE("A pose filter changes only the published pose, so an interrupted crossfade still blends") {
+    MotionActor actor;
+    auto animator = actor.object.add_component<StateMachineAnimator>(
+        std::make_shared<const Machine>(actor.motion, motion_states()));
+    // Raises the root 5 units along +Z, as an application places a pose with joint offsets and contacts.
+    MotionControls controls;
+    auto lift = identity();
+    lift[14] = 5;
+    controls.offsets.push_back({"root", lift, 1});
+    animator->set_pose_filter([&](Pose &pose) { pose = actor.motion->evaluate(pose, controls).pose; });
+    // The filter applies from the next publish.
+    CHECK(&animator->published_pose() == &animator->pose());
+    CHECK(actor.root()[14] == Near{0, pose_tolerance});
+
+    (void)animator->update(.25);
+    CHECK(animator->published_pose().local.empty());
+    CHECK(animator->published_pose().world ==
+          std::vector<Mat4>{actor.root(), actor.scene.instance(actor.object.id()).palette.at(1)});
+    CHECK(actor.root()[12] == Near{.25, pose_tolerance});
+    CHECK(actor.root()[14] == Near{5, pose_tolerance});
+    CHECK(animator->pose().local.size() == 2);
+    CHECK(animator->pose().world[0][14] == Near{0, pose_tolerance});
+
+    // Glide at 0.5 s and rise, halfway through the crossfade.
+    animator->set_trigger("up");
+    (void)animator->update(.25);
+    CHECK(actor.root()[12] == Near{.25, pose_tolerance});
+    CHECK(actor.root()[13] == Near{1, pose_tolerance});
+    CHECK(actor.root()[14] == Near{5, pose_tolerance});
+
+    // Down interrupts the crossfade from the pose that the machine evaluated, which keeps its local transforms, and
+    // blends it halfway toward glide entered 0.25 s ago.
+    animator->set_trigger("down");
+    REQUIRE_NOTHROW((void)animator->update(.25));
+    CHECK(animator->state() == "glide");
+    REQUIRE(animator->crossfade());
+    CHECK(animator->crossfade()->source == "rise");
+    CHECK_FALSE(animator->crossfade()->source_time);
+    CHECK(actor.root()[12] == Near{.25, pose_tolerance});
+    CHECK(actor.root()[13] == Near{.5, pose_tolerance});
+    CHECK(actor.root()[14] == Near{5, pose_tolerance});
+
+    // A failing filter leaves the animator and its published pose as they were.
+    animator->set_pose_filter([](Pose &) { throw std::runtime_error("Pose filter failed"); });
+    const auto published = actor.root();
+    CHECK_THROWS_WITH_AS((void)animator->update(.125), "Pose filter failed", std::runtime_error);
+    CHECK(animator->crossfade()->elapsed == .25);
+    CHECK(animator->published_pose().local.empty());
+    CHECK(actor.root() == published);
+
+    // Without a filter, the evaluated pose is published again.
+    animator->set_pose_filter({});
+    (void)animator->update(0);
+    CHECK(&animator->published_pose() == &animator->pose());
+    CHECK(actor.root()[14] == Near{0, pose_tolerance});
 }

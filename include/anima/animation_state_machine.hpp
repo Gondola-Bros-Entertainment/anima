@@ -13,7 +13,8 @@
 /// @file
 /// Animation state machines: states that play one clip or a one-dimensional blend of clips, and
 /// transitions between them with conditions on parameters, exit times and crossfades, run on a
-/// GameObject's mesh by the StateMachineAnimator component.
+/// GameObject's mesh by the StateMachineAnimator component. The clips are an asset's own, or the
+/// base clips of a MotionRuntime, played on its model.
 ///
 /// Part of the `anima::assets` target. The application authors the machine, as a Definition or a
 /// document, under its own names, and sets its parameters; Anima evaluates it. Times are in
@@ -23,6 +24,7 @@
 /// state that does not loop reaches its end, whose clips then hold their last pose.
 
 namespace anima {
+class MotionRuntime;
 namespace detail {
 struct AnimationStateMachineData;
 struct StateMachineAnimatorAccess;
@@ -50,9 +52,9 @@ struct AnimationStateRuntime {
     std::optional<AnimationStateFade> fade;
 };
 } // namespace detail
-/// A state machine over the clips of one asset: parameters, states and transitions. Immutable after
-/// construction; StateMachineAnimator runs it, and animators share one machine through
-/// `std::shared_ptr<const AnimationStateMachine>`.
+/// A state machine over the clips of one asset, or the base clips of one MotionRuntime: parameters,
+/// states and transitions. Immutable after construction; StateMachineAnimator runs it, and animators
+/// share one machine through `std::shared_ptr<const AnimationStateMachine>`.
 class AnimationStateMachine {
   public:
     /// Type of a Parameter.
@@ -181,6 +183,18 @@ class AnimationStateMachine {
     /// state, parameter or clip, a parameter of the wrong type, and an enumerator outside its type.
     AnimationStateMachine(std::shared_ptr<const Asset> source, std::span<const ClipMetadata> clips,
                           Definition definition);
+    /// Validates @p definition over the base clips of @p motion and keeps both; @p motion is retained,
+    /// and with it its model, which source() returns.
+    ///
+    /// Each clip that a state names must be a base clip of @p motion, whose MotionRuntime::clips entry
+    /// gives its playback policy; layer clips, and clips that the model carries itself, are not base
+    /// clips. The states sample their clips with MotionRuntime::sample, so the poses cover the model's
+    /// nodes, with local transforms, and nodes that the motion lacks keep their rest transforms. The
+    /// rules on @p definition are the other constructor's.
+    ///
+    /// Throws `std::invalid_argument` for a null @p motion and for a @p definition that the other
+    /// constructor would reject, including a clip name that is not a base clip of @p motion.
+    AnimationStateMachine(std::shared_ptr<const MotionRuntime> motion, Definition definition);
     /// Decodes an `anima.animation-state-machine` version 1 document and constructs the machine from it
     /// as the constructor does.
     ///
@@ -202,15 +216,26 @@ class AnimationStateMachine {
     /// wrong JSON type.
     [[nodiscard]] static AnimationStateMachine
     deserialize(std::shared_ptr<const Asset> source, std::span<const ClipMetadata> clips, std::string_view document);
+    /// Decodes @p document as the other overload does and constructs the machine over the base clips
+    /// of @p motion. Throws as that overload and the motion constructor do.
+    [[nodiscard]] static AnimationStateMachine deserialize(std::shared_ptr<const MotionRuntime> motion,
+                                                           std::string_view document);
     /// The definition, as validated.
     [[nodiscard]] const Definition &definition() const noexcept { return definition_; }
-    /// The asset whose clips the states play.
+    /// The asset whose nodes the states pose: the asset whose clips they play, or the model of
+    /// motion().
     [[nodiscard]] const std::shared_ptr<const Asset> &source() const noexcept { return source_; }
+    /// The motion runtime whose base clips the states play, or null for a machine over the clips of
+    /// source().
+    [[nodiscard]] const std::shared_ptr<const MotionRuntime> &motion() const noexcept { return motion_; }
 
   private:
     friend class StateMachineAnimator;
     friend struct detail::StateMachineAnimatorAccess;
+    // Validates definition_ over the clips of motion_, or of source_ when motion_ is null, and builds data_.
+    void compile(std::span<const ClipMetadata> clips);
     std::shared_ptr<const Asset> source_;
+    std::shared_ptr<const MotionRuntime> motion_;
     Definition definition_;
     std::shared_ptr<const detail::AnimationStateMachineData> data_;
 };
@@ -258,13 +283,16 @@ struct AnimationCrossfade {
 /// MeshRenderer::set_pose, advances in on_update during Scene::update when attached as a component
 /// and through update() when standalone, and needs one driver. Replacing the object's mesh requires
 /// a new StateMachineAnimator: every call that publishes a pose then throws `std::logic_error`.
-/// Poses are sampled with sample_pose and blended with blend_pose, so they have local transforms.
+/// Poses are sampled with sample_pose, or MotionRuntime::sample for a machine over a motion runtime,
+/// and blended with blend_pose, so pose() has local transforms. A pose filter (set_pose_filter) can
+/// then change the pose that is published, for example with MotionRuntime::evaluate to place contacts.
 class StateMachineAnimator {
   public:
     /// Binds @p machine to @p object's mesh, with its parameters at their initial values, enters its
     /// first state at normalized time 0 and publishes that pose. Throws `std::invalid_argument` for a
     /// null machine or one whose source asset does not match the mesh, as Animator requires; fails as
-    /// GameObject::renderer does when @p object has no mesh.
+    /// GameObject::renderer does when @p object has no mesh. A machine over a motion runtime matches
+    /// the meshes that its model matches.
     StateMachineAnimator(GameObject object, std::shared_ptr<const AnimationStateMachine> machine);
     /// Sets float parameter @p name. Throws `std::out_of_range` for an unknown parameter and
     /// `std::invalid_argument` for a parameter of another type or a nonfinite value.
@@ -314,7 +342,8 @@ class StateMachineAnimator {
     /// blended with blend_pose by `elapsed / duration`, where elapsed counts the seconds advanced
     /// since the start. The outgoing pose is the state the machine played, which keeps playing and
     /// reporting events until the crossfade ends, or, when the transition interrupts a crossfade,
-    /// the pose last published, frozen, so the pose stays continuous.
+    /// pose(), the pose last evaluated, frozen, so the pose stays continuous. A pose filter's result
+    /// is never frozen.
     ///
     /// Then every state that plays advances its normalized time by @p seconds times its rate:
     /// State::speed, times its speed parameter, divided by its duration, which is its clip's or its
@@ -347,8 +376,24 @@ class StateMachineAnimator {
     [[nodiscard]] std::optional<AnimationCrossfade> crossfade() const;
     /// The machine this animator runs.
     [[nodiscard]] const std::shared_ptr<const AnimationStateMachine> &machine() const noexcept { return machine_; }
-    /// The last successfully published pose.
+    /// The pose that the machine evaluated for the last successful publish, before any pose filter,
+    /// with local transforms.
     [[nodiscard]] const Pose &pose() const noexcept { return pose_; }
+    /// The last successfully published pose: pose() as the pose filter left it, or pose() itself when
+    /// that publish had no filter.
+    [[nodiscard]] const Pose &published_pose() const noexcept { return filtered_ ? *filtered_ : pose_; }
+    /// Sets @p filter, which every later publish (by play() or update()) calls on a copy of pose()
+    /// before it passes that copy to MeshRenderer::set_pose; an empty @p filter removes it. The pose
+    /// already published is unchanged.
+    ///
+    /// The filter may replace the pose with any that set_pose accepts, including a world-only one,
+    /// such as MotionRuntime::evaluate returns when it applies joint offsets and two-bone contacts to
+    /// the machine's pose; that is its intended use. Crossfades blend and freeze pose(), never the
+    /// filtered pose. The animator owns @p filter and calls it within the publishing call, on that
+    /// call's thread; the filter must not call this animator's play(), update() or set_pose_filter(). An
+    /// exception from the filter, or from set_pose for the pose that it leaves, propagates from the
+    /// publishing call, which then leaves the animator and its published pose unchanged.
+    void set_pose_filter(std::function<void(Pose &)> filter) { filter_ = std::move(filter); }
 
   private:
     friend struct detail::StateMachineAnimatorAccess;
@@ -359,6 +404,9 @@ class StateMachineAnimator {
     std::shared_ptr<const AnimationStateMachine> machine_;
     detail::AnimationStateRuntime runtime_;
     Pose pose_;
+    // The published pose when the last publish ran a filter.
+    std::optional<Pose> filtered_;
+    std::function<void(Pose &)> filter_;
     std::vector<AnimationStateEvent> events_;
 };
 
@@ -370,7 +418,8 @@ class StateMachineAnimator {
 /// number for a float or integer, and a boolean for a bool or for whether a trigger is set. Keys are 1
 /// to 4,096 bytes without NUL, both when captured and when restored. A crossfade is not persisted: a
 /// restored animator plays `state` alone at `time` and publishes that pose, and, unlike play(), does
-/// not report the events at that time again. Events and the pose are not persisted.
+/// not report the events at that time again. Events, the pose and the pose filter are not persisted;
+/// a restored animator has no filter.
 ///
 /// Restoring rejects missing, unknown, repeated and mistyped fields, a key that @p resolve maps to null, a
 /// parameter that the machine lacks or that the payload omits, a value of the wrong type or outside
