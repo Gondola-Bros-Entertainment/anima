@@ -44,7 +44,7 @@ std::shared_ptr<const Mesh> Terrain::compile(TerrainGrid field, TerrainAppearanc
     asset.materials.assign(appearance.materials.begin(), appearance.materials.end());
     asset.textures.assign(appearance.textures.begin(), appearance.textures.end());
     if (asset.materials.empty())
-        asset.materials.push_back({"Terrain", {1, 1, 1}, -1});
+        asset.materials.push_back({"Terrain", {1, 1, 1}, no_index});
     asset.primitives.resize(1);
     auto &primitive = asset.primitives[0];
     primitive.material = 0;

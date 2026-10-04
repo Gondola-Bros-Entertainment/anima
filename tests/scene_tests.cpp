@@ -184,7 +184,7 @@ TEST_CASE("Snapshots keep seams, skin influences, colors and rigid transforms") 
         primitive.vertices[15].joints = {0, 1, 0, 0};
     }
     auto rigid = source->primitives.back();
-    rigid.skin = -1;
+    rigid.skin = anima::no_index;
     source->primitives.push_back(rigid);
     anima::Scene instances;
     const auto id = instances.add(anima::Mesh::compile(*source));
@@ -215,7 +215,7 @@ TEST_CASE("Snapshots keep seams, skin influences, colors and rigid transforms") 
 TEST_CASE("Snapshots keep each triangle's source winding against its normals under a mirroring transform") {
     auto source = asset();
     auto rigid = source->primitives.front();
-    rigid.skin = -1;
+    rigid.skin = anima::no_index;
     source->primitives.push_back(rigid);
     const auto rest = anima::sample_pose(*source);
     const auto unmirrored = anima::make_mesh_snapshot(*source, rest);

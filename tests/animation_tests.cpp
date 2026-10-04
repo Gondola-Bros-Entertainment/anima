@@ -589,18 +589,37 @@ TEST_CASE("A clip selected paused holds its start until resumed") {
 
 TEST_CASE("A fitted model binds to the body's joints by name") {
     const auto asset = fixture();
-    CHECK(compatible_skin(asset, asset).size() == 2);
-    // Joint indices may be ordered differently.
+    const auto same = compatible_skin(asset, asset);
+    REQUIRE(same.size() == 2);
+    CHECK(same[1].fitted_node == 1);
+    CHECK(same[1].body_node == 1);
+    // Joint indices may be ordered differently; the result follows the fitted skin's joint order.
     auto reordered = asset;
     std::swap(reordered.skins[0].joints[0], reordered.skins[0].joints[1]);
     std::swap(reordered.skins[0].inverse_bind[0], reordered.skins[0].inverse_bind[1]);
-    CHECK(compatible_skin(asset, reordered).size() == 2);
+    CHECK(compatible_skin(asset, reordered) ==
+          std::vector<FittedJoint>{{.fitted_node = 1, .body_node = 1}, {.fitted_node = 0, .body_node = 0}});
+    // The mapping pairs nodes by name, so a fitted model with an extra leading node maps shifted indices.
+    auto shifted = asset;
+    shifted.animations.clear();
+    AssetNode extra;
+    extra.name = "extra";
+    shifted.nodes.insert(shifted.nodes.begin(), extra);
+    for (auto &node : shifted.nodes)
+        if (node.parent != no_index)
+            ++node.parent;
+    for (auto &joint : shifted.skins[0].joints)
+        ++joint;
+    for (auto &primitive : shifted.primitives)
+        ++primitive.node;
+    CHECK(compatible_skin(asset, shifted) ==
+          std::vector<FittedJoint>{{.fitted_node = 1, .body_node = 0}, {.fitted_node = 2, .body_node = 1}});
 }
 
 TEST_CASE("A fitted model that does not match the body's rig is rejected with its reason") {
     const auto asset = fixture();
     auto fitted = asset;
-    fitted.primitives[0].skin = -1;
+    fitted.primitives[0].skin = no_index;
     CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted),
                          "Fitted model contains an unskinned mesh; bind it to the body's rig", std::runtime_error);
     fitted = asset;
@@ -610,7 +629,7 @@ TEST_CASE("A fitted model that does not match the body's rig is rejected with it
                          "body",
                          std::runtime_error);
     fitted = asset;
-    fitted.nodes[1].parent = -1;
+    fitted.nodes[1].parent = no_index;
     CHECK_THROWS_WITH_AS(compatible_skin(asset, fitted),
                          "Fitted hierarchy mismatch at hand; export against the body's rig", std::runtime_error);
     fitted = asset;

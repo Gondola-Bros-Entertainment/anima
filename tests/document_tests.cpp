@@ -1,5 +1,5 @@
 #include <anima/assets/fitted.hpp>
-#include <anima/assets/preview.hpp>
+#include <anima/assets/manifest.hpp>
 #include <anima/camera.hpp>
 #include <anima/components.hpp>
 #include <anima/prefab.hpp>

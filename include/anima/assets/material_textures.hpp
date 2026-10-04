@@ -11,8 +11,8 @@ namespace anima {
 inline constexpr std::uint32_t material_texture_count = 5;
 /// One image to upload.
 struct MaterialTextureImage {
-    /// Source texture index, or -1 for the shared 1x1 white fallback.
-    int source = -1;
+    /// Source texture index, or no_index for the shared 1x1 white fallback.
+    int source = no_index;
     /// Mip options; set for a masked or blended base-color map whose ImageFormat::rgba8 image is mipmapped.
     TextureMipOptions mips;
 };
