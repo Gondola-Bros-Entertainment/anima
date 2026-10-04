@@ -125,6 +125,9 @@ VkRenderPass create_display_pass() {
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color_ref;
+    // The display shader samples the scene target after the world pass's color writes, which that pass's outgoing
+    // dependency makes visible to fragment shaders as it moves the target to its sampled layout; this dependency
+    // states the same ordering from the reading side, so no barrier between the passes repeats it.
     VkSubpassDependency incoming{};
     incoming.srcSubpass = VK_SUBPASS_EXTERNAL;
     incoming.dstSubpass = 0;
@@ -262,13 +265,6 @@ void record_display(VkFramebuffer framebuffer) {
                        footprint.data());
     vkCmdDraw(command, 3, 1, 0, 0);
     // Caller draws UI here, in display colour, then ends this render pass.
-}
-void finish_world_writes() {
-    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(frame().command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 // Gives the swapchain's format a display pass and the pipelines that draw into it, unless that format's exist, so that
 // recreating the swapchain in the same format keeps them: the resolve pipeline, and the UI pipeline if UI drew with the

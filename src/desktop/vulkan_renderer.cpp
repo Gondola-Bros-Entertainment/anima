@@ -2325,7 +2325,6 @@ struct VulkanRenderer::Impl {
         vkCmdEndRenderPass(command);
         timestamp(TimingQuery::after_scene);
 #ifdef ANIMA_HAS_ASSETS
-        finish_world_writes();
         record_display(image.framebuffer);
 #ifdef ANIMA_UI
         if (ui_frame)
