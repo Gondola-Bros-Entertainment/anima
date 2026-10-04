@@ -164,9 +164,14 @@ class MotionRuntime {
     /// Applies @p controls to @p source: each layer, then each offset, then each contact, solved on
     /// the result so far.
     ///
-    /// Empty controls return @p source unchanged; otherwise the pose is world-only. Throws for an
-    /// invalid weight, a layer clip on another mask or an override with a reference clip, and
-    /// `std::out_of_range` for an unknown clip, mask, chain or joint.
+    /// Empty controls return @p source unchanged; otherwise the pose is world-only. With nonempty
+    /// controls, a world-only @p source, such as an earlier result, fails where the evaluation
+    /// parent of a joint, or the asset parent of a node that is not an evaluation joint, is
+    /// collapsed, since only local transforms recover what lies below it (see EvaluationRig::encode
+    /// and EvaluationRig::render_pose). Throws for an invalid weight, a layer clip on another mask
+    /// or an override with a reference clip, as EvaluationRig::encode and EvaluationRig::render_pose
+    /// do for @p source and solve_contact for each contact, and `std::out_of_range` for an unknown
+    /// clip, mask, chain or joint.
     MotionEvaluation evaluate(const Pose &source, const MotionControls &controls) const;
 
   private:

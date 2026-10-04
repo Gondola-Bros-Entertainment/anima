@@ -23,8 +23,8 @@ struct InteractionRole {
 struct InteractionSocket {
     /// Node index in the role's asset.
     std::size_t node{};
-    /// Finite, affine frame relative to the node, with a positive determinant. A bind-space frame
-    /// may cancel an authored joint's stretch.
+    /// Finite, affine frame relative to the node, with a determinant above `1e-12` (see
+    /// affine_rotation). A bind-space frame may cancel an authored joint's stretch.
     Mat4 local = identity();
 };
 /// Places a child role by aligning its socket with a socket of its parent role.
@@ -55,7 +55,7 @@ struct InteractionPlacement {
 
 /// Rigid model-space frame of @p socket in @p pose: its position and rotation without scale or
 /// shear, so a stretched joint cannot stretch an attached actor. Throws `std::out_of_range` for a
-/// node outside @p pose.
+/// node outside @p pose, and as affine_rotation does for the frame, such as a collapsed one.
 [[nodiscard]] inline Mat4 interaction_socket(const Pose &pose, const InteractionSocket &socket) {
     const auto frame = pose.world.at(socket.node) * socket.local;
     return matrix(Transform{point(frame, {}), affine_rotation(frame), {1, 1, 1}});

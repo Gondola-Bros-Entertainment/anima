@@ -64,7 +64,7 @@ struct PoseFrame {
     Mat4 local = identity();
 };
 /// Model-space matrix of @p frame in @p pose. Throws unless the result is a finite affine frame
-/// with a positive determinant.
+/// with a determinant above `1e-12` (see affine_rotation).
 [[nodiscard]] inline Mat4 pose_frame(const Pose &pose, const PoseFrame &frame) {
     const auto result = pose.world.at(frame.node) * frame.local;
     (void)affine_rotation(result); // Require a finite, invertible affine frame.

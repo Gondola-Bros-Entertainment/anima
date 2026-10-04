@@ -75,6 +75,57 @@ Mat4 sheared() {
     shear[9] = -.2F;
     return matrix(t) * shear;
 }
+Mat4 rotation_matrix(Quat rotation) {
+    Transform t;
+    t.rotation = rotation;
+    return matrix(t);
+}
+// Nodes of guarded_leg(); each mapped node is the rig joint of the same index in guarded_rig().
+namespace leg {
+constexpr std::size_t root = 0, hip = 1, thigh = 2, knee = 3, ankle = 4, guard = 5, strap = 6, buckle = 7;
+}
+// A leg below a root, from the hip at (0, 1, 0) through a turned thigh joint to the knee and the ankle, with a guard on
+// the knee that carries a strap and then a buckle.
+Asset guarded_leg() {
+    // The thigh's rest rotation, about an axis off every coordinate axis.
+    constexpr Quat thigh_turn{.3F, .1F, .2F, 1};
+    Asset asset;
+    const auto add = [&](const char *name, int parent, Vec3 translation) {
+        AssetNode node;
+        node.name = name;
+        node.parent = parent;
+        node.rest.translation = translation;
+        asset.nodes.push_back(node);
+    };
+    add("root", -1, {});
+    add("hip", leg::root, {0, 1, 0});
+    add("thigh", leg::hip, {0, -.5F, 0});
+    add("knee", leg::thigh, {0, -.5F, 0});
+    add("ankle", leg::knee, {0, -1, 0});
+    add("guard", leg::knee, {0, 0, .1F});
+    add("strap", leg::guard, {0, .1F, 0});
+    add("buckle", leg::strap, {0, .1F, 0});
+    asset.nodes[leg::thigh].rest.rotation = unit_quaternion(thigh_turn);
+    return asset;
+}
+// Every node of guarded_leg() but the buckle, in the asset's hierarchy.
+EvaluationRig guarded_rig(const Asset &asset) {
+    return {asset,
+            {{"root", leg::root, -1},
+             {"hip", leg::hip, leg::root},
+             {"thigh", leg::thigh, leg::hip},
+             {"knee", leg::knee, leg::thigh},
+             {"ankle", leg::ankle, leg::knee},
+             {"guard", leg::guard, leg::knee},
+             {"strap", leg::strap, leg::guard}}};
+}
+// The rest pose of @p asset with node @p node scaled by @p scale; a zero component collapses the node and everything
+// below it.
+Pose scaled(const Asset &asset, std::size_t node, Vec3 scale) {
+    auto local = sample_pose(asset).local;
+    local[node].scale = scale;
+    return pose_from_local(asset, local);
+}
 } // namespace
 
 TEST_CASE("Affine blending returns its exact endpoints and interpolates rotation and stretch") {
@@ -112,28 +163,35 @@ TEST_CASE("Reflected and projective transforms and invalid weights are rejected"
                          "Layer/contact weight must be in [0,1]", std::invalid_argument);
 }
 
+TEST_CASE("Affine rotation rejects a transform within the collapse threshold") {
+    // Uniform scales whose determinants, 1.03e-12 and 9.7e-13, lie just either side of the 1e-12 collapse threshold.
+    constexpr float small_scale = 1.01e-4F, collapsed_scale = .99e-4F;
+    Transform t;
+    t.rotation = {0, std::sin(.3F), 0, std::cos(.3F)};
+    t.scale = {small_scale, small_scale, small_scale};
+    const auto rotation = affine_rotation(matrix(t));
+    // q and -q are the same rotation.
+    float cosine = 0;
+    for (std::size_t i = 0; i < rotation.size(); ++i)
+        cosine += rotation[i] * t.rotation[i];
+    CHECK(std::abs(cosine) == Near{1, tolerance});
+    t.scale = {collapsed_scale, collapsed_scale, collapsed_scale};
+    CHECK_THROWS_WITH_AS(affine_rotation(matrix(t)), "Affine transform is collapsed", std::invalid_argument);
+}
+
 TEST_CASE("A joint scaled to zero stays evaluable when the pose has local transforms") {
-    Asset asset;
-    for (const auto *name : {"root", "arm", "hand", "tip"}) {
-        AssetNode node;
-        node.name = name;
-        node.parent = static_cast<int>(asset.nodes.size()) - 1;
-        node.rest.translation = {0, asset.nodes.empty() ? 0.F : 1.F, 0};
-        asset.nodes.push_back(node);
-    }
-    const EvaluationRig rig(asset, {{"root", 0, -1}, {"arm", 1, 0}, {"hand", 2, 1}});
-    auto local = sample_pose(asset).local;
-    local[1].scale = {0, 0, 0};
-    const auto pose = pose_from_local(asset, local);
+    const auto asset = guarded_leg();
+    const auto rig = guarded_rig(asset);
+    const auto pose = scaled(asset, leg::guard, {0, 0, 0});
     const auto encoded = rig.encode(pose);
     const auto world = rig.world(encoded);
     for (std::size_t joint = 0; joint < rig.size(); ++joint) {
         CAPTURE(joint);
         CHECK(difference(world[joint], pose.world[rig.asset_node(joint)]) < tolerance);
     }
-    // The tip is unmapped and hangs below the collapsed hand.
-    CHECK(difference(rig.render_pose(pose, encoded).world[3], pose.world[3]) < tolerance);
-    // A world-only pose has no local transforms to recover the hand below the collapsed arm.
+    // The buckle is unmapped and hangs below the strap, which the guard collapses.
+    CHECK(difference(rig.render_pose(pose, encoded).world[leg::buckle], pose.world[leg::buckle]) < tolerance);
+    // A world-only pose has no local transforms to recover the strap below the collapsed guard.
     Pose world_only;
     world_only.world = pose.world;
     CHECK_THROWS_WITH_AS(rig.encode(world_only),
@@ -141,10 +199,41 @@ TEST_CASE("A joint scaled to zero stays evaluable when the pose has local transf
                          std::invalid_argument);
 }
 
+TEST_CASE("A world-only pose cannot place a node that the rig leaves unmapped below a collapsed joint") {
+    const auto asset = guarded_leg();
+    // The strap and the buckle below it are not joints of this rig.
+    const EvaluationRig rig(asset, {{"root", leg::root, -1},
+                                    {"hip", leg::hip, leg::root},
+                                    {"thigh", leg::thigh, leg::hip},
+                                    {"knee", leg::knee, leg::thigh},
+                                    {"ankle", leg::ankle, leg::knee},
+                                    {"guard", leg::guard, leg::knee}});
+    const auto pose = scaled(asset, leg::guard, {0, 0, 0});
+    Pose world_only;
+    world_only.world = pose.world;
+    // No joint lies below the collapsed guard, so even the world-only pose encodes.
+    const auto encoded = rig.encode(world_only);
+    CHECK(difference(rig.render_pose(pose, encoded).world[leg::strap], pose.world[leg::strap]) < tolerance);
+    CHECK_THROWS_WITH_AS(rig.render_pose(world_only, encoded),
+                         "A node below a collapsed parent needs the source pose's local transforms",
+                         std::invalid_argument);
+}
+
 TEST_CASE("An unknown evaluation joint is reported as std::out_of_range") {
     const auto asset = fixture();
     const EvaluationRig rig(asset, joints());
     CHECK_THROWS_WITH_AS(rig.joint("missing"), "Unknown evaluation joint: missing", std::out_of_range);
+}
+
+TEST_CASE("A rig reports each joint's parent in its own hierarchy") {
+    constexpr std::size_t root = 0, shoulder = 2, elbow = 3;
+    const auto asset = fixture();
+    const EvaluationRig rig(asset, joints());
+    CHECK(rig.parent(root) == -1);
+    // joints() chains the arm, whose nodes all hang from the root in the asset.
+    CHECK(rig.parent(elbow) == static_cast<int>(shoulder));
+    CHECK(asset.nodes[rig.asset_node(elbow)].parent == static_cast<int>(root));
+    CHECK_THROWS_WITH_AS(rig.parent(rig.size()), "Evaluation joint index out of range", std::out_of_range);
 }
 
 TEST_CASE("A rig round-trips a sheared pose and propagates a local offset to its descendants") {
@@ -266,6 +355,90 @@ TEST_CASE("A two-bone contact reaches within its limits, follows its pole and bl
     c.middle = 6;
     CHECK_THROWS_WITH_AS(solve_contact(rig, initial, c), "Contact needs an ordered, distinct two-bone chain",
                          std::invalid_argument);
+}
+
+TEST_CASE("A contact changes only its chain's local transforms, so a joint scaled to zero below it is kept") {
+    // Distance a solved contact may leave between its end joint and its target.
+    constexpr float reach_tolerance = 2e-5F;
+    const auto asset = guarded_leg();
+    const auto rig = guarded_rig(asset);
+    // The guard on the knee is hidden, which collapses the strap below it too.
+    const auto pose = rig.encode(scaled(asset, leg::guard, {0, 0, 0}));
+    TwoBoneContact c;
+    c.start = leg::hip;
+    c.middle = leg::knee;
+    c.end = leg::ankle;
+    c.target = {1, 0, 0};
+    c.pole = {0, 0, 2};
+    const auto unchanged = [&](const ContactResult &solved, std::initializer_list<std::size_t> joints) {
+        for (const auto joint : joints) {
+            CAPTURE(joint);
+            CHECK(solved.pose.local[joint] == pose.local[joint]);
+        }
+    };
+    const auto solved = solve_contact(rig, pose, c);
+    CHECK(solved.reachable);
+    CHECK(solved.error < reach_tolerance);
+    // The knee's local transform is relative to the thigh, which turns with the hip.
+    const auto world = rig.world(solved.pose);
+    CHECK(length(at(world[leg::knee]) - at(world[leg::hip])) == Near{solved.upper_length, tolerance});
+    CHECK(at(world[leg::knee]).z > 0); // Bent toward the pole.
+    unchanged(solved, {leg::root, leg::thigh, leg::ankle, leg::guard, leg::strap});
+    // A weighted solve blends only the joints it turns; blending another local matrix with itself could round it.
+    c.weight = .3F;
+    const auto partial = solve_contact(rig, pose, c);
+    CHECK(partial.error > reach_tolerance);
+    unchanged(partial, {leg::root, leg::thigh, leg::ankle, leg::guard, leg::strap});
+    c.weight = 0;
+    CHECK(solve_contact(rig, pose, c).pose.local == pose.local);
+    // An end rotation also sets the ankle's local transform.
+    const Quat quarter_turn{0, std::numbers::sqrt2_v<float> / 2, 0, std::numbers::sqrt2_v<float> / 2};
+    c.weight = 1;
+    c.end_rotation = quarter_turn;
+    const auto oriented = solve_contact(rig, pose, c);
+    CHECK(oriented.error < reach_tolerance);
+    const auto ankle = rig.world(oriented.pose)[leg::ankle];
+    // The first three columns of the ankle's world matrix are those of the rotation.
+    constexpr unsigned rotation_elements = 12;
+    for (unsigned i = 0; i < rotation_elements; ++i) {
+        CAPTURE(i);
+        CHECK(ankle[i] == Near{rotation_matrix(quarter_turn)[i], tolerance});
+    }
+    unchanged(oriented, {leg::root, leg::thigh, leg::guard, leg::strap});
+    // A chain that starts at the rig's root turns the root's local transform, which has no parent to be relative to.
+    c.start = leg::root;
+    c.middle = leg::hip;
+    c.end = leg::knee;
+    c.end_rotation.reset();
+    c.target = {.8F, .8F, .3F};
+    const auto rooted = solve_contact(rig, pose, c);
+    CHECK(rooted.reachable);
+    CHECK(rooted.error < reach_tolerance);
+    CHECK(rooted.pose.local[leg::root] != pose.local[leg::root]);
+    unchanged(rooted, {leg::thigh, leg::knee, leg::ankle, leg::guard, leg::strap});
+}
+
+TEST_CASE("A contact rejects a collapsed parent of a joint it moves and a collapsed end it orients") {
+    const auto asset = guarded_leg();
+    const auto rig = guarded_rig(asset);
+    TwoBoneContact c;
+    c.start = leg::hip;
+    c.middle = leg::knee;
+    c.end = leg::ankle;
+    c.target = {1, 0, 0};
+    c.pole = {0, 0, 2};
+    // The thigh, the knee's parent, collapses along one axis, so no local matrix turns the knee freely.
+    const auto flattened = rig.encode(scaled(asset, leg::thigh, {0, 1, 1}));
+    CHECK_THROWS_WITH_AS(solve_contact(rig, flattened, c), "Contact chain joint has a collapsed parent",
+                         std::invalid_argument);
+    c.weight = 0;
+    CHECK(solve_contact(rig, flattened, c).pose.local == flattened.local);
+    // A collapsed ankle still moves with the knee, but has no rotation to replace.
+    c.weight = 1;
+    const auto hidden = rig.encode(scaled(asset, leg::ankle, {0, 0, 0}));
+    CHECK_NOTHROW((void)solve_contact(rig, hidden, c));
+    c.end_rotation = Quat{0, 0, 0, 1};
+    CHECK_THROWS_WITH_AS(solve_contact(rig, hidden, c), "Affine transform is collapsed", std::invalid_argument);
 }
 
 TEST_CASE("A phase track maps phase to clip time") {

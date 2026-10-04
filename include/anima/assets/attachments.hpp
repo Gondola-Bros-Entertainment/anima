@@ -46,11 +46,11 @@ struct AttachmentHandling {
     std::string socket;
     /// Layer clip (see MotionRuntime::compose) applied over every base clip that #layer_overrides
     /// does not name, or empty for none.
-    std::string layer;
+    std::string layer{};
     /// Layer clip per base clip name, replacing #layer for that clip.
-    std::map<std::string, std::string, std::less<>> layer_overrides;
+    std::map<std::string, std::string, std::less<>> layer_overrides{};
     /// Support contacts with distinct chains; 1 to 4 when the catalog declares any.
-    std::vector<AttachmentContact> support_contacts;
+    std::vector<AttachmentContact> support_contacts{};
     /// Layer clip for base clip @p clip: its override, else #layer.
     std::string_view layer_for(std::string_view clip) const {
         const auto found = layer_overrides.find(clip);
@@ -244,13 +244,14 @@ struct AttachmentSet {
     void add_to(Scene &scene, const GameObject *owner);
 };
 /// Solves the support contacts of @p handling that are active for base clip @p clip or action
-/// @p action, in order, starting from @p source.
+/// @p action, in order, with one MotionRuntime::evaluate of @p source.
 ///
 /// Each contact moves its chain so that its body socket frame meets its prop marker, with the prop
-/// placed through @p primary in @p source. Weights come from @p weights by chain name (default 1,
-/// each in [0, 1]); a zero weight skips the contact. Animated markers need @p prop_asset and
-/// @p prop_pose. With no active contact, returns @p source unchanged. Throws
-/// `std::invalid_argument` for an invalid weight, `std::out_of_range` for an unknown socket, and as
+/// placed through @p primary in @p source, and is solved on the result of the contacts before it.
+/// Weights come from @p weights by chain name (default 1, each in [0, 1]); a zero weight skips the
+/// contact. Animated markers need @p prop_asset and @p prop_pose. With no active contact, returns
+/// @p source unchanged. Throws `std::invalid_argument` for an invalid weight or a collapsed contact
+/// frame (see affine_rotation), `std::out_of_range` for an unknown socket, and as
 /// MotionRuntime::evaluate and attachment_marker do.
 MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const Pose &source, std::string_view clip,
                                            const AttachmentHandling &handling, const AttachmentVisual &visual,
