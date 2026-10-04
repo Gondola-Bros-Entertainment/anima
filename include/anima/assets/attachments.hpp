@@ -3,7 +3,6 @@
 #include <anima/assets/motion_runtime.hpp>
 #include <anima/scene.hpp>
 #include <map>
-#include <mutex>
 #include <set>
 
 /// @file
@@ -89,11 +88,11 @@ struct AttachmentDefinition {
 struct AttachmentCatalog {
     /// Directory that AttachmentVisual::model paths resolve against.
     std::filesystem::path directory;
-    /// Handling profile of a role with no item, which AttachmentLibrary::motion returns for an
+    /// Handling profile of a role with no item, which AttachmentLibrary::handling returns for an
     /// empty item id; it has no socket.
     std::string empty_handling;
     /// Handling profiles by id.
-    std::map<std::string, AttachmentHandling, std::less<>> motions;
+    std::map<std::string, AttachmentHandling, std::less<>> handling;
     /// Visuals by id.
     std::map<std::string, AttachmentVisual, std::less<>> visuals;
     /// Items by id.
@@ -144,41 +143,46 @@ struct AttachmentAsset {
 };
 /// Catalog lookups and shared prop loading.
 ///
-/// load() and resident_assets() lock an internal mutex, so they may run on several threads.
+/// Copies share the catalog and the loaded-model cache. Moving a library copies it, so a library
+/// always has both. References that members return stay valid until the library is destroyed or
+/// assigned to. Const members may run on several threads at once, on one library and its copies:
+/// loads of different files run concurrently, and concurrent loads of one file share one import.
 class AttachmentLibrary {
   public:
-    /// The catalog as given; the library does not validate it again.
-    const AttachmentCatalog catalog;
     /// A library of @p definition whose loads compile their meshes with @p texel_retention. Throws
     /// `std::invalid_argument` for an unknown @p texel_retention.
     explicit AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention = TexelRetention::keep);
+    AttachmentLibrary(const AttachmentLibrary &) = default;
+    AttachmentLibrary &operator=(const AttachmentLibrary &) = default;
+    /// The catalog as given; the library does not validate it again.
+    [[nodiscard]] const AttachmentCatalog &catalog() const noexcept;
     /// Item @p id. Throws `std::out_of_range` for an unknown id.
     [[nodiscard]] const AttachmentDefinition &item(std::string_view id) const;
     /// Visual @p id. Throws `std::out_of_range` for an unknown id.
     [[nodiscard]] const AttachmentVisual &visual(std::string_view id) const;
     /// Handling profile of item @p item_id, or the empty handling for an empty id. Throws
     /// `std::out_of_range` for an unknown id.
-    [[nodiscard]] const AttachmentHandling &motion(std::string_view item_id) const;
-    /// Loads the model of visual @p visual_id; loads of the same file share its Asset and Mesh
-    /// while they are alive.
+    [[nodiscard]] const AttachmentHandling &handling(std::string_view item_id) const;
+    /// Loads the model of visual @p visual_id.
     ///
-    /// Throws `std::out_of_range` for an unknown visual, `std::invalid_argument` for an animated
-    /// model without AttachmentVisual::animation_tracks, `std::runtime_error` when the model does
-    /// not have exactly one node or clip of each name that the visual uses, and as load_asset and
+    /// Loads of one file share an AttachmentAsset while it is alive, and its Mesh while that is
+    /// alive: with only the Mesh alive, a load imports the file again and keeps the Mesh when the
+    /// Mesh accepts the new model as an animation source (see Mesh::accepts_animation_source) and
+    /// has as many textures, and otherwise compiles a new one. Concurrent loads of one file share
+    /// one import and compile, and their failure, which caches nothing, so a later load imports
+    /// again. Each load then checks the model against its own visual. Throws `std::out_of_range`
+    /// for an unknown visual, `std::invalid_argument` for an animated model without
+    /// AttachmentVisual::animation_tracks, `std::runtime_error` when the model does not have
+    /// exactly one node or clip of each name that the visual uses, and as load_asset and
     /// Mesh::compile do.
     [[nodiscard]] std::shared_ptr<const AttachmentAsset> load(std::string_view visual_id) const;
-    /// Meshes of loaded models that are still alive.
-    [[nodiscard]] std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
+    /// Every Mesh that loads compiled and that is still alive, once each, in no particular order.
+    [[nodiscard]] std::vector<std::shared_ptr<const Mesh>> resident_meshes() const;
 
   private:
     static void validate(const Asset &source, const AttachmentVisual &visual);
-    struct CachedModel {
-        std::weak_ptr<const Asset> source;
-        std::weak_ptr<const Mesh> render;
-    };
-    TexelRetention texel_retention_;
-    mutable std::mutex mutex_;
-    mutable std::map<std::filesystem::path, CachedModel> models_;
+    struct State;
+    std::shared_ptr<State> state_;
 };
 /// A socket combined with a visual's grip: where the prop's model origin goes, relative to the
 /// body node.
