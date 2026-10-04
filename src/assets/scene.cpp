@@ -73,6 +73,11 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     return compile(source, texel_retention, {});
 }
 std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention texel_retention, MeshLodOptions lods) {
+    return compile_indexed(source, {}, texel_retention, lods);
+}
+std::shared_ptr<const Mesh> Mesh::compile_indexed(const Asset &source,
+                                                  std::span<const std::vector<std::uint32_t>> indices,
+                                                  TexelRetention texel_retention, MeshLodOptions lods) {
     require(lods.levels <= 8, "Mesh LOD levels must be from 0 to 8");
     if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
         throw std::invalid_argument("Unknown texel retention");
@@ -119,31 +124,43 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
     result->palette_size_ = palette_size;
     // Where each draw's vertices start, then where the last one's end.
     std::vector<std::size_t> vertex_ranges;
-    for (const auto &primitive : source.primitives) {
+    require(indices.empty() || indices.size() == source.primitives.size(), "Invalid render primitive indices");
+    for (std::size_t p = 0; p < source.primitives.size(); ++p) {
+        const auto &primitive = source.primitives[p];
+        // The primitive's own triangle list over its vertices, or null to weld its triangle corners.
+        const auto *triangles = indices.empty() ? nullptr : &indices[p];
+        const auto corners = triangles ? triangles->size() : primitive.vertices.size();
         require(primitive.node < source.nodes.size(), "Invalid render primitive node");
         require(primitive.skin >= -1 && (primitive.skin < 0 || std::size_t(primitive.skin) < source.skins.size()),
                 "Invalid render primitive skin");
         require(primitive.material >= -1 &&
                     (primitive.material < 0 || std::size_t(primitive.material) < source.materials.size()),
                 "Invalid render primitive material");
-        require(!primitive.vertices.empty() && primitive.vertices.size() % 3 == 0 &&
-                    primitive.vertices.size() <= UINT32_MAX - result->indices_.size(),
+        require(corners && corners % 3 == 0 && corners <= UINT32_MAX - result->indices_.size(),
                 "Invalid render triangle count");
         require(primitive.vertices.size() <=
                     std::numeric_limits<std::size_t>::max() / sizeof(SourceVertex) - result->vertices_.size(),
                 "Render vertex byte size overflow");
+        // Welded vertices never outnumber the indices, which the count above bounds; indexed ones must fit too.
+        require(!triangles || primitive.vertices.size() <= UINT32_MAX - result->vertices_.size(),
+                "Render vertex index overflow");
         const auto offset = primitive.skin < 0 ? static_cast<std::uint32_t>(primitive.node) : offsets[primitive.skin];
         const auto joint_count = primitive.skin < 0 ? 1 : source.skins[primitive.skin].joints.size();
-        vertex_ranges.push_back(result->vertices_.size());
-        result->draws_.push_back(
-            {static_cast<std::uint32_t>(result->indices_.size()), static_cast<std::uint32_t>(primitive.vertices.size()),
-             offset, static_cast<std::uint32_t>(joint_count), primitive.skin >= 0, primitive.material,
-             static_cast<std::uint32_t>(primitive.node), source.nodes[primitive.node].name, primitive.mesh_name});
+        const auto first_vertex = result->vertices_.size();
+        vertex_ranges.push_back(first_vertex);
+        result->draws_.push_back({static_cast<std::uint32_t>(result->indices_.size()),
+                                  static_cast<std::uint32_t>(corners), offset, static_cast<std::uint32_t>(joint_count),
+                                  primitive.skin >= 0, primitive.material, static_cast<std::uint32_t>(primitive.node),
+                                  source.nodes[primitive.node].name, primitive.mesh_name});
         if (primitive.skin >= 0)
-            materials->skinned_vertices += primitive.vertices.size();
+            materials->skinned_vertices += corners;
         std::vector<RenderBounds> bounds(joint_count);
         std::unordered_map<Key, std::uint32_t, Hash> unique;
-        unique.reserve(primitive.vertices.size() / 2);
+        if (triangles) {
+            result->vertices_.reserve(first_vertex + primitive.vertices.size());
+            result->indices_.reserve(result->indices_.size() + corners);
+        } else
+            unique.reserve(primitive.vertices.size() / 2);
         for (const auto &v : primitive.vertices) {
             require(finite(v.position) && finite(v.normal) && finite(v.color) && std::isfinite(v.uv[0]) &&
                         std::isfinite(v.uv[1]) && std::isfinite(v.alpha) && v.alpha >= 0 && v.alpha <= 1 &&
@@ -163,11 +180,20 @@ std::shared_ptr<const Mesh> Mesh::compile(const Asset &source, TexelRetention te
                         "Render skin weights must be normalized");
             } else
                 expand(bounds[0], v.position);
+            if (triangles) {
+                result->vertices_.push_back(v);
+                continue;
+            }
             auto [found, inserted] = unique.emplace(key(v), static_cast<std::uint32_t>(result->vertices_.size()));
             if (inserted)
                 result->vertices_.push_back(v);
             result->indices_.push_back(found->second);
         }
+        if (triangles)
+            for (const auto index : *triangles) {
+                require(index < primitive.vertices.size(), "Invalid render vertex index");
+                result->indices_.push_back(static_cast<std::uint32_t>(first_vertex + index));
+            }
         auto &parts = result->bounds_.emplace_back();
         for (std::size_t j = 0; j < bounds.size(); ++j)
             if (bounds[j].valid)
