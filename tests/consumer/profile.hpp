@@ -12,11 +12,11 @@
 
 // FrameProfile accounts for each draw() with one frame in flight and with two: its CPU fields add up to the call's
 // duration, releasing cached meshes counts in prepare_ms, the GPU fields time the frame submitted
-// RendererOptions::frames_in_flight submissions earlier, and where the renderer measures it, the GPU's idle time
-// between two frames is absent from the first timed frame, which follows no timed frame, lies within the calls around
-// the two frames and, with one frame in flight, spans the CPU work that separated them, and a present interval is
-// reported only where the renderer measures one, and then by some calls. After VulkanRenderer::wait_for_frame(), which
-// an application calls before reading input, draw() waits for no frame.
+// RendererOptions::frames_in_flight submissions earlier, the GPU interval fields add up to gpu_ms, and where the
+// renderer measures it, the GPU's idle time between two frames is absent from the first timed frame, which follows no
+// timed frame, lies within the calls around the two frames and, with one frame in flight, spans the CPU work that
+// separated them, and a present interval is reported only where the renderer measures one, and then by some calls.
+// After VulkanRenderer::wait_for_frame(), which an application calls before reading input, draw() waits for no frame.
 namespace profile_test {
 inline void require(bool condition, const std::string &message) {
     if (!condition)
@@ -97,6 +97,17 @@ class Check {
         // The fields divide the call's own clock readings, so only rounding can carry their sum past its duration.
         constexpr double rounding_ms = 1e-6;
         require(call.cpu_ms() <= call.wall_ms() + rounding_ms, "The CPU fields add up to more than the draw() call");
+        // Likewise the GPU interval fields divide gpu_ms at the frame's timestamps between its first and its last.
+        if (profile.gpu_available) {
+            for (const double field : {profile.gpu_ms, profile.gpu_atmosphere_ms, profile.gpu_shadow_ms,
+                                       profile.gpu_scene_ms, profile.gpu_resolve_ms, profile.gpu_transfer_ms})
+                require(std::isfinite(field) && field >= 0, "A GPU field is negative or not finite");
+            const double intervals = profile.gpu_atmosphere_ms + profile.gpu_shadow_ms + profile.gpu_scene_ms +
+                                     profile.gpu_resolve_ms + profile.gpu_transfer_ms;
+            require(std::abs(intervals - profile.gpu_ms) <= rounding_ms,
+                    "The GPU interval fields add up to " + std::to_string(intervals) + " ms, not the " +
+                        std::to_string(profile.gpu_ms) + " ms of gpu_ms");
+        }
         // Every draw() of the renderer passes through this check, so the first call with GPU fields reads the first
         // timed frame, which has no timed frame before it to measure idle time from.
         if (profile.gpu_available && !timed_) {

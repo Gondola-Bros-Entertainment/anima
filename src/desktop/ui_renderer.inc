@@ -210,11 +210,11 @@ void prepare_ui(const detail::UiFrame &ui_frame) {
     for (const auto &batch : ui_frame.batches)
         upload_ui_texture(batch.texture ? batch.texture : ui_white);
 }
-void record_ui(const detail::UiFrame &ui_frame) {
+// Records @p ui_frame into @p command, inside the render pass that draws the swapchain image and with its viewport.
+void record_ui(VkCommandBuffer command, const detail::UiFrame &ui_frame) {
     if (ui_frame.vertices.empty())
         return;
     const auto &slot = frame();
-    const auto command = slot.command;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_pipeline);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(command, 0, 1, &slot.ui_buffer->buffer, &offset);

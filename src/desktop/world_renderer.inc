@@ -236,17 +236,17 @@ void create_display_pipeline() {
     check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &resolve_pipeline),
           "Create world output pipeline");
 }
-void record_display(VkFramebuffer framebuffer) {
-    const auto command = frame().command;
+// Records into @p command, the frame's display batch, the display pass into @p framebuffer, the swapchain image's.
+void record_display(VkCommandBuffer command, VkFramebuffer framebuffer) {
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     pass.renderPass = present_pass;
     pass.framebuffer = framebuffer;
     pass.renderArea.extent = extent;
     vkCmdBeginRenderPass(command, &pass, VK_SUBPASS_CONTENTS_INLINE);
-    // The swapchain's size, which UI also draws at, rather than the scene targets' that the world pass set. The
-    // fullscreen triangle maps the whole world target onto it: a target no larger than the window is interpolated
-    // through normalized coordinates, and a larger one averaged over each window pixel's area, which the footprint
-    // measures in target pixels.
+    // The swapchain's size, which UI also draws at, rather than the scene targets' that the world pass set in the
+    // scene's command buffer. The fullscreen triangle maps the whole world target onto it: a target no larger than the
+    // window is interpolated through normalized coordinates, and a larger one averaged over each window pixel's area,
+    // which the footprint measures in target pixels.
     const VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0, 1};
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
