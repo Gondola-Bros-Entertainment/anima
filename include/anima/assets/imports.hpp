@@ -91,6 +91,9 @@ template <class T> class AssetRef {
     std::shared_ptr<detail::ImportedAsset<T>> state_;
 };
 
+/// File size limit, in bytes (64 MiB), that an AssetImports registry applies unless its
+/// constructor is given another.
+inline constexpr std::size_t default_import_file_bytes = 64 * 1024 * 1024;
 /// Registry of keyed importers with explicit, all-or-nothing refresh.
 ///
 /// The registry keeps a copy of every accepted input's bytes for comparison. Importers cannot
@@ -108,10 +111,10 @@ class AssetImports {
 
   public:
     /// Registry for the project directory @p root, reading files of at most @p maximum_file_bytes
-    /// (positive; 64 MiB by default). Throws `std::invalid_argument` for a zero limit or a root
-    /// that is not a directory, and `std::filesystem::filesystem_error` when @p root does not
-    /// exist.
-    explicit AssetImports(std::filesystem::path root, std::size_t maximum_file_bytes = 64 * 1024 * 1024);
+    /// (positive; default_import_file_bytes by default). Throws `std::invalid_argument` for a zero
+    /// limit or a root that is not a directory, and `std::filesystem::filesystem_error` when @p root
+    /// does not exist.
+    explicit AssetImports(std::filesystem::path root, std::size_t maximum_file_bytes = default_import_file_bytes);
     /// Registers @p importer under @p key, imports immediately and returns the reference at
     /// revision 1.
     ///

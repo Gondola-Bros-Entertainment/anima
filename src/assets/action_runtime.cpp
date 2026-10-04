@@ -1,12 +1,6 @@
 #include "presentation_data.hpp"
 #include <anima/assets/action_runtime.hpp>
 namespace anima {
-namespace {
-constexpr std::size_t maximum_actions = 4096;
-constexpr std::size_t maximum_phase_layers = 8;
-constexpr std::size_t maximum_phase_props = 8;
-constexpr std::size_t maximum_action_roles = 8;
-} // namespace
 struct ActionRuntime::Impl {
   public:
     Impl(std::shared_ptr<const MotionRuntime> motion, const nlohmann::json &document) : motion_(std::move(motion)) {
@@ -43,7 +37,8 @@ struct ActionRuntime::Impl {
                 ActionPhaseBinding binding;
                 if (!p.at("layers").is_array() || p.at("layers").empty() ||
                     p.at("layers").size() > maximum_phase_layers)
-                    throw std::invalid_argument("Action needs 1..8 pose layers per phase");
+                    throw std::invalid_argument("Action needs 1.." + std::to_string(maximum_phase_layers) +
+                                                " pose layers per phase");
                 bool full = false;
                 for (const auto &l : p.at("layers")) {
                     anima::detail::json_fields(l, {"clip", "mask", "interval", "mode", "weight", "reference"});
@@ -103,7 +98,7 @@ struct ActionRuntime::Impl {
                                     std::move(bindings),
                                     std::move(handling),
                                     {}};
-            if (!value.at("roles").is_object() || value.at("roles").size() > maximum_action_roles)
+            if (!value.at("roles").is_object() || value.at("roles").size() > maximum_roles)
                 throw std::invalid_argument("Invalid required action roles");
             for (const auto &[role, profiles] : value.at("roles").items()) {
                 if (role.empty() || !profiles.is_array() || profiles.empty())
@@ -193,7 +188,8 @@ struct ActionRuntime::Impl {
     // Shared phase curves are also used by coordinated actor contacts.
     static ActionWeight weight(const nlohmann::json &value) {
         if (!value.is_array() || value.size() > ActionWeight::maximum_keys)
-            throw std::invalid_argument("Action weight requires 2..32 keys covering 0..1");
+            throw std::invalid_argument("Action weight requires 2.." + std::to_string(ActionWeight::maximum_keys) +
+                                        " keys covering 0..1");
         std::vector<ActionWeightKey> keys;
         for (const auto &key : value) {
             const auto [progress, amount] = interval(key);

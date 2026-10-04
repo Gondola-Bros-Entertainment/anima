@@ -1,12 +1,16 @@
 #include "presentation_data.hpp"
 #include <anima/assets/actor_presentation.hpp>
 namespace anima {
+namespace {
+// The one actor presentation profile version ActorPresentation accepts.
+constexpr int profile_version = 2;
+} // namespace
 ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
                                      std::optional<std::filesystem::path> manifest_override) {
     using namespace presentation_data;
     using anima::operator*;
     const auto document = read(profile);
-    anima::detail::json_version(document, "version", 2, "Unsupported actor presentation profile version");
+    anima::detail::json_version(document, "version", profile_version, "Unsupported actor presentation profile version");
     anima::detail::json_fields(document, {"version", "id", "manifest", "sockets"});
     if (!document.at("sockets").is_object())
         throw std::invalid_argument("Invalid actor presentation profile");

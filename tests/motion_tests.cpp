@@ -633,6 +633,14 @@ TEST_CASE("An action catalog requires every field, with null, [] and {} declarin
     // null is the one spelling of a full-body layer's mask.
     CHECK_THROWS_WITH_AS(ActionRuntime(motion, replaced(action_catalog, R"("mask":"limb")", R"("mask":"")")),
                          "Empty presentation identity/reference", std::invalid_argument);
+    // A phase holds at most ActionRuntime::maximum_phase_layers layers.
+    std::string extra_layers;
+    for (std::size_t i = 0; i < ActionRuntime::maximum_phase_layers; ++i)
+        extra_layers += R"({"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override",)"
+                        R"("weight":[[0,1],[1,1]],"reference":null},)";
+    CHECK_THROWS_WITH_AS(
+        ActionRuntime(motion, replaced(action_catalog, R"("layers":[)", "\"layers\":[" + extra_layers)),
+        "Action needs 1..8 pose layers per phase", std::invalid_argument);
 }
 
 TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership checks the chosen clips") {
@@ -704,7 +712,7 @@ TEST_CASE("An attachment catalog requires every field, with null, [] and {} decl
               .primary_node == "prop");
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("primary_node":null)", R"("primary_node":"")")),
                          "Empty presentation identity/reference", std::invalid_argument);
-    constexpr auto contact_count = "Handling contacts require an array of at most four constraints";
+    constexpr auto contact_count = "Handling contacts require an array of at most 4 constraints";
     CHECK_THROWS_WITH_AS(decode(replaced(catalog, R"("support_contacts":[])", R"("support_contacts":{})")),
                          contact_count, std::invalid_argument);
     CHECK_THROWS_WITH_AS(

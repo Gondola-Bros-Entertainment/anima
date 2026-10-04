@@ -8,6 +8,8 @@ namespace {
 constexpr int catalog_version = 4;
 // The one socket document version decode_attachment_sockets accepts.
 constexpr int sockets_version = 1;
+// The most support contacts a handling entry may declare.
+constexpr std::size_t maximum_support_contacts = 4;
 AttachmentCatalog decode_catalog(std::string_view document, const std::filesystem::path &directory) {
     using namespace presentation_data;
     const auto json = presentation_data::parse(document);
@@ -35,8 +37,9 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
             motion.layer_overrides.emplace(name, text(value));
         }
         const auto &contacts = entry.at("support_contacts");
-        if (!contacts.is_array() || contacts.size() > 4)
-            throw std::invalid_argument("Handling contacts require an array of at most four constraints");
+        if (!contacts.is_array() || contacts.size() > maximum_support_contacts)
+            throw std::invalid_argument("Handling contacts require an array of at most " +
+                                        std::to_string(maximum_support_contacts) + " constraints");
         std::set<std::string> chains;
         for (const auto &value : contacts) {
             anima::detail::json_fields(value, {"chain", "socket", "marker", "pole", "clips", "actions"});

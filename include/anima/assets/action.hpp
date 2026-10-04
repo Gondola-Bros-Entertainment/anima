@@ -29,7 +29,8 @@ struct ActionCue {
 struct ActionPhase {
     /// Nonempty and unique within the timeline.
     std::string id;
-    /// Seconds, in (0, 3600]: the length of a timed phase or the loop period of a held phase.
+    /// Seconds, in (0, ActionTimeline::maximum_phase_seconds]: the length of a timed phase or the
+    /// loop period of a held phase.
     double duration{};
     /// Loops until release instead of ending after #duration.
     bool held{};
@@ -67,11 +68,18 @@ struct TimedActionCue {
 /// so seeking needs no history. Const member functions may run concurrently on any thread.
 class ActionTimeline {
   public:
-    /// Throws unless there are 1 to 64 phases with valid, unique ids and durations, at most one
-    /// held phase, and at most 1024 cues in total, each valid and ordered within its phase.
+    /// Largest number of phases.
+    static constexpr std::size_t maximum_phases = 64;
+    /// Largest ActionPhase::duration, in seconds.
+    static constexpr double maximum_phase_seconds = 3600;
+    /// Largest number of cues over all phases.
+    static constexpr std::size_t maximum_cues = 1024;
+    /// Throws unless there are 1 to #maximum_phases phases ("Action needs 1..64 phases" otherwise)
+    /// with valid, unique ids and durations in (0, #maximum_phase_seconds], at most one held phase,
+    /// and at most #maximum_cues cues in total, each valid and ordered within its phase.
     explicit ActionTimeline(std::vector<ActionPhase> phases) : phases_(std::move(phases)) {
         if (phases_.empty() || phases_.size() > maximum_phases)
-            throw std::invalid_argument("Action needs 1..64 phases");
+            throw std::invalid_argument("Action needs 1.." + std::to_string(maximum_phases) + " phases");
         std::set<std::string> names;
         bool held = false;
         std::size_t cues = 0;
@@ -162,9 +170,6 @@ class ActionTimeline {
     }
 
   private:
-    static constexpr std::size_t maximum_phases = 64;
-    static constexpr double maximum_phase_seconds = 3600;
-    static constexpr std::size_t maximum_cues = 1024;
     // Bounds a held phase's cycle count before it is converted to an integer, whatever the platform's cast does
     // beyond that range.
     static constexpr double maximum_held_cycles = 1e12;

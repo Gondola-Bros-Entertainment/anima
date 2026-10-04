@@ -2,8 +2,6 @@
 #include <anima/assets/interaction_runtime.hpp>
 namespace anima {
 namespace {
-// A document may hold this many contacts per actor, counted over the whole document.
-constexpr std::size_t contacts_per_actor = 8;
 // The one coordinated interaction version InteractionRuntime accepts.
 constexpr int interaction_version = 2;
 } // namespace
@@ -74,7 +72,8 @@ struct InteractionRuntime::Impl {
             placement_weights_.push_back(weights(entry.at("weights")));
         }
         bindings_ = std::make_unique<anima::InteractionBindings>(std::move(roles), std::move(attachments));
-        if (!document.at("contacts").is_array() || document.at("contacts").size() > actors_.size() * contacts_per_actor)
+        if (!document.at("contacts").is_array() ||
+            document.at("contacts").size() > actors_.size() * maximum_contacts_per_actor)
             throw std::invalid_argument("Invalid interaction contact count");
         std::set<std::pair<std::string, std::string>> owned_chains;
         for (const auto &entry : document.at("contacts")) {
