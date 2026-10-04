@@ -479,13 +479,18 @@ TEST_CASE("Body lifetime, contacts and argument validation") {
         REQUIRE_THROWS_WITH_AS(world.step(0), step_range, std::invalid_argument);
         REQUIRE_THROWS_WITH_AS(world.step(1), step_range, std::invalid_argument);
         REQUIRE_THROWS_WITH_AS(world.raycast({}, {0, 0, 0}), "Zero ray displacement", std::invalid_argument);
-        REQUIRE_THROWS_WITH_AS(floor.set_velocity({1, 0, 0}), "Static bodies cannot have velocity",
+        REQUIRE_THROWS_WITH_AS(floor.set_velocity({1, 0, 0}), "Stationary bodies cannot have velocity",
+                               std::invalid_argument);
+        REQUIRE_THROWS_WITH_AS(floor.set_angular_velocity({1, 0, 0}), "Stationary bodies cannot have angular velocity",
                                std::invalid_argument);
         auto bad = box({}, {0, 1, 1});
         REQUIRE_THROWS_WITH_AS(world.create(bad), "Invalid collider dimensions", std::invalid_argument);
         bad = box({}, {1, 1, 1});
         bad.mass = std::numeric_limits<float>::quiet_NaN();
         REQUIRE_THROWS_WITH_AS(world.create(bad), "Invalid body mass/material", std::invalid_argument);
+        bad = box({}, {1, 1, 1});
+        bad.velocity = {1, 0, 0};
+        REQUIRE_THROWS_WITH_AS(world.create(bad), "Stationary body has velocity", std::invalid_argument);
         stale = replacement;
         World other;
         REQUIRE_MESSAGE(!other.owns(replacement), "Foreign world accepted body");

@@ -13,6 +13,7 @@ using anima::detail::maximum_vector_component;
 using anima::detail::minimum_body_mass;
 using anima::detail::minimum_squared_displacement;
 using anima::detail::minimum_step_seconds;
+using anima::detail::rigid_transform_tolerance;
 inline constexpr std::size_t maximum_mesh_vertices = 1'000'000;
 inline constexpr std::size_t maximum_mesh_indices = 3'000'000;
 inline constexpr std::size_t maximum_hull_points = 256;
