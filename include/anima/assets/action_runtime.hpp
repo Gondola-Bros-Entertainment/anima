@@ -61,7 +61,8 @@ class ActionWeight {
     explicit ActionWeight(std::vector<ActionWeightKey> keys) : keys_(std::move(keys)) {
         if (keys_.size() < 2 || keys_.size() > maximum_keys || keys_.front().progress != 0 ||
             keys_.back().progress != 1)
-            throw std::invalid_argument("Action weight requires 2..32 keys covering 0..1");
+            throw std::invalid_argument("Action weight requires 2.." + std::to_string(maximum_keys) +
+                                        " keys covering 0..1");
         double previous = -1;
         for (const auto &[progress, weight] : keys_) {
             if (!std::isfinite(progress) || progress <= previous || !std::isfinite(weight) || weight < 0 || weight > 1)
@@ -130,9 +131,9 @@ struct ActionPropTrack {
 };
 /// Layers, prop tracks and contact curves of one phase.
 struct ActionPhaseBinding {
-    /// 1 to 8 pose layers, applied in order.
+    /// 1 to ActionRuntime::maximum_phase_layers pose layers, applied in order.
     std::vector<ActionLayer> layers;
-    /// At most 8 prop tracks.
+    /// At most ActionRuntime::maximum_phase_props prop tracks.
     std::vector<ActionPropTrack> props;
     /// Weight curve per motion contact chain.
     std::map<std::string, ActionWeight, std::less<>> contacts;
@@ -178,19 +179,28 @@ struct ActionSample {
 class ActionRuntime {
   public:
     using Definitions = std::map<std::string, ActionDefinition, std::less<>>;
+    /// Largest number of actions in a catalog.
+    static constexpr std::size_t maximum_actions = 4096;
+    /// Largest number of pose layers in a phase.
+    static constexpr std::size_t maximum_phase_layers = 8;
+    /// Largest number of prop tracks in a phase.
+    static constexpr std::size_t maximum_phase_props = 8;
+    /// Largest number of attachment roles an action requires.
+    static constexpr std::size_t maximum_roles = 8;
     /// Decodes @p document for @p motion, which it retains; the actions pose the model @p motion is
     /// bound to.
     ///
-    /// The document has the integer `version` 2, checked before any other field ("Unsupported action
-    /// catalog version" otherwise), and 1 to 4096 `actions`. Each action has a unique `id`, a
-    /// nonempty list of unique `handling` profiles, `roles` (at most 8, each role mapped to a
-    /// nonempty list of unique handling profiles) and `phases`. Each phase has `id`, `duration`,
-    /// `held`, 1 to 8 `layers`, `cues` (`id` and `at`), at most 8 `props` (`role`, `track`,
-    /// `interval` and `required`) and `contacts` (chain name to weight curve); phases and cues
-    /// follow the ActionTimeline rules. Each layer has `clip`, `mask` (a mask name, or null for a
-    /// full-body layer), `interval`, `mode` (`"override"` or `"additive"`), `weight` and
-    /// `reference` (`clip` and `at`), which an additive layer needs and an override has as null.
-    /// Every field is required, with `[]` or `{}` for an empty list or map. Intervals are two
+    /// The document has the integer `version` 2, checked before any other field ("Unsupported
+    /// action catalog version" otherwise), and 1 to #maximum_actions `actions`. Each action has a
+    /// unique `id`, a nonempty list of unique `handling` profiles, `roles` (at most #maximum_roles,
+    /// each role mapped to a nonempty list of unique handling profiles) and `phases`. Each phase
+    /// has `id`, `duration`, `held`, 1 to #maximum_phase_layers `layers` ("Action needs 1..8 pose
+    /// layers per phase" otherwise), `cues` (`id` and `at`), at most #maximum_phase_props `props`
+    /// (`role`, `track`, `interval` and `required`) and `contacts` (chain name to weight curve);
+    /// phases and cues follow the ActionTimeline rules. Each layer has `clip`, `mask` (a mask name,
+    /// or null for a full-body layer), `interval`, `mode` (`"override"` or `"additive"`), `weight`
+    /// and `reference` (`clip` and `at`), which an additive layer needs and an override has as
+    /// null. Every field is required, with `[]` or `{}` for an empty list or map. Intervals are two
     /// numbers in [0, 1]; weight curves are as in weight(). Masks must exist in @p motion, and a
     /// layer that samples a layer clip must use that clip's mask.
     ///
@@ -229,11 +239,12 @@ class ActionRuntime {
     /// for the same progress. @p handling is the caller's choice among ActionDefinition::handling;
     /// throws also when it is not one of them.
     [[nodiscard]] ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
-    /// Decodes a JSON weight curve: 2 to 32 [progress, weight] pairs, both in [0, 1], with
-    /// progress strictly increasing from 0 to 1. A value that is not an array of at most 32 keys
-    /// throws as an ActionWeight with too many keys does, a key that is not two numbers in [0, 1]
-    /// throws before the curve is built, and the decoded keys are then checked by the ActionWeight
-    /// constructor. May run concurrently on any thread; reads the C locale as the constructor does.
+    /// Decodes a JSON weight curve: 2 to ActionWeight::maximum_keys [progress, weight] pairs, both
+    /// in [0, 1], with progress strictly increasing from 0 to 1. A value that is not an array of at
+    /// most ActionWeight::maximum_keys keys throws as an ActionWeight with too many keys does, a
+    /// key that is not two numbers in [0, 1] throws before the curve is built, and the decoded keys
+    /// are then checked by the ActionWeight constructor. May run concurrently on any thread; reads
+    /// the C locale as the constructor does.
     [[nodiscard]] static ActionWeight weight(std::string_view document);
 
   private:

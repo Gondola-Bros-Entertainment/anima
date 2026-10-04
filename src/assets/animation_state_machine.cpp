@@ -77,14 +77,15 @@ using Runtime = detail::AnimationStateRuntime;
 using Playing = detail::AnimationStatePlaying;
 using Json = nlohmann::json;
 // The largest normalized advance of a looping state in one update, as Playback bounds a looping step.
-constexpr double maximum_state_loops = 10'000;
+constexpr unsigned maximum_state_loops = 10'000;
 // Seconds per pass of a state whose clips have zero duration, at speed 1, so that its exit times are reached.
 constexpr double pose_pass_seconds = 1;
 constexpr std::size_t maximum_machine_document_bytes = 4 * 1024 * 1024;
 constexpr int maximum_machine_document_depth = 16;
 constexpr std::int64_t machine_document_version = 2;
 constexpr std::string_view machine_document_kind = "anima.animation-state-machine";
-constexpr std::size_t maximum_animator_payload_bytes = 16 * 1024 * 1024;
+constexpr std::size_t bytes_per_mebibyte = 1024 * 1024;
+constexpr std::size_t maximum_animator_payload_bytes = 16 * bytes_per_mebibyte;
 constexpr std::size_t maximum_machine_key_bytes = 4096;
 constexpr auto replaced_mesh = "StateMachineAnimator mesh was replaced; bind a new StateMachineAnimator explicitly";
 
@@ -283,7 +284,8 @@ void advance(const Data &data, Playing &playing, const std::vector<double> &valu
     const auto rate = state_rate(data, state, values, pair);
     const auto delta = rate * (to - from);
     if (state.loop && delta > maximum_state_loops)
-        throw std::invalid_argument("Animation state step exceeds 10000 loops; split large offline advances");
+        throw std::invalid_argument("Animation state step exceeds " + std::to_string(maximum_state_loops) +
+                                    " loops; split large offline advances");
     const auto start = playing.time, end = start + delta;
     if (!std::isfinite(end))
         throw std::runtime_error("Animation state time overflow");
@@ -884,7 +886,9 @@ void add_state_machine_animator_codec(ComponentCodecs &codecs, AnimationStateMac
                                 {"parameters", std::move(encoded)}}
                                .dump();
             // The decoder rejects larger payloads, so an animator captured over the limit could never be restored.
-            require(payload.size() <= maximum_animator_payload_bytes, "State machine animator payload exceeds 16 MiB");
+            require(payload.size() <= maximum_animator_payload_bytes,
+                    "State machine animator payload exceeds " +
+                        std::to_string(maximum_animator_payload_bytes / bytes_per_mebibyte) + " MiB");
             return payload;
         },
         [resolve = std::move(resolve)](GameObject object, std::string_view payload, const ObjectReferences &) {

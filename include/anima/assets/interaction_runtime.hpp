@@ -47,6 +47,8 @@ struct InteractionSample {
 class InteractionRuntime {
   public:
     using Actors = std::map<std::string, InteractionActor, std::less<>>;
+    /// Largest number of contacts per actor, counted over the whole document.
+    static constexpr std::size_t maximum_contacts_per_actor = 8;
     /// Decodes @p document for @p actors, keyed by role id.
     ///
     /// The document has the integer `version` 2, checked before any other field ("Unsupported
@@ -55,16 +57,18 @@ class InteractionRuntime {
     /// one entry per actor mapping every phase id to `{"layers": [...]}`, with layers as in an
     /// ActionRuntime document. `attachments` lists `child`, `parent`, `child_socket`,
     /// `parent_socket` (socket names of those actors) and `weights`. `contacts` has at most
-    /// `8 * actors.size()` entries, each with `child`, `parent`, `chain`, `target_socket` (a parent
-    /// socket), `pole` (three finite numbers in the child's model space), `weights` and
-    /// `orientation` (true also matches the socket's rotation). Every `weights` maps each phase id
-    /// to a curve as in ActionRuntime::weight. Every field is required.
+    /// #maximum_contacts_per_actor times `actors.size()` entries, each with `child`, `parent`,
+    /// `chain`, `target_socket` (a parent socket), `pole` (three finite numbers in the child's
+    /// model space), `weights` and `orientation` (true also matches the socket's rotation). Every
+    /// `weights` maps each phase id to a curve as in ActionRuntime::weight. Every field is
+    /// required.
     ///
-    /// There are 1 to 64 actors, each with a motion ("Interaction role has no motion" otherwise),
-    /// and a role's model is its motion's MotionRuntime::model(). Every socket that the document
-    /// names, as an attachment socket or a contact target, passes validate_interaction_socket
-    /// against its actor's model. A contact needs an attachment from its child to its parent, a
-    /// chain used once per child, and a chain that does not move the child's attachment socket.
+    /// There are 1 to InteractionBindings::maximum_roles actors, each with a motion ("Interaction
+    /// role has no motion" otherwise), and a role's model is its motion's MotionRuntime::model().
+    /// Every socket that the document names, as an attachment socket or a contact target, passes
+    /// validate_interaction_socket against its actor's model. A contact needs an attachment from
+    /// its child to its parent, a chain used once per child, and a chain that does not move the
+    /// child's attachment socket.
     ///
     /// May run concurrently on any thread. Reads @p document and the C locale, which must not change
     /// during the call, as prefab.hpp describes for documents.
