@@ -35,6 +35,23 @@ namespace detail {
 struct UiFrame;
 }
 
+/// How the display takes the frames that VulkanRenderer::draw() presents, as Vulkan's present modes of the same names
+/// define it. A surface supports PresentMode::fifo always and the others only where its driver offers them; see
+/// VulkanRenderer::set_present_mode.
+enum class PresentMode {
+    /// Frames wait in a queue and the display takes one at each vertical blank, so no frame tears and the display shows
+    /// at most one frame per refresh.
+    fifo,
+    /// A frame replaces the displayed image at once, without waiting for a vertical blank, so frames can tear.
+    immediate,
+    /// A frame waits for the next vertical blank in a queue of one, replacing the frame that waits there, which is
+    /// never displayed, so no frame tears and frames can be drawn faster than the display refreshes.
+    mailbox,
+    /// As fifo, except that a frame that arrives after a vertical blank at which the queue was empty replaces the
+    /// displayed image at once, so a late frame can tear.
+    fifo_relaxed,
+};
+
 /// Construction options for VulkanRenderer.
 struct RendererOptions {
     /// Enables `VK_LAYER_KHRONOS_validation` through `VK_EXT_debug_utils`; construction throws
@@ -60,8 +77,13 @@ struct RendererOptions {
     /// with no instances shows only the background.
     bool diagnostic_triangle = false;
     /// Enables FrameProfile timings, with six GPU timestamp queries when the graphics queue supports
-    /// them, and calibrated timestamps where the device also offers them (see VulkanRenderer::measures_gpu_idle).
-    /// When false there is no query pool and no clock is read.
+    /// them, calibrated timestamps where the device also offers them (see VulkanRenderer::measures_gpu_idle), and
+    /// `VK_GOOGLE_display_timing` where the device offers it (see VulkanRenderer::measures_present_interval). With
+    /// that extension every present carries an id for its display time, and each draw() that prepares a frame reads
+    /// the display times that arrived since the previous read with `vkGetPastPresentationTimingGOOGLE`, in
+    /// FrameProfile::prepare_ms; an out-of-date result of that read makes the next draw() recreate the swapchain, and
+    /// any other failure, such as surface loss, throws RendererFatalError as draw() describes. When false there is no
+    /// query pool, no clock is read and no display time is read.
     bool profile = false;
     /// Initial main-view culling state; see VulkanRenderer::set_frustum_culling.
     bool frustum_culling = true;
@@ -81,10 +103,16 @@ struct RendererOptions {
     /// `std::invalid_argument`. With 2, draw() prepares and records a frame while the GPU still runs the previous one,
     /// so that the CPU's work overlaps the GPU's, at the cost of a second copy of the per-frame buffers (palettes, the
     /// environment and custom material frame blocks, UI vertices) and of up to a frame more between the inputs that a
-    /// frame shows and its display. With 1, each draw() waits for the previous frame before preparing the next. Either
-    /// way, a draw() that uploads, as when a mesh first becomes visible, waits for the frames already in flight, since
-    /// the fence that an upload waits for signals only after every earlier submission.
+    /// frame shows and its display. With 1, each draw() waits for the previous frame before preparing the next. Where
+    /// VulkanRenderer::waits_for_presents() is true, each draw() also waits for the present of the frame submitted one
+    /// submission before the frame that it waits for, as VulkanRenderer::wait_for_frame() describes, which on a driver
+    /// that reports presents at display bounds the presented frames that wait for display ahead of the next at this
+    /// count. Either way, a draw() that uploads, as when a mesh first becomes visible, waits for the frames already in
+    /// flight, since the fence that an upload waits for signals only after every earlier submission.
     std::uint32_t frames_in_flight = 2;
+    /// Initial present mode request, under the rules of VulkanRenderer::set_present_mode. A value that is not a
+    /// PresentMode enumerator makes construction throw `std::invalid_argument`.
+    PresentMode present_mode = PresentMode::fifo;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -159,6 +187,11 @@ struct RenderStats {
     std::uint32_t capture_count{};
     /// Accepted selections, counting the initial one from construction (even an empty one).
     std::uint32_t scene_generations{};
+    /// Waits for a present that VulkanRenderer::wait_for_frame() and VulkanRenderer::draw() began, one for each
+    /// present that they wait for as wait_for_frame() describes; zero unless VulkanRenderer::waits_for_presents().
+    std::uint64_t present_waits{};
+    /// Waits counted in present_waits that ended at their 100 ms limit before the driver reported the present.
+    std::uint64_t present_wait_timeouts{};
 };
 
 /// Timings of the latest draw(), in milliseconds.
@@ -170,19 +203,23 @@ struct RenderStats {
 /// sets only the fields it reached. When fence_wait_ms ends, the GPU has finished the frame submitted
 /// RendererOptions::frames_in_flight submissions before the one that the draw() submits, and every frame before that.
 /// With one frame in flight that is the previous frame, so no later CPU field overlaps GPU frame work; with two, the
-/// previous frame can still run on the GPU during every later field. The frame submitted at the end of
-/// record_submit_ms can run on the GPU during present_ms and after draw() returns.
+/// previous frame can still run on the GPU during every later field. Where VulkanRenderer::wait_for_frame() waits for
+/// presents, the wait for the present of the frame submitted one submission before the finished one has ended too, as
+/// it describes. The frame submitted at the end of record_submit_ms can run on the GPU during present_ms and after
+/// draw() returns.
 struct FrameProfile {
     /// From draw() entry through the wait for the fence of the frame submitted RendererOptions::frames_in_flight
-    /// submissions earlier, including swapchain recreation. After VulkanRenderer::wait_for_frame() that frame has
-    /// finished, so the wait returns at once.
+    /// submissions earlier and, where VulkanRenderer::wait_for_frame() waits for presents, for the present of the frame
+    /// submitted one submission before that, including swapchain recreation. After VulkanRenderer::wait_for_frame()
+    /// those waits are done, so they return at once.
     double fence_wait_ms{};
     /// Frame preparation after that wait: destroying what earlier calls released once no frame in flight can use it,
     /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in
     /// flight and otherwise in a later call, once that frame has finished, sizing the shadow maps and fitting their
     /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
-    /// fence_wait_ms waited for, and for a UiContext frame, copying its vertices, creating the UI pipeline when first
-    /// needed and uploading each new UI texture, which waits for the GPU.
+    /// fence_wait_ms waited for, reading the display times that set present_interval_ms, and for a UiContext frame,
+    /// copying its vertices, creating the UI pipeline when first needed and uploading each new UI texture, which waits
+    /// for the GPU.
     double prepare_ms{};
     /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
     /// and placements, palette writes, sorting blended draws back to front, creating the opaque depth and color copies
@@ -191,7 +228,8 @@ struct FrameProfile {
     double upload_ms{};
     /// Swapchain image acquisition.
     double acquire_ms{};
-    /// Command recording and queue submission; driver calls may block here.
+    /// Command recording and queue submission; driver calls may block here, as MoltenVK's submission does until Core
+    /// Animation frees a drawable for the frame, which in PresentMode::fifo paces frames to the display.
     double record_submit_ms{};
     /// The presentation call.
     double present_ms{};
@@ -232,6 +270,19 @@ struct FrameProfile {
     /// the counter's wrap period (2^timestampValidBits ticks of timestampPeriod nanoseconds) after the earlier frame's
     /// submission. Empty otherwise too, as on the first timed frame.
     std::optional<double> gpu_idle_ms;
+    /// The time between the displays of two frames presented one after the other: the difference between the display
+    /// times (`actualPresentTime`) that `VK_GOOGLE_display_timing` reports for them. Display times arrive some time
+    /// after their presents, so the frames were presented by earlier calls. Each draw() reads the display times that
+    /// arrived since the previous one and sets the field from the latest frame among them whose predecessor has a known
+    /// display time, from this read or an earlier one, that is no later than the frame's own. Both frames must have
+    /// been presented to the current swapchain, and a display time of zero, which Vulkan does not define, counts as
+    /// unknown. Vulkan defines a display time as when the frame was displayed, so in PresentMode::fifo the difference
+    /// is normally the display's refresh interval, or a multiple of it after a frame missed a vertical blank. The times
+    /// are the driver's, though: MoltenVK 1.4.1 takes them from Core Animation and, for a frame that Core Animation
+    /// reports no display time for, as one it did not display, uses the time at which it learns that, so its intervals
+    /// then follow the presents rather than the display. Set where VulkanRenderer::measures_present_interval() is true;
+    /// empty otherwise, as when no display time arrived since the previous draw().
+    std::optional<double> present_interval_ms;
 };
 
 /// Resource residency and draw counters.
@@ -466,34 +517,39 @@ struct ResourceStats {
 /// buffer, textures and descriptors are created the first time a preparation draws it and are released as cached
 /// meshes are, once only the renderer references the material; creating them fails as a mesh upload does.
 ///
-/// Swapchains follow the window's pixel size with FIFO presentation. Recreation after a resize or an
-/// out-of-date or suboptimal result waits for the device to go idle, so it can stall briefly. Display output is
-/// sRGB-encoded once: by an sRGB swapchain format when the surface offers one, otherwise in the display shader
-/// for 8-bit UNORM formats. Presentation semaphores belong to swapchain images. Where the instance and device
-/// support `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain resources are
-/// destroyed; otherwise, or with RendererOptions::disable_present_fences, a device wait-idle is used, which
-/// unextended Vulkan does not guarantee to cover presentation. Portability enumeration and
-/// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to
-/// standard output.
+/// Swapchains follow the window's pixel size and present in the mode that set_present_mode() requests where the surface
+/// offers it, otherwise in PresentMode::fifo. Each swapchain is created with a `minImageCount` of one more than the
+/// fewest images that the surface allows in every mode and, where the instance supports `VK_EXT_surface_maintenance1`,
+/// in the swapchain's mode, but no more than the most that it allows in them; Vulkan lets the driver create more
+/// images than that. Recreation after a resize, a change of present mode or an out-of-date or suboptimal result waits
+/// for the device to go idle, so it can stall briefly. Where the device supports `VK_KHR_present_id` and
+/// `VK_KHR_present_wait` (waits_for_presents()), presents in the FIFO modes carry ids, which wait_for_frame() and
+/// draw() wait for. Display output is sRGB-encoded once: by an sRGB swapchain format when the surface offers one,
+/// otherwise in the display shader for 8-bit UNORM formats. Presentation semaphores belong to swapchain images. Where
+/// the instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain
+/// resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a device wait-idle is used,
+/// which unextended Vulkan does not guarantee to cover presentation. Portability enumeration and
+/// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard output.
 ///
-/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_environment(), set_time(),
-/// set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw `std::logic_error`; after a
-/// RendererFatalError they throw RendererFatalError.
+/// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(), set_present_mode(),
+/// set_environment(), set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw
+/// `std::logic_error`; after a RendererFatalError they throw RendererFatalError.
 class VulkanRenderer {
   public:
     /// Creates the Vulkan instance, surface and device for @p window, then selects RendererOptions::scenes.
     ///
-    /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that
-    /// supports swapchains, has a queue family for both graphics and compute, and can present to the window; the
-    /// first draw() with a drawable window creates the swapchain. Throws `std::invalid_argument` for a
-    /// RendererOptions::fail_after stage that the option says construction rejects, before anything else, then for a
+    /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that supports
+    /// swapchains, has a queue family for both graphics and compute, and can present to the window; the first draw()
+    /// with a drawable window creates the swapchain. Throws `std::invalid_argument` for a RendererOptions::fail_after
+    /// stage that the option says construction rejects, before anything else, then for a
     /// RendererOptions::max_anisotropy that is not finite or is below 1 ("Maximum anisotropy must be finite and at
     /// least 1"), for a RendererOptions::lod_threshold that is not finite or is negative ("LOD threshold must be finite
-    /// and nonnegative"), for a RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or 2")
-    /// and for a null @p window; RendererUnavailableError when no driver or device can present to the
-    /// window; what set_scenes() throws for the initial selection; InjectedRendererFailure for
-    /// RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
-    /// Completed stages are released before the exception propagates.
+    /// and nonnegative"), for a RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or
+    /// 2"), for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode") and for a
+    /// null @p window; RendererUnavailableError when no driver or device can present to the window; what set_scenes()
+    /// throws for the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and
+    /// `std::runtime_error` for other failures, including failed Vulkan calls. Completed stages are released before the
+    /// exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -552,6 +608,20 @@ class VulkanRenderer {
     /// draw the levels the view chose. Throws `std::invalid_argument` unless @p pixels is finite and nonnegative
     /// ("LOD threshold must be finite and nonnegative"), keeping the previous threshold.
     void set_lod_threshold(float pixels);
+    /// Requests @p mode for presentation; it starts as RendererOptions::present_mode. When @p mode differs from the
+    /// current request, the next draw() recreates the swapchain, as after request_resize(), in @p mode where the
+    /// surface offers it and otherwise in PresentMode::fifo, which Vulkan requires every surface to offer;
+    /// present_mode() reports which. Requesting the current mode again changes nothing. Throws `std::invalid_argument`
+    /// for a value that is not a PresentMode enumerator ("Unknown present mode"), keeping the previous request.
+    void set_present_mode(PresentMode mode);
+    /// The present mode of the latest swapchain that draw() created, or empty before the first. After
+    /// set_present_mode() it changes with the next swapchain.
+    [[nodiscard]] std::optional<PresentMode> present_mode() const noexcept;
+    /// Whether wait_for_frame() and draw() wait for presents in PresentMode::fifo and PresentMode::fifo_relaxed, which
+    /// the constructor decides once: the device offers `VK_KHR_present_id` and `VK_KHR_present_wait` with their
+    /// `presentId` and `presentWait` features, which the renderer then enables. The other modes queue no presents
+    /// behind one another, so frames in them never wait for presents. RenderStats::present_waits counts the waits.
+    [[nodiscard]] bool waits_for_presents() const noexcept;
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and the detail region, enabled or not, with
@@ -618,14 +688,27 @@ class VulkanRenderer {
     /// Waits for the frame that the next draw() or UiContext::render() waits for before preparing its own: the one
     /// submitted RendererOptions::frames_in_flight submissions before the frame that the call will submit.
     ///
-    /// Call it at the top of each frame, before reading input and updating the scenes and the view. draw()'s wait
-    /// then returns at once, so it no longer falls between reading the input and drawing it, and
-    /// FrameProfile::fence_wait_ms times only the window checks and any swapchain recreation. It does not wait for the
-    /// display: a driver that paces presentation by blocking image acquisition, submission or presentation still
-    /// blocks inside draw(). It waits whatever the window's state, and returns at once before the first submitted frame
-    /// and when no frame has been submitted since the previous wait. Throws `std::logic_error` after shutdown(),
-    /// RendererFatalError after a fatal failure, and RendererFatalError, after which the renderer accepts only
-    /// shutdown, for device loss or a frame that does not finish within 5 seconds.
+    /// Where waits_for_presents() is true, it then waits for the present of the frame submitted one submission before
+    /// that one, if that frame was presented to the current swapchain in PresentMode::fifo or
+    /// PresentMode::fifo_relaxed: until `vkWaitForPresentKHR` reports the present, for at most 100 ms. A present that
+    /// is not reported by then, as to a window that the system does not show, is not an error but holds the call for
+    /// the whole 100 ms; nor is a swapchain that the wait finds out of date or suboptimal, which the next draw()
+    /// recreates. RenderStats::present_waits and RenderStats::present_wait_timeouts count the waits. Vulkan asks
+    /// drivers to report a present as close as possible to its display. On a driver that does, the wait holds the call
+    /// only while that frame and the RendererOptions::frames_in_flight frames presented after it all wait for display,
+    /// so that at most RendererOptions::frames_in_flight presented frames wait for display ahead of the next, and no
+    /// frame's work waits for the display of the frame just before it. Vulkan does not require it, though:
+    /// MoltenVK 1.4.1 reports a present once the GPU has finished the commands that present it, so there the wait
+    /// bounds no display queue, and its submission paces frames instead (FrameProfile::record_submit_ms).
+    ///
+    /// Call it at the top of each frame, before reading input and updating the scenes and the view. draw()'s waits
+    /// then return at once, so they no longer fall between reading the input and drawing it, and
+    /// FrameProfile::fence_wait_ms times only the window checks and any swapchain recreation. A driver that paces
+    /// presentation by blocking image acquisition, submission or presentation still blocks inside draw(). It waits
+    /// whatever the window's state, and returns at once before the first submitted frame and when no frame has been
+    /// submitted since the previous wait. Throws `std::logic_error` after shutdown(), RendererFatalError after a fatal
+    /// failure, and RendererFatalError, after which the renderer accepts only shutdown, for any other failure of either
+    /// wait, such as device or surface loss, and for a frame that does not finish within 5 seconds.
     void wait_for_frame();
     /// Prepares, records, submits and presents one frame; does not advance simulation or animation.
     ///
@@ -634,9 +717,10 @@ class VulkanRenderer {
     /// loop and call again. Returns true when the frame was presented.
     ///
     /// Each call waits for the frame submitted RendererOptions::frames_in_flight submissions before the one that it
-    /// submits, a wait that returns at once when wait_for_frame() has already made it, releases unowned cache entries,
-    /// culls, uploads meshes that became visible or cast shadows (prepare_meshes() can upload them earlier) and writes
-    /// every prepared instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
+    /// submits and, as wait_for_frame() describes, for the present of the frame submitted one submission before that,
+    /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, culls,
+    /// uploads meshes that became visible or cast shadows (prepare_meshes() can upload them earlier) and writes every
+    /// prepared instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
     /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface loss, a
     /// fence timeout, any other Vulkan failure, or any failure to build a new swapchain once the previous one is
     /// released; and `std::runtime_error` for other failures, such as a surface that offers no usable format, which
@@ -650,6 +734,12 @@ class VulkanRenderer {
     /// `VK_EXT_calibrated_timestamps`, which the renderer then enables. Vulkan orders timestamps written by different
     /// submissions only with one of them enabled, and the idle time compares two frames' timestamps.
     [[nodiscard]] bool measures_gpu_idle() const noexcept;
+    /// Whether FrameProfile::present_interval_ms can be set, which the constructor decides once:
+    /// RendererOptions::profile is on and the device offers `VK_GOOGLE_display_timing`, which the renderer then
+    /// enables.
+    [[nodiscard]] bool measures_present_interval() const noexcept;
+    /// The counters so far, which shutdown() returns once they are final; after it, those final counters.
+    [[nodiscard]] RenderStats stats() const noexcept;
     /// Waits for the device and presentation to finish, destroys every Vulkan object and returns the final
     /// counters, including failures during this cleanup. Idempotent. The waits have no timeout, so a hung
     /// driver blocks here and in the destructor.
@@ -660,8 +750,6 @@ class VulkanRenderer {
     // Whether the surface offers the sRGB format that UI blending needs; UiContext checks it at construction.
     [[nodiscard]] bool srgb_presentation();
     [[nodiscard]] bool draw_ui(const detail::UiFrame &frame);
-    // RenderStats::presented_frames so far, from which UiContext counts the frames each render presents.
-    [[nodiscard]] std::uint64_t presented_frames() const noexcept;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -712,9 +712,9 @@ bool UiContext::render() {
     if (!impl_->render.failure.empty())
         throw UiUnsupportedFeature(impl_->render.failure);
     // The renderer's own count decides, so a frame presented by a call that then throws is counted too.
-    const auto presented_before = impl_->renderer.presented_frames();
+    const auto presented_before = impl_->renderer.stats().presented_frames;
     const auto count_presented = [&] {
-        impl_->stats.rendered_frames += impl_->renderer.presented_frames() - presented_before;
+        impl_->stats.rendered_frames += impl_->renderer.stats().presented_frames - presented_before;
     };
     bool presented = false;
     try {

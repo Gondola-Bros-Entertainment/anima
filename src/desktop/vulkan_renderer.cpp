@@ -37,6 +37,11 @@
 namespace anima {
 namespace {
 constexpr std::uint64_t fence_timeout = 5'000'000'000ULL;
+// Longest that a frame waits for the present of an earlier one, in nanoseconds. That wait only paces frames, so a
+// present that never completes, as to a window the system does not show, holds a frame back no longer than this.
+constexpr std::uint64_t present_wait_timeout = 100'000'000ULL;
+// Display times that one call reads from VK_GOOGLE_display_timing before asking for more.
+constexpr std::uint32_t display_time_batch = 16;
 // Most frames that RendererOptions::frames_in_flight allows.
 constexpr std::uint32_t max_frames_in_flight = 2;
 constexpr std::uint32_t vertex_code[] =
@@ -141,6 +146,33 @@ constexpr bool has_fields = initializable_from_any<T>(std::make_index_sequence<c
 // Swapchain formats in order of preference, each in VK_COLOR_SPACE_SRGB_NONLINEAR_KHR.
 constexpr std::array preferred_surface_formats{VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
                                                VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+// The Vulkan present mode of @p mode; throws std::invalid_argument for a value that is not a PresentMode enumerator.
+VkPresentModeKHR vulkan_present_mode(PresentMode mode) {
+    switch (mode) {
+    case PresentMode::fifo:
+        return VK_PRESENT_MODE_FIFO_KHR;
+    case PresentMode::immediate:
+        return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    case PresentMode::mailbox:
+        return VK_PRESENT_MODE_MAILBOX_KHR;
+    case PresentMode::fifo_relaxed:
+        return VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    }
+    throw std::invalid_argument("Unknown present mode");
+}
+const char *present_mode_name(PresentMode mode) noexcept {
+    switch (mode) {
+    case PresentMode::fifo:
+        return "fifo";
+    case PresentMode::immediate:
+        return "immediate";
+    case PresentMode::mailbox:
+        return "mailbox";
+    case PresentMode::fifo_relaxed:
+        return "fifo_relaxed";
+    }
+    return "unknown";
+}
 } // namespace
 
 struct VulkanRenderer::Impl {
@@ -179,6 +211,28 @@ struct VulkanRenderer::Impl {
     std::uint32_t graphics_family{}, present_family{};
     VkQueue graphics_queue{}, present_queue{};
     bool maintenance_instance{}, present_fences{}, resize = true, stopped = false, fatal = false;
+    // With VK_EXT_surface_maintenance1, the query of a surface's capabilities for one present mode.
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR surface_capabilities2{};
+    // Whether VK_KHR_present_id and VK_KHR_present_wait are enabled with their features, so that frames presented in
+    // the FIFO modes carry ids and later frames wait for their presents; see awaits_presents().
+    bool present_waits{};
+    PFN_vkWaitForPresentKHR wait_for_present{};
+    // Whether VK_GOOGLE_display_timing is enabled, which RendererOptions::profile asks for, so that presents carry
+    // ids whose display times set FrameProfile::present_interval_ms.
+    bool display_timing{};
+    PFN_vkGetPastPresentationTimingGOOGLE past_presentation_timing{};
+    // Presents so far, each of which takes the next value as its id.
+    std::uint64_t presents{};
+    // The mode of the latest swapchain created; empty before the first.
+    std::optional<PresentMode> presenting;
+    // The latest frame of the current swapchain that VK_GOOGLE_display_timing reported displayed: its id and display
+    // time in nanoseconds. Display times arrive in batches, gathered in past_timings.
+    struct DisplayedFrame {
+        std::uint32_t id{};
+        std::uint64_t time{};
+    };
+    std::optional<DisplayedFrame> latest_display;
+    std::vector<VkPastPresentationTimingGOOGLE> past_timings;
     // Whether BC7 images upload as BC7: the device samples BC7 with linear filtering and RendererOptions::decode_bc7
     // is off. Otherwise they upload decoded to RGBA8.
     bool bc7_sampled{};
@@ -405,6 +459,7 @@ struct VulkanRenderer::Impl {
             throw std::invalid_argument("LOD threshold must be finite and nonnegative");
         if (options.frames_in_flight < 1 || options.frames_in_flight > max_frames_in_flight)
             throw std::invalid_argument("Frames in flight must be 1 or 2");
+        (void)vulkan_present_mode(options.present_mode);
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -492,6 +547,12 @@ struct VulkanRenderer::Impl {
             throw RendererUnavailableError("No installed Vulkan driver supports Vulkan 1.1 (VkResult " +
                                            std::to_string(created) + ")");
         check(created, "Create instance");
+        if (maintenance_instance) {
+            surface_capabilities2 = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
+                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
+            if (!surface_capabilities2)
+                throw std::runtime_error("Surface capabilities entry point unavailable");
+        }
         if (options.validation) {
             const auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
                 vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
@@ -580,6 +641,25 @@ struct VulkanRenderer::Impl {
             if (present_fences)
                 extensions.push_back(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
         }
+        // Waiting for a present needs both its id and the wait, each an extension with a feature of its own.
+        VkPhysicalDevicePresentIdFeaturesKHR present_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+        VkPhysicalDevicePresentWaitFeaturesKHR present_wait{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+        if (has_extension(selected_extensions, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+            has_extension(selected_extensions, VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
+            present_id.pNext = &present_wait;
+            VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            features.pNext = &present_id;
+            vkGetPhysicalDeviceFeatures2(physical, &features);
+            present_waits = present_id.presentId && present_wait.presentWait;
+            if (present_waits) {
+                extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+                extensions.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+            }
+        }
+        display_timing = options.profile && has_extension(selected_extensions, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+        if (display_timing)
+            extensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         const float priority = 1.0F;
         std::vector<VkDeviceQueueCreateInfo> queues;
         for (auto family : {graphics_family, present_family}) {
@@ -618,9 +698,33 @@ struct VulkanRenderer::Impl {
             anisotropy = std::min(options.max_anisotropy, properties.limits.maxSamplerAnisotropy);
         }
         info.pEnabledFeatures = &enabled;
+        // Each enabled extension's feature structure, as the queries above filled it, joins the chain.
+        void *feature_chain = nullptr;
+        const auto enable = [&](auto &feature) {
+            feature.pNext = feature_chain;
+            feature_chain = &feature;
+        };
         if (present_fences)
-            info.pNext = &maintenance;
+            enable(maintenance);
+        if (present_waits) {
+            enable(present_id);
+            enable(present_wait);
+        }
+        info.pNext = feature_chain;
         check(vkCreateDevice(physical, &info, nullptr, &device), "Create device");
+        // The loader need not export extension commands, so they are looked up through the device.
+        if (present_waits) {
+            wait_for_present =
+                reinterpret_cast<PFN_vkWaitForPresentKHR>(vkGetDeviceProcAddr(device, "vkWaitForPresentKHR"));
+            if (!wait_for_present)
+                throw std::runtime_error("Present wait entry point unavailable");
+        }
+        if (display_timing) {
+            past_presentation_timing = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
+                vkGetDeviceProcAddr(device, "vkGetPastPresentationTimingGOOGLE"));
+            if (!past_presentation_timing)
+                throw std::runtime_error("Display timing entry point unavailable");
+        }
         VmaAllocatorCreateInfo allocator_info{};
         allocator_info.vulkanApiVersion = VK_API_VERSION_1_1;
         allocator_info.physicalDevice = physical;
@@ -631,6 +735,7 @@ struct VulkanRenderer::Impl {
         vkGetDeviceQueue(device, present_family, 0, &present_queue);
         std::cout << "Presentation retirement: "
                   << (present_fences ? "EXT_swapchain_maintenance1 fences" : "Vulkan 1.1 wait-idle fallback") << '\n';
+        std::cout << "Present waits: " << (present_waits ? "KHR_present_wait in the FIFO modes" : "none") << '\n';
         std::cout << "BC7 textures: " << (bc7_sampled ? "sampled as BC7" : "decoded to RGBA8 on the CPU") << '\n';
         std::cout << "Texture anisotropy: " << anisotropy << '\n';
     }
@@ -776,6 +881,41 @@ struct VulkanRenderer::Impl {
         }
         return formats.front();
     }
+    // The mode that recreate() gives the swapchain: the requested one where the surface offers it, otherwise FIFO,
+    // which Vulkan requires every surface to offer.
+    PresentMode supported_present_mode() const {
+        const auto modes = enumerate<VkPresentModeKHR>(
+            [&](auto *n, auto *p) { return vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, n, p); },
+            "Enumerate present modes");
+        if (std::find(modes.begin(), modes.end(), vulkan_present_mode(options.present_mode)) != modes.end())
+            return options.present_mode;
+        std::cout << "Present mode " << present_mode_name(options.present_mode) << " is unavailable; presenting in "
+                  << present_mode_name(PresentMode::fifo) << '\n';
+        return PresentMode::fifo;
+    }
+    // The swapchain's image count for @p mode, which the surface offers: one more than its least, within its most.
+    // Vulkan bounds the count by @p caps, the capabilities of every mode; with VK_EXT_surface_maintenance1 the least
+    // and most for @p mode alone, which may be more or fewer, bound it too.
+    std::uint32_t image_count(const VkSurfaceCapabilitiesKHR &caps, PresentMode mode) const {
+        auto least = caps.minImageCount;
+        // Zero means no most.
+        auto most = caps.maxImageCount;
+        if (surface_capabilities2) {
+            VkSurfacePresentModeEXT present{VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT};
+            present.presentMode = vulkan_present_mode(mode);
+            VkPhysicalDeviceSurfaceInfo2KHR info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
+            info.pNext = &present;
+            info.surface = surface;
+            VkSurfaceCapabilities2KHR capabilities{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+            check(surface_capabilities2(physical, &info, &capabilities), "Query present mode capabilities");
+            const auto &mode_caps = capabilities.surfaceCapabilities;
+            least = std::max(least, mode_caps.minImageCount);
+            if (mode_caps.maxImageCount != 0 && (most == 0 || mode_caps.maxImageCount < most))
+                most = mode_caps.maxImageCount;
+        }
+        const auto count = least + 1;
+        return most != 0 ? std::min(count, most) : count;
+    }
     static VkExtent2D surface_extent(VkExtent2D pixels, const VkSurfaceCapabilitiesKHR &caps) {
         return caps.currentExtent.width != UINT32_MAX
                    ? caps.currentExtent
@@ -801,12 +941,14 @@ struct VulkanRenderer::Impl {
             capture_to_memory = false;
             throw std::runtime_error("Capture requires a transferable BGRA/RGBA8 swapchain");
         }
+        const auto mode = supported_present_mode();
+        const auto count = image_count(caps, mode);
         check(vkDeviceWaitIdle(device), "Wait before swapchain recreation");
         wait_for_presentation();
         destroy_swapchain();
         // Nothing can be presented until the replacement is complete, so any failure from here on is fatal.
         try {
-            create_swapchain(caps, selected, selected_extent, capture);
+            create_swapchain(caps, selected, selected_extent, capture, mode, count);
         } catch (const std::exception &error) {
             fatal = true;
             throw RendererFatalError(error.what());
@@ -814,16 +956,13 @@ struct VulkanRenderer::Impl {
         resize = false;
         ++stats.swapchain_generations;
         std::cout << "Swapchain " << stats.swapchain_generations << ": " << extent.width << 'x' << extent.height
-                  << " pixels, " << images.size() << " images\n";
+                  << " pixels, " << images.size() << " images, " << present_mode_name(mode) << " presentation\n";
         return true;
     }
     void create_swapchain(const VkSurfaceCapabilitiesKHR &caps, VkSurfaceFormatKHR selected, VkExtent2D selected_extent,
-                          bool capture) {
+                          bool capture, PresentMode mode, std::uint32_t count) {
         extent = selected_extent;
         format = selected.format;
-        auto count = caps.minImageCount + 1;
-        if (caps.maxImageCount > 0)
-            count = std::min(count, caps.maxImageCount);
         VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         for (auto option : {VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
                             VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR}) {
@@ -849,9 +988,10 @@ struct VulkanRenderer::Impl {
         }
         info.preTransform = caps.currentTransform;
         info.compositeAlpha = alpha;
-        info.presentMode = VK_PRESENT_MODE_FIFO_KHR; // Required by Vulkan; bounded CPU/GPU use.
+        info.presentMode = vulkan_present_mode(mode);
         info.clipped = VK_TRUE;
         check(vkCreateSwapchainKHR(device, &info, nullptr, &swapchain), "Create swapchain");
+        presenting = mode;
         const auto handles = enumerate<VkImage>(
             [&](auto *n, auto *p) { return vkGetSwapchainImagesKHR(device, swapchain, n, p); }, "Get swapchain images");
         images.resize(handles.size());
@@ -1610,6 +1750,13 @@ struct VulkanRenderer::Impl {
     // The slot that draw() prepares and records next, and the slot of the latest submitted frame.
     std::size_t frame_index{}, latest_frame{};
     FrameSlot &frame() noexcept { return frames[frame_index]; }
+    // The present ids of the latest RendererOptions::frames_in_flight + 1 submissions, which draw() uses in turn, as it
+    // uses the frame slots: each holds the id of its submission's present while a later frame is to wait for that
+    // present, otherwise 0. The submission that the next draw() makes reuses the entry of the submission one before
+    // the one whose slot it reuses, and waits for that present first; see wait_for_queued_present().
+    std::array<std::uint64_t, max_frames_in_flight + 1> present_ids{};
+    // The entry of present_ids that the next submission uses.
+    std::size_t present_index{};
     // Destroys @p retired, a pointer to an object that submitted frames may still use, once none can. Waiting for the
     // fence of the latest submitted frame covers every earlier submission too, since a fence signal operation includes
     // every command submitted to the queue before it, so @p retired waits in that frame's release list until draw(),
@@ -1636,12 +1783,81 @@ struct VulkanRenderer::Impl {
             recycle_slot(slot);
         }
     }
-    // Waits for the frame that the next draw() waits for: the one that the slot it records next submitted last. The
-    // slot's fence stays signaled until draw() resets it just before its submission, so draw()'s own wait on it then
-    // returns at once.
+    // Whether frames wait for the presents of earlier ones: VK_KHR_present_wait is enabled and the swapchain's mode
+    // queues every present for a vertical blank, so that a frame's inputs can otherwise be read while several frames
+    // wait for display ahead of it. In the other modes no present waits behind another: immediate shows each at once
+    // and mailbox replaces the one that waits, so the wait would bound no queue, and in mailbox it would hold frames
+    // to the display's rate.
+    [[nodiscard]] bool awaits_presents() const noexcept {
+        return present_waits && (presenting == PresentMode::fifo || presenting == PresentMode::fifo_relaxed);
+    }
+    // Waits, for at most present_wait_timeout, until vkWaitForPresentKHR reports the present whose id the next
+    // submission's entry of present_ids holds: that of the frame submitted frames_in_flight + 1 submissions earlier,
+    // when draw() gave its present an id for this wait. Vulkan asks that a present be reported as close as possible to
+    // its display; MoltenVK 1.4.1 reports it when the command buffer that presents it completes. Waiting for the
+    // frame's present rather than for that of the frame whose slot the next submission reuses lets a frame start while
+    // the frame before it waits for a vertical blank. The id is cleared, so a second call returns at once. A wait that
+    // times out is not an error, since it only paces frames; an out-of-date or suboptimal swapchain is recreated by the
+    // next draw().
+    void wait_for_queued_present() {
+        const auto id = std::exchange(present_ids[present_index], 0);
+        if (id == 0)
+            return;
+        ++stats.present_waits;
+        const auto result = wait_for_present(device, swapchain, id, present_wait_timeout);
+        if (result == VK_TIMEOUT)
+            ++stats.present_wait_timeouts;
+        else if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+            resize = true;
+        else
+            check(result, "Wait for present");
+    }
+    // Waits for the frame that the next draw() waits for: the one that the slot it records next submitted last, and
+    // then for the present that wait_for_queued_present() names. The slot's fence stays signaled until draw() resets it
+    // just before its submission, and the present id is cleared, so draw()'s own waits then return at once.
     void wait_for_frame() {
         running();
         wait_for_slot(frame(), "Wait for frame");
+        wait_for_queued_present();
+    }
+    // Reads the display times that VK_GOOGLE_display_timing reported since the previous read, and sets
+    // FrameProfile::present_interval_ms from the latest frame that was displayed after the frame presented just before
+    // it.
+    void read_display_times() {
+        past_timings.clear();
+        for (;;) {
+            const auto offset = past_timings.size();
+            past_timings.resize(offset + display_time_batch);
+            auto count = display_time_batch;
+            const auto result = past_presentation_timing(device, swapchain, &count, past_timings.data() + offset);
+            past_timings.resize(offset + (result == VK_SUCCESS || result == VK_INCOMPLETE ? count : 0));
+            if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+                resize = true;
+                break;
+            }
+            if (result != VK_INCOMPLETE) {
+                check(result, "Read display times");
+                break;
+            }
+        }
+        // Ids increase by one per present and wrap at 2^32, so in a span shorter than half of that the signed
+        // difference orders them.
+        const auto earlier = [](std::uint32_t a, std::uint32_t b) { return static_cast<std::int32_t>(a - b) < 0; };
+        std::sort(past_timings.begin(), past_timings.end(),
+                  [&](const auto &a, const auto &b) { return earlier(a.presentID, b.presentID); });
+        for (const auto &timing : past_timings) {
+            // Vulkan does not define a display time of zero, so one is skipped rather than paired with a real time.
+            if (timing.actualPresentTime == 0)
+                continue;
+            if (latest_display && timing.presentID - latest_display->id == 1 &&
+                timing.actualPresentTime >= latest_display->time) {
+                const std::chrono::duration<double, std::nano> interval(
+                    double(timing.actualPresentTime - latest_display->time));
+                profile.present_interval_ms = std::chrono::duration<double, std::milli>(interval).count();
+            }
+            if (!latest_display || earlier(latest_display->id, timing.presentID))
+                latest_display = DisplayedFrame{timing.presentID, timing.actualPresentTime};
+        }
     }
     bool draw(const detail::UiFrame *ui_frame = nullptr) {
         running();
@@ -1673,8 +1889,11 @@ struct VulkanRenderer::Impl {
         }
         auto &slot = frame();
         wait_for_slot(slot, "Wait for frame");
+        wait_for_queued_present();
         measure(profile.fence_wait_ms);
         recycle_slot(slot);
+        if (display_timing)
+            read_display_times();
 #ifdef ANIMA_HAS_ASSETS
         retire_resources();
         try {
@@ -1966,13 +2185,34 @@ struct VulkanRenderer::Impl {
         slot.timing_pending = timing_queries != VK_NULL_HANDLE;
         latest_frame = frame_index;
         frame_index = (frame_index + 1) % frames.size();
+        // The frame submitted frames_in_flight + 1 submissions later waits for this one's present.
+        auto &queued_present = present_ids[present_index];
+        present_index = (present_index + 1) % (frames.size() + 1);
         measure(profile.record_submit_ms);
+        VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        const auto attach = [&](auto &extension) {
+            extension.pNext = present.pNext;
+            present.pNext = &extension;
+        };
         VkSwapchainPresentFenceInfoEXT fence_info{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT};
         fence_info.swapchainCount = 1;
         fence_info.pFences = &image.presented;
-        VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         if (present_fences)
-            present.pNext = &fence_info;
+            attach(fence_info);
+        const std::uint64_t present_id = ++presents;
+        VkPresentIdKHR id_info{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
+        id_info.swapchainCount = 1;
+        id_info.pPresentIds = &present_id;
+        const bool awaited = awaits_presents();
+        if (awaited)
+            attach(id_info);
+        // VK_GOOGLE_display_timing's ids are 32 bits wide, so they wrap; read_display_times() allows for that.
+        const VkPresentTimeGOOGLE present_time{static_cast<std::uint32_t>(present_id), 0};
+        VkPresentTimesInfoGOOGLE times_info{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
+        times_info.swapchainCount = 1;
+        times_info.pTimes = &present_time;
+        if (display_timing)
+            attach(times_info);
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &image.rendered;
         present.swapchainCount = 1;
@@ -1984,6 +2224,8 @@ struct VulkanRenderer::Impl {
         image.present_pending =
             present_fences && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ||
                                result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR);
+        if (awaited && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR))
+            queued_present = present_id;
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || acquire == VK_SUBOPTIMAL_KHR)
             resize = true;
         if (result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR)
@@ -2046,6 +2288,9 @@ struct VulkanRenderer::Impl {
         if (swapchain)
             vkDestroySwapchainKHR(device, swapchain, nullptr);
         swapchain = VK_NULL_HANDLE;
+        // Present ids and display times belong to the swapchain.
+        present_ids.fill(0);
+        latest_display.reset();
     }
     void cleanup() noexcept {
         if (stopped)
@@ -2243,6 +2488,16 @@ void VulkanRenderer::set_frustum_culling(bool enabled) {
     impl_->running();
     impl_->options.frustum_culling = enabled;
 }
+void VulkanRenderer::set_present_mode(PresentMode mode) {
+    impl_->running();
+    (void)vulkan_present_mode(mode);
+    if (mode == impl_->options.present_mode)
+        return;
+    impl_->options.present_mode = mode;
+    impl_->resize = true;
+}
+std::optional<PresentMode> VulkanRenderer::present_mode() const noexcept { return impl_->presenting; }
+bool VulkanRenderer::waits_for_presents() const noexcept { return impl_->present_waits; }
 void VulkanRenderer::set_lod_threshold(float pixels) {
     impl_->running();
     if (!std::isfinite(pixels) || pixels < 0)
@@ -2340,14 +2595,23 @@ void VulkanRenderer::set_environment(const Environment &environment) {
     throw std::logic_error("Environment rendering requires asset support");
 #endif
 }
+RenderStats VulkanRenderer::stats() const noexcept {
+    auto current = impl_->stats;
+    // The validation counts stay in their atomic counters until cleanup() copies them, once they are final.
+    if (!impl_->stopped) {
+        current.validation_warnings = impl_->warnings.load();
+        current.validation_errors = impl_->errors.load();
+    }
+    return current;
+}
 RenderStats VulkanRenderer::shutdown() {
     impl_->cleanup();
     return impl_->stats;
 }
 FrameProfile VulkanRenderer::frame_profile() const noexcept { return impl_->profile; }
 bool VulkanRenderer::measures_gpu_idle() const noexcept { return impl_->calibrated_timestamps; }
+bool VulkanRenderer::measures_present_interval() const noexcept { return impl_->display_timing; }
 #ifdef ANIMA_UI
-std::uint64_t VulkanRenderer::presented_frames() const noexcept { return impl_->stats.presented_frames; }
 bool VulkanRenderer::srgb_presentation() {
     impl_->running();
     try {
