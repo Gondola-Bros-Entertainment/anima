@@ -668,8 +668,12 @@ struct Filter final : JPH::ObjectLayerFilter, JPH::BodyFilter {
     bool ShouldCollideLocked(const JPH::Body &body) const override { return filter.sensors || !body.IsSensor(); }
 };
 Hit hit(detail::WorldState &world, const JPH::CollideShapeResult &result, float fraction) {
-    return {world.handle(result.mBodyID2), fraction, a(result.mContactPointOn2),
-            a(-result.mPenetrationAxis.NormalizedOr(JPH::Vec3::sAxisY())), std::max(0.F, result.mPenetrationDepth)};
+    return {world.handle(result.mBodyID2),
+            fraction,
+            a(result.mContactPointOn2),
+            a(-result.mPenetrationAxis.NormalizedOr(JPH::Vec3::sAxisY())),
+            fraction == 0 ? std::max(0.F, result.mPenetrationDepth) : 0.F,
+            fraction == 0};
 }
 } // namespace
 std::optional<Hit> World::raycast(Vec3 origin, Vec3 displacement, QueryFilter filter) const {
@@ -690,7 +694,7 @@ std::optional<Hit> World::raycast(Vec3 origin, Vec3 displacement, QueryFilter fi
     // Mesh hits report the triangle's winding normal; face it back along the ray, as sweeps do.
     if (normal.Dot(ray.mDirection) > 0)
         normal = -normal;
-    return Hit{body, result.mFraction, a(p), a(normal), 0};
+    return Hit{body, result.mFraction, a(p), a(normal), 0, result.mFraction == 0};
 }
 std::optional<Hit> World::sweep(const Collider &collider, Pose start, Vec3 displacement, QueryFilter filter) const {
     vector(displacement);
