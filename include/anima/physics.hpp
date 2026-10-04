@@ -221,6 +221,19 @@ struct Hit {
     float penetration{};
 };
 enum class ContactPhase { begin, end };
+/// Where a solid contact began and how fast its bodies met, as the backend found the contact,
+/// before the solver resolved it.
+struct ContactPoint {
+    /// World-space point: the mean of the backend's contact points, each midway between the
+    /// points it found on the two surfaces.
+    Vec3 point{};
+    /// World-space unit normal pointing from ContactEvent::first toward ContactEvent::second.
+    Vec3 normal{};
+    /// Speed at which the bodies approached along #normal, in units per second: the largest at any
+    /// of the contact points, from velocities that include the collision step's gravity. Zero,
+    /// never negative, when no point was approaching.
+    float approach_speed{};
+};
 /// A change in contact between two bodies, aggregated across compound children and mesh
 /// triangles: a compound's contact ends only when its last touching child separates.
 struct ContactEvent {
@@ -231,6 +244,10 @@ struct ContactEvent {
     ContactPhase phase{};
     /// Whether either body is a sensor.
     bool sensor{};
+    /// Set on the begin event of a solid contact and empty on end events and sensor overlaps. When
+    /// several compound children or mesh triangles begin touching in one step, it describes the
+    /// one that approached fastest.
+    std::optional<ContactPoint> contact;
 };
 /// Owns bodies and steps their simulation.
 ///

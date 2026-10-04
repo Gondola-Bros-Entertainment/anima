@@ -28,6 +28,7 @@
 #include <map>
 #include <mutex>
 #include <numbers>
+#include <utility>
 
 namespace anima::physics {
 namespace {
@@ -253,6 +254,23 @@ struct Layers final : JPH::BroadPhaseLayerInterface, JPH::ObjectVsBroadPhaseLaye
                (masks[a % detail::collision_layer_count] & (1u << (b % detail::collision_layer_count)));
     }
 };
+// The contact Jolt found between @p body1 and @p body2 before solving it, from velocities that already include the
+// collision step's gravity. Jolt's normal points from body 1 toward body 2, so @p reversed flips it for an event
+// that names body 2 first; the approach speed is the same either way.
+ContactPoint measure(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &m, bool reversed) {
+    const auto count = m.mRelativeContactPointsOn1.size(); // Jolt reports at least one point.
+    auto sum = JPH::Vec3::sZero();
+    float approach = 0;
+    for (JPH::uint i = 0; i < count; ++i) {
+        const auto offset = .5F * (m.mRelativeContactPointsOn1[i] + m.mRelativeContactPointsOn2[i]);
+        const auto point = m.mBaseOffset + offset;
+        approach = std::max(approach,
+                            (body1.GetPointVelocity(point) - body2.GetPointVelocity(point)).Dot(m.mWorldSpaceNormal));
+        sum += offset;
+    }
+    return {a(m.mBaseOffset + sum / static_cast<float>(count)),
+            a(reversed ? -m.mWorldSpaceNormal : m.mWorldSpaceNormal), approach};
+}
 } // namespace
 namespace detail {
 struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::ContactListener {
@@ -275,6 +293,9 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
     std::map<JPH::SubShapeIDPair, Pair> contacts;
     using Key = std::pair<std::uint64_t, std::uint64_t>;
     std::map<Key, bool> reported;
+    // The fastest solid sub-shape contact of each body pair recorded during the step, which reconcile() reports on
+    // the pair's begin event and then clears.
+    std::map<Key, ContactPoint> began;
     std::vector<ContactEvent> events;
     explicit WorldState(WorldSettings settings) {
         vector(settings.gravity);
@@ -295,12 +316,21 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
     }
     Body handle(std::uint64_t id) { return Body(weak_from_this(), id); }
     Body handle(JPH::BodyID id) { return handle(system.GetBodyInterface().GetUserData(id)); }
-    void record(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &m) {
-        auto first = a.GetUserData(), second = b.GetUserData();
-        if (first > second)
+    // A persisted contact keeps its entry, whose bodies and sensor flag cannot change, so a solid contact is measured
+    // only when it is recorded first, before the solver has resolved it.
+    void record(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &m) {
+        auto first = body1.GetUserData(), second = body2.GetUserData();
+        const bool reversed = first > second;
+        if (reversed)
             std::swap(first, second);
-        contacts[{a.GetID(), m.mSubShapeID1, b.GetID(), m.mSubShapeID2}] = {first, second,
-                                                                            a.IsSensor() || b.IsSensor()};
+        const bool sensor = body1.IsSensor() || body2.IsSensor();
+        const JPH::SubShapeIDPair key{body1.GetID(), m.mSubShapeID1, body2.GetID(), m.mSubShapeID2};
+        if (!contacts.try_emplace(key, Pair{first, second, sensor}).second || sensor)
+            return;
+        const auto contact = measure(body1, body2, m, reversed);
+        const auto [fastest, inserted] = began.try_emplace({first, second}, contact);
+        if (!inserted && contact.approach_speed > fastest->second.approach_speed)
+            fastest->second = contact;
     }
     void OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &m,
                         JPH::ContactSettings &) override {
@@ -314,6 +344,7 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
     }
     void OnContactRemoved(const JPH::SubShapeIDPair &pair) override { contacts.erase(pair); }
     void reconcile() {
+        const auto measured = std::exchange(began, {});
         std::map<Key, bool> current;
         for (const auto &[key, pair] : contacts) {
             (void)key;
@@ -321,10 +352,14 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
         }
         for (auto [key, sensor] : reported)
             if (!current.contains(key))
-                events.push_back({handle(key.first), handle(key.second), ContactPhase::end, sensor});
+                events.push_back({handle(key.first), handle(key.second), ContactPhase::end, sensor, std::nullopt});
+        // A body pair begins only through sub-shape contacts recorded during this step, so each solid one was measured.
         for (auto [key, sensor] : current)
-            if (!reported.contains(key))
-                events.push_back({handle(key.first), handle(key.second), ContactPhase::begin, sensor});
+            if (!reported.contains(key)) {
+                const auto contact = measured.find(key);
+                events.push_back({handle(key.first), handle(key.second), ContactPhase::begin, sensor,
+                                  contact == measured.end() ? std::optional<ContactPoint>{} : contact->second});
+            }
         reported = std::move(current);
     }
     // Contacts change only in Jolt's callbacks during step(), which reconciles right after, so between steps
@@ -338,7 +373,7 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
         const auto names = [id](const Key &key) { return key.first == id || key.second == id; };
         for (auto [key, sensor] : reported)
             if (names(key))
-                events.push_back({handle(key.first), handle(key.second), ContactPhase::end, sensor});
+                events.push_back({handle(key.first), handle(key.second), ContactPhase::end, sensor, std::nullopt});
         std::erase_if(reported, [&](const auto &entry) { return names(entry.first); });
     }
 };

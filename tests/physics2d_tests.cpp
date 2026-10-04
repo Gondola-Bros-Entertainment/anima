@@ -8,6 +8,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 using namespace anima::physics2d;
 namespace {
@@ -318,6 +319,55 @@ TEST_CASE("A sensor pair is reported only when either body can move") {
     CHECK_MESSAGE(reported(probe, wall), "A dynamic sensor did not detect a stationary body");
     CHECK_FALSE_MESSAGE(reported(zone, wall), "Two stationary bodies reported a sensor overlap");
     CHECK(events.size() == 2u);
+    for (const auto &event : events)
+        CHECK_FALSE_MESSAGE(event.contact, "A sensor overlap reported a contact point");
+}
+
+TEST_CASE("A solid contact's begin event reports its point, normal and approach speed") {
+    constexpr double tick = 1. / 60;
+    constexpr float impact_speed = 5; // Without gravity the crate meets the floor at its launch speed.
+    constexpr float tolerance = .002F;
+    // Creating the crate first names it first, while Box2D orders the pair by its broad-phase proxies, which puts
+    // the floor first either way.
+    for (const bool floor_first : {true, false}) {
+        CAPTURE(floor_first);
+        World world({{0, 0}, 8});
+        const auto floor_settings = box({0, -.5F}, {10, .5F});
+        auto crate_settings = box({0, 1}, {.5F, .5F}, Motion::dynamic);
+        crate_settings.velocity = {0, -impact_speed};
+        Body floor, crate;
+        if (floor_first) {
+            floor = world.create(floor_settings);
+            crate = world.create(crate_settings);
+        } else {
+            crate = world.create(crate_settings);
+            floor = world.create(floor_settings);
+        }
+        std::vector<ContactEvent> events;
+        for (int i = 0; i < 240 && events.empty(); ++i) {
+            world.step(tick);
+            events = world.take_events();
+        }
+        REQUIRE(events.size() == 1u);
+        const auto &begin = events[0];
+        REQUIRE((begin.phase == ContactPhase::begin && !begin.sensor));
+        REQUIRE_MESSAGE(begin.contact, "A solid begin event has no contact point");
+        CHECK((begin.first == floor) == floor_first);
+        const float up = floor_first ? 1.F : -1.F;
+        CHECK_MESSAGE(
+            (std::abs(begin.contact->normal.x) < tolerance && std::abs(begin.contact->normal.y - up) < tolerance),
+            "The normal does not point from the first body toward the second");
+        // The crate lands flat, centered on the origin, and the surfaces were at most one step's travel apart.
+        CHECK(std::abs(begin.contact->point.x) < tolerance);
+        CHECK(std::abs(begin.contact->point.y) <= impact_speed * tick);
+        CHECK(std::abs(begin.contact->approach_speed - impact_speed) < tolerance);
+        crate.teleport({{0, 10}});
+        world.step(tick);
+        events = world.take_events();
+        REQUIRE(events.size() == 1u);
+        CHECK(events[0].phase == ContactPhase::end);
+        CHECK_FALSE_MESSAGE(events[0].contact, "An end event reported a contact point");
+    }
 }
 
 TEST_CASE("Damping slows only dynamic bodies, by the documented factor per substep") {

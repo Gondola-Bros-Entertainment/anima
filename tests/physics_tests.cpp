@@ -12,6 +12,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 using namespace anima;
 using namespace anima::physics;
@@ -443,6 +444,8 @@ TEST_CASE("A sensor pair is reported only when either body can move") {
     CHECK_MESSAGE(reported(probe, wall), "A dynamic sensor did not detect a stationary body");
     CHECK_MESSAGE(!reported(zone, wall), "Two stationary bodies reported a sensor overlap");
     CHECK(events.size() == 2u);
+    for (const auto &event : events)
+        CHECK_MESSAGE(!event.contact, "A sensor overlap reported a contact point");
 }
 
 TEST_CASE("A long step does not let a discrete body pass through a floor") {
@@ -625,6 +628,61 @@ TEST_CASE("Reenabling a body before the next step reports its contact again") {
     events = world.take_events();
     REQUIRE_MESSAGE(events.size() == 1u, "Reenabled contact reported no begin event");
     REQUIRE(events[0].phase == ContactPhase::begin);
+    REQUIRE_MESSAGE(events[0].contact, "A reenabled contact's begin event has no contact point");
+    CHECK(near(events[0].contact->normal, {0, 1, 0}));
+}
+
+TEST_CASE("A solid contact's begin event reports its point, normal and approach speed") {
+    constexpr float impact_speed = 5; // Without gravity the crate meets the floor at its launch speed.
+    // Creating the crate first names it first. Jolt reuses the body slot freed last first, so after two removals the
+    // crate takes the higher slot and the floor the lower one, and Jolt reports the pair in the opposite order to the
+    // event, whose normal must then be reversed.
+    for (const int order : {0, 1, 2}) {
+        CAPTURE(order);
+        World world(weightless(8));
+        if (order == 2) {
+            auto low_slot = world.create(box({10, 0, 0}, {.5F, .5F, .5F}));
+            auto high_slot = world.create(box({20, 0, 0}, {.5F, .5F, .5F}));
+            low_slot.remove();
+            high_slot.remove();
+        }
+        const auto floor_settings = box({0, -.5F, 0}, {20, .5F, 20});
+        auto crate_settings = box({0, 1, 0}, {.5F, .5F, .5F}, Motion::dynamic);
+        crate_settings.velocity = {0, -impact_speed, 0};
+        Body floor, crate;
+        if (order == 0) {
+            floor = world.create(floor_settings);
+            crate = world.create(crate_settings);
+        } else {
+            crate = world.create(crate_settings);
+            floor = world.create(floor_settings);
+        }
+        std::vector<ContactEvent> events;
+        for (int i = 0; i < settle_ticks && events.empty(); ++i) {
+            world.step(tick);
+            events = world.take_events();
+        }
+        REQUIRE(events.size() == 1u);
+        const auto &begin = events[0];
+        REQUIRE((begin.phase == ContactPhase::begin && !begin.sensor));
+        REQUIRE_MESSAGE(begin.contact, "A solid begin event has no contact point");
+        const bool floor_first = begin.first == floor;
+        CHECK(floor_first == (order == 0));
+        CHECK_MESSAGE(near(begin.contact->normal, floor_first ? Vec3{0, 1, 0} : Vec3{0, -1, 0}),
+                      "The normal does not point from the first body toward the second");
+        // The crate lands flat, centered on the origin, and the surfaces were at most one step's travel apart.
+        const auto point = begin.contact->point;
+        CHECK(std::abs(point.x) < tolerance);
+        CHECK(std::abs(point.z) < tolerance);
+        CHECK(std::abs(point.y) <= impact_speed * tick);
+        CHECK(std::abs(begin.contact->approach_speed - impact_speed) < tolerance);
+        crate.teleport({{0, 10, 0}});
+        world.step(tick);
+        events = world.take_events();
+        REQUIRE(events.size() == 1u);
+        CHECK(events[0].phase == ContactPhase::end);
+        CHECK_MESSAGE(!events[0].contact, "An end event reported a contact point");
+    }
 }
 
 TEST_CASE("Removing or disabling a body ends only its own contacts, in body creation order") {
