@@ -36,11 +36,11 @@
 ///   one; then Environment's lights as `vec4`s with w 0: 144 `sunDirection` (unit, toward the sun), 160
 ///   `sunIrradiance`, the sun's irradiance as it reaches the ground, atmosphere_sunlight(), 176 `fillDirection`, 192
 ///   `fillIrradiance`, 208 `ambientSky`, 224 `ambientGround` and 240 `ambientSpecular`; 256 `vec4 fog`,
-///   EnvironmentSettings::fog_color with fog_density in w, the density per unit at fog_height (0 for no fog); 272 `vec4
+///   HeightFog::color with HeightFog::density in w, the density per unit at the fog's height (0 for no fog); 272 `vec4
 ///   viewport`, the scene target's width and height in pixels, which are the window's times
 ///   VulkanRenderer::render_scale() (see VulkanRenderer::set_render_scale), and their reciprocals; 288 `float time`,
-///   the seconds that VulkanRenderer::set_time received; 304 `vec4 fogShape`, EnvironmentSettings::fog_height,
-///   fog_falloff, fog_sky_distance and fog_sun_anisotropy; and 320 `vec4 fogSun`, fog_sun_scattering times
+///   the seconds that VulkanRenderer::set_time received; 304 `vec4 fogShape`, HeightFog::height, HeightFog::falloff,
+///   HeightFog::sky_distance and HeightFog::sun_anisotropy; and 320 `vec4 fogSun`, HeightFog::sun_scattering times
 ///   `sunIrradiance`, capped at the largest float, with w 0. `animaFogged()` in custom_material.glsl applies this fog
 ///   as the standard material does.
 /// - Set 0, binding 1, fragment shaders of blended and additive materials only: `sampler2D` opaque depth, the

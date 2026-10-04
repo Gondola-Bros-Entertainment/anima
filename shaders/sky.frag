@@ -1,8 +1,8 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 // The sky behind the scene, while the atmosphere is enabled: the sky view table in the direction of the view ray,
-// times the sun's irradiance above the atmosphere, with the sun's disc, fogged as a surface fog_sky_distance along the
-// ray would be.
+// times the sun's irradiance above the atmosphere, with the sun's disc, fogged as a surface HeightFog::sky_distance
+// along the ray would be.
 layout(location = 0) in vec2 screen;
 layout(location = 0) out vec4 outColor;
 #include "environment.glsl"

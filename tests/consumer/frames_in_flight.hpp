@@ -116,8 +116,8 @@ class Sequence {
         environment.detail_shadow.extent = 5;
         environment.atmosphere.enabled = true;
         environment.atmosphere.rayleigh_scale_height = frame < rebuild_frame ? 8'000.F : 9'000.F;
-        environment.fog_density = .02F;
-        environment.fog_falloff = .5F;
+        environment.fog.density = .02F;
+        environment.fog.falloff = .5F;
         renderer.set_environment(environment);
         renderer.set_time(time_step * t);
         auto pose = anima::sample_pose(*skinned_asset_);

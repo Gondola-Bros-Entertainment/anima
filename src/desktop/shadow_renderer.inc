@@ -45,8 +45,8 @@ bool view_set{};
 // extends toward its casters, and spans cascade_depth once finish_shadow_cascades() has rounded both ends.
 std::array<std::array<double, 3>, 3> sun_axes{};
 detail::CascadeFits cascade_fits;
-std::array<double, 4> cascade_near{}, cascade_depth{};
-std::array<ShadowPass, 4> cascade_passes;
+std::array<double, ShadowCascades::max_count> cascade_near{}, cascade_depth{};
+std::array<ShadowPass, ShadowCascades::max_count> cascade_passes;
 ShadowPass detail_pass;
 void create_shadow_pass() {
     for (const auto format_candidate : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {

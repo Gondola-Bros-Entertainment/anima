@@ -24,27 +24,34 @@ constexpr auto inactive_light = "Selected light must have an active DirectionalL
 constexpr auto collapsed_axes = "Directional light world axes must be nonzero";
 constexpr auto skewed_axes = "Directional light world axes must be orthogonal and right-handed";
 constexpr auto invalid_irradiance = "Directional light irradiance must be finite nonnegative linear RGB";
-constexpr auto invalid_exposure = "Invalid environment exposure or fog density";
-constexpr auto invalid_atmosphere = "Invalid atmosphere";
+constexpr auto invalid_exposure = "Environment exposure must be finite and positive";
+constexpr auto invalid_anisotropy = "Atmosphere mie_anisotropy must lie strictly between -1 and 1";
 constexpr auto duplicate_codec = "Duplicate component codec";
 constexpr auto outside_graph = "Object reference is stale or outside the captured graph";
 constexpr auto needs_number = "Lighting field requires a number";
 constexpr auto needs_boolean = "Lighting field requires a boolean";
+constexpr auto needs_string = "Lighting field requires a string";
+constexpr auto unknown_tone_mapping = "Unknown tone mapping";
 constexpr auto needs_vector = "Lighting vector requires three numbers";
 constexpr auto float_range = "JSON number outside the float range";
 constexpr auto integer_resolution = "Shadow resolution requires a positive integer";
 constexpr auto resolution_range = "Shadow resolution exceeds its range";
 bool near(float a, float b) { return a == Near{b, tolerance}; }
 bool near(Vec3 a, Vec3 b) { return near(a.x, b.x) && near(a.y, b.y) && near(a.z, b.z); }
+bool same(const ShadowBias &a, const ShadowBias &b) { return near(a.constant, b.constant) && near(a.slope, b.slope); }
 bool same(const DirectionalShadow &a, const DirectionalShadow &b) {
     return a.enabled == b.enabled && a.resolution == b.resolution && near(a.center, b.center) &&
-           near(a.extent, b.extent) && near(a.depth, b.depth) && near(a.constant_bias, b.constant_bias) &&
-           near(a.slope_bias, b.slope_bias);
+           near(a.extent, b.extent) && near(a.depth, b.depth) && same(a.bias, b.bias);
 }
 bool same(const ShadowCascades &a, const ShadowCascades &b) {
     return a.enabled == b.enabled && a.count == b.count && a.resolution == b.resolution &&
            near(a.distance, b.distance) && near(a.logarithmic_split, b.logarithmic_split) && near(a.blend, b.blend) &&
-           near(a.constant_bias, b.constant_bias) && near(a.slope_bias, b.slope_bias);
+           same(a.bias, b.bias);
+}
+bool same(const HeightFog &a, const HeightFog &b) {
+    return near(a.color, b.color) && near(a.density, b.density) && near(a.height, b.height) &&
+           near(a.falloff, b.falloff) && near(a.sun_scattering, b.sun_scattering) &&
+           near(a.sun_anisotropy, b.sun_anisotropy) && near(a.sky_distance, b.sky_distance);
 }
 bool same(const Atmosphere &a, const Atmosphere &b) {
     return a.enabled == b.enabled && near(a.ground_height, b.ground_height) && near(a.planet_radius, b.planet_radius) &&
@@ -60,11 +67,9 @@ bool same(const Environment &a, const Environment &b) {
            near(a.sun.irradiance, b.sun.irradiance) && near(a.fill.irradiance, b.fill.irradiance) &&
            near(a.ambient_sky, b.ambient_sky) && near(a.ambient_ground, b.ambient_ground) &&
            near(a.ambient_specular, b.ambient_specular) && same(a.atmosphere, b.atmosphere) &&
-           near(a.fog_color, b.fog_color) && near(a.fog_density, b.fog_density) && near(a.fog_height, b.fog_height) &&
-           near(a.fog_falloff, b.fog_falloff) && near(a.fog_sun_scattering, b.fog_sun_scattering) &&
-           near(a.fog_sun_anisotropy, b.fog_sun_anisotropy) && near(a.fog_sky_distance, b.fog_sky_distance) &&
-           near(a.exposure, b.exposure) && a.tone_mapping == b.tone_mapping &&
-           same(a.shadow_cascades, b.shadow_cascades) && same(a.detail_shadow, b.detail_shadow);
+           near(a.background, b.background) && same(a.fog, b.fog) && near(a.exposure, b.exposure) &&
+           a.tone_mapping == b.tone_mapping && same(a.shadow_cascades, b.shadow_cascades) &&
+           same(a.detail_shadow, b.detail_shadow);
 }
 GameObject light(Scene &scene, Vec3 irradiance = {1, 2, 3}) {
     auto object = scene.create("light");
@@ -138,17 +143,12 @@ EnvironmentSettings changed_settings() {
     atmosphere.mie_anisotropy = .75F;
     atmosphere.ground_albedo = {.2F, .25F, .3F};
     atmosphere.sun_angular_radius = .005F;
-    settings.fog_color = {.3F, .2F, .1F};
-    settings.fog_density = .05F;
-    settings.fog_height = -3;
-    settings.fog_falloff = .2F;
-    settings.fog_sun_scattering = {.4F, .3F, .2F};
-    settings.fog_sun_anisotropy = -.25F;
-    settings.fog_sky_distance = 900;
+    settings.background = {.25F, .5F, 1};
+    settings.fog = {{.3F, .2F, .1F}, .05F, -3, .2F, {.4F, .3F, .2F}, -.25F, 900};
     settings.exposure = 1.5F;
-    settings.tone_mapping = true;
-    settings.shadow_cascades = {true, 3, 150, .6F, .2F, 1024, 1.5F, 2.5F};
-    settings.detail_shadow = {true, {4, 5, 6}, 4, 40, 2048, .004F, .005F};
+    settings.tone_mapping = ToneMapping::reinhard;
+    settings.shadow_cascades = {true, 3, 150, .6F, .2F, 1024, {1.5F, 2.5F}};
+    settings.detail_shadow = {true, {4, 5, 6}, 4, 40, 2048, {2.25F, 4.5F}};
     return settings;
 }
 // A rig whose environment selects its two child lights, with the lighting codecs registered.
@@ -224,53 +224,38 @@ TEST_CASE("Invalid environment settings are rejected and keep the accepted envir
     auto selected = environment(scene, sun, light(scene, {}));
     auto settings = selected->settings();
     settings.atmosphere.enabled = true;
-    settings.tone_mapping = true;
+    settings.tone_mapping = ToneMapping::reinhard;
     settings.exposure = 1.5F;
     settings.shadow_cascades.enabled = true;
     settings.detail_shadow.extent = 8;
     selected->configure(settings);
     const auto configured = lighting_environment(scene);
     CHECK(point(detail_shadow_matrix(configured), {0, 0, 0}).z == Near{.5F, tolerance});
-    constexpr auto colours = "Environment colours must be finite nonnegative linear RGB";
-    constexpr auto cascades = "Invalid shadow cascades", region = "Invalid directional shadow region",
-                   height_fog = "Invalid environment height fog";
     constexpr auto infinite = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
     const std::vector<std::pair<std::function<void(EnvironmentSettings &)>, const char *>> breaks{
         {[](auto &bad) { bad.exposure = 0; }, invalid_exposure},
-        {[](auto &bad) { bad.fog_density = -1; }, invalid_exposure},
-        {[](auto &bad) { bad.ambient_specular.x = -1; }, colours},
-        {[](auto &bad) { bad.ambient_ground.y = infinite; }, colours},
-        {[](auto &bad) { bad.atmosphere.ground_albedo.x = 1.5F; }, invalid_atmosphere},
-        {[](auto &bad) { bad.atmosphere.mie_anisotropy = 1; }, invalid_atmosphere},
-        {[](auto &bad) { bad.atmosphere.sun_angular_radius = 0; }, invalid_atmosphere},
-        {[](auto &bad) { bad.atmosphere.ground_height = nan; }, invalid_atmosphere},
-        {[](auto &bad) { bad.atmosphere.rayleigh_scale_height = -1; }, invalid_atmosphere},
-        {[](auto &bad) { bad.fog_sun_scattering.z = -1; }, colours},
-        {[](auto &bad) { bad.fog_height = infinite; }, height_fog},
-        {[](auto &bad) { bad.fog_falloff = -.1F; }, height_fog},
-        {[](auto &bad) { bad.fog_falloff = nan; }, height_fog},
-        {[](auto &bad) { bad.fog_sky_distance = -1; }, height_fog},
-        {[](auto &bad) { bad.fog_sky_distance = infinite; }, height_fog},
-        {[](auto &bad) { bad.fog_sky_distance = 2e9F; }, height_fog},
-        {[](auto &bad) { bad.fog_sun_anisotropy = 1; }, height_fog},
-        {[](auto &bad) { bad.fog_sun_anisotropy = -1; }, height_fog},
-        {[](auto &bad) { bad.fog_sun_anisotropy = nan; }, height_fog},
-        {[](auto &bad) { bad.shadow_cascades.count = 0; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.count = 5; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.distance = 0; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.distance = 2e9F; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.distance = nan; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.logarithmic_split = 1.5F; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.logarithmic_split = nan; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.blend = -.5F; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.resolution = 15; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.constant_bias = infinite; }, cascades},
-        {[](auto &bad) { bad.shadow_cascades.slope_bias = -1; }, cascades},
-        {[](auto &bad) { bad.detail_shadow.extent = 0; }, region},
-        {[](auto &bad) { bad.detail_shadow.depth = 0; }, region},
-        {[](auto &bad) { bad.detail_shadow.center.z = nan; }, region},
-        {[](auto &bad) { bad.detail_shadow.resolution = 0; }, region},
-        {[](auto &bad) { bad.detail_shadow.slope_bias = -1; }, region}};
+        {[](auto &bad) { bad.ambient_specular.x = -1; },
+         "Environment ambient_specular must be finite nonnegative linear RGB"},
+        {[](auto &bad) { bad.ambient_ground.y = infinite; },
+         "Environment ambient_ground must be finite nonnegative linear RGB"},
+        {[](auto &bad) { bad.atmosphere.ground_albedo.x = 1.5F; },
+         "Atmosphere ground_albedo must lie from 0 to 1 in every channel"},
+        {[](auto &bad) { bad.atmosphere.mie_anisotropy = 1; }, invalid_anisotropy},
+        {[](auto &bad) { bad.atmosphere.ground_height = nan; }, "Atmosphere ground_height must be finite"},
+        {[](auto &bad) { bad.background.z = 65536; },
+         "Environment background must be finite nonnegative linear RGB of at most 65504"},
+        {[](auto &bad) { bad.fog.density = -1; }, "Fog density must be finite and nonnegative"},
+        {[](auto &bad) { bad.fog.sun_scattering.z = -1; }, "Fog sun_scattering must be finite and nonnegative"},
+        {[](auto &bad) { bad.fog.height = infinite; }, "Fog height must be finite"},
+        {[](auto &bad) { bad.fog.sky_distance = 2e9F; }, "Fog sky_distance must lie from 0 to 1,000,000,000"},
+        {[](auto &bad) { bad.tone_mapping = static_cast<ToneMapping>(255); }, unknown_tone_mapping},
+        {[](auto &bad) { bad.shadow_cascades.count = 5; }, "Shadow cascade count must be from 1 to 4"},
+        {[](auto &bad) { bad.shadow_cascades.resolution = 15; }, "Shadow cascade resolution must be at least 16"},
+        {[](auto &bad) { bad.shadow_cascades.bias.constant = infinite; },
+         "Shadow cascade bias constant must be finite and nonnegative"},
+        {[](auto &bad) { bad.detail_shadow.depth = 0; }, "Detail shadow depth must be finite and positive"},
+        {[](auto &bad) { bad.detail_shadow.bias.slope = -1; },
+         "Detail shadow bias slope must be finite and nonnegative"}};
     for (std::size_t index = 0; index < breaks.size(); ++index) {
         CAPTURE(index);
         auto bad = settings;
@@ -372,7 +357,7 @@ TEST_CASE("An environment in one member follows its lights through a replacement
     REQUIRE(cleared.size() == 2);
     for (const auto &link : cleared) {
         CHECK(link.owner.id() == selected.object().id());
-        CHECK(link.component == "anima.scene-environment.v3");
+        CHECK(link.component == "anima.scene-environment.v4");
         CHECK(link.target == SceneAddress{"lights", sun_key});
     }
     CHECK(selected->sun.id() == Scene::Id{});
@@ -446,24 +431,48 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
             for (const auto &[bad, error] : {std::pair{"true", needs_number}, std::pair{"\"1\"", needs_number},
                                              std::pair{"-1", invalid_exposure}, std::pair{"1e100", float_range}})
                 payloads.push_back({replace(valid, "\"exposure\":1.5", "\"exposure\":" + std::string(bad)), error});
-            payloads.push_back({replace(valid, "\"tone_mapping\":true", "\"tone_mapping\":1"), needs_boolean});
+            // Tone mapping is the name of its curve.
+            payloads.push_back({replace(valid, "\"tone_mapping\":\"reinhard\"", "\"tone_mapping\":1"), needs_string});
+            payloads.push_back(
+                {replace(valid, "\"tone_mapping\":\"reinhard\"", "\"tone_mapping\":true"), needs_string});
+            for (const auto *bad : {"\"Reinhard\"", "\"aces\"", "\"\""})
+                payloads.push_back(
+                    {replace(valid, "\"tone_mapping\":\"reinhard\"", "\"tone_mapping\":" + std::string(bad)),
+                     unknown_tone_mapping});
             payloads.push_back({replace(valid, "\"enabled\":true", "\"enabled\":\"true\""), needs_boolean});
             payloads.push_back({replace(valid, "\"center\":[4.0,5.0,6.0]", "\"center\":[4,5]"), needs_vector});
-            payloads.push_back({replace(valid, "\"slope_bias\":", "\"slope_bias\":0,\"slope_bias\":"),
-                                "Duplicate JSON document field"});
+            // Each shadow map's bias is an object of its two terms in texels.
             payloads.push_back(
-                {replace(valid, "\"fog_density\":", "\"unexpected\":"), "Missing JSON field: fog_density"});
-            // Every field is required, the height fog's and the atmosphere's included.
-            payloads.push_back({replace(valid, "\"fog_height\":-3.0", "\"fog_height\":true"), needs_number});
-            payloads.push_back({replace(valid, "\"fog_sky_distance\":900.0", "\"fog_sky_distance\":-900"),
-                                "Invalid environment height fog"});
-            payloads.push_back({replace(valid, "\"fog_sun_anisotropy\":-0.25", "\"fog_sun_anisotropy\":1"),
-                                "Invalid environment height fog"});
+                {replace(valid, "\"slope\":", "\"slope\":0,\"slope\":"), "Duplicate JSON document field"});
+            payloads.push_back({replace(valid, "\"slope\":", "\"unexpected\":"), "Missing JSON field: slope"});
+            payloads.push_back({replace(valid, "\"constant\":1.5", "\"constant\":-1.5"),
+                                "Shadow cascade bias constant must be finite and nonnegative"});
+            payloads.push_back({replace(valid, "\"slope\":4.5", "\"slope\":-4.5"),
+                                "Detail shadow bias slope must be finite and nonnegative"});
+            payloads.push_back({replace(valid, "\"bias\":{\"constant\":2.25,\"slope\":4.5}", "\"bias\":2.25"),
+                                "JSON document requires an object"});
+            payloads.push_back({replace(valid, "\"density\":", "\"unexpected\":"), "Missing JSON field: density"});
+            // Every field is required, the height fog's, the background and the atmosphere's included.
+            payloads.push_back({replace(valid, "\"height\":-3.0", "\"height\":true"), needs_number});
+            payloads.push_back({replace(valid, "\"sky_distance\":900.0", "\"sky_distance\":-900"),
+                                "Fog sky_distance must lie from 0 to 1,000,000,000"});
+            payloads.push_back({replace(valid, "\"sun_anisotropy\":-0.25", "\"sun_anisotropy\":1"),
+                                "Fog sun_anisotropy must lie strictly between -1 and 1"});
+            payloads.push_back({replace(valid, "\"height\":", "\"heigth\":"), "Missing JSON field: height"});
+            payloads.push_back({replace(valid, "\"fog\":", "\"unexpected\":"), "Missing JSON field: fog"});
+            payloads.push_back({replace(valid, "\"background\":[0.25,0.5,1.0]", "\"background\":[0.25,0.5,65505]"),
+                                "Environment background must be finite nonnegative linear RGB of at most 65504"});
+            payloads.push_back({replace(valid, "\"background\":[0.25,0.5,1.0]", "\"background\":0.25"), needs_vector});
             payloads.push_back(
-                {replace(valid, "\"fog_height\":", "\"fog_heigth\":"), "Missing JSON field: fog_height"});
+                {replace(valid, "\"background\":", "\"unexpected\":"), "Missing JSON field: background"});
+            // The fields that version 4 grouped or renamed are not read, beside the current ones.
+            payloads.push_back({replace(valid, "\"exposure\":", "\"fog_density\":0.5,\"exposure\":"),
+                                "Unknown JSON field: fog_density"});
+            payloads.push_back({replace(valid, "\"constant\":", "\"constant_bias\":1,\"constant\":"),
+                                "Unknown JSON field: constant_bias"});
             payloads.push_back(
                 {replace(valid, "\"ozone_width\":", "\"unexpected\":"), "Missing JSON field: ozone_width"});
-            payloads.push_back({replace(valid, "\"mie_anisotropy\":0.75", "\"mie_anisotropy\":1"), invalid_atmosphere});
+            payloads.push_back({replace(valid, "\"mie_anisotropy\":0.75", "\"mie_anisotropy\":1"), invalid_anisotropy});
             payloads.push_back({replace(valid, "\"ozone_altitude\":", "\"ozone_altitude\":0,\"ozone_altitude\":"),
                                 "Duplicate JSON document field"});
             // The gradient sky that the atmosphere replaced is gone, not ignored.
@@ -473,7 +482,7 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
             for (const auto &[bad, error] : {std::pair{"0", "Shadow cascade count exceeds its range"},
                                              std::pair{"2.5", "Shadow cascade count requires a positive integer"},
                                              std::pair{"-2", "Shadow cascade count requires a positive integer"},
-                                             std::pair{"5", "Invalid shadow cascades"}})
+                                             std::pair{"5", "Shadow cascade count must be from 1 to 4"}})
                 payloads.push_back({replace(valid, "\"count\":3", "\"count\":" + std::string(bad)), error});
             payloads.push_back({replace(valid, "\"blend\":", "\"unexpected\":"), "Missing JSON field: blend"});
             payloads.push_back(
@@ -505,7 +514,7 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
 
 TEST_CASE_FIXTURE(Rig, "Lighting components of an earlier version are not read") {
     using Versions = std::pair<std::string, std::string>;
-    for (const auto &[current, earlier] : {Versions{"anima.scene-environment.v3", "anima.scene-environment.v2"},
+    for (const auto &[current, earlier] : {Versions{"anima.scene-environment.v4", "anima.scene-environment.v3"},
                                            Versions{"anima.directional-light.v2", "anima.directional-light.v1"}}) {
         CAPTURE(earlier);
         auto document = serialize_scene(scene, {}, codecs);
@@ -543,7 +552,7 @@ TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes fi
 TEST_CASE("A failed codec registration publishes neither codec") {
     ComponentCodecs conflict;
     conflict.add<SceneEnvironment>(
-        "anima.scene-environment.v3", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
+        "anima.scene-environment.v4", [](const SceneEnvironment &, const ObjectReferences &) { return "{}"; },
         [](GameObject o, std::string_view, const ObjectReferences &) { o.add_component<SceneEnvironment>(); });
     CHECK_THROWS_WITH_AS(add_lighting_component_codecs(conflict), duplicate_codec, std::invalid_argument);
     Scene scene;

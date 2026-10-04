@@ -14,8 +14,11 @@
 /// Lighting environment values for anima::VulkanRenderer, with their validation and the sun's shadow projections.
 /// Header-only; needs only `anima::core`.
 ///
-/// Colors, radiance and irradiance are linear RGB, and directions point from the surface toward the light. Validation
-/// throws `std::invalid_argument`, or anima::MathError (derived from it) for a projection that cannot be inverted.
+/// Colors, radiance and irradiance are linear RGB, and directions point from the surface toward the light. Lengths are
+/// in world units; the atmosphere takes one world unit as one meter, so Atmosphere::ground_height and the eye's
+/// altitude above it are in meters. Validation throws `std::invalid_argument`, or anima::MathError (derived from it)
+/// for a projection that cannot be inverted; a rejected setting's message names its field as the
+/// `anima.scene-environment.v4` payload spells it (add_lighting_component_codecs()).
 
 namespace anima {
 /// One directional light of an Environment.
@@ -29,6 +32,19 @@ struct DirectionalLight {
     /// Finite, nonnegative linear RGB irradiance on a surface facing the light: a Lambertian surface of albedo `a`
     /// facing it reflects the radiance `a * irradiance / pi`.
     Vec3 irradiance{std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2, std::numbers::pi_v<float> / 2};
+};
+/// How far a shadow map's comparisons move each receiver toward the sun, in texels of the map: ShadowCascades::bias and
+/// DirectionalShadow::bias.
+///
+/// The filter compares the map's depths with the receiver moved `(constant + slope * (1 - max(dot(N, L), 0))) * t`
+/// toward the sun, for the shading normal `N`, the unit direction `L` toward the sun and the world size `t` of one of
+/// the map's texels, so that the bias follows the map's resolution and coverage. Where the device stores shadow depth
+/// in 16 bits, the renderer adds one of its 65,535 steps across the map's depth range, which the format cannot resolve.
+struct ShadowBias {
+    /// Bias in texels at every angle; finite and nonnegative.
+    float constant = 1;
+    /// Extra bias in texels times `1 - max(dot(N, L), 0)`, so that it grows at grazing angles; finite and nonnegative.
+    float slope = 3;
 };
 /// The sun's shadow cascades, which the renderer fits to the view every frame as fit_shadow_cascades() does.
 ///
@@ -55,42 +71,43 @@ struct DirectionalLight {
 /// whose bounds reach into the square's column toward the sun, each end rounded outward to whole texels; casters
 /// beyond the sphere cannot shadow what it holds.
 ///
-/// Each cascade filters as DirectionalShadow describes, with biases in its own texels, and casts from every shadow
+/// Each cascade filters as DirectionalShadow describes, with #bias in its own texels, and casts from every shadow
 /// casting draw whose bounds reach into its square's column toward the sun, short of the far side of its sphere. A
 /// disabled set is validated like an enabled one; only the device limit that VulkanRenderer::set_environment places on
 /// #resolution is skipped while it is disabled.
 struct ShadowCascades {
+    /// Most cascades a set may have, which the renderer's fixed cascade arrays hold.
+    static constexpr std::uint32_t max_count = 4;
+    /// Least #resolution, which leaves a cascade's square room for its 3 texels of margin on each side.
+    static constexpr std::uint32_t min_resolution = 16;
     /// Renders each cascade's casters into its depth map every frame. Disabled, the sun casts shadows only in
     /// EnvironmentSettings::detail_shadow, and the cascades keep only a 1x1 placeholder map.
     bool enabled = false;
-    /// Number of cascades, from 1 to 4.
-    std::uint32_t count = 4;
-    /// View depth at which shadows end, finite, positive and at most 1,000,000,000.
+    /// Number of cascades, from 1 to #max_count.
+    std::uint32_t count = max_count;
+    /// View depth in world units at which shadows end, positive and at most 1,000,000,000.
     float distance = 100;
     /// Share of the logarithmic distribution in each split, from 0 (even splits) to 1 (logarithmic).
     float logarithmic_split = .75F;
     /// Share of each cascade's range over which it blends into the next, from 0 to 1.
     float blend = .1F;
-    /// Depth map edge in texels of every cascade, at least 16. While the cascades are #enabled,
+    /// Depth map edge in texels of every cascade, at least #min_resolution. While the cascades are #enabled,
     /// VulkanRenderer::set_environment also limits it to the device; disabled, they keep a 1x1 map whatever its value.
     std::uint32_t resolution = 2048;
-    /// Receiver bias along the sun, in texels of the cascade; finite and nonnegative.
-    float constant_bias = 1;
-    /// Extra bias in texels times `1 - max(dot(N, L), 0)` for the shading normal `N`, so it grows at grazing angles;
-    /// finite and nonnegative.
-    float slope_bias = 3;
+    /// Receiver bias in texels of each cascade.
+    ShadowBias bias;
 };
 /// An orthographic shadow region of Environment::sun fixed in world space: EnvironmentSettings::detail_shadow.
 ///
 /// The region is a box around #center, `2 * extent` wide on both axes across the light and #depth deep
-/// along it, so a texel spans `2 * extent / resolution`. Its axes across the light are those of the shadow cascades'
-/// squares (ShadowCascades), which depend only on the light's direction, and the center snaps to whole texels along
-/// them, which reduces shimmer when a region follows a subject. Only casters inside the box cast. Inside the box the
-/// region's result replaces the cascades' (EnvironmentSettings::shadow_cascades), blending into theirs over the
+/// along it, so a texel spans `2 * extent / resolution` world units. Its axes across the light are those of the shadow
+/// cascades' squares (ShadowCascades), which depend only on the light's direction, and the center snaps to whole texels
+/// along them, which reduces shimmer when a region follows a subject. Only casters inside the box cast. Inside the box
+/// the region's result replaces the cascades' (EnvironmentSettings::shadow_cascades), blending into theirs over the
 /// outer 4 percent of the box on each axis.
 ///
 /// Filtering takes a bilinearly weighted 3x3 comparison kernel over 4x4 texels. Each texel is compared with the
-/// nearer to the light of the receiver's own depth and the receiver plane's depth at that texel, less the bias. The
+/// nearer to the light of the receiver's own depth and the receiver plane's depth at that texel, less #bias. The
 /// plane, found from screen-space position derivatives rather than shading normals, keeps a sloped receiver from
 /// shadowing itself toward the light; it never reaches deeper than the receiver, where a crease that bends toward the
 /// light would leave the surface in front of it. Nearly edge-on planes fall back to the bias alone.
@@ -104,24 +121,21 @@ struct DirectionalShadow {
     bool enabled = false;
     /// World-space center, finite.
     Vec3 center{};
-    /// Half the region's width across the light, finite and positive.
+    /// Half the region's width across the light in world units, finite and positive.
     float extent = 30;
-    /// Region depth along the light, centered on #center, finite and positive.
+    /// Region depth along the light in world units, centered on #center, finite and positive.
     float depth = 100;
     /// Depth map edge in texels, nonzero. While the region is #enabled, VulkanRenderer::set_environment also
     /// limits it to the device; a disabled region keeps a 1x1 map whatever its value.
     std::uint32_t resolution = 2048;
-    /// Receiver bias in normalized shadow depth, where 1 spans #depth; finite and nonnegative.
-    float constant_bias = .0005F;
-    /// Extra bias times `1 - max(dot(N, L), 0)` for the shading normal `N`, so it grows at grazing angles;
-    /// finite and nonnegative.
-    float slope_bias = .0015F;
+    /// Receiver bias in texels of the region.
+    ShadowBias bias{1.7F, 5.1F};
 };
 /// A planet's atmosphere after Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique"
 /// (EGSR 2020), over a spherical ground: Rayleigh and Mie scattering whose densities fall exponentially with altitude,
-/// Mie absorption, and ozone absorption in a tent around an altitude. Lengths are in meters and coefficients per meter,
-/// each at its medium's densest. The defaults are Earth's, as the paper's reference implementation sets them;
-/// validate_atmosphere() defines the accepted values.
+/// Mie absorption, and ozone absorption in a tent around an altitude. Lengths are in meters, one per world unit, and
+/// coefficients per meter, each at its medium's densest. The defaults are Earth's, as the paper's reference
+/// implementation sets them; validate_atmosphere() defines the accepted values.
 ///
 /// The sky's radiance along a view ray, per unit of the sun's irradiance above the atmosphere, integrates what the
 /// media scatter toward the eye, dimmed by the transmittance back to it: the sun transmitted to each point, zero where
@@ -168,27 +182,115 @@ struct Atmosphere {
     /// irradiance above the atmosphere, times the transmittance along the view ray, which is zero into the ground.
     float sun_angular_radius = .004675F;
 };
-/// Throws `std::invalid_argument("Invalid atmosphere")` unless @p a's radius, scale heights and ozone width are finite
-/// and positive, its thickness is finite and more than 2, `planet_radius + thickness` is at most 1,000,000,000, every
-/// coefficient is finite and nonnegative, `ground_height` and `ozone_altitude` are finite, `mie_anisotropy` lies
-/// strictly between -1 and 1, each channel of `ground_albedo` lies from 0 to 1, and `sun_angular_radius` lies strictly
-/// between 0 and pi / 2, whether the atmosphere is enabled or not.
+/// Validates @p a whether it is enabled or not. Checking the fields in their order, throws `std::invalid_argument` with
+/// the message of the first rule broken: "Atmosphere ground_height must be finite", "Atmosphere planet_radius must be
+/// finite and positive", "Atmosphere thickness must be finite and more than 2", "Atmosphere planet_radius plus
+/// thickness must be at most 1,000,000,000", "Atmosphere rayleigh_scattering must be finite and nonnegative",
+/// "Atmosphere rayleigh_scale_height must be finite and positive", "Atmosphere mie_scattering must be finite and
+/// nonnegative", "Atmosphere mie_absorption must be finite and nonnegative", "Atmosphere mie_scale_height must be
+/// finite and positive", "Atmosphere ozone_absorption must be finite and nonnegative", "Atmosphere ozone_altitude must
+/// be finite", "Atmosphere ozone_width must be finite and positive", "Atmosphere mie_anisotropy must lie strictly
+/// between -1 and 1", "Atmosphere ground_albedo must lie from 0 to 1 in every channel" and "Atmosphere
+/// sun_angular_radius must lie strictly between 0 and pi / 2". A color or coefficient meets its rule only in every
+/// channel.
 inline void validate_atmosphere(const Atmosphere &a) {
     const auto positive = [](float v) { return std::isfinite(v) && v > 0; };
     const auto coefficients = [](Vec3 c) {
         return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
     };
+    const auto require = [](bool valid, const char *message) {
+        if (!valid)
+            throw std::invalid_argument(message);
+    };
     constexpr double maximum_radius = 1e9;
-    if (!positive(a.planet_radius) || !std::isfinite(a.thickness) || !(a.thickness > 2) ||
-        double(a.planet_radius) + a.thickness > maximum_radius || !positive(a.rayleigh_scale_height) ||
-        !positive(a.mie_scale_height) || !positive(a.ozone_width) || !std::isfinite(a.ozone_altitude) ||
-        !coefficients(a.rayleigh_scattering) || !coefficients(a.mie_scattering) || !coefficients(a.mie_absorption) ||
-        !coefficients(a.ozone_absorption) || !std::isfinite(a.ground_height) ||
-        !(a.mie_anisotropy > -1 && a.mie_anisotropy < 1) || !coefficients(a.ground_albedo) || a.ground_albedo.x > 1 ||
-        a.ground_albedo.y > 1 || a.ground_albedo.z > 1 ||
-        !(a.sun_angular_radius > 0 && a.sun_angular_radius < std::numbers::pi_v<float> / 2))
-        throw std::invalid_argument("Invalid atmosphere");
+    require(std::isfinite(a.ground_height), "Atmosphere ground_height must be finite");
+    require(positive(a.planet_radius), "Atmosphere planet_radius must be finite and positive");
+    require(std::isfinite(a.thickness) && a.thickness > 2, "Atmosphere thickness must be finite and more than 2");
+    require(double(a.planet_radius) + a.thickness <= maximum_radius,
+            "Atmosphere planet_radius plus thickness must be at most 1,000,000,000");
+    require(coefficients(a.rayleigh_scattering), "Atmosphere rayleigh_scattering must be finite and nonnegative");
+    require(positive(a.rayleigh_scale_height), "Atmosphere rayleigh_scale_height must be finite and positive");
+    require(coefficients(a.mie_scattering), "Atmosphere mie_scattering must be finite and nonnegative");
+    require(coefficients(a.mie_absorption), "Atmosphere mie_absorption must be finite and nonnegative");
+    require(positive(a.mie_scale_height), "Atmosphere mie_scale_height must be finite and positive");
+    require(coefficients(a.ozone_absorption), "Atmosphere ozone_absorption must be finite and nonnegative");
+    require(std::isfinite(a.ozone_altitude), "Atmosphere ozone_altitude must be finite");
+    require(positive(a.ozone_width), "Atmosphere ozone_width must be finite and positive");
+    require(a.mie_anisotropy > -1 && a.mie_anisotropy < 1,
+            "Atmosphere mie_anisotropy must lie strictly between -1 and 1");
+    require(coefficients(a.ground_albedo) && a.ground_albedo.x <= 1 && a.ground_albedo.y <= 1 && a.ground_albedo.z <= 1,
+            "Atmosphere ground_albedo must lie from 0 to 1 in every channel");
+    require(a.sun_angular_radius > 0 && a.sun_angular_radius < std::numbers::pi_v<float> / 2,
+            "Atmosphere sun_angular_radius must lie strictly between 0 and pi / 2");
 }
+/// Fog whose density falls exponentially with height: EnvironmentSettings::fog. validate_height_fog() defines the
+/// accepted values.
+///
+/// In perspective views a mesh surface keeps the share `exp(-t)` of its color and takes the rest from the fog's light.
+/// `t` integrates the density along the straight path of length `d` from the eye to the surface: with `k` the
+/// #falloff, `y` the height of the path's lower end and `r` the height between its ends, `t = density * d * exp(-k *
+/// (y - height)) * (1 - exp(-k * r)) / (k * r)`, where the last factor is 1 when `k * r` is zero, so that uniform fog
+/// keeps `exp(-density * d)`. The fog's light is #color plus Environment::sun's irradiance as it reaches the ground,
+/// atmosphere_sunlight(), times #sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 +
+/// g^2 - 2 * g * c)^1.5)`, with `g` the #sun_anisotropy and `c` the cosine of the angle between the path, from the eye,
+/// and the direction toward the sun. It depends on the path's direction alone, not on its length, and each of its
+/// channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor the scene's
+/// own light reach the fog. Orthographic views are not fogged.
+struct HeightFog {
+    /// Ambient light that the fog scatters toward the eye; finite and nonnegative.
+    Vec3 color{.55F, .65F, .75F};
+    /// Density per world unit at #height, finite and nonnegative; zero disables fog. The density at height `y` is
+    /// `density * exp(-falloff * (y - height))`.
+    float density = 0;
+    /// Height along +Y at which the density is #density; finite.
+    float height = 0;
+    /// Rate per world unit at which the density falls with height above #height, and rises below it; finite and
+    /// nonnegative. Zero makes the density uniform.
+    float falloff = 0;
+    /// Share of the sun as it reaches the ground, atmosphere_sunlight(), per channel, that the fog scatters toward the
+    /// eye, weighted by the phase function; finite and nonnegative. Zero scatters no sunlight.
+    Vec3 sun_scattering{0, 0, 0};
+    /// Asymmetry `g` of the phase function, greater than -1 and less than 1. Positive values scatter sunlight forward,
+    /// so the fog brightens toward the sun; zero scatters it evenly.
+    float sun_anisotropy = .6F;
+    /// Distance in world units along each view ray at which fog applies to the sky and to
+    /// EnvironmentSettings::background, from 0 to 1,000,000,000. Geometry at this distance meets the sky or background
+    /// behind it in the same fog, so a horizon of distant terrain fades into it. Zero leaves them unfogged.
+    float sky_distance = 0;
+};
+/// Validates @p fog. Checking the fields in their order, throws `std::invalid_argument` with the message of the first
+/// rule broken: "Fog color must be finite nonnegative linear RGB", "Fog density must be finite and nonnegative", "Fog
+/// height must be finite", "Fog falloff must be finite and nonnegative", "Fog sun_scattering must be finite and
+/// nonnegative", "Fog sun_anisotropy must lie strictly between -1 and 1" and "Fog sky_distance must lie from 0 to
+/// 1,000,000,000". A color meets its rule only in every channel.
+inline void validate_height_fog(const HeightFog &fog) {
+    const auto color = [](Vec3 c) {
+        return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
+    };
+    const auto require = [](bool valid, const char *message) {
+        if (!valid)
+            throw std::invalid_argument(message);
+    };
+    // Bounding the distance keeps its products with the density and falloff within float range. The comparisons
+    // reject NaN.
+    constexpr float maximum_distance = 1e9F;
+    require(color(fog.color), "Fog color must be finite nonnegative linear RGB");
+    require(std::isfinite(fog.density) && fog.density >= 0, "Fog density must be finite and nonnegative");
+    require(std::isfinite(fog.height), "Fog height must be finite");
+    require(std::isfinite(fog.falloff) && fog.falloff >= 0, "Fog falloff must be finite and nonnegative");
+    require(color(fog.sun_scattering), "Fog sun_scattering must be finite and nonnegative");
+    require(fog.sun_anisotropy > -1 && fog.sun_anisotropy < 1, "Fog sun_anisotropy must lie strictly between -1 and 1");
+    require(fog.sky_distance >= 0 && fog.sky_distance <= maximum_distance,
+            "Fog sky_distance must lie from 0 to 1,000,000,000");
+}
+/// A curve that compresses exposed linear scene color before display encoding: EnvironmentSettings::tone_mapping. The
+/// `anima.scene-environment.v4` payload stores it as its enumerator's name.
+enum class ToneMapping : std::uint8_t {
+    /// Applies no curve.
+    none,
+    /// Compresses each exposed channel `c` to `c / (1 + c)`.
+    reinhard,
+};
 /// Lighting settings other than the two lights, shared by SceneEnvironment and Environment.
 ///
 /// validate_environment_settings() defines the accepted values. Fog, exposure and tone mapping do not apply
@@ -203,7 +305,7 @@ struct EnvironmentSettings {
     /// both ambient terms.
     Vec3 ambient_specular{.08F, .08F, .08F};
     /// The planet's atmosphere. While it is enabled, the renderer draws the sky from it behind the scene instead of
-    /// the fixed clear color, with the sun's disc, and lights surfaces and fog with the sun as it reaches the ground,
+    /// #background, with the sun's disc, and lights surfaces and fog with the sun as it reaches the ground,
     /// atmosphere_sunlight(); the sky itself scatters the sun's irradiance above the atmosphere. The sky is seen from
     /// the eye's altitude above Atmosphere::ground_height, kept between 1 m and 1 m below the atmosphere's top, with
     /// the planet's center straight below the eye, so that +Y is up wherever the eye moves; an orthographic view sees
@@ -212,45 +314,21 @@ struct EnvironmentSettings {
     /// distance from the world's origin, or until a thinner atmosphere's top falls to less than 1 m above it, then
     /// takes the eye's again: VulkanRenderer::set_view recovers the eye from a float view-projection, whose rounding
     /// moves the eye when the camera only turns. In perspective views fog applies to the sky as to a surface
-    /// #fog_sky_distance along each view ray. Disabled, nothing draws behind the scene and the sun keeps its
+    /// HeightFog::sky_distance along each view ray. Disabled, #background shows behind the scene and the sun keeps its
     /// irradiance.
     Atmosphere atmosphere;
-    /// Ambient light that fog scatters toward the eye.
-    Vec3 fog_color{.55F, .65F, .75F};
-    /// Fog density per world unit at #fog_height, finite and nonnegative; zero disables fog. The density at height
-    /// `y` is `fog_density * exp(-fog_falloff * (y - fog_height))`.
-    ///
-    /// In perspective views a mesh surface keeps the share `exp(-t)` of its color and takes the rest from the fog's
-    /// light. `t` integrates the density along the straight path of length `d` from the eye to the surface: with `k`
-    /// the falloff, `y` the height of the path's lower end and `r` the height between its ends, `t = fog_density * d *
-    /// exp(-k * (y - fog_height)) * (1 - exp(-k * r)) / (k * r)`, where the last factor is 1 when `k * r` is zero,
-    /// so that uniform fog keeps `exp(-fog_density * d)`. The fog's light is #fog_color plus Environment::sun's
-    /// irradiance times #fog_sun_scattering times the Henyey-Greenstein phase function `(1 - g^2) / (4 * pi * (1 +
-    /// g^2 - 2 * g * c)^1.5)`, with `g` the #fog_sun_anisotropy and `c` the cosine of the angle between the path, from
-    /// the eye, and the direction toward the sun. It depends on the path's direction alone, not on its length, and each
-    /// of its channels is capped at 65504, the largest half float that the scene target holds. Neither shadows nor the
-    /// scene's own light reach the fog. Orthographic views are not fogged.
-    float fog_density = 0;
-    /// Height along +Y at which the fog's density is #fog_density; finite.
-    float fog_height = 0;
-    /// Rate per world unit at which the fog's density falls with height above #fog_height, and rises below it;
-    /// finite and nonnegative. Zero makes the density uniform.
-    float fog_falloff = 0;
-    /// Share of the sun as it reaches the ground, atmosphere_sunlight(), per channel, that the fog scatters toward the
-    /// eye, weighted by the phase function; finite and nonnegative. Zero scatters no sunlight.
-    Vec3 fog_sun_scattering{0, 0, 0};
-    /// Asymmetry `g` of the fog's phase function, greater than -1 and less than 1. Positive values scatter
-    /// sunlight forward, so the fog brightens toward the sun; zero scatters it evenly.
-    float fog_sun_anisotropy = .6F;
-    /// Distance along each view ray at which fog applies to the sky, from 0 to 1,000,000,000. Geometry at this
-    /// distance meets the sky behind it in the same fog, so a horizon of distant terrain fades into the sky. Zero
-    /// leaves the sky unfogged.
-    float fog_sky_distance = 0;
+    /// Linear radiance behind the scene while #atmosphere is disabled, wherever no mesh draws; the sky replaces it
+    /// while the atmosphere is enabled. Finite, nonnegative and at most 65504 in each channel, the largest half float
+    /// that the scene target holds. In perspective views fog applies to it as to a surface HeightFog::sky_distance
+    /// along each view ray, as it does to the sky, and #exposure and #tone_mapping apply to it as to the scene.
+    Vec3 background{.018F, .027F, .041F};
+    /// Height fog over the scene, the sky and #background.
+    HeightFog fog;
     /// Multiplies linear scene color, including the sky and background, before tone mapping; finite and
     /// positive.
     float exposure = 1;
-    /// Compresses each exposed channel `c` to `c / (1 + c)` before display encoding.
-    bool tone_mapping = false;
+    /// The curve that compresses exposed scene color before display encoding.
+    ToneMapping tone_mapping = ToneMapping::none;
     /// Shadow cascades of Environment::sun, fitted to the view.
     ShadowCascades shadow_cascades;
     /// Optional finer region, for example around a moving subject; move it by updating its center. Inside it,
@@ -266,52 +344,79 @@ struct Environment : EnvironmentSettings {
     /// Fill light, without shadows.
     DirectionalLight fill{{.8F, .3F, -.5F}, {.314159265F, .314159265F, .314159265F}};
 };
-/// Throws `std::invalid_argument` unless every color in @p e, `fog_sun_scattering` included, is finite and
-/// nonnegative, `fog_density` is finite and nonnegative, `exposure` is finite and positive, `fog_height` is finite,
-/// `fog_falloff` is finite and nonnegative, `fog_sky_distance` lies from 0 to 1,000,000,000, `fog_sun_anisotropy`
-/// lies strictly between -1 and 1, the shadow cascades, enabled or not, meet the ranges that ShadowCascades states,
-/// the detail region, enabled or not, has a finite center, finite positive `extent` and `depth`, nonzero
-/// `resolution` and finite nonnegative biases, and the atmosphere passes validate_atmosphere().
+// The validation messages below state these limits.
+static_assert(ShadowCascades::max_count == 4 && ShadowCascades::min_resolution == 16);
+/// Validates @p e, its shadow maps whether they are enabled or not. Checking the fields in their order, throws
+/// `std::invalid_argument` with the message of the first rule broken: "Environment ambient_sky must be finite
+/// nonnegative linear RGB", and so for `ambient_ground` and `ambient_specular`; validate_atmosphere()'s messages;
+/// "Environment background must be finite nonnegative linear RGB of at most 65504"; validate_height_fog()'s messages;
+/// "Environment exposure must be finite and positive"; "Unknown tone mapping" unless `tone_mapping` is a ToneMapping
+/// enumerator; "Shadow cascade count must be from 1 to 4", "Shadow cascade distance must be positive and at most
+/// 1,000,000,000", "Shadow cascade logarithmic_split must lie from 0 to 1", "Shadow cascade blend must lie from 0 to
+/// 1", "Shadow cascade resolution must be at least 16", "Shadow cascade bias constant must be finite and nonnegative"
+/// and "Shadow cascade bias slope must be finite and nonnegative"; and "Detail shadow center must be finite", "Detail
+/// shadow extent must be finite and positive", "Detail shadow depth must be finite and positive", "Detail shadow
+/// resolution must be nonzero", "Detail shadow bias constant must be finite and nonnegative" and "Detail shadow bias
+/// slope must be finite and nonnegative". A color or center meets its rule only in every channel or axis.
 inline void validate_environment_settings(const EnvironmentSettings &e) {
     const auto color = [](Vec3 c) {
         return std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && c.x >= 0 && c.y >= 0 && c.z >= 0;
     };
-    for (const auto c : {e.ambient_sky, e.ambient_ground, e.ambient_specular, e.fog_color, e.fog_sun_scattering})
-        if (!color(c))
-            throw std::invalid_argument("Environment colours must be finite nonnegative linear RGB");
-    if (!std::isfinite(e.fog_density) || e.fog_density < 0 || !std::isfinite(e.exposure) || e.exposure <= 0)
-        throw std::invalid_argument("Invalid environment exposure or fog density");
-    // Bounding distances keeps their products with the fog's density and falloff within float range. Negated
-    // comparisons also reject NaN.
-    constexpr float maximum_distance = 1e9F;
-    if (!std::isfinite(e.fog_height) || !(e.fog_falloff >= 0 && std::isfinite(e.fog_falloff)) ||
-        !(e.fog_sky_distance >= 0 && e.fog_sky_distance <= maximum_distance) ||
-        !(e.fog_sun_anisotropy > -1 && e.fog_sun_anisotropy < 1))
-        throw std::invalid_argument("Invalid environment height fog");
-    const auto &c = e.shadow_cascades;
-    if (c.count < 1 || c.count > 4 || !(c.distance > 0 && c.distance <= maximum_distance) ||
-        !(c.logarithmic_split >= 0 && c.logarithmic_split <= 1) || !(c.blend >= 0 && c.blend <= 1) ||
-        c.resolution < 16 || !std::isfinite(c.constant_bias) || c.constant_bias < 0 || !std::isfinite(c.slope_bias) ||
-        c.slope_bias < 0)
-        throw std::invalid_argument("Invalid shadow cascades");
-    const auto &s = e.detail_shadow;
-    if (!std::isfinite(s.center.x) || !std::isfinite(s.center.y) || !std::isfinite(s.center.z) ||
-        !std::isfinite(s.extent) || s.extent <= 0 || !std::isfinite(s.depth) || s.depth <= 0 || !s.resolution ||
-        !std::isfinite(s.constant_bias) || s.constant_bias < 0 || !std::isfinite(s.slope_bias) || s.slope_bias < 0)
-        throw std::invalid_argument("Invalid directional shadow region");
+    const auto require = [](bool valid, const char *message) {
+        if (!valid)
+            throw std::invalid_argument(message);
+    };
+    const auto nonnegative = [](float v) { return std::isfinite(v) && v >= 0; };
+    const auto positive = [](float v) { return std::isfinite(v) && v > 0; };
+    require(color(e.ambient_sky), "Environment ambient_sky must be finite nonnegative linear RGB");
+    require(color(e.ambient_ground), "Environment ambient_ground must be finite nonnegative linear RGB");
+    require(color(e.ambient_specular), "Environment ambient_specular must be finite nonnegative linear RGB");
     validate_atmosphere(e.atmosphere);
+    // The largest half float, which the scene target clears to at most.
+    constexpr float maximum_half_float = 65504;
+    const auto &b = e.background;
+    require(color(b) && b.x <= maximum_half_float && b.y <= maximum_half_float && b.z <= maximum_half_float,
+            "Environment background must be finite nonnegative linear RGB of at most 65504");
+    validate_height_fog(e.fog);
+    require(positive(e.exposure), "Environment exposure must be finite and positive");
+    require(e.tone_mapping == ToneMapping::none || e.tone_mapping == ToneMapping::reinhard, "Unknown tone mapping");
+    constexpr float maximum_distance = 1e9F;
+    const auto &c = e.shadow_cascades;
+    require(c.count >= 1 && c.count <= ShadowCascades::max_count, "Shadow cascade count must be from 1 to 4");
+    require(c.distance > 0 && c.distance <= maximum_distance,
+            "Shadow cascade distance must be positive and at most 1,000,000,000");
+    require(c.logarithmic_split >= 0 && c.logarithmic_split <= 1,
+            "Shadow cascade logarithmic_split must lie from 0 to 1");
+    require(c.blend >= 0 && c.blend <= 1, "Shadow cascade blend must lie from 0 to 1");
+    require(c.resolution >= ShadowCascades::min_resolution, "Shadow cascade resolution must be at least 16");
+    require(nonnegative(c.bias.constant), "Shadow cascade bias constant must be finite and nonnegative");
+    require(nonnegative(c.bias.slope), "Shadow cascade bias slope must be finite and nonnegative");
+    const auto &s = e.detail_shadow;
+    require(std::isfinite(s.center.x) && std::isfinite(s.center.y) && std::isfinite(s.center.z),
+            "Detail shadow center must be finite");
+    require(positive(s.extent), "Detail shadow extent must be finite and positive");
+    require(positive(s.depth), "Detail shadow depth must be finite and positive");
+    require(s.resolution != 0, "Detail shadow resolution must be nonzero");
+    require(nonnegative(s.bias.constant), "Detail shadow bias constant must be finite and nonnegative");
+    require(nonnegative(s.bias.slope), "Detail shadow bias slope must be finite and nonnegative");
 }
-/// Validates @p e as validate_environment_settings() does, and requires each light to have finite, nonnegative
-/// irradiance and a direction whose squared length is finite and at least `1e-12`. Throws `std::invalid_argument`.
+/// Validates @p e as validate_environment_settings() does, then Environment::sun and then Environment::fill, throwing
+/// `std::invalid_argument` with "Environment sun direction must have a finite squared length of at least 1e-12" or
+/// "Environment sun irradiance must be finite nonnegative linear RGB", or the same of the fill light.
 inline void validate_environment(const Environment &e) {
     validate_environment_settings(e);
-    for (const auto &l : {e.sun, e.fill}) {
+    const auto light = [](const DirectionalLight &l, const char *direction, const char *irradiance) {
         const auto square = dot(l.direction, l.direction);
+        if (!std::isfinite(square) || square < 1e-12F)
+            throw std::invalid_argument(direction);
         const auto c = l.irradiance;
-        if (!std::isfinite(square) || square < 1e-12F || !std::isfinite(c.x) || !std::isfinite(c.y) ||
-            !std::isfinite(c.z) || c.x < 0 || c.y < 0 || c.z < 0)
-            throw std::invalid_argument("Invalid directional light");
-    }
+        if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z) || c.x < 0 || c.y < 0 || c.z < 0)
+            throw std::invalid_argument(irradiance);
+    };
+    light(e.sun, "Environment sun direction must have a finite squared length of at least 1e-12",
+          "Environment sun irradiance must be finite nonnegative linear RGB");
+    light(e.fill, "Environment fill direction must have a finite squared length of at least 1e-12",
+          "Environment fill irradiance must be finite nonnegative linear RGB");
 }
 namespace detail {
 /// atmosphere_transmittance() of an atmosphere and a sample that it accepts, without validating them.
@@ -472,9 +577,9 @@ struct ShadowCascade {
     float end{};
     /// World-space center of its square, on whole texels across the sun.
     Vec3 center{};
-    /// Half the square's width across the sun.
+    /// Half the square's width across the sun, in world units.
     float radius{};
-    /// World size of one texel, `2 * radius / ShadowCascades::resolution`.
+    /// World size of one texel in world units, `2 * radius / ShadowCascades::resolution`.
     float texel{};
     /// Column-major view-projection: the square to Vulkan clip X and Y, with Y down, and depth along the sun from 0
     /// at the side of the cascade's sphere facing the sun to 1 at its far side, both rounded outward to whole
@@ -482,6 +587,11 @@ struct ShadowCascade {
     Mat4 view_projection{};
 };
 namespace detail {
+/// Texels by which each cascade's square reaches past its sphere on every side: the filter, whose 4x4 texels reach 2.5
+/// texels from a sample, stays inside the square after snapping moves the center by up to half a texel.
+inline constexpr double cascade_margin_texels = 3;
+static_assert(ShadowCascades::min_resolution > 2 * cascade_margin_texels,
+              "A cascade's square must hold more than its margins");
 /// A cascade as fit_shadow_cascades() fits it, in double: its ShadowCascade fields and its sun-space position.
 struct CascadeFit {
     double begin{}, end{}, radius{}, texel{};
@@ -493,7 +603,7 @@ struct CascadeFit {
 struct CascadeFits {
     /// Cascades fitted, from nearest to farthest, which #cascades holds first.
     std::uint32_t count{};
-    std::array<CascadeFit, 4> cascades{};
+    std::array<CascadeFit, ShadowCascades::max_count> cascades{};
     /// The point that view depths are measured from, the eye or the near plane's center, and the unit view direction.
     std::array<double, 3> origin{}, forward{};
 };
@@ -563,7 +673,7 @@ inline CascadeFits fit_cascades(const Environment &e, const Mat4 &view_projectio
     if (!(end > start))
         return result;
     const auto count = settings.count;
-    std::array<double, 5> splits{};
+    std::array<double, ShadowCascades::max_count + 1> splits{};
     for (std::uint32_t k = 0; k <= count; ++k) {
         const double share = double(k) / count, even = start + (end - start) * share;
         splits[k] = perspective ? settings.logarithmic_split * start * std::pow(end / start, share) +
@@ -604,10 +714,7 @@ inline CascadeFits fit_cascades(const Environment &e, const Mat4 &view_projectio
         double radius = 0;
         for (const auto &corner : slice)
             radius = std::max(radius, length3(subtract(corner, offset)));
-        // 3 texels of margin keep the filter, whose 4x4 texels reach 2.5 texels from a sample, inside the square
-        // after snapping moves the center by up to half a texel.
-        constexpr double margin = 3;
-        radius *= resolution / (resolution - 2 * margin);
+        radius *= resolution / (resolution - 2 * cascade_margin_texels);
         const auto step = std::ldexp(1., std::ilogb(radius) - 10);
         radius = std::ceil(radius / step) * step;
         cascade.radius = radius;

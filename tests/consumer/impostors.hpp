@@ -266,11 +266,11 @@ inline int run(int argc, char **argv) {
     // keeps the tree's parity.
     {
         anima::Environment hazy;
-        hazy.fog_color = {.45F, .5F, .55F};
-        hazy.fog_density = .02F;
-        hazy.fog_height = center.y;
-        hazy.fog_falloff = .3F;
-        hazy.fog_sun_scattering = {.2F, .2F, .2F};
+        hazy.fog.color = {.45F, .5F, .55F};
+        hazy.fog.density = .02F;
+        hazy.fog.height = center.y;
+        hazy.fog.falloff = .3F;
+        hazy.fog.sun_scattering = {.2F, .2F, .2F};
         renderer.set_environment(hazy);
         view(center + anima::Vec3{60, 8, 0}, center);
         compare_views("height-fog", alone(tree), alone(impostor));

@@ -86,7 +86,7 @@ class SceneEnvironment {
 /// describes.
 [[nodiscard]] Environment lighting_environment(SceneSet &scenes);
 
-/// Registers the `anima.directional-light.v2` and `anima.scene-environment.v3` component codecs together,
+/// Registers the `anima.directional-light.v2` and `anima.scene-environment.v4` component codecs together,
 /// or neither: throws `std::invalid_argument` if @p codecs already has either type or key.
 ///
 /// A directional-light payload is a JSON object with exactly `irradiance`, three numbers. A scene-environment
@@ -95,15 +95,17 @@ class SceneEnvironment {
 /// each prefab instance maps them to its own objects; a link to a stale object or outside the captured
 /// objects fails to capture, and a key the document lacks fails to decode.
 ///
-/// `settings` has exactly the EnvironmentSettings field names, and `atmosphere` exactly the Atmosphere field names.
-/// Colors, coefficients and centers are three numbers and flags are booleans. `shadow_cascades` has exactly `enabled`,
-/// `count`, `distance`, `logarithmic_split`, `blend`, `resolution`, `constant_bias` and `slope_bias`, and
-/// `detail_shadow` exactly `enabled`, `center`, `extent`, `depth`, `resolution`, `constant_bias` and `slope_bias`,
-/// where each count and resolution is an integer from 1 to 4,294,967,295 that validate_environment_settings() then
-/// limits. Numbers must be finite, and payloads are at most 64 KiB. Unknown, missing or duplicate fields, wrong types
-/// and invalid values are rejected. The scene or prefab stores transforms and enabled state. A
-/// missing or inactive light is not a decoding error; lighting_environment() rejects it later. The scene-environment
-/// codec reports SceneEnvironment::sun and SceneEnvironment::fill as links, so SceneSet::replace and SceneSet::unload
-/// repair them (see ComponentCodecs::add).
+/// `settings` has exactly the EnvironmentSettings field names, `atmosphere` exactly the Atmosphere field names, `fog`
+/// exactly the HeightFog field names, `shadow_cascades` exactly `enabled`, `count`, `distance`, `logarithmic_split`,
+/// `blend`, `resolution` and `bias`, `detail_shadow` exactly the DirectionalShadow field names, and each `bias`
+/// exactly `constant` and `slope`. Colors, coefficients and centers are three numbers and flags are booleans.
+/// `tone_mapping` is the name of a ToneMapping enumerator, `"none"` or `"reinhard"`, and another string fails with
+/// "Unknown tone mapping". Each count and resolution is an integer from 1 to 4,294,967,295 that
+/// validate_environment_settings() then limits. Numbers must be finite, and payloads are at most 64 KiB. Unknown,
+/// missing or duplicate fields, wrong types and invalid values are rejected, with the messages of
+/// validate_environment_settings() for values that it rejects. The scene or prefab stores transforms and enabled
+/// state. A missing or inactive light is not a decoding error; lighting_environment() rejects it later. The
+/// scene-environment codec reports SceneEnvironment::sun and SceneEnvironment::fill as links, so SceneSet::replace and
+/// SceneSet::unload repair them (see ComponentCodecs::add).
 void add_lighting_component_codecs(ComponentCodecs &codecs);
 } // namespace anima

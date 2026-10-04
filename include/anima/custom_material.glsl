@@ -30,7 +30,7 @@ layout(set = 0, binding = 0, std140) uniform AnimaFrame {
     float time;
     // The fog's height, falloff, sky distance and phase asymmetry.
     vec4 fogShape;
-    // The sunlight that the fog scatters, before its phase function: fog_sun_scattering times sunIrradiance.
+    // The sunlight that the fog scatters, before its phase function: HeightFog::sun_scattering times sunIrradiance.
     vec4 fogSun;
 }
 animaFrame;
