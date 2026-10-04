@@ -476,11 +476,11 @@ TEST_CASE("Snapshots offset each instance's texture references, and compiled mat
     resources.create({}, compiled).renderer().set_pose(sample_pose(*source), mirror());
     (void)resources.create({}, compiled);
     const auto composed = resources.snapshot();
-    CHECK(composed.material_data[1].normal_texture == 2);
-    CHECK(composed.material_data[1].emissive_texture == 3);
+    CHECK(composed.materials[1].normal_texture == 2);
+    CHECK(composed.materials[1].emissive_texture == 3);
     CHECK_NOTHROW(validate_scene(composed));
     source->materials[0].normal_scale = .5F;
-    CHECK(compiled->materials()->material_data[0].normal_scale == 1);
+    CHECK(compiled->description()->materials[0].normal_scale == 1);
 }
 
 TEST_CASE("A tangent handedness other than 0, 1 or -1 is rejected") {

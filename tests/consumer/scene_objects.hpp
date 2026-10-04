@@ -337,7 +337,7 @@ inline void run() {
             "Attaching a mesh lost the empty object's transform");
     auto other = scene.create("Marker", mesh);
     renderer.set_material_factor(0, {.2F, .7F, .9F});
-    require(scene.instance(other.id()).factors[0].x == 1 && mesh->materials()->material_data[0].factor.x == 1,
+    require(scene.instance(other.id()).factors[0].x == 1 && mesh->description()->materials[0].factor.x == 1,
             "Per-object material override mutated another object or resource");
     rejects<std::out_of_range>([&] { (void)foreign.object(empty.id()); }, "Stale or foreign GameObject handle");
     rejects<std::logic_error>([&] { (void)empty.add_mesh(mesh); }, "GameObject already has a MeshRenderer");
@@ -426,17 +426,17 @@ inline void run() {
     textured.textures[0].encoding = TextureEncoding::linear;
     const auto reduced = Mesh::compile_static(textured, {3, 2});
     require(reduced.size() == 2, "Static resource preparation ignored its caller's geometry limit");
-    const auto &first = *reduced.front()->materials();
+    const auto &first = *reduced.front()->description();
     for (const auto &part : reduced) {
-        const auto &materials = *part->materials();
-        const auto &material = materials.material_data[0];
-        const auto &color = materials.textures.at(material.texture);
+        const auto &description = *part->description();
+        const auto &material = description.materials[0];
+        const auto &color = description.textures.at(material.texture);
         require(color.image->width == 2 && color.sampler.u == Wrap::mirror &&
-                    materials.textures.at(material.normal_texture).encoding == TextureEncoding::linear,
+                    description.textures.at(material.normal_texture).encoding == TextureEncoding::linear,
                 "Static resource preparation lost material, sampler or encoding identity");
-        require(color.image == first.textures.at(first.material_data[0].texture).image &&
-                    materials.textures.at(material.normal_texture).image ==
-                        first.textures.at(first.material_data[0].normal_texture).image,
+        require(color.image == first.textures.at(first.materials[0].texture).image &&
+                    description.textures.at(material.normal_texture).image ==
+                        first.textures.at(first.materials[0].normal_texture).image,
                 "Static pieces did not share their shrunk images");
     }
     require(textured.textures[0].image == pixels && pixels->width == 4 && textured.materials[0].texture == 1,

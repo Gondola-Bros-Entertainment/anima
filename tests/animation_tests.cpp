@@ -667,7 +667,7 @@ TEST_CASE("A fitted model compiled until upload keeps a source without texels") 
     const FittedAsset fitted(body, std::move(source), TexelRetention::until_upload);
     REQUIRE(fitted.source->textures.size() == 1);
     // The source's textures are the mesh's, which describe the image without holding its texels.
-    CHECK(fitted.source->textures[0].image == fitted.render->materials()->textures[0].image);
+    CHECK(fitted.source->textures[0].image == fitted.render->description()->textures[0].image);
     CHECK(fitted.source->textures[0].image->rgba.empty());
     CHECK(fitted.source->primitives.size() == 1);
     CHECK(fitted.joints.size() == 2);

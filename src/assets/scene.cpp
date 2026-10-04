@@ -94,16 +94,15 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
         result->nodes_.emplace_back(node.name, node.parent);
     for (const auto &m : result->rest_.world)
         affine(m);
-    auto materials = std::make_shared<MeshSnapshot>();
-    materials->material_data = source.materials;
-    materials->textures = source.textures;
-    materials->mesh_nodes = source.mesh_nodes;
-    materials->skins = source.skins.size();
-    materials->materials = source.materials.size();
-    materials->notices = source.notices;
+    detail::validate_surfaces(source.materials, source.textures, detail::Texels::required);
+    auto description = std::make_shared<MeshDescription>();
+    description->materials = source.materials;
+    description->textures = source.textures;
+    description->mesh_nodes = source.mesh_nodes;
+    description->skins = source.skins.size();
+    description->notices = source.notices;
     for (const auto &clip : source.animations)
-        materials->clips.push_back(clip.name);
-    detail::validate_scene(*materials, {}, detail::Texels::required);
+        description->clips.push_back(clip.name);
     result->skins_ = source.skins;
     std::size_t palette_size = source.nodes.size();
     std::vector<std::uint32_t> offsets;
@@ -114,7 +113,7 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
         require(palette_size <= UINT32_MAX - skin.joints.size(), "Render palette index overflow");
         offsets.push_back(static_cast<std::uint32_t>(palette_size));
         palette_size += skin.joints.size();
-        materials->joints += skin.joints.size();
+        description->joints += skin.joints.size();
         std::set<std::size_t> seen;
         for (std::size_t j = 0; j < skin.joints.size(); ++j) {
             require(skin.joints[j] < source.nodes.size() && seen.insert(skin.joints[j]).second,
@@ -123,10 +122,10 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
             const auto bind = result->rest_.world[skin.joints[j]] * skin.inverse_bind[j], unit = identity();
             affine(bind);
             for (unsigned k = 0; k < 16; ++k)
-                materials->bind_deviation = std::max(materials->bind_deviation, std::abs(bind[k] - unit[k]));
+                description->bind_deviation = std::max(description->bind_deviation, std::abs(bind[k] - unit[k]));
         }
     }
-    materials->default_is_bind_pose = materials->bind_deviation < mesh_limits::bind_pose_tolerance;
+    description->default_is_bind_pose = description->bind_deviation < mesh_limits::bind_pose_tolerance;
     require(palette_size <= UINT32_MAX, "Render palette index overflow");
     result->palette_size_ = palette_size;
     // Where each draw's vertices start, then where the last one's end.
@@ -160,7 +159,7 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
                                   primitive.skin >= 0, primitive.material, static_cast<std::uint32_t>(primitive.node),
                                   source.nodes[primitive.node].name, primitive.mesh_name});
         if (primitive.skin >= 0)
-            materials->skinned_vertices += corners;
+            description->skinned_vertices += corners;
         std::vector<RenderBounds> bounds(joint_count);
         std::unordered_map<Key, std::uint32_t, Hash> unique;
         if (triangles) {
@@ -224,7 +223,7 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
     for (std::size_t d = 0; lods.levels && d < result->draws_.size(); ++d) {
         auto &draw = result->draws_[d];
         const auto alpha_mode =
-            draw.material >= 0 ? materials->material_data[std::size_t(draw.material)].alpha_mode : AlphaMode::opaque;
+            draw.material >= 0 ? description->materials[std::size_t(draw.material)].alpha_mode : AlphaMode::opaque;
         if (alpha_mode == AlphaMode::mask)
             continue;
         const bool blended = alpha_mode == AlphaMode::blend;
@@ -286,8 +285,8 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
     }
     result->texel_retention_ = texel_retention;
     if (texel_retention == TexelRetention::until_upload)
-        result->texels_ = detail::hold_texels(materials->textures, "Mesh texture texels were released after upload");
-    result->materials_ = std::move(materials);
+        result->texels_ = detail::hold_texels(description->textures, "Mesh texture texels were released after upload");
+    result->description_ = std::move(description);
     // The rest pose's palette places each bounds part, as Scene::append_pose does for an object at the origin.
     std::vector<Mat4> rest_palette(result->rest_.world.begin(), result->rest_.world.end());
     for (const auto &skin : result->skins_)
@@ -308,8 +307,8 @@ std::vector<std::shared_ptr<const Image>> Mesh::texel_images() const {
     if (const auto *hold = texels_.get())
         return hold->images();
     std::vector<std::shared_ptr<const Image>> result;
-    result.reserve(materials_->textures.size());
-    for (const auto &texture : materials_->textures)
+    result.reserve(description_->textures.size());
+    for (const auto &texture : description_->textures)
         result.push_back(texture.image);
     return result;
 }
@@ -557,7 +556,7 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
     std::optional<Pose> next_pose;
     if (initial_pose)
         next_pose = *initial_pose;
-    for (const auto &material : next.asset->materials_->material_data)
+    for (const auto &material : next.asset->description_->materials)
         next.factors.push_back(material.factor);
     next.custom_materials.resize(next.factors.size());
     next.primitive_visible.resize(next.asset->draws_.size(), true);
@@ -996,7 +995,7 @@ void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
 void Scene::clear_material_factor(Id id, std::size_t material) {
     auto &value = get(id);
     require_index(material, value.factors.size(), material_factor_slot);
-    value.factors[material] = value.asset->materials_->material_data[material].factor;
+    value.factors[material] = value.asset->description_->materials[material].factor;
 }
 void Scene::set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
     auto &value = get(id);
@@ -1086,21 +1085,21 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     for (auto id : objects) {
         const auto &value = instance(id);
         const auto &asset = *value.asset;
-        const auto &description = *asset.materials();
-        const auto material_offset = result.material_data.size(), texture_offset = result.textures.size();
-        require(description.material_data.size() <= INT_MAX && description.textures.size() <= INT_MAX &&
-                    material_offset <= INT_MAX - description.material_data.size() &&
+        const auto &description = *asset.description();
+        const auto material_offset = result.materials.size(), texture_offset = result.textures.size();
+        require(description.materials.size() <= INT_MAX && description.textures.size() <= INT_MAX &&
+                    material_offset <= INT_MAX - description.materials.size() &&
                     texture_offset <= INT_MAX - description.textures.size(),
                 "Snapshot material index overflow");
         result.textures.insert(result.textures.end(), description.textures.begin(), description.textures.end());
-        for (std::size_t i = 0; i < description.material_data.size(); ++i) {
-            auto material = description.material_data[i];
+        for (std::size_t i = 0; i < description.materials.size(); ++i) {
+            auto material = description.materials[i];
             material.factor = value.factors[i];
             for (auto *index : {&material.texture, &material.normal_texture, &material.metallic_roughness_texture,
                                 &material.emissive_texture, &material.occlusion_texture})
                 if (*index >= 0)
                     *index += static_cast<int>(texture_offset);
-            result.material_data.push_back(std::move(material));
+            result.materials.push_back(std::move(material));
         }
         result.mesh_nodes += description.mesh_nodes;
         result.skins += description.skins;
@@ -1127,7 +1126,7 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                 const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : value.factors[draw.material];
                 result.primitives.push_back(
                     {draw.node_name, draw.mesh_name,
-                     draw.material < 0 ? "default" : description.material_data[draw.material].name, palette[draw.node],
+                     draw.material < 0 ? "default" : description.materials[draw.material].name, palette[draw.node],
                      static_cast<std::uint32_t>(result.vertices.size()), draw.index_count,
                      draw.material < 0 ? no_index : static_cast<int>(material_offset) + draw.material, visible});
                 if (draw.skinned)
@@ -1165,7 +1164,6 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
             }
         }
     }
-    result.materials = result.material_data.size();
     if (bounds.valid) {
         result.minimum = bounds.minimum;
         result.maximum = bounds.maximum;

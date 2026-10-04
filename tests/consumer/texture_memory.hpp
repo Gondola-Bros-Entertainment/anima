@@ -227,7 +227,7 @@ inline int run(int argc, char **argv) {
     const auto kept_before = held_bytes({&kept_image}), released_before = held_bytes({&released_image});
     require(kept_before == texel_bytes && released_before == texel_bytes,
             "Each mesh must hold its image's texels until it is uploaded");
-    require(released->materials()->textures[0].image->rgba.empty(),
+    require(released->description()->textures[0].image->rgba.empty(),
             "A mesh compiled until upload describes its texture without texels");
     const auto kept_scene = scene_of(kept), released_scene = scene_of(released);
 

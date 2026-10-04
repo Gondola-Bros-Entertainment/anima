@@ -263,28 +263,28 @@ TEST_CASE("The geometry and motion loaders reject each other's resources") {
 TEST_CASE("Materials keep their alpha mode, metallic-roughness factors, sidedness and glTF defaults") {
     const Temp temp;
     const auto masked = load_glb(fixture(temp, "mask"));
-    CHECK(masked.material_data.at(0).alpha_mode == AlphaMode::mask);
-    CHECK(masked.material_data[0].alpha_cutoff == Near{.35F, tolerance});
-    CHECK(masked.material_data[0].alpha == Near{.7F, tolerance});
+    CHECK(masked.materials.at(0).alpha_mode == AlphaMode::mask);
+    CHECK(masked.materials[0].alpha_cutoff == Near{.35F, tolerance});
+    CHECK(masked.materials[0].alpha == Near{.7F, tolerance});
     CHECK(masked.vertices.at(0).alpha == Near{0, tolerance}); // The vertex colour's alpha.
     const auto blended = load_glb(fixture(temp, "alpha"));
-    CHECK(blended.material_data.at(0).alpha_mode == AlphaMode::blend);
-    CHECK(blended.material_data[0].alpha == Near{.4F, tolerance});
-    CHECK(blended.material_data.at(1).alpha_mode == AlphaMode::opaque); // glTF's default mode.
+    CHECK(blended.materials.at(0).alpha_mode == AlphaMode::blend);
+    CHECK(blended.materials[0].alpha == Near{.4F, tolerance});
+    CHECK(blended.materials.at(1).alpha_mode == AlphaMode::opaque); // glTF's default mode.
     const auto pbr = load_glb(fixture(temp, "pbr"));
-    CHECK(pbr.material_data.at(0).metallic == Near{.7F, tolerance});
-    CHECK(pbr.material_data[0].roughness == Near{.23F, tolerance});
+    CHECK(pbr.materials.at(0).metallic == Near{.7F, tolerance});
+    CHECK(pbr.materials[0].roughness == Near{.23F, tolerance});
     // glTF's defaults for factors a material omits.
-    CHECK(pbr.material_data.at(1).metallic == Near{1, tolerance});
-    CHECK(pbr.material_data[1].roughness == Near{1, tolerance});
+    CHECK(pbr.materials.at(1).metallic == Near{1, tolerance});
+    CHECK(pbr.materials[1].roughness == Near{1, tolerance});
     // A primitive without a material uses the spec's default material.
     const auto implicit = load_glb(fixture(temp, "implicit-material"));
-    const auto &fallback = implicit.material_data.at(implicit.primitives.at(0).material_index);
+    const auto &fallback = implicit.materials.at(implicit.primitives.at(0).material_index);
     CHECK(fallback.metallic == Near{1, tolerance});
     CHECK_FALSE(fallback.double_sided);
     // glTF materials are single-sided unless they say otherwise; programmatic ones render both sides.
-    CHECK_FALSE(masked.material_data[0].double_sided);
-    CHECK(load_glb(fixture(temp, "double-sided")).material_data.at(0).double_sided);
+    CHECK_FALSE(masked.materials[0].double_sided);
+    CHECK(load_glb(fixture(temp, "double-sided")).materials.at(0).double_sided);
     CHECK(Material{}.double_sided);
 }
 
