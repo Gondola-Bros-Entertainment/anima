@@ -1,3 +1,4 @@
+#include "../detail/rotation_matrix.hpp"
 #include "mesh_limits.hpp"
 #include "surface_validation.hpp"
 #include "texel_hold.hpp"
@@ -828,6 +829,17 @@ void GameObject::set_local_position(Vec3 position) {
 }
 void GameObject::set_local_transform(const Transform &transform) { set_local_matrix(matrix(transform)); }
 void GameObject::set_local_matrix(const Mat4 &local) { scene().set_local_transform(id_, local); }
+Quat GameObject::local_rotation() const { return detail::orientation(detail::upper(local_matrix())); }
+void GameObject::set_local_rotation(const Quat &rotation) {
+    const auto local = local_matrix();
+    set_local_matrix(matrix({translation_of(local), rotation, detail::axis_scale(detail::upper(local))}));
+}
+Vec3 GameObject::local_scale() const { return detail::axis_scale(detail::upper(local_matrix())); }
+void GameObject::set_local_scale(Vec3 scale) {
+    const auto local = local_matrix();
+    set_local_matrix(matrix({translation_of(local), detail::orientation(detail::upper(local)), scale}));
+}
+std::optional<Transform> GameObject::local_transform() const { return decompose(local_matrix()); }
 std::optional<GameObject> GameObject::parent() const {
     auto &owner = scene();
     const auto parent = owner.slot(id_).parent;
@@ -857,6 +869,15 @@ void GameObject::set_position(Vec3 position) {
 }
 void GameObject::set_world_transform(const Transform &transform) { set_world_matrix(matrix(transform)); }
 void GameObject::set_world_matrix(const Mat4 &world) { scene().set_transform(id_, world); }
+Quat GameObject::rotation() const { return detail::orientation(detail::upper(world_matrix())); }
+void GameObject::set_rotation(const Quat &rotation) {
+    const auto world = world_matrix();
+    set_world_matrix(matrix({translation_of(world), rotation, detail::axis_scale(detail::upper(world))}));
+}
+Vec3 GameObject::forward() const { return normalized(-axis_z(world_matrix())); }
+Vec3 GameObject::right() const { return normalized(axis_x(world_matrix())); }
+Vec3 GameObject::up() const { return normalized(axis_y(world_matrix())); }
+void GameObject::look_at(Vec3 target, Vec3 up) { set_rotation(look_rotation(target - position(), up)); }
 bool GameObject::has_renderer() const { return bool(scene().slot(id_).value.asset); }
 MeshRenderer GameObject::add_mesh(std::shared_ptr<const Mesh> mesh) {
     require(bool(mesh), "Null mesh");

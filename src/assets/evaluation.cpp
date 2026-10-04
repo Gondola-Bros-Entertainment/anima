@@ -1,4 +1,4 @@
-#include "rotation_matrix.hpp"
+#include "../detail/rotation_matrix.hpp"
 #include <anima/assets/evaluation.hpp>
 #include <numbers>
 #include <numeric>
@@ -16,22 +16,11 @@ void require(bool value, const char *message) {
 void weight_valid(float weight) {
     require(std::isfinite(weight) && weight >= 0 && weight <= 1, "Layer/contact weight must be in [0,1]");
 }
-using M3 = std::array<std::array<double, 3>, 3>;
-double determinant(const M3 &m) {
-    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
-           m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-}
-// A linear part whose determinant is within this of 0 has collapsed at least one axis, as a joint scaled to zero
-// does; below its negative, the transform reflects.
-constexpr double collapse_determinant = 1e-12;
-M3 upper(const Mat4 &m) {
-    M3 result{};
-    for (unsigned r = 0; r < 3; ++r)
-        for (unsigned c = 0; c < 3; ++c)
-            result[r][c] = m[c * 4 + r];
-    return result;
-}
-bool collapsed(const M3 &m) { return std::abs(determinant(m)) <= collapse_determinant; }
+using M3 = detail::Matrix3;
+using detail::collapse_determinant;
+using detail::collapsed;
+using detail::determinant;
+using detail::upper;
 M3 linear(const Mat4 &m) {
     // Largest summed deviation of the bottom row from (0, 0, 0, 1) that still counts as affine.
     constexpr float affine_tolerance = 1e-5F;
@@ -40,20 +29,8 @@ M3 linear(const Mat4 &m) {
     require(std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1) < affine_tolerance,
             "Evaluation needs affine transforms");
     const auto result = upper(m);
+    // Below the negative of the collapse threshold, the transform reflects.
     require(determinant(result) >= -collapse_determinant, "Evaluation needs transforms without reflection");
-    return result;
-}
-M3 inverse_transpose(const M3 &m) {
-    // The inverse divides by the determinant, so smaller magnitudes count as singular.
-    constexpr double singular_determinant = 1e-20;
-    const double d = determinant(m);
-    require(std::isfinite(d) && std::abs(d) > singular_determinant, "Polar decomposition is singular");
-    M3 result{};
-    for (unsigned r = 0; r < 3; ++r)
-        for (unsigned c = 0; c < 3; ++c)
-            result[r][c] = (m[(r + 1) % 3][(c + 1) % 3] * m[(r + 2) % 3][(c + 2) % 3] -
-                            m[(r + 1) % 3][(c + 2) % 3] * m[(r + 2) % 3][(c + 1) % 3]) /
-                           d;
     return result;
 }
 Quat quaternion(const M3 &m) {
@@ -61,45 +38,7 @@ Quat quaternion(const M3 &m) {
     require(q.has_value(), "Invalid polar rotation");
     return *q;
 }
-struct Polar {
-    Quat rotation;
-    M3 stretch;
-};
-Polar polar(const Mat4 &m) {
-    constexpr unsigned maximum_iterations = 64;
-    // The iteration has converged once a step changes no element by this much.
-    constexpr double convergence = 1e-12;
-    const auto a = linear(m);
-    auto r = a;
-    bool converged = false;
-    for (unsigned iteration = 0; iteration < maximum_iterations; ++iteration) {
-        const auto it = inverse_transpose(r);
-        double nr = 0, ni = 0, error = 0;
-        for (unsigned i = 0; i < 3; ++i)
-            for (unsigned j = 0; j < 3; ++j) {
-                nr += r[i][j] * r[i][j];
-                ni += it[i][j] * it[i][j];
-            }
-        const auto gamma = std::pow(ni / nr, .25);
-        for (unsigned i = 0; i < 3; ++i)
-            for (unsigned j = 0; j < 3; ++j) {
-                const double next = .5 * (gamma * r[i][j] + it[i][j] / gamma);
-                error = std::max(error, std::abs(next - r[i][j]));
-                r[i][j] = next;
-            }
-        if (error < convergence) {
-            converged = true;
-            break;
-        }
-    }
-    require(converged, "Polar decomposition did not converge");
-    M3 s{};
-    for (unsigned i = 0; i < 3; ++i)
-        for (unsigned j = 0; j < 3; ++j)
-            for (unsigned k = 0; k < 3; ++k)
-                s[i][j] += r[k][i] * a[k][j];
-    return {quaternion(r), s};
-}
+detail::Polar polar(const Mat4 &m) { return detail::polar(linear(m)); }
 std::vector<std::size_t> order(const std::vector<int> &parents) {
     std::vector<unsigned char> visited(parents.size());
     std::vector<std::size_t> result;
@@ -178,11 +117,6 @@ Mat4 blend_affine(const Mat4 &from, const Mat4 &to, float weight) {
     set_translation(result, translation_of(from) * (1 - weight) + translation_of(to) * weight);
     (void)linear(result);
     return result;
-}
-Quat affine_rotation(const Mat4 &transform) {
-    // polar() fails only once its inverse is singular, far below the collapse threshold.
-    require(!collapsed(linear(transform)), "Affine transform is collapsed");
-    return polar(transform).rotation;
 }
 EvaluationRig::EvaluationRig(const Asset &asset, std::vector<EvaluationJoint> joints) : joints_(std::move(joints)) {
     require(!joints_.empty(), "Evaluation rig has no joints");

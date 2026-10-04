@@ -18,9 +18,9 @@
 /// their components. GameObject, MeshRenderer, ObjectTransform and ComponentRef are checked,
 /// non-owning handles: any use of a default or stale handle, or of a Scene::Id from another scene,
 /// throws `std::out_of_range`, except validity checks and GameObject::id(). Invalid arguments throw
-/// `std::invalid_argument`, or MathError (derived from it) for a matrix or rotation that cannot be
-/// inverted or normalized; calls made in the wrong state throw `std::logic_error`. A failed call
-/// leaves the scene unchanged unless its comment says otherwise.
+/// `std::invalid_argument`, or MathError (derived from it) for math without a result, such as a
+/// matrix or rotation that cannot be inverted or normalized; calls made in the wrong state throw
+/// `std::logic_error`. A failed call leaves the scene unchanged unless its comment says otherwise.
 ///
 /// Matrices must be finite and affine, with a bottom row within `1e-5` of (0, 0, 0, 1). They are
 /// stored exactly as given, so shear, reflection and nonuniform scale are preserved.
@@ -425,6 +425,26 @@ class GameObject {
     void set_local_transform(const Transform &transform);
     /// Sets the matrix relative to the parent.
     void set_local_matrix(const Mat4 &local);
+    /// Rotation of local_matrix(), as decompose() finds it, also for a matrix with shear: the rotation of the polar
+    /// decomposition of its upper 3x3, the rotation nearest to it, after negating its X axis when it reflects. Throws
+    /// MathError with MathErrorCode::collapsed_transform when that 3x3's determinant is within `1e-12` of 0, as for an
+    /// object scaled to zero, which has no rotation.
+    [[nodiscard]] Quat local_rotation() const;
+    /// Sets the local matrix to T * R * S from its translation, @p rotation and local_scale(), dropping any shear.
+    /// Throws MathError when @p rotation cannot be normalized (see unit_quaternion()).
+    void set_local_rotation(const Quat &rotation);
+    /// Scale of local_matrix(): the lengths of its first three columns, with X negated when its upper 3x3 has a
+    /// negative determinant, so a reflection gives a negative X scale. A matrix with shear is not a T * R * S product,
+    /// and its column lengths are not the factors of one.
+    [[nodiscard]] Vec3 local_scale() const;
+    /// Sets the local matrix to T * R * S from its translation, local_rotation() and @p scale, dropping any shear. A
+    /// negative component mirrors its axis and 0 collapses it. Throws as local_rotation() does for a collapsed local
+    /// matrix, which has no rotation to keep, so after a scale of 0 set the rotation too with set_local_transform(),
+    /// and `std::invalid_argument` for a nonfinite @p scale, as set_local_matrix() does for a nonfinite matrix.
+    void set_local_scale(Vec3 scale);
+    /// local_matrix() as translation, rotation and scale (see decompose()), or nothing when it has shear or a collapsed
+    /// axis.
+    [[nodiscard]] std::optional<Transform> local_transform() const;
     /// Parent handle, or empty for a root.
     [[nodiscard]] std::optional<GameObject> parent() const;
     /// Direct children, in the order they were attached.
@@ -447,6 +467,25 @@ class GameObject {
     /// Sets the world matrix; the local matrix becomes the inverse parent world matrix times
     /// @p world.
     void set_world_matrix(const Mat4 &world);
+    /// Rotation of world_matrix(), found and failing as local_rotation() states for the local matrix.
+    [[nodiscard]] Quat rotation() const;
+    /// Sets the world matrix to T * R * S from its translation, @p rotation and the lengths of its first three columns,
+    /// with X negated when it reflects, dropping any shear. Throws MathError when @p rotation cannot be normalized (see
+    /// unit_quaternion()), and as set_world_matrix() does.
+    void set_rotation(const Quat &rotation);
+    /// World direction that the object's local -Z, view_forward, points along, which cameras and audio listeners face:
+    /// the third column of world_matrix(), negated and normalized, or world_up when that column is no longer than
+    /// `1e-12` (see normalized()).
+    [[nodiscard]] Vec3 forward() const;
+    /// World direction of the object's local +X: the first column of world_matrix(), normalized (see normalized()).
+    [[nodiscard]] Vec3 right() const;
+    /// World direction of the object's local +Y: the second column of world_matrix(), normalized (see normalized()).
+    [[nodiscard]] Vec3 up() const;
+    /// Turns the object to face @p target with @p up as its up reference: set_rotation() with
+    /// `look_rotation(target - position(), up)`, so forward() then points at @p target unless the object's Z axis has
+    /// collapsed. Throws MathError with MathErrorCode::invalid_look when look_rotation() rejects those directions, as
+    /// for a @p target at the position or straight along @p up from it, and as set_rotation() does.
+    void look_at(Vec3 target, Vec3 up = world_up);
     /// Whether the object has a MeshRenderer.
     [[nodiscard]] bool has_renderer() const;
     /// Adds a renderer for @p mesh with its rest pose, authored material factors, the renderer and
@@ -612,6 +651,28 @@ class ObjectTransform {
     void set_local_transform(const Transform &value) { object_.set_local_transform(value); }
     /// Sets the local matrix; see GameObject::set_local_matrix.
     void set_local_matrix(const Mat4 &value) { object_.set_local_matrix(value); }
+    /// World rotation; see GameObject::rotation.
+    [[nodiscard]] Quat rotation() const { return object_.rotation(); }
+    /// Replaces the world rotation; see GameObject::set_rotation.
+    void set_rotation(const Quat &value) { object_.set_rotation(value); }
+    /// Rotation relative to the parent; see GameObject::local_rotation.
+    [[nodiscard]] Quat local_rotation() const { return object_.local_rotation(); }
+    /// Replaces the local rotation; see GameObject::set_local_rotation.
+    void set_local_rotation(const Quat &value) { object_.set_local_rotation(value); }
+    /// Scale relative to the parent; see GameObject::local_scale.
+    [[nodiscard]] Vec3 local_scale() const { return object_.local_scale(); }
+    /// Replaces the local scale; see GameObject::set_local_scale.
+    void set_local_scale(Vec3 value) { object_.set_local_scale(value); }
+    /// Translation, rotation and scale relative to the parent; see GameObject::local_transform.
+    [[nodiscard]] std::optional<Transform> local_transform() const { return object_.local_transform(); }
+    /// World direction of local -Z; see GameObject::forward.
+    [[nodiscard]] Vec3 forward() const { return object_.forward(); }
+    /// World direction of local +X; see GameObject::right.
+    [[nodiscard]] Vec3 right() const { return object_.right(); }
+    /// World direction of local +Y; see GameObject::up.
+    [[nodiscard]] Vec3 up() const { return object_.up(); }
+    /// Turns the object to face @p target; see GameObject::look_at.
+    void look_at(Vec3 target, Vec3 up = world_up) { object_.look_at(target, up); }
 
   private:
     friend class Scene;

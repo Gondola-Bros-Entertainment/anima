@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/assets/asset.hpp>
+#include <anima/core/transform.hpp>
 #include <numbers>
 #include <span>
 
@@ -11,7 +12,8 @@
 /// determinant is not below `-1e-12`, so reflections are rejected. Scale and shear are kept, and
 /// so is a collapsed transform, whose determinant is within `1e-12` of 0, such as a joint scaled to
 /// zero. Failures throw `std::invalid_argument` or anima::MathError, which derives from it, unless
-/// stated.
+/// stated. The header includes anima/core/transform.hpp, whose affine_rotation() gives the rotation
+/// of such a transform.
 
 namespace anima {
 /// One joint of an EvaluationRig.
@@ -41,9 +43,6 @@ enum class LayerMode {
 /// to extract, so then the two interpolate element by element: blended toward a transform scaled
 /// to zero, the other shrinks in place. A weight of 0 or 1 returns that input exactly.
 [[nodiscard]] Mat4 blend_affine(const Mat4 &from, const Mat4 &to, float weight);
-/// Rotation of the polar decomposition of @p transform, as a unit quaternion. Throws for a
-/// collapsed transform, which has no rotation.
-[[nodiscard]] Quat affine_rotation(const Mat4 &transform);
 
 /// Joint hierarchy for evaluation, mapped onto an asset's nodes.
 ///
