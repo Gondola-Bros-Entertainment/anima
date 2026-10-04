@@ -45,7 +45,9 @@ template <class Scenes> Environment resolve(Scenes &scenes) {
     Environment result;
     static_cast<EnvironmentSettings &>(result) = selected->settings();
     result.sun = resolve_light(scenes, selected->sun);
-    result.fill = resolve_light(scenes, selected->fill);
+    // A null fill, including one SceneSet::unload cleared, gives no fill light; a stale or foreign one still throws.
+    result.fill =
+        selected->fill.id() == Scene::Id{} ? DirectionalLight{{0, 1, 0}, {}} : resolve_light(scenes, selected->fill);
     validate_environment(result);
     // The renderer uses the detail region's projection even while the region is disabled.
     (void)detail_shadow_matrix(result);
