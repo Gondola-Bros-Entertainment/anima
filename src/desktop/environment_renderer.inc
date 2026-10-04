@@ -128,7 +128,8 @@ void create_environment_layout() {
 // Records the sky while the atmosphere is enabled, or else the background where fog reaches it (fogs_background()).
 // Either lies at the far plane, depth 0, tests depth with GREATER_OR_EQUAL and writes none, so recorded after every
 // opaque and masked surface of the pass it shades only the pixels that they leave at the far plane, and the frame is
-// the same as if it had drawn first.
+// the same as if it had drawn first. Binding the environment set disturbs the sets bound through
+// resource_pipeline_layout, so it clears resource_bound.
 void record_sky() {
     const bool sky = environment.atmosphere.enabled;
     if (!sky && !fogs_background())
@@ -137,6 +138,7 @@ void record_sky() {
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, sky ? sky_pipeline : background_pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, environment_pipeline_layout, 1, 1,
                             &frame().environment_set, 0, nullptr);
+    resource_bound = {};
     vkCmdDraw(command, 3, 1, 0, 0);
 }
 // Whether the view's fog needs the shaders' height fog code: fog whose density falls with height or that scatters
