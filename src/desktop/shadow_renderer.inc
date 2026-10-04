@@ -22,6 +22,9 @@ struct ShadowTarget {
         if (texture.image)
             vmaDestroyImage(allocator, texture.image, texture.allocation);
     }
+    ShadowTarget() = default;
+    ShadowTarget(const ShadowTarget &) = delete;
+    ShadowTarget &operator=(const ShadowTarget &) = delete;
 };
 // One shadow pass: the view-projection that its casters draw through, and the frustum that culls them.
 struct ShadowPass {
