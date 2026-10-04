@@ -1100,27 +1100,32 @@ TEST_CASE("Action layers evaluate together on a pose that hides a joint by scali
     // Each action's one phase lasts a second. "masked" turns the limb and then blends it halfway back to the base
     // clip's rest; "blended" blends the whole body halfway to the base clip's half-second pose and then turns the limb;
     // "resting" turns the limb at weight 0.
-    const ActionRuntime actions(hidden.motion, R"({"schema_version":1,"actions":[
-        {"id":"masked","handling":["free"],"phases":[{"id":"reach","duration":1,"layers":[
-          {"clip":"layer.limb","mask":"limb","interval":[0,1]},
-          {"clip":"base","mask":"limb","interval":[0,1],"weight":[[0,0.5],[1,0.5]]}]}]},
-        {"id":"blended","handling":["free"],"phases":[{"id":"reach","duration":1,"layers":[
-          {"clip":"base","interval":[0,1],"weight":[[0,0.5],[1,0.5]]},
-          {"clip":"layer.limb","mask":"limb","interval":[0,1]}]}]},
-        {"id":"resting","handling":["free"],"phases":[{"id":"reach","duration":1,"layers":[
-          {"clip":"layer.limb","mask":"limb","interval":[0,1],"weight":[[0,0],[1,0]]}]}]}]})");
+    const ActionRuntime actions(hidden.motion, R"({"version":2,"actions":[
+        {"id":"masked","handling":["free"],"roles":{},"phases":[{"id":"reach","duration":1,"held":false,"layers":[
+          {"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,1],[1,1]],
+           "reference":null},
+          {"clip":"base","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,0.5],[1,0.5]],
+           "reference":null}],"cues":[],"props":[],"contacts":{}}]},
+        {"id":"blended","handling":["free"],"roles":{},"phases":[{"id":"reach","duration":1,"held":false,"layers":[
+          {"clip":"base","mask":null,"interval":[0,1],"mode":"override","weight":[[0,0.5],[1,0.5]],
+           "reference":null},
+          {"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,1],[1,1]],
+           "reference":null}],"cues":[],"props":[],"contacts":{}}]},
+        {"id":"resting","handling":["free"],"roles":{},"phases":[{"id":"reach","duration":1,"held":false,"layers":[
+          {"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,0],[1,0]],
+           "reference":null}],"cues":[],"props":[],"contacts":{}}]}]})");
     const auto base = hidden.motion->sample("base", 0);
     ActionSample masked, blended;
-    CHECK_NOTHROW(masked = actions.sample(base, {"masked", 1, .5, {}, {}}, "free"));
+    CHECK_NOTHROW(masked = actions.sample(base, {"masked", .5, {}, {}}, "free"));
     CHECK(masked.pose.world[root][14] == Near{0, pose_tolerance});
     CHECK(masked.pose.world[upper][0] == Near{sixteenth_turn_cosine, pose_tolerance});
     check_hidden_side(masked.pose);
-    CHECK_NOTHROW(blended = actions.sample(base, {"blended", 1, .5, {}, {}}, "free"));
+    CHECK_NOTHROW(blended = actions.sample(base, {"blended", .5, {}, {}}, "free"));
     CHECK(blended.pose.world[root][14] == Near{.25, pose_tolerance});
     CHECK(blended.pose.world[upper][0] == Near{eighth_turn_cosine, pose_tolerance});
     check_hidden_side(blended.pose);
     // A layer at weight 0 is skipped, so the base pose returns exactly, local transforms and all.
-    const auto resting = actions.sample(base, {"resting", 1, .5, {}, {}}, "free");
+    const auto resting = actions.sample(base, {"resting", .5, {}, {}}, "free");
     CHECK(resting.pose.world == base.world);
     REQUIRE(resting.pose.local.size() == base.local.size());
     for (std::size_t i = 0; i < base.local.size(); ++i) {
@@ -1139,20 +1144,21 @@ TEST_CASE("An interaction role solves its layers and contacts together on a pose
     // The child stands on the parent's root and reaches both limbs to targets just off the parent's limb ends.
     Transform offset;
     offset.translation = {.1F, .1F, 0};
-    const InteractionRuntime::Actors actors{{"child", {hidden.body, hidden.motion, {{"anchor", {root, identity()}}}}},
+    const InteractionRuntime::Actors actors{{"child", {hidden.motion, {{"anchor", {root, identity()}}}}},
                                             {"parent",
-                                             {fixture.body,
-                                              parent_motion,
+                                             {parent_motion,
                                               {{"anchor", {root, identity()}},
                                                {"target", {end, matrix(offset)}},
                                                {"other.target", {other_end, matrix(offset)}}}}}};
     const auto both = replaced(meeting, R"("contacts":[)", R"("contacts":[
         {"child":"child","parent":"parent","chain":"other","target_socket":"other.target","pole":[0,0,2],
-         "weights":{"hold":[[0,1],[1,1]]}},)");
-    // The child's layers then end with a masked one, so they give a world-only pose.
-    const auto layered = replaced(both, R"("child":{"hold":{"layers":[{"clip":"base","interval":[0,1]}]}})",
-                                  R"("child":{"hold":{"layers":[{"clip":"base","interval":[0,1]},
-                                      {"clip":"layer.limb","mask":"limb","interval":[0,1]}]}})");
+         "weights":{"hold":[[0,1],[1,1]]},"orientation":false},)");
+    // The child's layers then end with a masked one, so they give a world-only pose. Only the child's base layer, the
+    // last of its role, is followed by the end of its role and a comma.
+    const auto layered = replaced(both, R"("weight":[[0,1],[1,1]],"reference":null}]}},)",
+                                  R"("weight":[[0,1],[1,1]],"reference":null},
+        {"clip":"layer.limb","mask":"limb","interval":[0,1],"mode":"override","weight":[[0,1],[1,1]],
+         "reference":null}]}},)");
     const std::map<std::string, Mat4, std::less<>> free_worlds{{"child", identity()}, {"parent", identity()}};
     for (const auto &document : {both, layered}) {
         CAPTURE(document);

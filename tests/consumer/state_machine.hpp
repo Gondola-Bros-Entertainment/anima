@@ -84,12 +84,16 @@ inline void run_motion() {
     const ActorPresentation actor(fixture.directory / "actor.profile.json");
     const auto &motion = actor.actor.motion;
     constexpr std::string_view document = R"({
-  "version": 1,
+  "version": 2,
   "kind": "anima.animation-state-machine",
-  "parameters": [{"name": "wave", "type": "trigger"}],
-  "states": [{"name": "drifting", "clip": "drift"}, {"name": "waving", "clip": "signal"}],
+  "parameters": [{"name": "wave", "type": "trigger", "initial": false}],
+  "states": [
+    {"name": "drifting", "clip": "drift", "blend": null, "speed": 1, "speed_parameter": null},
+    {"name": "waving", "clip": "signal", "blend": null, "speed": 1, "speed_parameter": null}
+  ],
   "transitions": [
-    {"from": "drifting", "to": "waving", "conditions": [{"parameter": "wave", "mode": "is_true"}], "duration": 0.5}
+    {"from": "drifting", "to": "waving", "conditions": [{"parameter": "wave", "mode": "is_true", "threshold": 0}],
+     "exit_time": null, "duration": 0.5, "offset": 0, "interruption": "none", "to_self": false}
   ]
 })";
     const auto machine =

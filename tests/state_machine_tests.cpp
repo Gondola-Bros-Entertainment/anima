@@ -247,12 +247,12 @@ struct MotionActor {
         manifest.motion_contract = "motion.json";
         motion = std::make_shared<const MotionRuntime>(
             model, manifest,
-            R"({"version":3,"skeleton":{"id":"test.rig","bind_signature":")" + signature +
+            R"({"version":4,"skeleton":{"id":"test.rig","bind_signature":")" + signature +
                 R"(","joint_count":2},"resource":"motion.glb",
             "evaluation":{"version":1,"id":"test.evaluation","parents":{"root":null,"tip":"root"},"masks":{"tip":["tip"]},
                           "chains":{}},
-            "clips":[{"name":"glide","loop":true,"events":[{"time":0.5,"name":"step"}]},
-                     {"name":"rise","loop":false,"events":[]}],
+            "clips":[{"name":"glide","loop":true,"reference_speed":null,"events":[{"time":0.5,"name":"step"}]},
+                     {"name":"rise","loop":false,"reference_speed":null,"events":[]}],
             "layers":{"layer.tip":{"mask":"tip","owned_joints":["tip"],"context_joints":["root"]}}})");
         object = scene.create("mover", Mesh::compile(*model));
     }
@@ -1598,8 +1598,8 @@ TEST_CASE("A machine over a motion runtime plays the motion's base clips on the 
     CHECK(actor.scene.instance(actor.object.id()).palette.at(1)[13] == Near{2, pose_tolerance});
 
     // A document builds the same machine over the motion.
-    const auto document = std::string(R"({"version":1,"kind":"anima.animation-state-machine","parameters":[],
-        "states":[{"name":"glide","clip":"glide"}],"transitions":[]})");
+    const auto document = std::string(R"({"version":2,"kind":"anima.animation-state-machine","parameters":[],
+        "states":[{"name":"glide","clip":"glide","blend":null,"speed":1,"speed_parameter":null}],"transitions":[]})");
     CHECK(Machine::deserialize(actor.motion, document).motion() == actor.motion);
     CHECK_THROWS_WITH_AS(
         (void)Machine::deserialize(actor.motion, changed(document, R"("clip":"glide")", R"("clip":"sway")")),
