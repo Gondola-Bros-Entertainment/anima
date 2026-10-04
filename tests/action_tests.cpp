@@ -5,14 +5,16 @@
 
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 using namespace anima;
 namespace {
 constexpr double time_tolerance = 1e-12; // Timeline arithmetic is exact up to rounding.
 constexpr auto invalid_time = "Invalid action presentation/release time";
 constexpr auto invalid_phase = "Invalid/duplicate action phase or multiple held phases";
-constexpr auto invalid_weight = "Action weight requires a finite phase and 2..32 keys covering 0..1";
+constexpr auto invalid_weight = "Action weight requires 2..32 keys covering 0..1";
 constexpr auto invalid_keys = "Action weight keys must be ordered and normalized";
+constexpr auto invalid_progress = "Action weight progress must be finite";
 
 // A preparation, a held phase, a release and a settle; each of the first three has a cue at its start.
 ActionTimeline gesture() {
@@ -126,28 +128,69 @@ TEST_CASE("Invalid timelines and times are rejected") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(ActionTimeline({{"a", 1, false, {{"late", .8}, {"early", .2}}}}),
                          "Invalid, unordered or excessive action cues", std::invalid_argument);
+    // A cue's position in its phase is ActionCue::at; ActionTime::phase and TimedActionCue::phase are indices.
+    const ActionTimeline cued({{"swing", 2, false, {{"hit", .25}}}});
+    CHECK(cued.phases()[0].cues[0].at == .25);
+    CHECK(cued.cues()[0].time == .5);
     // A release time needs a held phase to release.
     const ActionTimeline timed({{"one", .3, false, {}}, {"two", .7, false, {}}});
     CHECK_THROWS_WITH_AS(timed.sample(.1, .1), invalid_time, std::invalid_argument);
 }
 
 TEST_CASE("An action weight interpolates its keys and clamps outside them") {
-    ActionWeight weight;
-    weight.keys = {{0., 0.F}, {.5, 1.F}, {1., 0.F}};
+    const ActionWeight weight({{0., 0.F}, {.5, 1.F}, {1., 0.F}});
+    CHECK(weight.sample(0) == 0);
     CHECK(weight.sample(.25) == .5F);
+    CHECK(weight.sample(.5) == 1);
+    CHECK(weight.sample(.75) == .5F);
+    CHECK(weight.sample(1) == 0);
     CHECK(weight.sample(-1) == 0);
     CHECK(weight.sample(2) == 0);
+    REQUIRE(weight.keys().size() == 3);
+    CHECK(weight.keys()[1].progress == .5);
+    CHECK(weight.keys()[1].weight == 1);
 }
 
-TEST_CASE("Invalid action weight phases and keys are rejected") {
-    ActionWeight weight;
-    weight.keys = {{0., 0.F}, {.5, 1.F}, {1., 0.F}};
-    CHECK_THROWS_WITH_AS(weight.sample(std::numeric_limits<double>::quiet_NaN()), invalid_weight,
+TEST_CASE("A default action weight is a constant 1") {
+    const ActionWeight weight;
+    REQUIRE(weight.keys().size() == 2);
+    CHECK(weight.keys()[0].progress == 0);
+    CHECK(weight.keys()[1].progress == 1);
+    CHECK(weight.sample(0) == 1);
+    CHECK(weight.sample(.3) == 1);
+    CHECK(weight.sample(1) == 1);
+}
+
+TEST_CASE("An action weight rejects invalid keys when constructed and nonfinite progress when sampled") {
+    constexpr auto nan = std::numeric_limits<double>::quiet_NaN();
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    CHECK_THROWS_WITH_AS(ActionWeight(std::vector<ActionWeightKey>{}), invalid_weight, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 1.F}}), invalid_weight, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{.1, 0.F}, {1., 1.F}}), invalid_weight, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 0.F}, {.9, 1.F}}), invalid_weight, std::invalid_argument);
+    std::vector<ActionWeightKey> excessive;
+    for (std::size_t i = 0; i <= ActionWeight::maximum_keys; ++i)
+        excessive.push_back({static_cast<double>(i) / ActionWeight::maximum_keys, 1.F});
+    CHECK_THROWS_WITH_AS(ActionWeight(excessive), invalid_weight, std::invalid_argument);
+    excessive.erase(excessive.begin() + 1);
+    CHECK(ActionWeight(excessive).keys().size() == ActionWeight::maximum_keys);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 0.F}, {0., 1.F}, {1., 0.F}}), invalid_keys, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 0.F}, {.6, 1.F}, {.4, 1.F}, {1., 0.F}}), invalid_keys,
                          std::invalid_argument);
-    weight.keys.clear();
-    CHECK_THROWS_WITH_AS(weight.sample(.5), invalid_weight, std::invalid_argument);
-    weight.keys = {{0., 0.F}, {0., 1.F}, {1., 0.F}};
-    CHECK_THROWS_WITH_AS(weight.sample(.5), invalid_keys, std::invalid_argument);
-    weight.keys = {{0., 0.F}, {1., std::numeric_limits<float>::infinity()}};
-    CHECK_THROWS_WITH_AS(weight.sample(.5), invalid_keys, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 0.F}, {nan, 1.F}, {1., 0.F}}), invalid_keys, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 0.F}, {1., infinity}}), invalid_keys, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., -.1F}, {1., 0.F}}), invalid_keys, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionWeight({{0., 0.F}, {1., 1.1F}}), invalid_keys, std::invalid_argument);
+    const ActionWeight weight;
+    CHECK_THROWS_WITH_AS(weight.sample(nan), invalid_progress, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(weight.sample(std::numeric_limits<double>::infinity()), invalid_progress,
+                         std::invalid_argument);
+}
+
+TEST_CASE("A decoded action weight is validated by the curve's constructor") {
+    const auto weight = ActionRuntime::weight("[[0,0],[0.5,1],[1,0]]");
+    CHECK(weight.sample(.25) == .5F);
+    CHECK_THROWS_WITH_AS(ActionRuntime::weight("{}"), invalid_weight, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionRuntime::weight("[[0,1]]"), invalid_weight, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(ActionRuntime::weight("[[0,1],[0.5,1],[0.5,0],[1,0]]"), invalid_keys, std::invalid_argument);
 }

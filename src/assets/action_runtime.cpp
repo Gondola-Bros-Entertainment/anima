@@ -16,7 +16,7 @@ PhaseLayers phase_layers(const MotionRuntime &motion, const ActionPhaseBinding &
         if (amount == 0)
             continue;
         const double time =
-            std::lerp(layer.interval[0], layer.interval[1], progress) * motion.clip(layer.clip).duration;
+            std::lerp(layer.interval.begin, layer.interval.end, progress) * motion.clip(layer.clip).duration;
         // A full-body layer, always a phase's first, replaces the base exactly at weight 1, as MotionRuntime::blend
         // returns its target.
         if (layer.mask.empty() && amount == 1 && result.controls.layers.empty())
@@ -175,7 +175,7 @@ struct ActionRuntime::Impl {
         result.clip = phase.layers.front().clip;
         for (const auto &track : phase.props)
             result.props.push_back({track.role, track.track,
-                                    std::lerp(track.interval[0], track.interval[1], result.clock.progress),
+                                    std::lerp(track.interval.begin, track.interval.end, result.clock.progress),
                                     track.required});
         for (const auto &[chain, curve] : phase.contacts)
             result.contacts[chain] = curve.sample(result.clock.progress);
@@ -190,7 +190,7 @@ struct ActionRuntime::Impl {
             throw std::invalid_argument("Action interval/weight must be 0..1");
         return n;
     }
-    static std::array<double, 2> interval(const nlohmann::json &value) {
+    static NormalizedInterval interval(const nlohmann::json &value) {
         if (!value.is_array() || value.size() != 2)
             throw std::invalid_argument("Action clip interval needs two normalized endpoints");
         // Reversed intervals intentionally support authored reverse playback.
@@ -200,21 +200,14 @@ struct ActionRuntime::Impl {
   public:
     // Shared phase curves are also used by coordinated actor contacts.
     static ActionWeight weight(const nlohmann::json &value) {
-        ActionWeight result;
-        result.keys.clear();
-        if (!value.is_array() || value.size() < 2 || value.size() > ActionWeight::maximum_keys)
-            throw std::invalid_argument("Action weight needs 2..32 keys");
-        double previous = -1;
+        if (!value.is_array() || value.size() > ActionWeight::maximum_keys)
+            throw std::invalid_argument("Action weight requires 2..32 keys covering 0..1");
+        std::vector<ActionWeightKey> keys;
         for (const auto &key : value) {
-            const auto point = interval(key);
-            if (point[0] <= previous)
-                throw std::invalid_argument("Action weight keys must increase");
-            previous = point[0];
-            result.keys.emplace_back(point[0], static_cast<float>(point[1]));
+            const auto [progress, amount] = interval(key);
+            keys.push_back({progress, static_cast<float>(amount)});
         }
-        if (result.keys.front().first != 0 || result.keys.back().first != 1)
-            throw std::invalid_argument("Action weight must cover 0..1");
-        return result;
+        return ActionWeight(std::move(keys));
     }
 
   private:

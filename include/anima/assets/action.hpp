@@ -22,7 +22,7 @@ struct ActionCue {
     /// Nonempty and unique within its phase.
     std::string id;
     /// Position in the phase, in [0, 1].
-    double phase{};
+    double at{};
 };
 /// One phase of an ActionTimeline.
 struct ActionPhase {
@@ -32,7 +32,7 @@ struct ActionPhase {
     double duration{};
     /// Loops until release instead of ending after #duration.
     bool held{};
-    /// Cues in nondecreasing ActionCue::phase order.
+    /// Cues in nondecreasing ActionCue::at order.
     std::vector<ActionCue> cues;
 };
 /// Where an ActionTimeline is at one moment.
@@ -82,10 +82,10 @@ class ActionTimeline {
             double previous = -1;
             std::set<std::string> unique;
             for (const auto &cue : phase.cues) {
-                if (cue.id.empty() || !unique.insert(cue.id).second || !std::isfinite(cue.phase) || cue.phase < 0 ||
-                    cue.phase > 1 || cue.phase < previous || ++cues > maximum_cues)
+                if (cue.id.empty() || !unique.insert(cue.id).second || !std::isfinite(cue.at) || cue.at < 0 ||
+                    cue.at > 1 || cue.at < previous || ++cues > maximum_cues)
                     throw std::invalid_argument("Invalid, unordered or excessive action cues");
-                previous = cue.phase;
+                previous = cue.at;
             }
         }
         held_ = held;
@@ -144,7 +144,7 @@ class ActionTimeline {
             // Held cues occur once in the first cycle. Continuous effects use
             // explicit start/stop cues; seeking cannot create a catch-up burst.
             for (const auto &cue : p.cues) {
-                const double at = start + cue.phase * p.duration;
+                const double at = start + cue.at * p.duration;
                 if ((!p.held || at < end) && std::isfinite(at))
                     result.push_back({i, cue.id, at});
             }
