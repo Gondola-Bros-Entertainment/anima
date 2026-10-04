@@ -58,7 +58,8 @@ TEST_CASE("Rigid bodies drive XY poses, keep presentation depth and follow enabl
         ball.set_position({0, 10, 7});
         rigid.set_enabled(true);
         p::step(scene, world, 1. / 60);
-        CHECK_MESSAGE(ball.position().y < 1, "Reenable did not restore physics pose");
+        // The edit made while disabled moves the body when it is enabled again.
+        CHECK_MESSAGE(std::abs(ball.position().y - 10) < .01F, "Reenabling ignored the object's edit");
         CHECK(rigid->body().enabled());
         ball.set_active(false);
         p::step(scene, world, 1. / 60);
@@ -164,6 +165,109 @@ TEST_CASE("An invalid snapshot moves no body") {
     CHECK_THROWS_WITH_AS(p::step(scene, world, 1. / 60), "2D physics position outside supported range",
                          std::invalid_argument);
     CHECK_MESSAGE(a.pose().position.x == 0, "Invalid snapshot partially moved an earlier body");
+}
+
+TEST_CASE("A dynamic body follows edits to its object, apart from depth, and keeps its velocity") {
+    constexpr double tick = 1. / 60;
+    constexpr float tolerance = 1e-5F;
+    p::World world({{0, 0}, 4});
+    Scene scene;
+    auto ball = scene.create();
+    ball.set_position({0, 0, 7});
+    p::BodySettings settings;
+    settings.collider.shape = p::Shape::circle;
+    settings.motion = p::Motion::dynamic;
+    settings.velocity = {1, 0};
+    auto body = ball.add_component<p::RigidBody>(world, settings)->body();
+    p::step(scene, world, tick);
+    // A respawn written to the object teleports the body before the step.
+    ball.set_position({0, 5, 7});
+    p::step(scene, world, tick);
+    CHECK(std::abs(body.pose().position.x - 1.F / 60) < tolerance);
+    CHECK(body.pose().position.y == 5);
+    CHECK(std::abs(body.velocity().x - 1) < tolerance);
+    CHECK(ball.position().y == 5);
+    // A teleport through body() holds while the object is left alone.
+    body.teleport({{-3, 0}, 0});
+    p::step(scene, world, tick);
+    CHECK(std::abs(ball.position().x - (-3 + 1.F / 60)) < tolerance);
+    CHECK(ball.position().y == 0);
+    // Depth is presentation only: changing it neither moves nor wakes a sleeping body.
+    body.set_velocity({0, 0});
+    for (int i = 0; i < 60; ++i)
+        p::step(scene, world, tick);
+    REQUIRE_FALSE(body.awake());
+    const auto rest = ball.position();
+    ball.set_position({rest.x, rest.y, 2});
+    p::step(scene, world, tick);
+    CHECK_FALSE_MESSAGE(body.awake(), "A depth edit woke the body");
+    CHECK(ball.position().z == 2);
+}
+
+TEST_CASE("Stationary and kinematic bodies follow their objects over writes through body()") {
+    p::World world({{0, 0}, 4});
+    Scene scene;
+    auto wall = scene.create(), platform = scene.create();
+    wall.set_position({0, -10, 0});
+    platform.set_position({4, 0, 0});
+    auto stationary = wall.add_component<p::RigidBody>(world)->body();
+    p::BodySettings settings;
+    settings.motion = p::Motion::kinematic;
+    auto kinematic = platform.add_component<p::RigidBody>(world, settings)->body();
+    stationary.teleport({{1, 2}, 0});
+    kinematic.set_velocity({5, 0});
+    p::step(scene, world, 1. / 60);
+    const auto wall_pose = stationary.pose();
+    CHECK_MESSAGE((wall_pose.position.x == 0 && wall_pose.position.y == -10),
+                  "The step kept a teleport of a stationary body");
+    const auto platform_velocity = kinematic.velocity();
+    CHECK_MESSAGE((platform_velocity.x == 0 && platform_velocity.y == 0),
+                  "The step kept a velocity written to a kinematic body");
+    CHECK(kinematic.pose().position.x == 4);
+}
+
+TEST_CASE("Only an active rigid body's object must meet the transform rules") {
+    constexpr double tick = 1. / 60;
+    p::World world({{0, 0}, 4});
+    Scene scene;
+    auto hand = scene.create("hand");
+    hand.set_transform({{0, 1, 0}, {0, 0, 0, 1}, {2, 2, 2}});
+    p::BodySettings settings;
+    settings.collider.shape = p::Shape::circle;
+    settings.motion = p::Motion::dynamic;
+    auto item = scene.create("item");
+    auto held = item.add_component<p::RigidBody>(world, settings);
+    // A disabled dynamic item may be carried under a scaled hand.
+    held.set_enabled(false);
+    item.set_parent(hand, ReparentMode::keep_local);
+    CHECK_NOTHROW(p::step(scene, world, tick));
+    held.set_enabled(true);
+    CHECK_THROWS_WITH_AS(p::step(scene, world, tick), "Dynamic 2D bodies must be scene roots", std::invalid_argument);
+    // Released as a root, its body moves to where the object was let go.
+    item.clear_parent();
+    item.set_transform({{3, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}});
+    p::step(scene, world, tick);
+    CHECK(held->body().enabled());
+    CHECK(held->body().pose().position.x == 3);
+    auto fixture = scene.create("fixture");
+    auto mount = fixture.add_component<p::RigidBody>(world);
+    mount.set_enabled(false);
+    fixture.set_parent(hand, ReparentMode::keep_local);
+    CHECK_NOTHROW(p::step(scene, world, tick));
+    mount.set_enabled(true);
+    CHECK_THROWS_WITH_AS(p::step(scene, world, tick), planar_transform, std::invalid_argument);
+    fixture.destroy();
+    // A fixed-rotation kinematic object may turn while inactive, but not once it is active again.
+    settings.motion = p::Motion::kinematic;
+    settings.fixed_rotation = true;
+    auto lever = scene.create("lever");
+    auto turning = lever.add_component<p::RigidBody>(world, settings);
+    turning.set_enabled(false);
+    lever.set_transform({{}, {0, 0, std::sin(.5F), std::cos(.5F)}, {1, 1, 1}});
+    CHECK_NOTHROW(p::step(scene, world, tick));
+    turning.set_enabled(true);
+    CHECK_THROWS_WITH_AS(p::step(scene, world, tick), "Fixed-rotation kinematic object changed angle",
+                         std::invalid_argument);
 }
 
 TEST_CASE("Bodies and codecs expire with their world") {

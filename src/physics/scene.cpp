@@ -103,23 +103,32 @@ Collider collider(const Json &j, bool child) {
     return c;
 }
 } // namespace
-RigidBody::RigidBody(GameObject object, World &world, BodySettings settings) : settings_(std::move(settings)) {
+RigidBody::RigidBody(GameObject object, World &world, BodySettings settings)
+    : settings_(std::move(settings)), published_(object.world_matrix()) {
     settings_.pose = rigid_pose(object, settings_.motion);
     body_ = world.create(settings_);
 }
 RigidBody::~RigidBody() { body_.remove(); }
+namespace detail {
+struct RigidBodyAccess {
+    static Mat4 &published(RigidBody &component) { return component.published_; }
+};
+} // namespace detail
 namespace {
 template <class Scenes> void step_scenes(Scenes &scenes, World &world, double seconds) {
     if (!std::isfinite(seconds) || seconds < detail::minimum_step_seconds || seconds > detail::maximum_step_seconds)
         throw std::invalid_argument("Invalid physics fixed step");
     anima::detail::SceneDriver::check(scenes);
     auto components = scenes.template components<RigidBody>();
-    // Validate the full snapshot before changing simulation state.
-    std::vector<Pose> poses;
-    for (const auto &component : components) {
+    // Validate the full snapshot before changing simulation state. The driver never uses an inactive component's
+    // pose, so its object meets the transform rules only once it is active again.
+    std::vector<Pose> poses(components.size());
+    for (std::size_t i = 0; i < components.size(); ++i) {
+        const auto &component = components[i];
         if (!world.owns(component->body()))
             throw std::invalid_argument("Rigid body belongs to another or expired world");
-        poses.push_back(rigid_pose(component.object(), component->settings().motion));
+        if (component.active())
+            poses[i] = rigid_pose(component.object(), component->settings().motion);
     }
     for (std::size_t i = 0; i < components.size(); ++i) {
         auto &component = components[i];
@@ -128,16 +137,24 @@ template <class Scenes> void step_scenes(Scenes &scenes, World &world, double se
         if (!component.active())
             continue;
         const auto motion = component->settings().motion;
-        if (motion == Motion::stationary)
+        if (motion == Motion::stationary) {
             body.teleport(poses[i]);
-        else if (motion == Motion::kinematic)
+        } else if (motion == Motion::kinematic) {
             body.move_kinematic(poses[i], seconds);
+        } else if (component.object().world_matrix() != detail::RigidBodyAccess::published(*component)) {
+            // The object was edited since construction or the last write-back. Comparing with Body::pose() instead
+            // would undo a teleport through body(), and Jolt rebuilds the origin from the center of mass, so even an
+            // untouched body need not match its object bit for bit.
+            body.teleport(poses[i]);
+        }
     }
     world.step(seconds);
     for (auto &component : components) {
         if (component.active() && component->settings().motion == Motion::dynamic) {
             const auto pose = component->body().pose();
-            component.object().set_transform({pose.position, pose.rotation, {1, 1, 1}});
+            auto object = component.object();
+            object.set_transform({pose.position, pose.rotation, {1, 1, 1}});
+            detail::RigidBodyAccess::published(*component) = object.world_matrix();
         }
     }
 }
