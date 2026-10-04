@@ -109,12 +109,12 @@ struct InteractionRuntime::Impl {
     const anima::InteractionBindings &bindings() const { return *bindings_; }
     const std::string &id() const { return id_; }
 
-    InteractionSample sample(double elapsed, std::optional<double> released,
+    InteractionSample sample(double elapsed, std::optional<double> released_at,
                              const std::map<std::string, anima::Mat4, std::less<>> &free_worlds) const {
         using anima::operator*;
         if (free_worlds.size() != actors_.size())
             throw std::invalid_argument("Every interaction role needs a free placement");
-        InteractionSample result{timeline_->sample(elapsed, released), {}, {}, {}};
+        InteractionSample result{timeline_->sample(elapsed, released_at), {}, {}, {}};
         // Each role's layers, which a role with contacts evaluates again together with them, since evaluating the
         // world-only pose that its layers give would fail below a collapsed joint.
         std::vector<detail::PhaseLayers> layers;
@@ -202,8 +202,8 @@ InteractionRuntime::InteractionRuntime(Actors actors, std::string_view document)
 const ActionTimeline &InteractionRuntime::timeline() const { return impl_->timeline(); }
 const InteractionBindings &InteractionRuntime::bindings() const { return impl_->bindings(); }
 const std::string &InteractionRuntime::id() const { return impl_->id(); }
-InteractionSample InteractionRuntime::sample(double elapsed, std::optional<double> released,
+InteractionSample InteractionRuntime::sample(double elapsed, std::optional<double> released_at,
                                              const std::map<std::string, Mat4, std::less<>> &free_worlds) const {
-    return impl_->sample(elapsed, released, free_worlds);
+    return impl_->sample(elapsed, released_at, free_worlds);
 }
 } // namespace anima

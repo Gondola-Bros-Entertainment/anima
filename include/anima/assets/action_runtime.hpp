@@ -1,11 +1,14 @@
 #pragma once
+#include <algorithm>
 #include <anima/assets/action.hpp>
 #include <anima/assets/motion_runtime.hpp>
+#include <cmath>
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
+#include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 /// @file
@@ -35,35 +38,66 @@ struct ActionRequest {
     /// their declared phase timing and reject this.
     std::optional<double> duration{};
 };
-/// Piecewise-linear weight curve over phase progress.
-struct ActionWeight {
-    /// Largest number of #keys.
+/// One key of an ActionWeight.
+struct ActionWeightKey {
+    /// Phase progress, in [0, 1].
+    double progress{};
+    /// Weight at #progress, in [0, 1].
+    float weight{};
+};
+/// Piecewise-linear weight curve over phase progress. Immutable after construction; const member
+/// functions may run concurrently on any thread.
+class ActionWeight {
+  public:
+    /// Largest number of keys.
     static constexpr std::size_t maximum_keys = 32;
-    /// (phase, weight) keys: 2 to #maximum_keys, phases strictly increasing from exactly 0 to exactly
-    /// 1, and weights finite in [0, 1]. The default is a constant 1.
-    std::vector<std::pair<double, float>> keys{{0., 1.F}, {1., 1.F}};
-    /// Weight at @p phase; finite phases outside [0, 1] clamp to the end keys. Validates #keys on
-    /// every call, so curves built directly rather than decoded are checked too. Throws for a
-    /// nonfinite @p phase or invalid keys.
-    float sample(double phase) const {
-        if (!std::isfinite(phase) || keys.size() < 2 || keys.size() > maximum_keys || keys.front().first != 0 ||
-            keys.back().first != 1)
-            throw std::invalid_argument("Action weight requires a finite phase and 2..32 keys covering 0..1");
+    /// A constant weight of 1: the keys (0, 1) and (1, 1).
+    ActionWeight() = default;
+    /// Takes ownership of @p keys. Throws `std::invalid_argument` ("Action weight requires 2..32
+    /// keys covering 0..1") unless there are 2 to #maximum_keys keys whose first progress is
+    /// exactly 0 and whose last is exactly 1, and ("Action weight keys must be ordered and
+    /// normalized") unless every progress is finite and strictly greater than the one before it
+    /// and every weight is finite in [0, 1].
+    explicit ActionWeight(std::vector<ActionWeightKey> keys) : keys_(std::move(keys)) {
+        if (keys_.size() < 2 || keys_.size() > maximum_keys || keys_.front().progress != 0 ||
+            keys_.back().progress != 1)
+            throw std::invalid_argument("Action weight requires 2..32 keys covering 0..1");
         double previous = -1;
-        for (const auto &[at, value] : keys) {
-            if (!std::isfinite(at) || at <= previous || at < 0 || at > 1 || !std::isfinite(value) || value < 0 ||
-                value > 1)
+        for (const auto &[progress, weight] : keys_) {
+            if (!std::isfinite(progress) || progress <= previous || !std::isfinite(weight) || weight < 0 || weight > 1)
                 throw std::invalid_argument("Action weight keys must be ordered and normalized");
-            previous = at;
+            previous = progress;
         }
-        for (std::size_t i = 1; i < keys.size(); ++i)
-            if (phase <= keys[i].first) {
-                const auto [a, x] = keys[i - 1];
-                const auto [b, y] = keys[i];
-                return x + (y - x) * static_cast<float>(std::clamp((phase - a) / (b - a), 0., 1.));
-            }
-        return keys.back().second;
     }
+    /// Weight at @p progress, interpolated linearly between the keys around it; finite progress
+    /// outside [0, 1] clamps to the end keys. Throws `std::invalid_argument` ("Action weight
+    /// progress must be finite") for a nonfinite @p progress.
+    [[nodiscard]] float sample(double progress) const {
+        if (!std::isfinite(progress))
+            throw std::invalid_argument("Action weight progress must be finite");
+        for (std::size_t i = 1; i < keys_.size(); ++i)
+            if (progress <= keys_[i].progress) {
+                const auto &a = keys_[i - 1];
+                const auto &b = keys_[i];
+                return a.weight +
+                       (b.weight - a.weight) *
+                           static_cast<float>(std::clamp((progress - a.progress) / (b.progress - a.progress), 0., 1.));
+            }
+        return keys_.back().weight;
+    }
+    /// The keys, in increasing progress; valid while the curve lives.
+    [[nodiscard]] std::span<const ActionWeightKey> keys() const noexcept { return keys_; }
+
+  private:
+    std::vector<ActionWeightKey> keys_{{0., 1.F}, {1., 1.F}};
+};
+/// Two normalized positions that a phase maps linearly onto its progress. ActionRuntime decodes
+/// each in [0, 1]; an interval whose #begin exceeds its #end runs backward.
+struct NormalizedInterval {
+    /// Position at phase progress 0.
+    double begin = 0;
+    /// Position at phase progress 1.
+    double end = 1;
 };
 /// One pose layer of an action phase.
 struct ActionLayer {
@@ -72,9 +106,8 @@ struct ActionLayer {
     /// Motion mask that the layer affects; empty for a full-body layer, which must be the phase's
     /// first layer and an override.
     std::string mask;
-    /// Normalized clip times, each in [0, 1], mapped linearly over the phase; a reversed interval
-    /// plays backward.
-    std::array<double, 2> interval{0, 1};
+    /// Normalized clip times mapped over the phase; a reversed interval plays backward.
+    NormalizedInterval interval;
     /// Layer weight over phase progress.
     ActionWeight weight;
     anima::LayerMode mode = anima::LayerMode::override_pose;
@@ -89,8 +122,8 @@ struct ActionPropTrack {
     std::string role;
     /// Semantic track name, resolved through AttachmentVisual::animation_tracks.
     std::string track;
-    /// Normalized track progress, each in [0, 1], mapped linearly over the phase.
-    std::array<double, 2> interval{0, 1};
+    /// Normalized track progress mapped over the phase.
+    NormalizedInterval interval;
     /// Whether the action requires the role's visual to have the track; see
     /// validate_attachment_action.
     bool required = true;
@@ -196,9 +229,11 @@ class ActionRuntime {
     /// for the same progress. @p handling is the caller's choice among ActionDefinition::handling;
     /// throws also when it is not one of them.
     ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
-    /// Decodes a JSON weight curve: 2 to 32 [phase, weight] pairs, both in [0, 1], with phases
-    /// strictly increasing from 0 to 1. May run concurrently on any thread; reads the C locale as
-    /// the constructor does.
+    /// Decodes a JSON weight curve: 2 to 32 [progress, weight] pairs, both in [0, 1], with
+    /// progress strictly increasing from 0 to 1. A value that is not an array of at most 32 keys
+    /// throws as an ActionWeight with too many keys does, a key that is not two numbers in [0, 1]
+    /// throws before the curve is built, and the decoded keys are then checked by the ActionWeight
+    /// constructor. May run concurrently on any thread; reads the C locale as the constructor does.
     static ActionWeight weight(std::string_view document);
 
   private:

@@ -691,6 +691,8 @@ TEST_CASE("An action catalog requires every field, with null, [] and {} declarin
     CHECK(phase.contacts.empty());
     CHECK(actions.definition("reach").timeline.phases().at(0).cues.empty());
     REQUIRE(phase.layers.size() == 1);
+    CHECK(phase.layers[0].interval.begin == 0);
+    CHECK(phase.layers[0].interval.end == 1);
     CHECK(phase.layers[0].mode == LayerMode::override_pose);
     CHECK(phase.layers[0].reference.empty());
     REQUIRE(phase.props.size() == 1);
