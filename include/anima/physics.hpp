@@ -18,6 +18,12 @@
 /// arguments throw `std::invalid_argument`, or anima::MathError (derived from it) for a
 /// rotation that cannot be normalized, unless a member states otherwise.
 ///
+/// Dynamic bodies are capped at a speed of 500 units per second and an angular speed of 15 pi
+/// radians per second: World::create, the velocity setters, Body::add_impulse and steps clamp a
+/// longer velocity to its cap, keeping its direction. Kinematic bodies are capped at 2,000,000
+/// of each instead, beyond the length of any vector that passes validation, and neither
+/// Body::move_kinematic nor a step clamps theirs.
+///
 /// Use all worlds and their bodies from one application thread. Anima owns Jolt's process
 /// registration, so other Jolt users cannot share the process. There are no joints, character
 /// controller, per-child materials, runtime collider edits or debug drawing.
@@ -89,9 +95,11 @@ struct BodySettings {
     /// Initial authored origin in world space. anima::physics::RigidBody ignores it and uses
     /// its object's world pose.
     Pose pose;
-    /// Linear velocity at the center of mass; must be zero for stationary bodies.
+    /// Linear velocity at the center of mass; must be zero for stationary bodies. A dynamic
+    /// body's is clamped to a length of 500 units per second.
     Vec3 velocity{};
-    /// Angular velocity; must be zero for stationary bodies.
+    /// Angular velocity in radians per second; must be zero for stationary bodies. A dynamic
+    /// body's is clamped to a length of 15 pi.
     Vec3 angular_velocity{};
     /// Total dynamic mass, in [0.001, 1,000,000]. Automatic centers of mass and inertia assume
     /// uniform density; compound children contribute by volume, overlapping volumes separately.
@@ -142,18 +150,20 @@ class Body {
     [[nodiscard]] Vec3 angular_velocity() const;
     /// Moves the authored origin to @p pose immediately and wakes the body.
     void teleport(Pose pose);
-    /// Sets linear velocity at the center of mass. Throws for stationary bodies.
+    /// Sets linear velocity at the center of mass, clamped to the body's cap. Throws for
+    /// stationary bodies.
     void set_velocity(Vec3 velocity);
-    /// Throws for stationary bodies.
+    /// Sets angular velocity, clamped to the body's cap. Throws for stationary bodies.
     void set_angular_velocity(Vec3 velocity);
     /// Applies an impulse at the center of mass. Throws unless the body is dynamic and enabled.
     void add_impulse(Vec3 impulse);
     /// Moves a kinematic body so its authored origin reaches @p target after @p seconds, in
     /// [0.000001, 0.1]. Throws for other motion types.
     void move_kinematic(Pose target, double seconds);
-    /// Disabled bodies keep their pose and velocities and accept writes to them, but leave
-    /// collisions and queries, end their contacts and reject impulses. Reenabling resumes from
-    /// that state and reports contacts that still touch as new begin events.
+    /// Disabled bodies keep their pose and their velocities, clamped to the body's cap, and
+    /// accept writes to them, but leave collisions and queries, end their contacts and reject
+    /// impulses. Reenabling resumes from that state and reports contacts that still touch as new
+    /// begin events.
     void set_enabled(bool enabled);
     [[nodiscard]] bool enabled() const;
     /// Destroys the body and ends its contacts. Idempotent, including after world destruction.
