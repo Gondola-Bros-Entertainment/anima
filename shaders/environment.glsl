@@ -141,23 +141,35 @@ float cascadedVisibility(vec3 position, vec3 normal, ShadowReceiver receiver) {
     }
     return 1.0;
 }
+// The share of the detail region's box on each axis, in from each face, over which the region's result fades into the
+// cascades', so that crossing its boundary neither removes their casters nor double-darkens them.
+const float detailShadowFade = 0.04;
+// The sun's visibility at @p position: inside an enabled detail region from its map, fading into the cascades over
+// its outer detailShadowFade, and elsewhere from the cascades. Only the fade and the world outside the region sample
+// the cascades, through a single call, so that compilers inline the cascades' filters once.
 float sunVisibility(vec3 position, vec3 normal, ShadowReceiver receiver) {
-    float visible = cascadedVisibility(position, normal, receiver);
-    if (environment.detailShadow.x < 0.5)
-        return visible;
-    mat4 view = environment.detailShadowView;
-    vec3 p = (view * vec4(position, 1)).xyz;
-    p.xy = p.xy * 0.5 + 0.5;
-    if (any(lessThan(p, vec3(0))) || any(greaterThan(p, vec3(1))))
-        return visible;
-    vec4 settings = environment.detailShadow;
-    // The texel's world size: the box's width, 2 over the projection's X scale, over the resolution.
-    float texel = 2.0 * settings.y / max(length(vec3(view[0][0], view[1][0], view[2][0])), 1e-12);
-    float bias = settings.z + settings.w * (1.0 - max(dot(normal, environment.sunDirection.xyz), 0.0));
-    float detail = shadowFilter(detailShadowDepth, 0.0, p, receiverPlaneGradient(receiver, view, texel), bias);
-    // Fade at the region's boundary into the cascades, so crossing it neither removes their casters nor
-    // double-darkens them.
-    float edge = min(min(p.x, 1.0 - p.x), min(p.y, 1.0 - p.y));
-    edge = min(edge, min(p.z, 1.0 - p.z));
-    return mix(visible, detail, smoothstep(0.0, 0.04, edge));
+    float detail = 1.0;
+    float weight = 0.0;
+    if (environment.detailShadow.x >= 0.5) {
+        mat4 view = environment.detailShadowView;
+        vec3 p = (view * vec4(position, 1)).xyz;
+        p.xy = p.xy * 0.5 + 0.5;
+        bool outside = any(lessThan(p, vec3(0))) || any(greaterThan(p, vec3(1)));
+        if (!outside) {
+            vec4 settings = environment.detailShadow;
+            // The texel's world size: the box's width, 2 over the projection's X scale, over the resolution.
+            float texel = 2.0 * settings.y / max(length(vec3(view[0][0], view[1][0], view[2][0])), 1e-12);
+            float bias = settings.z + settings.w * (1.0 - max(dot(normal, environment.sunDirection.xyz), 0.0));
+            detail = shadowFilter(detailShadowDepth, 0.0, p, receiverPlaneGradient(receiver, view, texel), bias);
+            float edge = min(min(p.x, 1.0 - p.x), min(p.y, 1.0 - p.y));
+            edge = min(edge, min(p.z, 1.0 - p.z));
+            // smoothstep() is defined as 1 from its upper edge on, where the region's map alone shades. This tests
+            // the edge rather than smoothstep()'s result, which Vulkan's precision lets fall just short of 1 there.
+            if (edge >= detailShadowFade)
+                return detail;
+            weight = smoothstep(0.0, detailShadowFade, edge);
+        }
+    }
+    // A weight of 0, with the region disabled or outside its box, returns the cascades' result exactly.
+    return mix(cascadedVisibility(position, normal, receiver), detail, weight);
 }
