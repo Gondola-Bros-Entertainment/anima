@@ -15,33 +15,33 @@ struct RenderBounds {
     /// False when the box is empty or unknown. Culling never rejects an invalid box.
     bool valid{};
 };
-/// A simplified version of an IndexedDraw's triangles: a subset of its vertices, joined into fewer triangles, which
+/// A simplified version of a MeshPrimitive's triangles: a subset of its vertices, joined into fewer triangles, which
 /// VulkanRenderer draws in its place where the error it adds would cover at most its LOD threshold in pixels of the
 /// scene targets (VulkanRenderer::set_lod_threshold).
-struct DrawLevel {
+struct PrimitiveLevel {
     /// Offset of the level's first index in Mesh::indices().
     std::uint32_t first_index{};
     /// Number of indices, three per triangle, fewer than the level before it has.
     std::uint32_t index_count{};
     /// The sum of the errors of the simplification steps that produced the level, each measured from the level it
-    /// started from, in the units of the draw's vertices before their node or joints place them, so at least the
-    /// error of the level before it. It estimates how far the level lies from the draw's own triangles; each step's
-    /// error is itself an estimate, so a level may lie somewhat farther. A step's error combines how far it may move
-    /// the surface it starts from with how much it changes normals and vertex colors, which the simplifier weighs as
-    /// distance and clamps to the scale of the positional error.
+    /// started from, in the units of the primitive's vertices before their node or joints place them, so at least the
+    /// error of the level before it. It estimates how far the level lies from the primitive's own triangles; each
+    /// step's error is itself an estimate, so a level may lie somewhat farther. A step's error combines how far it may
+    /// move the surface it starts from with how much it changes normals and vertex colors, which the simplifier weighs
+    /// as distance and clamps to the scale of the positional error.
     float error{};
 };
-/// One indexed triangle-list draw of a Mesh, compiled from one source primitive. Its position in
-/// Mesh::draws() is the primitive index that MeshRenderer::set_primitive_visible takes.
-struct IndexedDraw {
-    /// Offset of the draw's first index in Mesh::indices().
+/// One indexed triangle list of a Mesh, compiled from one source primitive. Its position in Mesh::primitives() is the
+/// primitive index that MeshRenderer::set_primitive_visible takes.
+struct MeshPrimitive {
+    /// Offset of the primitive's first index in Mesh::indices().
     std::uint32_t first_index{};
     /// Number of indices, three per triangle.
     std::uint32_t index_count{};
-    /// First palette matrix the draw uses: its node's matrix when rigid, its skin's first joint matrix when
+    /// First palette matrix the primitive uses: its node's matrix when rigid, its skin's first joint matrix when
     /// skinned. See Mesh::palette_size().
     std::uint32_t palette_offset{};
-    /// Palette matrices from #palette_offset that may place the draw's vertices: 1 when rigid, its skin's joint
+    /// Palette matrices from #palette_offset that may place the primitive's vertices: 1 when rigid, its skin's joint
     /// count when skinned.
     std::uint32_t palette_count{};
     /// Whether each vertex blends up to four joint matrices, with SourceVertex::joints counted from
@@ -55,28 +55,28 @@ struct IndexedDraw {
     std::string node_name;
     std::string mesh_name;
     /// Simplified levels of detail, each coarser than the one before (MeshLodOptions); empty draws only this one.
-    std::vector<DrawLevel> levels{};
+    std::vector<PrimitiveLevel> levels{};
 };
 
-/// Levels of detail that Mesh::compile generates for each draw, as Godot generates them on import.
+/// Levels of detail that Mesh::compile generates for each primitive, as Godot generates them on import.
 ///
-/// Each level simplifies the one before it, starting from the draw, with meshoptimizer's quadric simplifier, which
+/// Each level simplifies the one before it, starting from the primitive, with meshoptimizer's quadric simplifier, which
 /// collapses the edges that change the surface, normals and vertex colors least, toward half the triangles. It may
 /// collapse across a hard edge, where normals or vertex colors split, charging the change to the step's error, so
 /// faceted models simplify too, but never across a split in the attributes it does not weigh: texture coordinates,
-/// tangent handedness, vertex alpha, and in a skinned draw joints and weights. A level's triangles are ordered for the
-/// vertex cache, except those of a draw whose own material is AlphaMode::blend, which keep their source order, since
-/// they composite in it; a blended custom material (MeshRenderer::set_custom_material) composites any other draw's
-/// levels in their cache order. Every level keeps the draw's open border whole, so draws that meet
-/// along it, such as the material subsets of one mesh or the pieces of Mesh::compile_static, meet without cracks
-/// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices
-/// of the one before it or when a step's error would exceed the draw's extent. Draws with a masked material
+/// tangent handedness, vertex alpha, and in a skinned primitive joints and weights. A level's triangles are ordered for
+/// the vertex cache, except those of a primitive whose own material is AlphaMode::blend, which keep their source order,
+/// since they composite in it; a blended custom material (MeshRenderer::set_custom_material) composites any other
+/// primitive's levels in their cache order. Every level keeps the primitive's open border whole, so primitives that
+/// meet along it, such as the material subsets of one mesh or the pieces of Mesh::compile_static, meet without cracks
+/// whichever levels are drawn for each. Generation stops early when a level would keep more than 85% of the indices of
+/// the one before it or when a step's error would exceed the primitive's extent. Primitives with a masked material
 /// (AlphaMode::mask) get none: their cutout edges follow texture coordinates, which the simplifier does not weigh, so
 /// foliage draws far away as an impostor instead (bake_impostor()). Each level takes its indices' memory and upload in
-/// addition to the draw's.
+/// addition to the primitive's.
 struct MeshLodOptions {
-    /// Most levels per draw, from 0, the default, which generates none, to 8.
-    std::size_t levels{};
+    /// Most levels per primitive, from 0, the default, which generates none, to 8.
+    std::uint32_t levels{};
 };
 
 /// How Mesh::load() and Mesh::compile() compile a source, and how Mesh::compile_static() compiles each Mesh it
@@ -84,7 +84,7 @@ struct MeshLodOptions {
 struct MeshOptions {
     /// How the Mesh holds its textures' texels, TexelRetention::keep or TexelRetention::until_upload.
     TexelRetention texel_retention = TexelRetention::keep;
-    /// Levels of detail that each draw of the Mesh gets.
+    /// Levels of detail that each primitive of the Mesh gets.
     MeshLodOptions lods{};
 };
 
@@ -100,19 +100,19 @@ enum class ImpostorLayout {
 /// How an impostor's atlas holds its frames, in the space of its source mesh's vertices as the rest pose places them,
 /// with +Y up. A persisted atlas keeps these values with its images.
 ///
-/// The atlas holds #count by #count frames, frame `(i, j)` in column `i` and row `j` counted from texture coordinate
-/// `(0, 0)`. Frame `(i, j)` views the mesh orthographically from the unit direction `d` that the grid point
-/// `(u, v) = (2i / (count - 1) - 1, 2j / (count - 1) - 1)` encodes: for ImpostorLayout::hemisphere, `x = (u + v) / 2`,
-/// `z = (u - v) / 2` and `y = 1 - |x| - |z|`; for ImpostorLayout::sphere, `x = u`, `z = v` and `y = 1 - |u| - |v|`,
-/// where a negative `y` folds `x` and `z` to `(1 - |z|) sign(x)` and `(1 - |x|) sign(z)`; `d` is `(x, y, z)`
-/// normalized. The frame shows the square of side `2 radius` around #center on the plane through #center
+/// The atlas holds `n` by `n` frames, where `n` is #frames_per_side, frame `(i, j)` in column `i` and row `j` counted
+/// from texture coordinate `(0, 0)`. Frame `(i, j)` views the mesh orthographically from the unit direction `d` that
+/// the grid point `(u, v) = (2i / (n - 1) - 1, 2j / (n - 1) - 1)` encodes: for ImpostorLayout::hemisphere,
+/// `x = (u + v) / 2`, `z = (u - v) / 2` and `y = 1 - |x| - |z|`; for ImpostorLayout::sphere, `x = u`, `z = v` and
+/// `y = 1 - |u| - |v|`, where a negative `y` folds `x` and `z` to `(1 - |z|) sign(x)` and `(1 - |x|) sign(z)`; `d` is
+/// `(x, y, z)` normalized. The frame shows the square of side `2 radius` around #center on the plane through #center
 /// perpendicular to `d`, with texture `u` along `right` and `v` along `up`: `right` is `(d.z, 0, -d.x)` normalized, or
 /// `(1, 0, 0)` where `d.x` and `d.z` are both 0, and `up` is `cross(d, right)`.
 struct ImpostorFrames {
     /// The directions that the frames cover.
     ImpostorLayout layout = ImpostorLayout::hemisphere;
     /// Frames along each side of the atlas, from 2 to 32.
-    std::uint32_t count{};
+    std::uint32_t frames_per_side{};
     /// Center of the sphere that holds every vertex, the center of Mesh::rest_bounds().
     Vec3 center{};
     /// Radius of that sphere, finite and greater than 0.
@@ -124,7 +124,7 @@ struct ImpostorAtlas;
 /// import metadata that Scene::snapshot() adds up into a MeshSnapshot. Mesh::description() shares one, which never
 /// changes.
 struct MeshDescription {
-    /// The source's materials, in order; IndexedDraw::material and Scene's material slots index them.
+    /// The source's materials, in order; MeshPrimitive::material and Scene's material slots index them.
     std::vector<Material> materials;
     /// The source's textures, in order, which the materials refer to. They share the source's images, or with
     /// TexelRetention::until_upload refer to images with no texels; Mesh::texel_images() returns the images that have
@@ -136,8 +136,8 @@ struct MeshDescription {
     std::size_t skins{};
     /// Total joints over all skins.
     std::size_t joints{};
-    /// Triangle corners of the skinned draws, three per triangle, as many as the vertices a MeshSnapshot expands them
-    /// into.
+    /// Triangle corners of the skinned primitives, three per triangle, as many as the vertices a MeshSnapshot expands
+    /// them into.
     std::size_t skinned_vertices{};
     /// Names of the source's clips, in order.
     std::vector<std::string> clips;
@@ -163,14 +163,14 @@ struct MeshCompileOptions {
     /// Mesh::compile_static throws `std::invalid_argument` ("Block-compressed texture stores no mip level within
     /// the texture limit") when it stores none. Textures that share an image and an encoding share each shrunk
     /// image. Zero keeps authored sizes.
-    unsigned max_texture_edge{};
+    std::uint32_t max_texture_edge{};
     /// How each resulting Mesh holds its textures' texels and which levels of detail it generates, as compile() does
     /// with these options. Shrunk images have no other holder, so with TexelRetention::until_upload they are freed
     /// once their Mesh is uploaded.
     MeshOptions mesh{};
 };
 
-/// Immutable compiled render mesh: indexed geometry, draws, materials, textures and skins.
+/// Immutable compiled render mesh: indexed geometry, primitives, materials, textures and skins.
 ///
 /// Compile once and share the pointer: each Scene instance keeps its own pose, material factors and visibility, while
 /// VulkanRenderer caches GPU geometry and textures per Mesh object. To change geometry, textures or material constants,
@@ -201,8 +201,8 @@ class Mesh {
     /// TexelRetention::until_upload in MeshOptions::texel_retention holds them until it is uploaded; @p source may
     /// change or be destroyed afterwards, but the images must not (see Image).
     ///
-    /// Each source primitive becomes one IndexedDraw, in order. Within a primitive, vertices whose attributes are all
-    /// bit-identical are merged, so seams and triangle order are preserved and the draw's own triangles are not
+    /// Each source primitive becomes one MeshPrimitive, in order. Within a primitive, vertices whose attributes are all
+    /// bit-identical are merged, so seams and triangle order are preserved and the primitive's own triangles are not
     /// simplified; MeshOptions::lods then adds the simplified levels of detail that MeshLodOptions describes. Throws
     /// `std::invalid_argument` for more than 8 levels ("Mesh LOD levels must be from 0 to 8"), before anything else,
     /// then for an unknown MeshOptions::texel_retention ("Unknown texel retention"), and for invalid content, for
@@ -221,7 +221,7 @@ class Mesh {
     /// With both limits in @p options zero this returns `{compile(source, options.mesh)}`. Otherwise it first shrinks
     /// oversized textures. Without a vertex limit it then returns one Mesh; with one, it starts a new Mesh at every
     /// material change between consecutive primitives and whenever MeshCompileOptions::max_vertices would be exceeded,
-    /// splitting primitives between whole triangles; the draws of a split blended primitive sort separately in
+    /// splitting primitives between whole triangles; the pieces of a split blended primitive sort separately in
     /// VulkanRenderer. Each result keeps every node, Asset::mesh_nodes and Asset::notices, as compile() does, but only
     /// the materials and textures it uses; a source without primitives gives one Mesh with no materials or textures.
     /// Throws `std::invalid_argument` for an unknown MeshOptions::texel_retention in MeshCompileOptions::mesh, a
@@ -238,7 +238,7 @@ class Mesh {
     /// Compiles @p atlas, from bake_impostor() or persisted from it, into a Mesh that VulkanRenderer draws as an
     /// impostor, and that scenes place, range and cull as any Mesh.
     ///
-    /// The Mesh has one node and one draw, a quad of two triangles whose corners span the cube of side
+    /// The Mesh has one node and one primitive, a quad of two triangles whose corners span the cube of side
     /// `2 ImpostorFrames::radius` around ImpostorFrames::center, so its rest bounds share their center with its source
     /// mesh's and a visibility range measures to the same point for both. Its one material is AlphaMode::mask with
     /// cutoff 0.5 and double-sided, with ImpostorAtlas::color as its base color, ImpostorAtlas::normal_depth as its
@@ -266,11 +266,11 @@ class Mesh {
     compile_impostor(const ImpostorAtlas &atlas, TexelRetention texel_retention = TexelRetention::keep);
     /// Vertices that indices() refers to.
     [[nodiscard]] std::span<const SourceVertex> vertices() const { return vertices_; }
-    /// Triangle-list indices into vertices(): every draw's own, in source order, then after all of them each draw's
-    /// levels of detail (IndexedDraw::levels), draw by draw and level by level.
+    /// Triangle-list indices into vertices(): every primitive's own, in source order, then after all of them each
+    /// primitive's levels of detail (MeshPrimitive::levels), primitive by primitive and level by level.
     [[nodiscard]] std::span<const std::uint32_t> indices() const { return indices_; }
-    /// One draw per source primitive, in source order.
-    [[nodiscard]] std::span<const IndexedDraw> draws() const { return draws_; }
+    /// One primitive per source primitive, in source order.
+    [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return primitives_; }
     /// The materials, textures and import metadata of the source, never null. With TexelRetention::until_upload its
     /// textures' images have no texels; texel_images() returns the images that have them. Copies of this Mesh share
     /// it.
@@ -295,8 +295,8 @@ class Mesh {
     [[nodiscard]] const Pose &rest_pose() const { return rest_; }
     /// Matrices in each instance palette: one per source node, then one per joint of each skin, in order.
     [[nodiscard]] std::size_t palette_size() const { return palette_size_; }
-    /// Bounds of every draw, hidden or not, in the rest pose and the mesh's own space, before an object places it;
-    /// invalid when no draw has a vertex. VisibilityRange measures to its center.
+    /// Bounds of every primitive, hidden or not, in the rest pose and the mesh's own space, before an object places it;
+    /// invalid when no primitive has a vertex. VisibilityRange measures to its center.
     [[nodiscard]] const RenderBounds &rest_bounds() const noexcept { return rest_bounds_; }
     /// Whether @p source can animate this mesh: the same node names and parents in the same order, and rest
     /// world transforms within `0.00001` per element. Animator requires it. Throws as sample_pose() does when
@@ -324,7 +324,7 @@ class Mesh {
     };
     std::vector<SourceVertex> vertices_;
     std::vector<std::uint32_t> indices_;
-    std::vector<IndexedDraw> draws_;
+    std::vector<MeshPrimitive> primitives_;
     std::shared_ptr<const MeshDescription> description_;
     Pose rest_;
     std::vector<std::pair<std::string, int>> nodes_;

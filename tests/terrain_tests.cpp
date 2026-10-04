@@ -135,9 +135,9 @@ TEST_CASE("Terrain compiles one vertex per sample and indexes the surface that w
     const auto quads = (field.columns - 1) * (field.rows - 1);
     REQUIRE(mesh->vertices().size() == field.heights.size());
     REQUIRE(mesh->indices().size() == 6 * quads);
-    REQUIRE(mesh->draws().size() == 1);
-    CHECK(mesh->draws()[0].first_index == 0);
-    CHECK(mesh->draws()[0].index_count == 6 * quads);
+    REQUIRE(mesh->primitives().size() == 1);
+    CHECK(mesh->primitives()[0].first_index == 0);
+    CHECK(mesh->primitives()[0].index_count == 6 * quads);
     for (std::size_t z = 0; z < field.rows; ++z)
         for (std::size_t x = 0; x < field.columns; ++x) {
             CAPTURE(x);
@@ -191,7 +191,7 @@ TEST_CASE("Terrain compiles one vertex per sample and indexes the surface that w
     REQUIRE(welded_bounds.valid);
     CHECK(bits(bounds.minimum) == bits(welded_bounds.minimum));
     CHECK(bits(bounds.maximum) == bits(welded_bounds.maximum));
-    CHECK(mesh->draws()[0].material == welded->draws()[0].material);
+    CHECK(mesh->primitives()[0].material == welded->primitives()[0].material);
     CHECK(mesh->palette_size() == welded->palette_size());
 }
 

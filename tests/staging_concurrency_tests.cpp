@@ -103,7 +103,7 @@ TEST_CASE("Loads stage on several threads while the owning thread updates and co
                     auto staged = stage_scene(scene_document, resolve, {}, {{}, &progress});
                     auto staged_set = stage_scene_set(set_document, resolve, {}, {{}, &progress});
                     const std::lock_guard lock(mutex);
-                    if (pieces.size() != 4 || prepared_own.images().empty() || prepared_shared.asset() != shared)
+                    if (pieces.size() != 4 || prepared_own.images().empty() || prepared_shared.mesh() != shared)
                         failures.emplace_back("A worker staged unexpected content");
                     results.push_back({std::move(staged), std::move(staged_set), std::move(prefab)});
                 }

@@ -313,7 +313,7 @@ TEST_CASE("Mesh preparation filters each planned image as the plan asks") {
     upload_source.textures.assign(sources.begin(), sources.end());
     const auto compiled = Mesh::compile(upload_source);
     const MeshPreparation prepared(compiled);
-    CHECK(prepared.asset() == compiled);
+    CHECK(prepared.mesh() == compiled);
     CHECK(prepared.plan().bindings == plan.bindings);
     REQUIRE(prepared.images().size() == plan.images.size());
     CHECK(prepared.images().front().front().rgba == std::vector<std::uint8_t>{255, 255, 255, 255}); // The fallback.
@@ -337,5 +337,5 @@ TEST_CASE("Mesh preparation filters each planned image as the plan asks") {
     REQUIRE(unfiltered.images().size() == 2);
     REQUIRE(unfiltered.images()[1].size() == 1);
     CHECK(unfiltered.images()[1][0].rgba == no_mips.image->rgba);
-    CHECK_THROWS_WITH_AS(MeshPreparation(nullptr), "Cannot prepare a null render asset", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(MeshPreparation(nullptr), "Cannot prepare a null mesh", std::invalid_argument);
 }

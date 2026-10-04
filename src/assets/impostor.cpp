@@ -201,18 +201,18 @@ class Baker {
                             .first;
             return &found->second;
         };
-        const auto &draws = mesh.draws();
-        for (const auto &draw : draws)
-            if (draw.index_count)
-                require(!draw.skinned, "Impostors bake only rigid meshes");
-        // The default Material for draws without one, then each material of the mesh.
+        const auto &primitives = mesh.primitives();
+        for (const auto &primitive : primitives)
+            if (primitive.index_count)
+                require(!primitive.skinned, "Impostors bake only rigid meshes");
+        // The default Material for primitives without one, then each material of the mesh.
         materials_.resize(description.materials.size() + 1);
         for (std::size_t m = 0; m < description.materials.size(); ++m)
             materials_[m + 1].source = description.materials[m];
-        for (const auto &draw : draws) {
-            if (!draw.index_count)
+        for (const auto &primitive : primitives) {
+            if (!primitive.index_count)
                 continue;
-            const auto &material = materials_[std::size_t(draw.material + 1)].source;
+            const auto &material = materials_[std::size_t(primitive.material + 1)].source;
             require(!material.unlit && material.alpha_mode != AlphaMode::blend,
                     "Impostors bake only lit opaque and masked materials");
         }
@@ -234,13 +234,13 @@ class Baker {
         const auto &rest = mesh.rest_pose().world;
         const auto vertices = mesh.vertices();
         const auto indices = mesh.indices();
-        for (const auto &draw : draws) {
-            if (!draw.index_count)
+        for (const auto &primitive : primitives) {
+            if (!primitive.index_count)
                 continue;
-            const auto &m = rest[draw.node];
+            const auto &m = rest[primitive.node];
             const Vec3 a{m[0], m[1], m[2]}, b{m[4], m[5], m[6]}, c{m[8], m[9], m[10]};
             const bool mirrored = dot(a, cross(b, c)) < 0;
-            const auto first = indices.begin() + draw.first_index, last = first + draw.index_count;
+            const auto first = indices.begin() + primitive.first_index, last = first + primitive.index_count;
             const auto lowest = *std::min_element(first, last), highest = *std::max_element(first, last);
             const auto offset = static_cast<std::uint32_t>(vertices_.size()) - lowest;
             for (auto i = lowest; i <= highest; ++i) {
@@ -248,7 +248,7 @@ class Baker {
                 vertices_.push_back(
                     {point(m, v.position), normal(m, v.normal), v.color, v.uv, tangent(m, v.tangent), v.alpha});
             }
-            const auto *material = &materials_[std::size_t(draw.material + 1)];
+            const auto *material = &materials_[std::size_t(primitive.material + 1)];
             for (auto corner = first; corner != last; corner += 3) {
                 BakeTriangle triangle;
                 triangle.corners = {corner[0] + offset, corner[1] + offset, corner[2] + offset};
@@ -278,7 +278,7 @@ class Baker {
     }
 
     ImpostorAtlas bake() {
-        const auto count = options_.frames, size = options_.frame_size, side = count * size;
+        const auto count = options_.frames_per_side, size = options_.frame_size, side = count * size;
         const auto texels = std::size_t(side) * side * 4;
         std::vector<std::uint8_t> color(texels), normal_depth(texels), surface(texels), emissive(emits_ ? texels : 0);
         for (std::size_t i = 3; i < texels; i += 4) {
@@ -396,7 +396,7 @@ class Baker {
         return result;
     }
     void bake_frame(std::uint32_t i, std::uint32_t j, Images &images) {
-        const auto axes = frame_axes(frame_direction(options_.layout, options_.frames, i, j));
+        const auto axes = frame_axes(frame_direction(options_.layout, options_.frames_per_side, i, j));
         const auto size = options_.frame_size, samples = options_.samples, side = size * samples;
         // Samples across the frame per unit of the mesh's space, and the frame's texels per sample.
         const float scale = float(side) / (2 * radius_);
@@ -481,7 +481,7 @@ class Baker {
     // weights, weighted by how many it covers, as multisampling resolves; then fills the uncovered texels.
     void resolve(std::uint32_t i, std::uint32_t j, const FrameAxes &axes, Images &images) {
         const auto size = options_.frame_size, samples = options_.samples, side = size * samples;
-        const auto atlas = options_.frames * size;
+        const auto atlas = options_.frames_per_side * size;
         struct Group {
             std::uint32_t triangle{}, count{};
             float w1{}, w2{};
@@ -550,7 +550,7 @@ class Baker {
     // Gives each uncovered texel of frame (i, j) the values of the nearest covered texel, by steps between neighbors,
     // keeping its coverage 0.
     void dilate(std::uint32_t i, std::uint32_t j, Images &images) {
-        const auto size = options_.frame_size, atlas = options_.frames * size;
+        const auto size = options_.frame_size, atlas = options_.frames_per_side * size;
         std::deque<std::uint32_t> queue;
         for (std::uint32_t texel = 0; texel < size * size; ++texel)
             if (covered_[texel])
@@ -610,9 +610,9 @@ class Baker {
 
 ImpostorAtlas bake_impostor(const Mesh &mesh, const ImpostorOptions &options) {
     require(known(options.layout), "Unknown impostor layout");
-    require(options.frames >= minimum_frames && options.frames <= maximum_frames && options.frame_size >= 8 &&
-                options.frame_size <= 1024 && options.frames * options.frame_size <= 8192 && options.samples >= 1 &&
-                options.samples <= 8,
+    require(options.frames_per_side >= minimum_frames && options.frames_per_side <= maximum_frames &&
+                options.frame_size >= 8 && options.frame_size <= 1024 &&
+                options.frames_per_side * options.frame_size <= 8192 && options.samples >= 1 && options.samples <= 8,
             options_message);
     return Baker(mesh, options).bake();
 }
@@ -620,15 +620,15 @@ ImpostorAtlas bake_impostor(const Mesh &mesh, const ImpostorOptions &options) {
 std::shared_ptr<const Mesh> Mesh::compile_impostor(const ImpostorAtlas &atlas, TexelRetention texel_retention) {
     const auto &frames = atlas.frames;
     require(known(frames.layout), "Unknown impostor layout");
-    require(frames.count >= minimum_frames && frames.count <= maximum_frames && finite(frames.center) &&
-                std::isfinite(frames.radius) && frames.radius > 0,
+    require(frames.frames_per_side >= minimum_frames && frames.frames_per_side <= maximum_frames &&
+                finite(frames.center) && std::isfinite(frames.radius) && frames.radius > 0,
             frames_message);
     const auto side = atlas.color.image ? atlas.color.image->width : 0;
     const auto square = [&](const Texture &texture, TextureEncoding encoding) {
         return texture.image && texture.image->width == side && texture.image->height == side &&
                texture.encoding == encoding;
     };
-    require(side && side % frames.count == 0 && square(atlas.color, TextureEncoding::srgb) &&
+    require(side && side % frames.frames_per_side == 0 && square(atlas.color, TextureEncoding::srgb) &&
                 square(atlas.normal_depth, TextureEncoding::linear) && square(atlas.surface, TextureEncoding::linear) &&
                 (!atlas.emissive || square(*atlas.emissive, TextureEncoding::srgb)),
             images_message);

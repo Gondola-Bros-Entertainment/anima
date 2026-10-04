@@ -70,7 +70,8 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     require(renderer->custom_materials.empty() ||
                 renderer->custom_materials.size() == renderer->mesh->description()->materials.size(),
             "Prefab variant custom materials do not match the mesh");
-    require(renderer->primitive_visible.empty() || renderer->primitive_visible.size() == renderer->mesh->draws().size(),
+    require(renderer->primitive_visible.empty() ||
+                renderer->primitive_visible.size() == renderer->mesh->primitives().size(),
             "Prefab variant primitive visibility does not match the mesh");
     for (auto factor : renderer->material_factors)
         for (auto channel : {factor.x, factor.y, factor.z})
