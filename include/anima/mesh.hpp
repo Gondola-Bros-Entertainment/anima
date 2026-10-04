@@ -136,11 +136,22 @@ struct MeshCompileOptions {
 ///
 /// Compile once and share the pointer: each Scene instance keeps its own pose, material factors and visibility, while
 /// VulkanRenderer caches GPU geometry and textures per Mesh object. To change geometry, textures or material constants,
-/// compile a new Mesh. Nothing changes after compilation but the hold of a Mesh compiled with
-/// TexelRetention::until_upload on its textures' texels, which is synchronized, so a Mesh may be read from several
-/// threads.
+/// compile a new Mesh. Nothing changes a Mesh but assignment, which the `std::shared_ptr<const Mesh>` that compiling
+/// returns does not allow, and the hold of a Mesh compiled with TexelRetention::until_upload on its textures' texels,
+/// which is synchronized, so a Mesh may be read from several threads. Only load(), compile(), compile_static() and
+/// compile_impostor() create a Mesh, apart from copying one.
 class Mesh {
   public:
+    /// A distinct Mesh with @p other's content, which VulkanRenderer caches and uploads separately. With
+    /// TexelRetention::until_upload it holds the images itself until its own release_texels() if @p other had not
+    /// released them; otherwise it finds them, as @p other does, only while something else holds them. Only reads
+    /// @p other, so it may run while other threads read it or call its release_texels(). Moving a Mesh copies it, so
+    /// no Mesh is ever empty.
+    Mesh(const Mesh &other) = default;
+    /// Replaces this Mesh's content with a copy of @p other's, made as the copy constructor makes one. Whatever uses a
+    /// Mesh, such as a Scene, MeshPlacements, MeshPreparation or VulkanRenderer, keeps what it derived from the content
+    /// it found, so assign only to a Mesh that nothing else uses, on any thread.
+    Mesh &operator=(const Mesh &other) = default;
     /// Imports the GLB file at @p path with load_asset() and compiles it with @p texel_retention; throws what
     /// either throws. With TexelRetention::until_upload nothing else holds the imported images, so they are freed
     /// once the Mesh is uploaded. Calls may run concurrently on any thread, as calls of both functions may.
@@ -258,6 +269,8 @@ class Mesh {
   private:
     friend class Scene;
     friend class MeshPlacements;
+    // An empty Mesh, whose null materials_ Scene and texel_images() would dereference; only compile() starts from one.
+    Mesh() = default;
     struct BoundPart {
         std::uint32_t palette;
         RenderBounds bound;
