@@ -3,12 +3,13 @@
 // One corner of an impostor's quad, which faces the viewpoint across the front of the sphere that holds its mesh,
 // covering the sphere's silhouette, in the mesh's space so that any affine placement keeps it exact. The fragment
 // shaders find where each pixel's ray crosses the planes of the three frames nearest the viewing direction.
+#include "shader_interface.h"
 // The corner, from 0 to 1 along the quad's right and up axes.
-layout(location = 3) in vec2 uv;
+layout(location = ANIMA_ATTRIBUTE_UV) in vec2 uv;
 // Rows 0 to 2 of the placement's affine matrix, per instance; an identity for an object without placements.
-layout(location = 8) in vec4 placement0;
-layout(location = 9) in vec4 placement1;
-layout(location = 10) in vec4 placement2;
+layout(location = ANIMA_ATTRIBUTE_PLACEMENT_ROW0) in vec4 placement0;
+layout(location = ANIMA_ATTRIBUTE_PLACEMENT_ROW1) in vec4 placement1;
+layout(location = ANIMA_ATTRIBUTE_PLACEMENT_ROW2) in vec4 placement2;
 // The ray through this corner in the mesh's space: from the eye, or along a parallel view from the corner itself.
 layout(location = 0) out vec3 rayOrigin;
 layout(location = 1) out vec3 rayDirection;
@@ -18,7 +19,6 @@ layout(location = 3) flat out uvec3 frames;
 layout(location = 4) flat out float visibility;
 // The matrix from the mesh's space to the world.
 layout(location = 5) flat out mat4 model;
-#include "shader_interface.h"
 layout(set = ANIMA_SET_POSES, binding = ANIMA_POSE_MATRICES, std430) readonly buffer Poses { mat4 matrices[]; }
 poses;
 layout(push_constant) uniform Draw {

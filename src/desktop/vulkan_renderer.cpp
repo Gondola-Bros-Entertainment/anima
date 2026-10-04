@@ -8,6 +8,7 @@
 
 #include "../../shaders/shader_interface.h"
 #include "../assets/bc7.hpp"
+#include "../detail/custom_material_interface.hpp"
 #endif
 #ifdef ANIMA_UI
 #include "../detail/image_limits.hpp"
@@ -450,11 +451,15 @@ struct VulkanRenderer::Impl {
     };
     // Weak entries never extend GPU lifetime beyond the scenes using a sampler.
     std::map<SamplerKey, std::weak_ptr<GpuSampler>> material_samplers;
+    // A material's uniform block, as shaders/material.glsl lays out MaterialData, in std140: its emissive radiance with
+    // its base alpha; its normal scale, mask cutoff (-1 unless it is masked), occlusion strength and whether it is
+    // unlit; and whether it has a normal map and whether it is double-sided.
+    struct MaterialUniform {
+        std::array<float, 4> emissive_alpha, detail, maps;
+    };
+    static_assert(sizeof(MaterialUniform) == 48, "material.glsl's MaterialData holds three vec4s");
     // Every candidate owns its allocations immediately. Destruction is legal only
     // after its graphics/upload work has completed; see UploadBatch and replacement.
-    struct MaterialUniform {
-        std::array<float, 4> emissive_alpha, surface, maps;
-    };
     struct GpuMaterials {
         VkDevice device{};
         VmaAllocator allocator{};
@@ -1589,32 +1594,25 @@ struct VulkanRenderer::Impl {
         GraphicsPipelineState state;
         state.cull_mode = cull_mode;
 #ifdef ANIMA_HAS_ASSETS
-        // Mesh vertices from binding 0 and placement rows from binding 1.
-        std::array<VkVertexInputAttributeDescription, resource_attributes.size() + placement_attributes.size()>
-            placed_attributes{};
-        std::copy(resource_attributes.begin(), resource_attributes.end(), placed_attributes.begin());
-        std::copy(placement_attributes.begin(), placement_attributes.end(),
-                  placed_attributes.begin() + resource_attributes.size());
+        // Mesh vertices from binding 0 and placement rows from binding 1, those that the vertex shader reads:
+        // resource.vert reads every one; shadow-resource.vert the position, the uv, joints and weights and the alpha;
+        // and impostor.vert, whose corner is its texture coordinate alone, the uv; each with the placement rows.
+        constexpr auto bit = [](std::uint32_t location) { return 1U << location; };
+        constexpr std::uint32_t placement_rows = bit(ANIMA_ATTRIBUTE_PLACEMENT_ROW0) |
+                                                 bit(ANIMA_ATTRIBUTE_PLACEMENT_ROW1) |
+                                                 bit(ANIMA_ATTRIBUTE_PLACEMENT_ROW2);
+        constexpr std::uint32_t mesh_locations =
+            bit(ANIMA_ATTRIBUTE_POSITION) | bit(ANIMA_ATTRIBUTE_NORMAL) | bit(ANIMA_ATTRIBUTE_COLOR) |
+            bit(ANIMA_ATTRIBUTE_UV) | bit(ANIMA_ATTRIBUTE_JOINTS) | bit(ANIMA_ATTRIBUTE_WEIGHTS) |
+            bit(ANIMA_ATTRIBUTE_TANGENT) | bit(ANIMA_ATTRIBUTE_ALPHA) | placement_rows;
+        constexpr std::uint32_t shadow_locations = bit(ANIMA_ATTRIBUTE_POSITION) | bit(ANIMA_ATTRIBUTE_UV) |
+                                                   bit(ANIMA_ATTRIBUTE_JOINTS) | bit(ANIMA_ATTRIBUTE_WEIGHTS) |
+                                                   bit(ANIMA_ATTRIBUTE_ALPHA) | placement_rows;
+        constexpr std::uint32_t impostor_locations = bit(ANIMA_ATTRIBUTE_UV) | placement_rows;
+        VertexInput input;
         if (resource) {
-            state.vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(resource_bindings.size());
-            state.vertex.pVertexBindingDescriptions = resource_bindings.data();
-            state.vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(placed_attributes.size());
-            state.vertex.pVertexAttributeDescriptions = placed_attributes.data();
-        }
-        const VkVertexInputAttributeDescription shadow_resource_attributes[]{
-            resource_attributes[0], resource_attributes[3],  resource_attributes[4],  resource_attributes[5],
-            resource_attributes[7], placement_attributes[0], placement_attributes[1], placement_attributes[2]};
-        if (shadow) {
-            state.vertex.vertexAttributeDescriptionCount =
-                static_cast<std::uint32_t>(std::size(shadow_resource_attributes));
-            state.vertex.pVertexAttributeDescriptions = shadow_resource_attributes;
-        }
-        // An impostor's corner is its texture coordinate alone.
-        const VkVertexInputAttributeDescription impostor_attributes[]{resource_attributes[3], placement_attributes[0],
-                                                                      placement_attributes[1], placement_attributes[2]};
-        if (impostor) {
-            state.vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(impostor_attributes));
-            state.vertex.pVertexAttributeDescriptions = impostor_attributes;
+            input = vertex_input(impostor ? impostor_locations : shadow ? shadow_locations : mesh_locations);
+            input.describe(state.vertex);
         }
 #endif
 #ifdef ANIMA_UI

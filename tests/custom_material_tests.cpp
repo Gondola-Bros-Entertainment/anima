@@ -287,6 +287,7 @@ TEST_CASE("A custom material records the interface that its shaders declare") {
             (void)module.input_at(row, module.vector(4));
         return module.words();
     };
+    CHECK(CustomMaterial::placement_attributes == 0x700U);
     auto rows = definition();
     rows.vertex_shader = placed({8, 9, 10});
     CHECK(CustomMaterial(rows).vertex_attributes() == 0x701U);

@@ -185,6 +185,9 @@ class CustomMaterial {
     static constexpr std::size_t max_textures = 4;
     /// Largest shader module, in bytes.
     static constexpr std::size_t max_shader_bytes = 16 * 1024 * 1024;
+    /// The bits of vertex_attributes() and shadow_vertex_attributes() for the three placement rows, locations 8 to 10,
+    /// all of which reads_placements() requires.
+    static constexpr std::uint32_t placement_attributes = 1U << 8 | 1U << 9 | 1U << 10;
 
     /// Validates @p definition and keeps it, holding its textures' images as
     /// CustomMaterialDefinition::texel_retention says.
@@ -224,7 +227,7 @@ class CustomMaterial {
     /// Whether the vertex shader, and the depth-only variant's if there is one, read all three placement rows
     /// (locations 8 to 10), which drawing an object's placements requires (MeshRenderer::set_placements).
     [[nodiscard]] bool reads_placements() const noexcept {
-        constexpr std::uint32_t rows = 0x700;
+        constexpr auto rows = placement_attributes;
         return (vertex_attributes_ & rows) == rows && (!casts_shadows() || (shadow_vertex_attributes_ & rows) == rows);
     }
     /// Whether the fragment shader declares opaque depth; either input makes the renderer copy opaque depth and
