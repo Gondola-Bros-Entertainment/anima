@@ -215,6 +215,7 @@ inline int run(int argc, char **argv) {
     const auto window = gpu_check::window("Anima impostor verification", window_size, window_size);
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     options.profile = true;
     anima::VulkanRenderer renderer(window.get(), options);
 

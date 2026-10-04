@@ -71,6 +71,12 @@ inline Window window(const char *title, int width, int height, SDL_WindowFlags f
         throw Unavailable(std::string("Vulkan window: ") + SDL_GetError());
     return created;
 }
+/// A RendererOptions::log that prints each message on its own line, information to standard output and warnings and
+/// errors to standard error, where CTest's failure expressions for the checks find swapchain creations, validation
+/// messages and the renderer's final counters.
+inline void log(anima::RendererLogLevel level, std::string_view message) {
+    (level == anima::RendererLogLevel::info ? std::cout : std::cerr) << message << '\n';
+}
 
 using Image = anima::CapturedImage;
 using Rgb = std::array<int, 3>;

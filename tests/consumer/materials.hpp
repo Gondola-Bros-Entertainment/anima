@@ -148,6 +148,7 @@ class Harness {
     static anima::RendererOptions options(float anisotropy) {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.log = gpu_check::log;
         settings.max_anisotropy = anisotropy;
         return settings;
     }

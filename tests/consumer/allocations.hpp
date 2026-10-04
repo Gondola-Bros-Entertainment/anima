@@ -29,6 +29,7 @@ inline int run(int argc, char **argv) {
     const auto window = gpu_check::window("Anima allocation verification", 640, 480, SDL_WINDOW_HIGH_PIXEL_DENSITY);
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     anima::VulkanRenderer renderer(window.get(), options);
     anima::OrbitCamera camera;
     const auto bounds = scene->bounds();

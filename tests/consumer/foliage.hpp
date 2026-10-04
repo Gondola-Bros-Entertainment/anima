@@ -60,6 +60,7 @@ inline int run(int argc, char **argv) {
     const auto window = gpu_check::window("Anima foliage verification", int(window_size), int(window_size));
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     anima::VulkanRenderer renderer(window.get(), options);
     anima::Environment environment;
     environment.sun.radiance = environment.fill.radiance = environment.ambient_sky = environment.ambient_ground =

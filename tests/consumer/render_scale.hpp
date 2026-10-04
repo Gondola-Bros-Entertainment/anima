@@ -371,6 +371,7 @@ inline int run(int argc, char **argv) {
     gpu_check::Captures captures(argv[2]);
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     options.scenes = {pool.scene};
     if (argc == 5)
         options.frames_in_flight = static_cast<std::uint32_t>(std::stoul(argv[4]));

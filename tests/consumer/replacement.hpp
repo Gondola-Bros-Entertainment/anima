@@ -216,6 +216,7 @@ inline int run(int argc, char **argv) {
     std::filesystem::path asset;
     std::string fatal;
     anima::RendererOptions options;
+    options.log = gpu_check::log;
     for (int i = 3; i < argc; ++i) {
         const std::string_view argument = argv[i];
         if (argument == "--no-present-fences")

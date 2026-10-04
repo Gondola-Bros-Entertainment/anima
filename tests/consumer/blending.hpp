@@ -198,6 +198,7 @@ class Harness {
     static anima::RendererOptions options(anima::SceneColorFormat format) {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.log = gpu_check::log;
         settings.scene_color_format = format;
         return settings;
     }

@@ -238,6 +238,7 @@ inline bool same_counters(const anima::RenderStats &a, const anima::RenderStats 
 // requests create, and which presents the draws in the first mode and in fifo wait for.
 inline Summary check_requests(SDL_Window *window, gpu_check::Captures &images) {
     anima::RendererOptions options;
+    options.log = gpu_check::log;
     options.present_mode = PresentMode::immediate;
     options.profile = true;
     Run run(window, options);
@@ -324,6 +325,7 @@ struct ResizeSummary {
 // check_waits() requires.
 inline ResizeSummary check_resize(SDL_Window *window, gpu_check::Captures &images) {
     anima::RendererOptions options;
+    options.log = gpu_check::log;
     options.frames_in_flight = 1;
     Run run(window, options);
     auto &renderer = run.renderer();

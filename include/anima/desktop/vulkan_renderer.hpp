@@ -7,11 +7,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /// @file
@@ -83,13 +85,37 @@ enum class SceneColorFormat {
     b10g11r11,
 };
 
+/// Severity of a message that VulkanRenderer passes to RendererOptions::log.
+enum class RendererLogLevel {
+    /// What the renderer chose or did: the device that it selected and the features that it uses there, each swapchain
+    /// that it creates, a requested present mode that the surface lacks, the material resources of each mesh that it
+    /// uploads, and its counters when it shuts down.
+    info,
+    /// A warning of the validation layer (RendererOptions::validation), one for each that
+    /// RenderStats::validation_warnings counts.
+    warning,
+    /// An error of the validation layer, or a failed wait while the renderer shuts down, one for each that
+    /// RenderStats::validation_errors counts, except as RendererOptions::log describes.
+    error,
+};
+
 /// Construction options for VulkanRenderer.
 struct RendererOptions {
     /// Enables `VK_LAYER_KHRONOS_validation` through `VK_EXT_debug_utils`; construction throws
     /// `std::runtime_error` ("RendererOptions::validation requires VK_LAYER_KHRONOS_validation and
-    /// VK_EXT_debug_utils") when either is missing. Warnings and errors are printed to standard error and counted in
-    /// RenderStats.
+    /// VK_EXT_debug_utils") when either is missing. Warnings and errors are passed to #log and counted in RenderStats.
     bool validation = false;
+    /// Receives the renderer's diagnostics, each a message without a trailing line break, with its level. Validation
+    /// messages are the layer's text after `[Vulkan validation] `. Empty drops RendererLogLevel::info and writes each
+    /// warning and error to standard error, followed by a line break.
+    ///
+    /// The renderer keeps its own copy and calls it only during its constructor, its members and its destructor, on
+    /// the thread that calls them, so never concurrently with itself; the last call is during shutdown(), or during
+    /// the destructor when shutdown() has not run, so whatever it refers to must stay valid until then. The message's
+    /// characters live only for the call. It must not throw: an exception that leaves it calls `std::terminate()`.
+    /// One error bypasses it: a failure to retire an upload, after which the GPU may still use memory that the
+    /// renderer would free, is written to standard error before the renderer calls `std::terminate()`.
+    std::function<void(RendererLogLevel, std::string_view)> log;
     /// Initial capture path, handled as VulkanRenderer::request_capture(std::filesystem::path) does; empty
     /// requests none.
     std::filesystem::path capture;
@@ -629,8 +655,7 @@ struct ResourceStats {
 /// swapchain images. Where the instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are
 /// waited before swapchain resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a
 /// device wait-idle is used, which unextended Vulkan does not guarantee to cover presentation. Portability enumeration
-/// and `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard
-/// output.
+/// and `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics go to RendererOptions::log.
 ///
 /// After shutdown(), every public non-const member except request_resize(), take_capture() and shutdown() throws
 /// `std::logic_error` ("Renderer is shut down"); after a RendererFatalError they throw RendererFatalError. Without

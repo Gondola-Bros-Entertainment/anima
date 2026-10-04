@@ -133,6 +133,7 @@ inline int run(int argc, char **argv) {
     const auto window = gpu_check::window("Anima level of detail verification", window_size, window_size);
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     anima::VulkanRenderer renderer(window.get(), options);
     for (const float invalid : {-1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
         rejection::rejects<std::invalid_argument>([&] { renderer.set_lod_threshold(invalid); },

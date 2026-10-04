@@ -233,6 +233,7 @@ class Harness {
     static anima::RendererOptions options() {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.log = gpu_check::log;
         return settings;
     }
     gpu_check::Video video_;

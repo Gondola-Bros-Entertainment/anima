@@ -168,6 +168,7 @@ inline int run(int argc, char **argv) {
     for (const std::uint32_t frames : {1U, 2U}) {
         anima::RendererOptions options;
         options.validation = true;
+        options.log = gpu_check::log;
         options.profile = true;
         options.frames_in_flight = frames;
         auto captured = render(window.get(), options);

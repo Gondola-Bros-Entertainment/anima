@@ -24,13 +24,17 @@
 #include <cmath>
 #include <compare>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <iostream>
 #include <limits>
+#include <locale>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -492,16 +496,36 @@ struct VulkanRenderer::Impl {
         : window(borrowed_window), options(std::move(settings)) {}
     ~Impl() { cleanup(); }
 
+    // Passes the text that @p parts print to an output stream, in the classic locale, to RendererOptions::log at
+    // @p level, or without a sink writes a warning or an error to standard error. An exception, from the sink or from
+    // formatting, calls std::terminate(), as RendererOptions::log states.
+    template <class... Parts> void log(RendererLogLevel level, const Parts &...parts) const noexcept {
+        if (!options.log && level == RendererLogLevel::info)
+            return;
+        std::ostringstream stream;
+        stream.imbue(std::locale::classic());
+        (stream << ... << parts);
+        const auto message = stream.str();
+        if (options.log)
+            options.log(level, message);
+        else
+            std::fprintf(stderr, "%s\n", message.c_str());
+    }
     static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                          VkDebugUtilsMessageTypeFlagsEXT,
                                                          const VkDebugUtilsMessengerCallbackDataEXT *data,
                                                          void *user) noexcept {
         auto &self = *static_cast<Impl *>(user);
-        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        // The messenger reports only warnings and errors.
+        auto level = RendererLogLevel::info;
+        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
             ++self.errors;
-        else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+            level = RendererLogLevel::error;
+        } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
             ++self.warnings;
-        std::fprintf(stderr, "[Vulkan validation] %s\n", data->pMessage);
+            level = RendererLogLevel::warning;
+        }
+        self.log(level, "[Vulkan validation] ", data->pMessage ? data->pMessage : "");
         return VK_FALSE;
     }
     void fail_after(RendererFailureStage stage) {
@@ -712,9 +736,9 @@ struct VulkanRenderer::Impl {
 #endif
             present_family = present;
             selected_extensions = extensions;
-            std::cout << "GPU: " << properties.deviceName << "; Vulkan " << VK_VERSION_MAJOR(properties.apiVersion)
-                      << '.' << VK_VERSION_MINOR(properties.apiVersion) << '.'
-                      << VK_VERSION_PATCH(properties.apiVersion) << '\n';
+            log(RendererLogLevel::info, "GPU: ", properties.deviceName, "; Vulkan ",
+                VK_VERSION_MAJOR(properties.apiVersion), '.', VK_VERSION_MINOR(properties.apiVersion), '.',
+                VK_VERSION_PATCH(properties.apiVersion));
             break;
         }
         if (!physical)
@@ -838,11 +862,11 @@ struct VulkanRenderer::Impl {
         check(vmaCreateAllocator(&allocator_info, &allocator), "Create memory allocator");
         vkGetDeviceQueue(device, graphics_family, 0, &graphics_queue);
         vkGetDeviceQueue(device, present_family, 0, &present_queue);
-        std::cout << "Presentation retirement: "
-                  << (present_fences ? "EXT_swapchain_maintenance1 fences" : "Vulkan 1.1 wait-idle fallback") << '\n';
-        std::cout << "Present waits: " << (present_waits ? "KHR_present_wait in the FIFO modes" : "none") << '\n';
-        std::cout << "BC7 textures: " << (bc7_sampled ? "sampled as BC7" : "decoded to RGBA8 on the CPU") << '\n';
-        std::cout << "Texture anisotropy: " << anisotropy << '\n';
+        log(RendererLogLevel::info, "Presentation retirement: ",
+            present_fences ? "EXT_swapchain_maintenance1 fences" : "Vulkan 1.1 wait-idle fallback");
+        log(RendererLogLevel::info, "Present waits: ", present_waits ? "KHR_present_wait in the FIFO modes" : "none");
+        log(RendererLogLevel::info, "BC7 textures: ", bc7_sampled ? "sampled as BC7" : "decoded to RGBA8 on the CPU");
+        log(RendererLogLevel::info, "Texture anisotropy: ", anisotropy);
     }
     void create_frame_resources() {
         frames.resize(options.frames_in_flight);
@@ -994,8 +1018,8 @@ struct VulkanRenderer::Impl {
             "Enumerate present modes");
         if (std::find(modes.begin(), modes.end(), vulkan_present_mode(options.present_mode)) != modes.end())
             return options.present_mode;
-        std::cout << "Present mode " << present_mode_name(options.present_mode) << " is unavailable; presenting in "
-                  << present_mode_name(PresentMode::fifo) << '\n';
+        log(RendererLogLevel::info, "Present mode ", present_mode_name(options.present_mode),
+            " is unavailable; presenting in ", present_mode_name(PresentMode::fifo));
         return PresentMode::fifo;
     }
     // The swapchain's image count for @p mode, which the surface offers: one more than its least, within its most.
@@ -1060,8 +1084,8 @@ struct VulkanRenderer::Impl {
         }
         resize = false;
         ++stats.swapchain_generations;
-        std::cout << "Swapchain " << stats.swapchain_generations << ": " << extent.width << 'x' << extent.height
-                  << " pixels, " << images.size() << " images, " << present_mode_name(mode) << " presentation\n";
+        log(RendererLogLevel::info, "Swapchain ", stats.swapchain_generations, ": ", extent.width, 'x', extent.height,
+            " pixels, ", images.size(), " images, ", present_mode_name(mode), " presentation");
         return true;
     }
     void create_swapchain(const VkSurfaceCapabilitiesKHR &caps, VkSurfaceFormatKHR selected, VkExtent2D selected_extent,
@@ -1949,8 +1973,8 @@ struct VulkanRenderer::Impl {
         std::memcpy(material_mapping, uniforms.data(), uniforms.size());
         check(vmaFlushAllocation(allocator, target.material_allocation, 0, VK_WHOLE_SIZE), "Flush material memory");
         inject_scene(failure, RendererFailureStage::descriptors, initial);
-        std::cout << "GPU textures=" << target.textures.size() << ", mip_levels=" << total_mips
-                  << ", material_descriptors=" << target.material_sets.size() << '\n';
+        log(RendererLogLevel::info, "GPU textures=", target.textures.size(), ", mip_levels=", total_mips,
+            ", material_descriptors=", target.material_sets.size());
     }
 #endif
     void create_capture() {
@@ -2604,7 +2628,7 @@ struct VulkanRenderer::Impl {
             const auto idle = vkDeviceWaitIdle(device);
             if (idle != VK_SUCCESS) {
                 ++errors;
-                std::fprintf(stderr, "Device idle failed during cleanup: %d\n", idle);
+                log(RendererLogLevel::error, "Device idle failed during cleanup: ", idle);
             }
             // Never destroy presentation resources merely because a timed wait expired.
             // A hung driver during teardown needs an external process timeout.
@@ -2612,7 +2636,7 @@ struct VulkanRenderer::Impl {
                 wait_for_presentation(UINT64_MAX);
             } catch (const std::exception &error) {
                 ++errors;
-                std::fprintf(stderr, "%s\n", error.what());
+                log(RendererLogLevel::error, error.what());
             }
             destroy_swapchain();
             // Retired objects first, since some, such as shadow maps, were made for objects destroyed below.
@@ -2732,8 +2756,8 @@ struct VulkanRenderer::Impl {
             vkDestroyInstance(instance, nullptr);
         stats.validation_warnings = warnings.load();
         stats.validation_errors = errors.load();
-        std::cout << "Renderer cleanup: validation_warnings=" << stats.validation_warnings
-                  << " validation_errors=" << stats.validation_errors << '\n';
+        log(RendererLogLevel::info, "Renderer cleanup: validation_warnings=", stats.validation_warnings,
+            " validation_errors=", stats.validation_errors);
     }
 };
 

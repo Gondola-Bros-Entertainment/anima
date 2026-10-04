@@ -146,6 +146,7 @@ inline int run(int argc, char **argv) {
     const auto window = gpu_check::window("Anima shadow cascade verification", 800, 600);
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     options.profile = true;
     anima::VulkanRenderer renderer(window.get(), options);
     gpu_check::Captures captures(argv[2]);

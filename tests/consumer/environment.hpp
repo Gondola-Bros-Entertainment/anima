@@ -530,6 +530,7 @@ inline int run(int argc, char **argv) {
     const auto window = gpu_check::window("Anima environment verification", 800, 600, SDL_WINDOW_RESIZABLE);
     anima::RendererOptions options;
     options.validation = true;
+    options.log = gpu_check::log;
     options.profile = true;
     anima::VulkanRenderer renderer(window.get(), options);
     const auto asset = fixture();

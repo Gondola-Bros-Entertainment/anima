@@ -65,8 +65,12 @@
 #include "texture_memory.hpp"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <algorithm>
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <chrono>
+#include <string>
+#include <string_view>
+#include <vector>
 #endif
 #ifdef CONSUMER_UI
 #include "ui.hpp"
@@ -111,9 +115,19 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     auto lens = eye.add_component<anima::Camera>();
     auto selection = cameras->create("view").add_component<anima::CameraView>();
     selection->camera = eye;
+    // The renderer's messages, which the sink also prints for CTest's failure expressions.
+    struct Message {
+        anima::RendererLogLevel level;
+        std::string text;
+    };
+    std::vector<Message> messages;
     anima::RendererOptions options;
     options.scenes = scenes.render_scenes();
     options.validation = true;
+    options.log = [&messages](anima::RendererLogLevel level, std::string_view text) {
+        gpu_check::log(level, text);
+        messages.push_back({level, std::string(text)});
+    };
     anima::VulkanRenderer renderer(window.get(), options);
     // Without RendererOptions::profile the renderer enables no calibrated timestamps, so it measures no GPU idle time.
     require(!renderer.measures_gpu_idle(), "A renderer without profiling measures GPU idle time");
@@ -235,6 +249,20 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     require(stats.presented_frames == 110 && stats.capture_count == 10 && !stats.validation_errors &&
                 !stats.validation_warnings,
             "External consumer GPU validation failed");
+    // The sink received the selected device and each swapchain as information, one message at the level of each
+    // validation warning and error counted, and the final counters last.
+    const auto count = [&](anima::RendererLogLevel level, std::string_view prefix) {
+        return static_cast<std::size_t>(std::count_if(messages.begin(), messages.end(), [&](const Message &message) {
+            return message.level == level && message.text.starts_with(prefix);
+        }));
+    };
+    using enum anima::RendererLogLevel;
+    require(count(info, "GPU: ") == 1 && count(info, "Swapchain ") == stats.swapchain_generations &&
+                count(warning, "") == stats.validation_warnings && count(error, "") == stats.validation_errors,
+            "The renderer's log missed its device, a swapchain or a validation message");
+    require(messages.back().level == info &&
+                messages.back().text == "Renderer cleanup: validation_warnings=0 validation_errors=0",
+            "The renderer's log did not end with its final counters");
     // A persisted camera reproduces the original view, a rejected selection changes nothing, an unloaded scene
     // renders as an empty renderer does, and unloading one scene leaves the other's image untouched.
     captures.require_same("consumer-camera-restored", "consumer-updated",

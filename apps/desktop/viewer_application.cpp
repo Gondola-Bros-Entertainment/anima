@@ -14,6 +14,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 struct SDLSession {
@@ -29,6 +30,10 @@ struct SDLSession {
 [[maybe_unused]] void sdl_check(bool success, const char *operation) {
     if (!success)
         throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
+}
+// Prints the renderer's information to standard output and its warnings and errors to standard error, a line each.
+void print_renderer_message(anima::RendererLogLevel level, std::string_view message) {
+    (level == anima::RendererLogLevel::info ? std::cout : std::cerr) << message << '\n';
 }
 } // namespace
 
@@ -80,6 +85,8 @@ int anima::viewer::run_viewer(ViewerOptions options, ViewerDriver *driver) {
         else if (!options.renderer.scenes.empty())
             SDL_SetWindowTitle(window.get(), "Anima | Static asset preview");
 #endif
+        if (!options.renderer.log)
+            options.renderer.log = print_renderer_message;
         anima::VulkanRenderer renderer{window.get(), options.renderer};
         anima::FixedStepClock simulation;
         using Clock = std::chrono::steady_clock;
