@@ -171,6 +171,7 @@ class Harness {
     static anima::RendererOptions options(bool decode_bc7, std::uint32_t texture_mip_skip) {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.log = gpu_check::log;
         settings.decode_bc7 = decode_bc7;
         settings.texture_mip_skip = texture_mip_skip;
         return settings;

@@ -120,6 +120,7 @@ class Rig {
     static anima::RendererOptions options() {
         anima::RendererOptions settings;
         settings.validation = true;
+        settings.log = gpu_check::log;
         settings.profile = true;
         return settings;
     }

@@ -125,6 +125,7 @@ inline int run(int argc, char **argv) {
         gpu_check::window("Anima shared GPU resources", 960, 720, SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     anima::RendererOptions settings;
     settings.validation = true;
+    settings.log = gpu_check::log;
     settings.profile = true;
     anima::VulkanRenderer renderer(window.get(), settings);
     anima::OrbitCamera camera;
