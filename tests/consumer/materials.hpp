@@ -615,6 +615,13 @@ inline anima::Asset sided_half(bool back) {
         vertex.position.x = (vertex.position.x - 1) / 2;
     return asset;
 }
+// sided_quad() whose node's rest matrix mirrors X, which reverses the winding of the copies that place it, as a
+// mirrored world matrix or placement does.
+inline anima::Asset mirrored_node_quad(bool back) {
+    auto asset = *anima::load_asset(std::span<const std::byte>(sided_quad(back, false)));
+    asset.nodes.at(0).rest.scale = {-1, 1, 1};
+    return asset;
+}
 // sided_half() twice in one skinned primitive, bound whole to a joint at rest and to one that mirrors X, which carries
 // the second half onto the right with its winding reversed, so that together they cover sided_quad().
 inline anima::Asset skinned_halves(bool back) {
@@ -649,11 +656,12 @@ inline int run_sidedness(int argc, char **argv) {
                            " through the pipeline that may discard, instead of 1 and " + std::to_string(discarding),
                        {name});
     };
-    // A scene of one object that draws @p mesh, at @p placements unless they are empty, within @p range.
+    // A scene of one object that draws @p mesh at @p world, at @p placements unless they are empty, within @p range.
     const auto object = [](const std::shared_ptr<const anima::Mesh> &mesh, const std::vector<anima::Mat4> &placements,
-                           const anima::VisibilityRange &range) {
+                           const anima::VisibilityRange &range, const anima::Mat4 &world = anima::identity()) {
         auto scene = std::make_shared<anima::Scene>();
         const auto id = scene->add(mesh);
+        scene->set_transform(id, world);
         if (!placements.empty()) {
             const auto copies = anima::MeshPlacements::create(mesh, placements);
             require(copies->clusters().size() == 1, "The sidedness placements do not form one cluster");
@@ -680,6 +688,18 @@ inline int run_sidedness(int argc, char **argv) {
     render("placed-mirrored-front", 0, object(quad, {mirrored}, {}));
     render("placed-mixed-front", 1, object(anima::Mesh::compile(sided_half(false)), mixed, {}));
     render("placed-mixed-back", 1, object(anima::Mesh::compile(sided_half(true)), mixed, {}));
+    // A copy's orientation composes the object's world matrix and its node's rest matrix with its placement's, so a
+    // mirrored world or node culls front faces, and a mirrored world undone by a mirrored placement culls back faces.
+    const auto back_quad =
+        anima::Mesh::compile(*anima::load_asset(std::span<const std::byte>(sided_quad(true, false))));
+    render("placed-world-mirrored-front", 0, object(quad, {anima::identity()}, {}, mirrored));
+    render("placed-world-mirrored-back", 0, object(back_quad, {anima::identity()}, {}, mirrored));
+    render("placed-world-and-placement-mirrored-front", 0, object(quad, {mirrored}, {}, mirrored));
+    render("placed-world-and-placement-mirrored-back", 0, object(back_quad, {mirrored}, {}, mirrored));
+    render("placed-node-mirrored-front", 0,
+           object(anima::Mesh::compile(mirrored_node_quad(false)), {anima::identity()}, {}));
+    render("placed-node-mirrored-back", 0,
+           object(anima::Mesh::compile(mirrored_node_quad(true)), {anima::identity()}, {}));
     // Each skinned triangle's first vertex orients it, here one half in place and one mirrored, so a single-sided
     // skinned draw discards in the shader.
     render("skinned-front", 1, object(anima::Mesh::compile(skinned_halves(false)), {}, {}));
@@ -697,15 +717,18 @@ inline int run_sidedness(int argc, char **argv) {
                    "The front of a single-sided quad shows " + gpu_check::text(surface) +
                        " at its center, too close to the background " + gpu_check::text(background),
                    {"empty", "front"});
-    // A single-sided back draws nothing, a double-sided one is lit as its front, and mirrored transforms and placements
-    // keep their outward sides, as does a skinned draw whose joints differ in orientation.
+    // A single-sided back draws nothing, a double-sided one is lit as its front, and mirrored transforms, placements
+    // and nodes keep their outward sides, as does a skinned draw whose joints differ in orientation.
     images.require_parity("empty", "back");
     images.require_parity("front", "double-sided-back");
     images.require_parity("front", "mirrored-front");
     images.require_parity("empty", "mirrored-back");
-    for (const auto *name : {"placed-mirrored-front", "placed-mixed-front", "skinned-front", "ranged-whole-front"})
+    for (const auto *name : {"placed-mirrored-front", "placed-mixed-front", "placed-world-mirrored-front",
+                             "placed-world-and-placement-mirrored-front", "placed-node-mirrored-front", "skinned-front",
+                             "ranged-whole-front"})
         images.require_parity("front", name);
-    for (const auto *name : {"placed-mixed-back", "skinned-back"})
+    for (const auto *name : {"placed-mixed-back", "placed-world-mirrored-back",
+                             "placed-world-and-placement-mirrored-back", "placed-node-mirrored-back", "skinned-back"})
         images.require_parity("empty", name);
     // In the margin the quad dissolves, the same pixels as an object and as a placed copy.
     constexpr double least_dissolved = .01;
@@ -714,8 +737,8 @@ inline int run_sidedness(int argc, char **argv) {
     images.require_parity("ranged-front", "placed-ranged-front");
     harness.finish();
     std::cout << "PASS sidedness: single-sided backs culled, double-sided backs lit as their fronts, mirrored "
-                 "transforms, placements and joints keeping their outward sides, through pipelines that discard only "
-                 "where the rasterizer cannot cull\n";
+                 "transforms, placements, nodes and joints keeping their outward sides, through pipelines that "
+                 "discard only where the rasterizer cannot cull\n";
     return 0;
 }
 } // namespace material_test
