@@ -3,11 +3,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <numbers>
+#include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 using namespace anima;
 using namespace anima::physics;
@@ -831,4 +835,26 @@ TEST_CASE("A dynamic body reports its mass, which sets its response to impulses"
                            std::invalid_argument);
     body.remove();
     REQUIRE_THROWS_WITH_AS((void)body.mass(), expired_body, std::out_of_range);
+}
+
+TEST_CASE("Body handles hash and order consistently with their identity") {
+    World first, second;
+    auto a = first.create({});
+    const auto b = first.create({}), c = second.create({});
+    const auto copy = a;
+    CHECK(std::hash<Body>{}(copy) == std::hash<Body>{}(a));
+    CHECK((copy <=> a) == std::strong_ordering::equal);
+    CHECK_MESSAGE(a < b, "A body created later in a world did not order after an earlier one");
+    CHECK(Body{} < a);
+    // The first bodies of two worlds share a creation position but are distinct and ordered.
+    CHECK(a != c);
+    CHECK((a < c) != (c < a));
+    const std::unordered_map<Body, int> indices{{a, 0}, {b, 1}, {c, 2}};
+    const std::set<Body> ordered{c, b, a, copy};
+    CHECK(indices.size() == 3u);
+    CHECK(ordered.size() == 3u);
+    a.remove();
+    REQUIRE_FALSE(copy.valid());
+    CHECK_MESSAGE(indices.at(copy) == 0, "A removed body's handle no longer finds its key");
+    CHECK(ordered.contains(copy));
 }
