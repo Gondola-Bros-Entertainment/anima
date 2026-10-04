@@ -37,8 +37,10 @@ std::shared_ptr<const Mesh> triangle() {
 }
 // The scene document of one object rendering the mesh named "triangle" with @p range, the JSON text of its field.
 std::string document(const std::string &range) {
-    return R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"rock","parent":null,)"
-           R"("local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":"triangle","visibility_range":)" +
+    return R"({"version":4,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"rock","parent":null,)"
+           R"("local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":"triangle","pose":null,"visible":true,"active":true,)"
+           R"("material_factors":[],"custom_materials":[],"primitive_visible":[],"casts_shadows":true,)"
+           R"("placements":null,"components":[],"visibility_range":)" +
            range + "}]}";
 }
 // Three small triangles near the ends of the unit axes, each its own draw, under a node that the rest pose places at

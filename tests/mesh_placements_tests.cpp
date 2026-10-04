@@ -321,8 +321,10 @@ TEST_CASE("Documents reject placements that a renderer cannot draw") {
     const MeshResolver resolve = [&](std::string_view) { return mesh; };
     const std::string identity_matrix = "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]";
     const auto document = [](const std::string &mesh_key, const std::string &pose, const std::string &placements) {
-        return R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"grove","parent":null,)"
-               R"("local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":)" +
+        return R"({"version":4,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"grove","parent":null,)"
+               R"("local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"visible":true,"active":true,"material_factors":[],)"
+               R"("custom_materials":[],"primitive_visible":[],"casts_shadows":true,"visibility_range":null,)"
+               R"("components":[],"mesh":)" +
                mesh_key + R"(,"pose":)" + pose + R"(,"placements":)" + placements + "}]}";
     };
     CHECK_NOTHROW((void)load_scene(document("\"triangle\"", "null", "[" + identity_matrix + "]"), resolve));

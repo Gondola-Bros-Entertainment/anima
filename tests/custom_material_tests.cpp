@@ -604,6 +604,14 @@ struct Library {
         };
     }
 };
+// A scene document of one object with @p mesh and @p custom_materials, the JSON text of those fields.
+std::string object_document(std::string_view mesh, std::string_view custom_materials) {
+    return R"({"version":4,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a","parent":null,)"
+           R"("local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"pose":null,"visible":true,"active":true,)"
+           R"("material_factors":[],"primitive_visible":[],"casts_shadows":true,"placements":null,)"
+           R"("visibility_range":null,"components":[],"mesh":)" +
+           std::string(mesh) + R"(,"custom_materials":)" + std::string(custom_materials) + "}]}";
+}
 } // namespace
 
 TEST_CASE("Scene objects assign custom materials per mesh material") {
@@ -676,12 +684,9 @@ TEST_CASE("Documents store custom materials by name and resolve them through the
           std::vector<std::shared_ptr<const CustomMaterial>>{nullptr, water});
     CHECK(serialize_scene(*loaded, library.names()) == document);
 
-    // An omitted setting keeps the mesh's own materials.
-    const auto omitted =
-        load_scene(R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a","parent":null,)"
-                   R"("local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":"shape"}]})",
-                   library.meshes());
-    CHECK(omitted->instance(omitted->find(ObjectKey{1}).id()).custom_materials ==
+    // An empty list keeps the mesh's own materials.
+    const auto kept = load_scene(object_document(R"("shape")", "[]"), library.meshes());
+    CHECK(kept->instance(kept->find(ObjectKey{1}).id()).custom_materials ==
           std::vector<std::shared_ptr<const CustomMaterial>>(2));
 
     const auto prefab = Prefab::capture(object);
@@ -755,20 +760,13 @@ TEST_CASE("Documents reject custom materials that do not match their names or me
                          "Different custom materials share a document name", std::invalid_argument);
 
     library.registered.emplace("water", material("water"));
-    std::string document = R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a",)"
-                           R"("parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":"shape",)"
-                           R"("custom_materials":["water"]}]})";
-    CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes(), {}, library.materials()),
-                         "Prefab custom materials do not match the mesh", std::invalid_argument);
-    document = R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a",)"
-               R"("parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":"shape",)"
-               R"("custom_materials":[null,""]}]})";
-    CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes(), {}, library.materials()),
-                         "Invalid scene custom material name", std::invalid_argument);
-    document = R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a",)"
-               R"("parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null,)"
-               R"("custom_materials":[null]}]})";
-    CHECK_THROWS_WITH_AS((void)load_scene(document, library.meshes(), {}, library.materials()),
+    CHECK_THROWS_WITH_AS(
+        (void)load_scene(object_document(R"("shape")", R"(["water"])"), library.meshes(), {}, library.materials()),
+        "Prefab custom materials do not match the mesh", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        (void)load_scene(object_document(R"("shape")", R"([null,""])"), library.meshes(), {}, library.materials()),
+        "Invalid scene custom material name", std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)load_scene(object_document("null", "[null]"), library.meshes(), {}, library.materials()),
                          "Empty scene object has renderer state", std::invalid_argument);
 }
 

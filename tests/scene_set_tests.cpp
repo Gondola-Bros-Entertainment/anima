@@ -41,14 +41,15 @@ std::string node(std::string_view key = "1") {
     return "{\"key\":\"" + std::string(key) +
            "\",\"name\":\"\",\"parent\":null,\"local\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"
            "\"mesh\":null,\"pose\":null,\"visible\":true,\"active\":true,\"material_factors\":[],"
-           "\"primitive_visible\":[],\"components\":[]}";
+           "\"custom_materials\":[],\"primitive_visible\":[],\"casts_shadows\":true,\"placements\":null,"
+           "\"visibility_range\":null,\"components\":[]}";
 }
 std::string scene(std::string_view key, const std::string &objects, std::string_view next = "2") {
     return "{\"key\":\"" + std::string(key) + "\",\"next_key\":\"" + std::string(next) + "\",\"objects\":[" + objects +
            "]}";
 }
 std::string envelope(const std::string &scenes, const std::string &references, std::string_view active = "\"beta\"") {
-    return "{\"kind\":\"anima.scene-set\",\"version\":1,\"active\":" + std::string(active) + " ,\"scenes\":[" + scenes +
+    return "{\"kind\":\"anima.scene-set\",\"version\":2,\"active\":" + std::string(active) + " ,\"scenes\":[" + scenes +
            "],\"references\":[" + references + "]}";
 }
 // Calls a set update and persistence from on_update; the update that runs the hook decides the error.
@@ -177,15 +178,17 @@ TEST_CASE("Malformed or oversized scene set documents are rejected without chang
     }
     const std::pair<std::string, const char *> documents[]{
         {"{}", missing_version},
-        {substitute(valid, "\"version\":1", "\"version\":3"), unsupported_version},
-        {substitute(valid, "\"version\":1", "\"version\":1.0"), unsupported_version},
-        // A removed field does not hide another version.
-        {substitute(substitute(valid, "\"version\":1", "\"version\":3"), "{", "{\"removed\":0,"), unsupported_version},
-        {substitute(valid, "\"version\":1,", ""), missing_version},
+        {substitute(valid, "\"version\":2", "\"version\":1"), unsupported_version},
+        {substitute(valid, "\"version\":2", "\"version\":2.0"), unsupported_version},
+        // A removed field does not hide another version, nor does an object that omits a field.
+        {substitute(substitute(valid, "\"version\":2", "\"version\":3"), "{", "{\"removed\":0,"), unsupported_version},
+        {substitute(substitute(valid, "\"version\":2", "\"version\":1"), ",\"casts_shadows\":true", ""),
+         unsupported_version},
+        {substitute(valid, "\"version\":2,", ""), missing_version},
         {substitute(valid, "anima.scene-set", "anima.scene"), "Invalid scene set document kind"},
         {substitute(valid, "{", "{\"unexpected\":null,"), "Unknown JSON field: unexpected"},
-        {substitute(valid, "{", "{\"version\":1,"), duplicate_field},
-        {substitute(valid, "{", "{\"ver\\u0073ion\":1,"), duplicate_field},
+        {substitute(valid, "{", "{\"version\":2,"), duplicate_field},
+        {substitute(valid, "{", "{\"ver\\u0073ion\":2,"), duplicate_field},
         {substitute(valid, "\"active\":\"beta\"", "\"active\":null"), needs_active},
         {substitute(valid, "\"active\":\"beta\"", "\"active\":true"), needs_active},
         {substitute(valid, "\"active\":\"beta\"", "\"active\":\"missing\""), "Active scene namespace is missing"},
@@ -198,6 +201,9 @@ TEST_CASE("Malformed or oversized scene set documents are rejected without chang
         {substitute(valid, "\"next_key\":\"2\"", "\"next_key\":\"02\""), invalid_key},
         {substitute(valid, "\"next_key\":\"2\",", ""), "Missing JSON field: next_key"},
         {substitute(valid, "\"next_key\":\"2\"", "\"next_key\":\"2\",\"extra\":0"), extra_field},
+        // Every field of a member's object is required, as in a scene document.
+        {substitute(valid, ",\"visibility_range\":null", ""), "Missing JSON field: visibility_range"},
+        {substitute(valid, ",\"components\":[]", ""), "Missing JSON field: components"},
         {envelope(scene("alpha", node()), "", "\"alpha\""), uncovered},
         // The count check rejects the extra entry before reading its fields.
         {envelope(scene("alpha", node()) + "," + scene("beta", node()), references + ",{}"), uncovered},
@@ -230,31 +236,6 @@ TEST_CASE("Malformed or oversized scene set documents are rejected without chang
         CHECK(retained.valid());
         CHECK(destination.serialize({}) == before);
     }
-}
-
-TEST_CASE("A scene object may omit its settings, which load as their defaults and are written back") {
-    const std::string document =
-        R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1",)"
-        R"("name":"root","parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null}]})";
-    const auto loaded = load_scene(document, {});
-    const auto roots = loaded->roots();
-    REQUIRE(roots.size() == 1);
-    CHECK(roots.front().active_self());
-    CHECK_FALSE(roots.front().has_renderer());
-    const auto written = serialize_scene(*loaded, {});
-    for (const auto field : {R"("pose": null)", R"("visible": true)", R"("active": true)", R"("material_factors": [])",
-                             R"("primitive_visible": [])", R"("casts_shadows": true)", R"("components": [])"}) {
-        CAPTURE(field);
-        CHECK(written.find(field) != std::string::npos);
-    }
-    // An explicit null is not an omission, so a setting that cannot be null still rejects it.
-    CHECK_THROWS_WITH_AS((void)load_scene(substitute(document, R"("mesh":null)", R"("mesh":null,"active":null)"), {}),
-                         "[json.exception.type_error.302] type must be boolean, but is null", std::invalid_argument);
-    // A removed field does not hide another version.
-    CHECK_THROWS_WITH_AS((void)load_scene(substitute(substitute(document, R"("version":3)", R"("version":2)"),
-                                                     R"("mesh":null)", R"("mesh":null,"removed":0)"),
-                                          {}),
-                         "Unsupported scene document version", std::invalid_argument);
 }
 
 TEST_CASE("An exhausted key allocator rejects creation but keeps persisted identities") {
@@ -462,7 +443,7 @@ TEST_CASE("A set document replacement validates the whole document but loads onl
         renamed.replace(at, 6, "\"gamma\"");
     CHECK_THROWS_WITH_AS((void)scenes.replace(beta, renamed, both), "Replaced scene namespace is missing",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, substitute(saved, "\"version\": 1", "\"version\": 2"), both),
+    CHECK_THROWS_WITH_AS((void)scenes.replace(beta, substitute(saved, "\"version\": 2", "\"version\": 1"), both),
                          unsupported_version, std::invalid_argument);
     CHECK(beta.valid());
     resolved.clear();

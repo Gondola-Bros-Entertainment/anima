@@ -50,16 +50,16 @@ class PrefabVariant {
     /// object or removes a missing component, or the result is not a valid Prefab. The base and
     /// earlier results are unchanged.
     [[nodiscard]] Prefab resolve(const PrefabResolver &resolver, ComponentCodecs codecs) const;
-    /// Writes an `anima.prefab-variant` version 1 document.
+    /// Writes an `anima.prefab-variant` version 2 document.
     ///
-    /// It has exactly `version`, `kind`, `base` and `overrides`. Each override has `key` and the
-    /// settings `name`, `local` (16 numbers), `active` and `renderer`, each null, the default, to
-    /// inherit, and `set_components` (objects with exactly `type`, `state` and `enabled`) and
-    /// `remove_components` (type keys), each empty by default. A renderer has `mesh` and the
-    /// settings `pose`, `visible`, `material_factors`, `custom_materials`, `primitive_visible`,
-    /// `casts_shadows`, `placements` and `visibility_range`, with the defaults and rules of scene objects.
+    /// It has exactly `version` (`2`), `kind`, `base` and `overrides`. Each override has exactly
+    /// `key`, `name`, `local` (16 numbers), `active` and `renderer`, each null to inherit, and
+    /// `set_components` (objects with exactly `type`, `state` and `enabled`) and
+    /// `remove_components` (type keys), each possibly empty. A renderer has exactly `mesh`, `pose`,
+    /// `visible`, `material_factors`, `custom_materials`, `primitive_visible`, `casts_shadows`,
+    /// `placements` and `visibility_range`, with the rules of scene objects (serialize_scene).
     [[nodiscard]] std::string serialize(const MeshName &name) const;
-    /// Reads an `anima.prefab-variant` version 1 document, resolving custom material names through
+    /// Reads an `anima.prefab-variant` version 2 document, resolving custom material names through
     /// @p materials, and validates it as the constructor does.
     static PrefabVariant deserialize(std::string_view document, const MeshResolver &resolve,
                                      const CustomMaterialResolver &materials = {});

@@ -15,8 +15,10 @@ inline nlohmann::json encode_visibility_range(const VisibilityRange &range) {
             {"begin_margin", range.begin_margin},
             {"end_margin", range.end_margin}};
 }
-// Reads @p value, which must be null or the object encode_visibility_range() writes, and validates the range; throws
-// `std::invalid_argument` with @p message for a malformed value and as validate_visibility_range() does.
+// Reads @p value, which must be null or the object encode_visibility_range() writes, and validates the range. Throws
+// `std::invalid_argument`: with @p message for a value that is neither null nor an object, or a field other than a
+// null `end` that is not a number; as json_fields() does for a missing or unknown field; as json_float() does for a
+// number outside the float range; and as validate_visibility_range() does.
 inline VisibilityRange decode_visibility_range(const nlohmann::json &value, const char *message) {
     VisibilityRange range;
     if (value.is_null())
