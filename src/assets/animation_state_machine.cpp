@@ -372,13 +372,16 @@ std::optional<std::size_t> choose(const Data &data, const Runtime &runtime) {
         return std::nullopt;
     }
     const auto &fade = *runtime.fade;
-    const auto &active = data.transitions[fade.transition];
+    // A crossfade that StateMachineAnimator::cross_fade started admits no interruption.
+    if (!fade.transition)
+        return std::nullopt;
+    const auto &active = data.transitions[*fade.transition];
     if (active.interruption == Machine::Interruption::none)
         return std::nullopt;
     std::vector<std::pair<std::size_t, const Playing *>> candidates;
     std::vector<bool> listed(data.transitions.size());
     const auto add = [&](std::size_t index, const Playing *owner) {
-        if (index != fade.transition && !listed[index]) {
+        if (index != *fade.transition && !listed[index]) {
             listed[index] = true;
             candidates.emplace_back(index, owner);
         }
@@ -421,30 +424,40 @@ std::optional<std::size_t> choose(const Data &data, const Runtime &runtime) {
             return index;
     return std::nullopt;
 }
-// Starts transition @p index; @p published is the pose last published.
-void start(const Data &data, Runtime &runtime, std::size_t index, const Pose &published) {
-    const auto &route = data.transitions[index];
-    for (const auto &test : route.tests)
-        if (data.parameter_types[test.parameter] == Machine::ParameterType::trigger)
-            runtime.parameters[test.parameter] = 0;
+// Enters state @p to at normalized time @p offset. With a positive @p duration, crossfades to it for that many
+// seconds, leaving state @p source_state: from the state the machine plays, or, when a crossfade is in progress,
+// from @p evaluated, the pose last evaluated, frozen. @p transition is the transition that starts the crossfade, or
+// empty for StateMachineAnimator::cross_fade.
+void enter(Runtime &runtime, std::size_t to, double offset, double duration, std::optional<std::size_t> transition,
+           std::size_t source_state, const Pose &evaluated) {
     Playing entered;
-    entered.state = route.to;
-    entered.time = entered.checked = route.offset;
+    entered.state = to;
+    entered.time = entered.checked = offset;
     entered.fresh = true;
-    if (route.duration <= 0) {
+    if (duration <= 0) {
         runtime.fade.reset();
         runtime.current = entered;
         return;
     }
     detail::AnimationStateFade fade;
-    fade.transition = index;
-    fade.source_state = route.from.value_or(runtime.current.state);
+    fade.transition = transition;
+    fade.duration = duration;
+    fade.source_state = source_state;
     if (runtime.fade)
-        fade.frozen = std::make_shared<const Pose>(published);
+        fade.frozen = std::make_shared<const Pose>(evaluated);
     else
         fade.source = runtime.current;
     runtime.fade = std::move(fade);
     runtime.current = entered;
+}
+// Starts transition @p index; @p evaluated is the pose last evaluated.
+void start(const Data &data, Runtime &runtime, std::size_t index, const Pose &evaluated) {
+    const auto &route = data.transitions[index];
+    for (const auto &test : route.tests)
+        if (data.parameter_types[test.parameter] == Machine::ParameterType::trigger)
+            runtime.parameters[test.parameter] = 0;
+    enter(runtime, route.to, route.offset, route.duration, index, route.from.value_or(runtime.current.state),
+          evaluated);
 }
 Pose state_pose(const Data &data, const Asset &asset, const Playing &playing, const std::vector<double> &values) {
     const auto &state = data.states[playing.state];
@@ -466,7 +479,7 @@ Pose evaluate(const Data &data, const Asset &asset, const Runtime &runtime) {
     if (!runtime.fade)
         return entered;
     const auto &fade = *runtime.fade;
-    const auto weight = static_cast<float>(fade.elapsed / data.transitions[fade.transition].duration);
+    const auto weight = static_cast<float>(fade.elapsed / fade.duration);
     if (fade.source)
         return blend_pose(asset, state_pose(data, asset, *fade.source, runtime.parameters), entered, weight);
     return blend_pose(asset, *fade.frozen, entered, weight);
@@ -752,6 +765,19 @@ void StateMachineAnimator::play(std::string_view name, double normalized_time) {
     next.current.fresh = true;
     commit(std::move(next));
 }
+void StateMachineAnimator::cross_fade(std::string_view name, double seconds, double normalized_offset) {
+    const auto &names = machine_->data_->state_names;
+    const auto found = names.find(name);
+    if (found == names.end())
+        throw std::out_of_range("Unknown animation state: " + std::string(name));
+    if (!std::isfinite(seconds) || seconds < 0)
+        throw std::invalid_argument("Invalid animation crossfade duration");
+    if (!std::isfinite(normalized_offset) || normalized_offset < 0 || normalized_offset >= 1)
+        throw std::invalid_argument("Invalid animation crossfade offset");
+    auto next = runtime_;
+    enter(next, found->second, normalized_offset, seconds, std::nullopt, next.current.state, pose_);
+    commit(std::move(next));
+}
 std::vector<AnimationStateEvent> StateMachineAnimator::update(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0)
         throw std::invalid_argument("Invalid StateMachineAnimator time step");
@@ -769,7 +795,7 @@ std::vector<AnimationStateEvent> StateMachineAnimator::update(double seconds) {
     std::vector<AnimationStateEvent> events;
     if (next.fade) {
         auto &fade = *next.fade;
-        const auto duration = data.transitions[fade.transition].duration;
+        const auto duration = fade.duration;
         // The outgoing state stops once the crossfade ends.
         if (fade.source)
             advance(data, *fade.source, next.parameters, 0, std::min(seconds, duration - fade.elapsed),
@@ -797,8 +823,9 @@ std::optional<AnimationCrossfade> StateMachineAnimator::crossfade() const {
     result.source = machine_->definition().states[fade.source_state].name;
     if (fade.source)
         result.source_time = fade.source->time;
+    result.duration = fade.duration;
     result.elapsed = fade.elapsed;
-    result.weight = static_cast<float>(fade.elapsed / machine_->data_->transitions[fade.transition].duration);
+    result.weight = static_cast<float>(fade.elapsed / fade.duration);
     return result;
 }
 void StateMachineAnimator::commit(detail::AnimationStateRuntime next) {

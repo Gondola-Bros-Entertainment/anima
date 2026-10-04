@@ -36,10 +36,12 @@ struct AnimationStatePlaying {
     double checked{};
     bool fresh{};
 };
-// A crossfade: its transition, the state it leaves, and that state while it plays or the pose frozen
-// when the crossfade interrupted another.
+// A crossfade: its transition, or none for one that StateMachineAnimator::cross_fade started, its length in
+// seconds, the state it leaves, and that state while it plays or the pose frozen when the crossfade interrupted
+// another.
 struct AnimationStateFade {
-    std::size_t transition{};
+    std::optional<std::size_t> transition;
+    double duration{};
     std::size_t source_state{};
     std::optional<AnimationStatePlaying> source;
     std::shared_ptr<const Pose> frozen;
@@ -261,17 +263,21 @@ struct AnimationStateEvent {
     float weight{};
 };
 
-/// A crossfade in progress; see StateMachineAnimator::update.
+/// A crossfade in progress; see StateMachineAnimator::update and StateMachineAnimator::cross_fade.
 struct AnimationCrossfade {
-    /// Index of its transition in AnimationStateMachine::Definition::transitions.
-    std::size_t transition{};
-    /// Name of the state it leaves: the transition's source, or for a transition from any state, the
-    /// state the machine played or was entering when it started.
+    /// Index of its transition in AnimationStateMachine::Definition::transitions, or empty for a
+    /// crossfade that StateMachineAnimator::cross_fade started.
+    std::optional<std::size_t> transition;
+    /// Name of the state it leaves: the transition's source, or for a transition from any state or a
+    /// crossfade from cross_fade, the state the machine played or was entering when it started.
     std::string source;
     /// Normalized time of #source while the crossfade fades it out as it keeps playing; empty when the
     /// crossfade interrupted another and fades out the pose frozen when it started.
     std::optional<double> source_time;
-    /// Seconds since it started, less than the transition's duration.
+    /// Its length in seconds, greater than 0: its transition's Transition::duration, or the seconds
+    /// passed to cross_fade.
+    double duration{};
+    /// Seconds since it started, less than #duration.
     double elapsed{};
     /// Weight of the entered state's pose, `elapsed / duration`, in [0, 1).
     float weight{};
@@ -319,22 +325,39 @@ class StateMachineAnimator {
     /// unknown state and `std::invalid_argument` for a negative or nonfinite time; the machine is
     /// unchanged on failure.
     void play(std::string_view name, double normalized_time = 0);
+    /// Crossfades for @p seconds to state @p name, entered at normalized time @p normalized_offset,
+    /// and publishes the pose at the crossfade's start; with @p seconds 0 it enters the state at once,
+    /// as play() does.
+    ///
+    /// The crossfade runs as a transition's does (see update()), with @p seconds as its duration. The
+    /// entered state reports the events at its entry point on its first advance. The outgoing pose is
+    /// the state the machine plays, which keeps playing and reporting events until the crossfade ends,
+    /// or, when it interrupts a crossfade in progress, pose(), frozen. @p name may be the state that
+    /// the machine plays, which then fades into a new pass of itself. No transition interrupts the
+    /// crossfade, so transitions are checked again by the first update after it ends; play() and
+    /// cross_fade() can end it at any time. Parameters, including triggers, are unchanged.
+    ///
+    /// Throws `std::out_of_range` with "Unknown animation state: " and @p name for an unknown state;
+    /// then `std::invalid_argument` with "Invalid animation crossfade duration" for a negative or
+    /// nonfinite @p seconds, and with "Invalid animation crossfade offset" for a @p normalized_offset
+    /// outside [0, 1), the range of Transition::offset. The machine is unchanged on failure.
+    void cross_fade(std::string_view name, double seconds, double normalized_offset = 0);
     /// Starts at most one transition, advances by @p seconds, publishes the pose and returns the clip
     /// events crossed, ordered by AnimationStateEvent::offset.
     ///
-    /// First, transitions are checked in priority order, and the first whose conditions all hold,
-    /// and that has no exit time or whose source state crossed its exit time, starts. Outside a
-    /// crossfade the candidates are the transitions from any state, then the transitions from the
-    /// current state. During a crossfade they are those its transition's Interruption admits,
-    /// except that transition itself: with `source`, the transitions from any state that precede it
-    /// and then those from its source state that precede it; with `destination`, the transitions
-    /// from any state and then those from the state it enters; with the two combined, both lists in
-    /// the stated order, each transition once. A transition from any state is skipped while its
-    /// target is the state the machine plays or is entering, unless Transition::to_self is set. A
-    /// state crosses exit time `e` when its normalized time passes `e`, having been below it, during
-    /// the advances since the state was entered or transitions were last checked; a looping state
-    /// also crosses `e + k` for each whole `k` when `e` is below 1. A transition with an exit time
-    /// can start only while its source state plays, not after a crossfade froze it.
+    /// First, transitions are checked in priority order, and the first whose conditions all hold, and
+    /// that has no exit time or whose source state crossed its exit time, starts. Outside a crossfade
+    /// the candidates are the transitions from any state, then the transitions from the current state.
+    /// During a crossfade they are those its transition's Interruption admits, except that transition
+    /// itself: with `source`, the transitions from any state that precede it and then those from its
+    /// source state that precede it; with `destination`, the transitions from any state and then those
+    /// from the state it enters; with the two combined, both lists in the stated order, each transition
+    /// once. A crossfade that cross_fade() started admits none. A transition from any state is skipped
+    /// while its target is the state the machine plays or is entering, unless Transition::to_self is
+    /// set. A state crosses exit time `e` when its normalized time passes `e`, having been below it,
+    /// during the advances since the state was entered or transitions were last checked; a looping
+    /// state also crosses `e + k` for each whole `k` when `e` is below 1. A transition with an exit
+    /// time can start only while its source state plays, not after a crossfade froze it.
     ///
     /// A starting transition resets the triggers its conditions test and enters its target at
     /// Transition::offset. With a zero duration the machine then plays the target alone. Otherwise the
@@ -382,17 +405,18 @@ class StateMachineAnimator {
     /// The last successfully published pose: pose() as the pose filter left it, or pose() itself when
     /// that publish had no filter.
     [[nodiscard]] const Pose &published_pose() const noexcept { return filtered_ ? *filtered_ : pose_; }
-    /// Sets @p filter, which every later publish (by play() or update()) calls on a copy of pose()
-    /// before it passes that copy to MeshRenderer::set_pose; an empty @p filter removes it. The pose
-    /// already published is unchanged.
+    /// Sets @p filter, which every later publish (by play(), cross_fade() or update()) calls on a copy
+    /// of pose() before it passes that copy to MeshRenderer::set_pose; an empty @p filter removes it.
+    /// The pose already published is unchanged.
     ///
     /// The filter may replace the pose with any that set_pose accepts, including a world-only one,
     /// such as MotionRuntime::evaluate returns when it applies joint offsets and two-bone contacts to
     /// the machine's pose; that is its intended use. Crossfades blend and freeze pose(), never the
     /// filtered pose. The animator owns @p filter and calls it within the publishing call, on that
-    /// call's thread; the filter must not call this animator's play(), update() or set_pose_filter(). An
-    /// exception from the filter, or from set_pose for the pose that it leaves, propagates from the
-    /// publishing call, which then leaves the animator and its published pose unchanged.
+    /// call's thread; the filter must not call this animator's play(), cross_fade(), update() or
+    /// set_pose_filter(). An exception from the filter, or from set_pose for the pose that it leaves,
+    /// propagates from the publishing call, which then leaves the animator and its published pose
+    /// unchanged.
     void set_pose_filter(std::function<void(Pose &)> filter) { filter_ = std::move(filter); }
 
   private:
