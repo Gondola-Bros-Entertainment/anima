@@ -3,10 +3,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <random>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 constexpr unsigned trials_per_view = 4000;
@@ -29,6 +33,13 @@ bool reference(const anima::Mat4 &view, const anima::RenderBounds &bounds) {
             outside[plane] &= distances[plane] < 0;
     }
     return std::none_of(std::begin(outside), std::end(outside), [](bool value) { return value; });
+}
+// Levels of detail with @p errors, in order.
+std::vector<anima::DrawLevel> levels(std::initializer_list<float> errors) {
+    std::vector<anima::DrawLevel> result;
+    for (const auto error : errors)
+        result.push_back({0, 0, error});
+    return result;
 }
 anima::Mat4 projection() { return anima::perspective(1.5F, .5F, 20); }
 // projection() with its far plane at infinity.
@@ -156,5 +167,89 @@ TEST_CASE("Scaling a large-coordinate view keeps a touching box") {
         for (auto &entry : view)
             entry *= scale;
         CHECK(anima::RenderFrustum(view).intersects(touching));
+    }
+}
+
+TEST_CASE("Distances measure to the nearest and the farthest point of the bounds") {
+    const auto bounds = box({1, 2, 3}, {4, 6, 8});
+    CHECK(anima::nearest_distance({0, 0, 0}, bounds) == std::sqrt(14.0));
+    CHECK(anima::farthest_distance({0, 0, 0}, bounds) == std::sqrt(116.0));
+    CHECK(anima::nearest_distance({2, 3, 10}, bounds) == 2); // Above the maximum along one axis only.
+    // From inside, the nearest point is the eye and the farthest the corner that lies farthest along every axis.
+    CHECK(anima::nearest_distance({2, 3, 4}, bounds) == 0);
+    CHECK(anima::farthest_distance({2, 3, 4}, bounds) == std::sqrt(29.0));
+    // Invalid bounds may hold any point.
+    CHECK(anima::nearest_distance({5, 5, 5}, {}) == 0);
+    CHECK(anima::farthest_distance({5, 5, 5}, {}) == std::numeric_limits<double>::infinity());
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    const auto endless = box({-infinity, 0, 0}, {infinity, 1, 1});
+    CHECK(anima::nearest_distance({5, 3, 0}, endless) == 2);
+    CHECK(anima::farthest_distance({5, 3, 0}, endless) == std::numeric_limits<double>::infinity());
+    CHECK(std::isnan(anima::nearest_distance({infinity, 0, 0}, endless))); // At the maximum's infinity.
+    auto nonfinite = bounds;
+    nonfinite.maximum.y = std::numeric_limits<float>::quiet_NaN();
+    CHECK(std::isnan(anima::nearest_distance({0, 0, 0}, nonfinite)));
+    CHECK(std::isnan(anima::farthest_distance({0, 0, 0}, nonfinite)));
+}
+
+TEST_CASE("Visibility ranges keep bounds that may hold a distance from the begin up to the end") {
+    const anima::VisibilityRange range{2, 10, 0, 0};
+    const auto at = [](float x) { return box({x, 0, 0}, {x, 0, 0}); };
+    CHECK(anima::within_visibility_range(range, {}, at(2)));
+    CHECK_FALSE(anima::within_visibility_range(range, {}, at(std::nextafter(2.F, 0.F))));
+    CHECK(anima::within_visibility_range(range, {}, at(std::nextafter(10.F, 0.F))));
+    CHECK_FALSE(anima::within_visibility_range(range, {}, at(10)));
+    // Bounds spanning the begin or the end are kept, and so are bounds around the eye that reach the begin.
+    CHECK(anima::within_visibility_range(range, {}, box({1, 0, 0}, {3, 0, 0})));
+    CHECK(anima::within_visibility_range(range, {}, box({9, 0, 0}, {11, 0, 0})));
+    CHECK(anima::within_visibility_range(range, {}, box({-5, -5, -5}, {5, 5, 5})));
+    CHECK_FALSE(anima::within_visibility_range(range, {}, box({-1, -1, -1}, {1, 1, 1})));
+    // An endless range culls only by its begin.
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    const anima::VisibilityRange endless{2, infinity, 0, 0};
+    CHECK(anima::within_visibility_range(endless, {}, at(std::numeric_limits<float>::max())));
+    CHECK_FALSE(anima::within_visibility_range(endless, {}, at(1)));
+    CHECK(anima::within_visibility_range({}, {}, at(0)));
+    // Invalid bounds and NaN distances are kept.
+    CHECK(anima::within_visibility_range(range, {}, {}));
+    auto nonfinite = at(20);
+    nonfinite.minimum.z = std::numeric_limits<float>::quiet_NaN();
+    CHECK(anima::within_visibility_range(range, {}, nonfinite));
+}
+
+TEST_CASE("The chosen level of detail is the last whose projected error fits the threshold") {
+    // At 100 pixels per unit of error, a scale of 2 and a distance of 10, the errors cover 5, 10 and 20 pixels exactly.
+    const auto chain = levels({.25F, .5F, 1});
+    const auto choose = [&](float threshold, double distance = 10) {
+        return anima::lod_level(chain, distance, 2, 100, true, threshold);
+    };
+    CHECK(choose(10) == 1U); // An error that covers the threshold exactly fits.
+    CHECK(choose(std::nextafter(10.F, 0.F)) == 0U);
+    CHECK(choose(20) == 2U);
+    CHECK(choose(1e6F) == 2U);
+    CHECK(choose(4) == std::nullopt);
+    // A threshold that is not positive, or no levels, draws the full draw.
+    CHECK(choose(0) == std::nullopt);
+    CHECK(choose(-1) == std::nullopt);
+    CHECK(choose(std::numeric_limits<float>::quiet_NaN()) == std::nullopt);
+    CHECK(anima::lod_level({}, 10, 2, 100, true, 1e6F) == std::nullopt);
+    // From inside the bounds, at a distance of 0, the full draw is drawn, and infinitely far the coarsest level.
+    CHECK(choose(1e6F, 0) == std::nullopt);
+    CHECK(choose(1e6F, -1) == std::nullopt);
+    CHECK(choose(1e6F, std::numeric_limits<double>::quiet_NaN()) == std::nullopt);
+    CHECK(choose(0.001F, std::numeric_limits<double>::infinity()) == 2U);
+    // The choice stops at the first level that does not fit, and a NaN product does not.
+    CHECK(anima::lod_level(levels({.25F, 1, .5F}), 10, 2, 100, true, 10) == 0U);
+    CHECK(anima::lod_level(chain, 10, std::numeric_limits<double>::quiet_NaN(), 100, true, 10) == std::nullopt);
+}
+
+TEST_CASE("An orthographic view chooses the level of detail without distance") {
+    // Without the division by distance, the errors cover 50, 100 and 200 pixels.
+    const auto chain = levels({.25F, .5F, 1});
+    for (const double distance : {10.0, 0.0, -1.0, std::numeric_limits<double>::quiet_NaN()}) {
+        CAPTURE(distance);
+        CHECK(anima::lod_level(chain, distance, 2, 100, false, 100) == 1U);
+        CHECK(anima::lod_level(chain, distance, 2, 100, false, 99) == 0U);
+        CHECK(anima::lod_level(chain, distance, 2, 100, false, 49) == std::nullopt);
     }
 }
