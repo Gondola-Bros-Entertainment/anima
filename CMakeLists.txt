@@ -499,6 +499,9 @@ if(ANIMA_BUILD_DESKTOP)
     # Vulkan Memory Allocator is private to the renderer; see third_party/README.md.
     target_include_directories(anima_desktop SYSTEM PRIVATE third_party/vma)
     target_link_libraries(anima_desktop PUBLIC SDL3::SDL3 anima::core PRIVATE Vulkan::Vulkan)
+    # The engine version that the renderer reports to Vulkan.
+    target_compile_definitions(anima_desktop PRIVATE ANIMA_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+        ANIMA_VERSION_MINOR=${PROJECT_VERSION_MINOR} ANIMA_VERSION_PATCH=${PROJECT_VERSION_PATCH})
     if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_desktop PUBLIC anima::assets)
         target_compile_definitions(anima_desktop PUBLIC ANIMA_HAS_ASSETS=1)
@@ -518,6 +521,12 @@ if(ANIMA_BUILD_DESKTOP)
         anima_target_defaults(anima_renderer_log_tests)
         anima_copy_sdl_runtime(anima_renderer_log_tests)
         add_test(NAME renderer_log COMMAND anima_renderer_log_tests)
+        # RendererOptions::application_name and application_version, which construction checks before a window.
+        add_executable(anima_renderer_application_tests tests/renderer_application_tests.cpp)
+        target_link_libraries(anima_renderer_application_tests PRIVATE anima::desktop anima_test_main)
+        anima_target_defaults(anima_renderer_application_tests)
+        anima_copy_sdl_runtime(anima_renderer_application_tests)
+        add_test(NAME renderer_application COMMAND anima_renderer_application_tests)
     endif()
 
     if(ANIMA_BUILD_TOOLS)

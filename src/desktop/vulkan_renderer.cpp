@@ -86,6 +86,55 @@ void validate_scene_color_format(SceneColorFormat format) {
     }
     throw std::invalid_argument("Unknown scene color format");
 }
+// Throws `std::invalid_argument` unless @p name is well-formed UTF-8 without a null character, as Vulkan requires of
+// `VkApplicationInfo::pApplicationName`: no overlong form, surrogate or code point above U+10FFFF.
+void validate_application_name(std::string_view name) {
+    constexpr auto invalid = "Application name must be UTF-8 without a null character";
+    for (std::size_t i = 0; i < name.size();) {
+        const auto lead = static_cast<unsigned char>(name[i]);
+        if (lead == 0)
+            throw std::invalid_argument(invalid);
+        if (lead < 0x80) {
+            ++i;
+            continue;
+        }
+        // The length of the sequence, and the range of its second byte, which excludes overlong forms, surrogates
+        // and code points above U+10FFFF.
+        std::size_t length = 0;
+        unsigned char low = 0x80, high = 0xbf;
+        if (lead >= 0xc2 && lead <= 0xdf)
+            length = 2;
+        else if (lead >= 0xe0 && lead <= 0xef) {
+            length = 3;
+            if (lead == 0xe0)
+                low = 0xa0;
+            else if (lead == 0xed)
+                high = 0x9f;
+        } else if (lead >= 0xf0 && lead <= 0xf4) {
+            length = 4;
+            if (lead == 0xf0)
+                low = 0x90;
+            else if (lead == 0xf4)
+                high = 0x8f;
+        } else
+            throw std::invalid_argument(invalid);
+        if (name.size() - i < length)
+            throw std::invalid_argument(invalid);
+        for (std::size_t k = 1; k < length; ++k) {
+            const auto byte = static_cast<unsigned char>(name[i + k]);
+            if (k == 1 ? byte < low || byte > high : byte < 0x80 || byte > 0xbf)
+                throw std::invalid_argument(invalid);
+        }
+        i += length;
+    }
+}
+// Throws `std::invalid_argument` unless @p version fits `VK_MAKE_API_VERSION`, whose major, minor and patch fields
+// are 7, 10 and 12 bits wide.
+void validate_application_version(const std::array<std::uint32_t, 3> &version) {
+    if (version[0] > 127 || version[1] > 1023 || version[2] > 4095)
+        throw std::invalid_argument("Application version must have a major of at most 127, a minor of at most 1023 "
+                                    "and a patch of at most 4095");
+}
 constexpr std::uint32_t vertex_code[] =
 #include "triangle.vert.inc"
     ;
@@ -577,6 +626,8 @@ struct VulkanRenderer::Impl {
         validate_shadow_filter(options.shadow_filter);
         validate_impostor_frames(options.impostor_frames);
         validate_scene_color_format(options.scene_color_format);
+        validate_application_name(options.application_name);
+        validate_application_version(options.application_version);
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -648,10 +699,12 @@ struct VulkanRenderer::Impl {
             enabled.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-        app.pApplicationName = "Anima";
-        app.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
+        app.pApplicationName = options.application_name.c_str();
+        const auto &version = options.application_version;
+        app.applicationVersion = VK_MAKE_API_VERSION(0, version[0], version[1], version[2]);
         app.pEngineName = "Anima";
-        app.engineVersion = app.applicationVersion;
+        // The build's project version, which CMake defines for this target.
+        app.engineVersion = VK_MAKE_API_VERSION(0, ANIMA_VERSION_MAJOR, ANIMA_VERSION_MINOR, ANIMA_VERSION_PATCH);
         app.apiVersion = VK_API_VERSION_1_1;
         VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         info.flags = flags;
@@ -737,8 +790,8 @@ struct VulkanRenderer::Impl {
             present_family = present;
             selected_extensions = extensions;
             log(RendererLogLevel::info, "GPU: ", properties.deviceName, "; Vulkan ",
-                VK_VERSION_MAJOR(properties.apiVersion), '.', VK_VERSION_MINOR(properties.apiVersion), '.',
-                VK_VERSION_PATCH(properties.apiVersion));
+                VK_API_VERSION_MAJOR(properties.apiVersion), '.', VK_API_VERSION_MINOR(properties.apiVersion), '.',
+                VK_API_VERSION_PATCH(properties.apiVersion));
             break;
         }
         if (!physical)
