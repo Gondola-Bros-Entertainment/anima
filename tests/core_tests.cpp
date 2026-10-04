@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
+#include <numbers>
 #include <stdexcept>
 
 using namespace std::chrono_literals;
@@ -53,6 +55,28 @@ TEST_CASE("Invalid clock inputs are rejected") {
     // A step so long that max_steps + 1 of them would overflow the nanosecond accumulator.
     CHECK_THROWS_WITH_AS((anima::FixedStepClock{std::chrono::nanoseconds::max(), 2}), invalid_clock,
                          std::invalid_argument);
+}
+
+TEST_CASE("Vectors of any finite length normalize, and nonfinite or tiny ones fall back to world up") {
+    using anima::normalized;
+    // Squared in float, a component of 1e20 overflowed to infinity and normalized to zero.
+    constexpr float huge = 1e20F;
+    CHECK(anima::length({huge, 0, 0}) == huge);
+    const auto large = normalized({huge, 0, 0});
+    CHECK(large.x == 1);
+    CHECK(large.y == 0);
+    CHECK(large.z == 0);
+    const auto diagonal = normalized({-huge, huge, 0});
+    CHECK(diagonal.x == doctest::Approx(-std::numbers::sqrt2_v<float> / 2));
+    CHECK(diagonal.y == doctest::Approx(std::numbers::sqrt2_v<float> / 2));
+    for (const anima::Vec3 v :
+         {anima::Vec3{std::numeric_limits<float>::infinity(), 0, 0},
+          anima::Vec3{std::numeric_limits<float>::quiet_NaN(), 0, 0}, anima::Vec3{1e-13F, 0, 0}}) {
+        const auto fallback = normalized(v);
+        CHECK(fallback.x == anima::world_up.x);
+        CHECK(fallback.y == anima::world_up.y);
+        CHECK(fallback.z == anima::world_up.z);
+    }
 }
 
 TEST_CASE("Normals keep their direction through mirroring and stay defined when an axis collapses") {

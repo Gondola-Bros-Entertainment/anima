@@ -33,12 +33,23 @@ inline constexpr Vec3 world_up{0, 1, 0};
 inline constexpr Vec3 view_forward{0, 0, -1};
 inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
-inline float length(Vec3 v) { return std::sqrt(dot(v, v)); }
-/// Returns @p v scaled to unit length, or `{0, 1, 0}` when its length is NaN or at most `1e-12`.
+namespace detail {
+/// The length of @p v, squared and summed in double, where no finite `float` component overflows or underflows.
+inline double length_in_double(Vec3 v) { return std::sqrt(double(v.x) * v.x + double(v.y) * v.y + double(v.z) * v.z); }
+} // namespace detail
+/// Returns the length of @p v, computed in double and rounded once to `float`, so a large component does not overflow
+/// when squared. A length beyond the `float` range, or an infinite component, gives infinity, and a NaN component
+/// gives NaN.
+inline float length(Vec3 v) { return float(detail::length_in_double(v)); }
+/// Returns @p v scaled to unit length, or world_up when its length is NaN, infinite or at most `1e-12`. The length
+/// and the division are computed in double, so any vector of finite `float` components longer than `1e-12`
+/// normalizes.
 inline Vec3 normalized(Vec3 v) {
-    constexpr float minimum_length = 1e-12F;
-    const auto n = length(v);
-    return n > minimum_length ? v * (1 / n) : Vec3{0, 1, 0};
+    constexpr double minimum_length = 1e-12;
+    const double n = detail::length_in_double(v);
+    if (!(n > minimum_length) || !std::isfinite(n))
+        return world_up;
+    return {float(v.x / n), float(v.y / n), float(v.z / n)};
 }
 /// 4x4 matrix stored column-major for column vectors: row `r` of column `c` is element `c * 4 + r`.
 using Mat4 = std::array<float, 16>;
