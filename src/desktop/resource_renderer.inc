@@ -507,11 +507,12 @@ static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &
     return cluster_visible(cluster_bounds(cluster, world), frustum, range, eye);
 }
 // Pixels of the view's height per unit of error at distance 1, or at any distance in an orthographic view: the length
-// of the view-projection's second row, which is the projection's vertical scale, times half the target's height.
+// of the view-projection's second row, which is the projection's vertical scale, times half the scene targets' height,
+// so that the LOD threshold counts the pixels that the view renders.
 double lod_projection() const {
     return std::sqrt(double(view_projection[1]) * view_projection[1] + double(view_projection[5]) * view_projection[5] +
                      double(view_projection[9]) * view_projection[9]) *
-           extent.height / 2;
+           scene_extent.height / 2;
 }
 // The coarsest level of @p draw whose error, scaled by @p scale and projected at @p distance from the eye, covers at
 // most the LOD threshold in pixels; null for the full draw.

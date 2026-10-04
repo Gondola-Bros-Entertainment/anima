@@ -63,7 +63,7 @@ struct GpuCustomMaterial {
     GpuCustomMaterial(const GpuCustomMaterial &) = delete;
     GpuCustomMaterial &operator=(const GpuCustomMaterial &) = delete;
 };
-// Copies of opaque depth and color that blended and additive custom materials sample, sized to the swapchain.
+// Copies of opaque depth and color that blended and additive custom materials sample, of the scene targets' size.
 struct OpaqueInputs {
     VkDevice device{};
     VmaAllocator allocator{};
@@ -86,7 +86,8 @@ VkDescriptorPool custom_frame_pool{};
 std::map<const CustomMaterial *, std::unique_ptr<GpuCustomMaterial>> custom_cache;
 // Seconds that VulkanRenderer::set_time received.
 float shader_time{};
-// Created on the first frame that draws a custom material reading opaque inputs, released with the swapchain.
+// Created on the first frame that draws a custom material reading opaque inputs, released with the swapchain or when
+// ensure_scene_targets() resizes the scene targets.
 std::unique_ptr<OpaqueInputs> opaque_inputs;
 // Counts the opaque input copies created, so that each frame slot's frame set can tell whether it points at the current
 // ones (FrameSlot::opaque_generation).
@@ -165,7 +166,8 @@ void create_custom_layout() {
 void update_custom_frame() {
     const auto vec = [](Vec3 v) { return std::array<float, 4>{v.x, v.y, v.z, 0}; };
     const auto &e = environment;
-    const auto width = static_cast<float>(extent.width), height = static_cast<float>(extent.height);
+    // The view's pixels, which gl_FragCoord counts and the opaque input copies hold.
+    const auto width = static_cast<float>(scene_extent.width), height = static_cast<float>(scene_extent.height);
     const CustomFrameUniform data{view_projection,
                                   inverse_view,
                                   view_origin,
@@ -457,9 +459,9 @@ void destroy_opaque_inputs() noexcept {
         *pass = VK_NULL_HANDLE;
     }
 }
-// Creates the opaque depth and color copies for the current swapchain, if they do not exist, and points the frame set
-// of the slot that records the next frame at them, unless it already does. Throws `std::runtime_error` when the device
-// cannot copy or sample them.
+// Creates the opaque depth and color copies for the current scene targets, if they do not exist, and points the frame
+// set of the slot that records the next frame at them, unless it already does. Throws `std::runtime_error` when the
+// device cannot copy or sample them.
 void ensure_opaque_inputs() {
     if (!opaque_inputs)
         create_opaque_inputs();
@@ -484,7 +486,7 @@ void ensure_opaque_inputs() {
     vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     slot.opaque_generation = opaque_generation;
 }
-// Creates the opaque depth and color copies for the current swapchain. Throws `std::runtime_error` when the device
+// Creates the opaque depth and color copies of the scene targets' size. Throws `std::runtime_error` when the device
 // cannot copy or sample them.
 void create_opaque_inputs() {
     if (!opaque_copies_supported())
@@ -496,7 +498,7 @@ void create_opaque_inputs() {
         VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         image.imageType = VK_IMAGE_TYPE_2D;
         image.format = image_format;
-        image.extent = {extent.width, extent.height, 1};
+        image.extent = {scene_extent.width, scene_extent.height, 1};
         image.mipLevels = image.arrayLayers = 1;
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -541,7 +543,7 @@ void copy_opaque_inputs() {
     // The opaque pass's depth and color writes, including its stores, precede the copy. Earlier frames' fragment
     // shaders last read the copies, whose contents are replaced whole; the barrier's first scope holds every command
     // submitted before it, those of a frame still in flight included.
-    const std::array sources{barrier(depth_image, VK_IMAGE_ASPECT_DEPTH_BIT,
+    const std::array sources{barrier(depth_target->image, VK_IMAGE_ASPECT_DEPTH_BIT,
                                      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                                      VK_ACCESS_TRANSFER_READ_BIT),
@@ -560,11 +562,11 @@ void copy_opaque_inputs() {
     const auto region = [&](VkImageAspectFlags aspect) {
         VkImageCopy copy{};
         copy.srcSubresource = copy.dstSubresource = {aspect, 0, 0, 1};
-        copy.extent = {extent.width, extent.height, 1};
+        copy.extent = {scene_extent.width, scene_extent.height, 1};
         return copy;
     };
     const auto depth_region = region(VK_IMAGE_ASPECT_DEPTH_BIT), color_region = region(VK_IMAGE_ASPECT_COLOR_BIT);
-    vkCmdCopyImage(command, depth_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, inputs.depth.image,
+    vkCmdCopyImage(command, depth_target->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, inputs.depth.image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &depth_region);
     vkCmdCopyImage(command, world_target->color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, inputs.color.image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &color_region);
@@ -574,7 +576,7 @@ void copy_opaque_inputs() {
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
         barrier(inputs.color.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
-        barrier(depth_image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        barrier(depth_target->image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0,
                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT),
         barrier(world_target->color.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

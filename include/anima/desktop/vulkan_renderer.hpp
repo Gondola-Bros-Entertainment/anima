@@ -64,8 +64,11 @@ struct RendererOptions {
     /// Failure injection for lifecycle tests. `instance`, `surface`, `device` and `resources` throw from
     /// construction, as do `texture` and `texture_upload` when the initial selection uploads a mesh;
     /// `swapchain` makes the first draw() that creates a swapchain throw RendererFatalError, as a real failure
-    /// there does. Construction throws `std::invalid_argument` for any other stage, and for `texture` and
-    /// `texture_upload` when #scenes is empty or asset support is off, since no initial upload can fire them.
+    /// there does; and `scene_targets` makes every draw() that creates scene targets while the render scale is above 1
+    /// throw SceneResourceError, as a failed allocation of them does (see VulkanRenderer::set_render_scale).
+    /// Construction throws `std::invalid_argument` for any other stage, for `texture` and `texture_upload` when
+    /// #scenes is empty or asset support is off, since no initial upload can fire them, and for `scene_targets` when
+    /// asset support is off, since the render scale is then always 1.
     RendererFailureStage fail_after = RendererFailureStage::none;
     /// Retires presentation with a device wait-idle even where `VK_EXT_swapchain_maintenance1` present
     /// fences are available.
@@ -99,6 +102,10 @@ struct RendererOptions {
     /// Initial level of detail threshold, in pixels; see VulkanRenderer::set_lod_threshold. Must be finite and
     /// nonnegative, or construction throws `std::invalid_argument`.
     float lod_threshold = 1;
+    /// Initial render scale; see VulkanRenderer::set_render_scale. Must be finite and from
+    /// VulkanRenderer::min_render_scale to VulkanRenderer::max_render_scale, and 1 without asset support, or
+    /// construction throws `std::invalid_argument`.
+    float render_scale = 1;
     /// Frames that draw() may submit before the GPU finishes the earliest of them: 1 or 2, or construction throws
     /// `std::invalid_argument`. With 2, draw() prepares and records a frame while the GPU still runs the previous one,
     /// so that the CPU's work overlaps the GPU's, at the cost of a second copy of the per-frame buffers (palettes, the
@@ -150,10 +157,11 @@ class RendererFatalError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
 };
-/// draw() could not prepare the selected scenes or the environment's shadow maps.
+/// draw() could not prepare the selected scenes, the environment's shadow maps or the scene targets
+/// (VulkanRenderer::set_render_scale).
 ///
 /// Thrown before an image is acquired, so no frame was submitted. The renderer stays usable and the next
-/// draw() prepares again: repair the selected scenes or environment, or change the selection.
+/// draw() prepares again: repair the selected scenes or environment, change the selection, or lower the render scale.
 class SceneResourceError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -210,12 +218,13 @@ struct RenderStats {
 struct FrameProfile {
     /// From draw() entry through the wait for the fence of the frame submitted RendererOptions::frames_in_flight
     /// submissions earlier and, where VulkanRenderer::wait_for_frame() waits for presents, for the present of the frame
-    /// submitted one submission before that, including swapchain recreation. After VulkanRenderer::wait_for_frame()
-    /// those waits are done, so they return at once.
+    /// submitted one submission before that, including swapchain recreation but not the scene targets that follow it
+    /// (prepare_ms). After VulkanRenderer::wait_for_frame() those waits are done, so they return at once.
     double fence_wait_ms{};
     /// Frame preparation after that wait: destroying what earlier calls released once no frame in flight can use it,
-    /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in
-    /// flight and otherwise in a later call, once that frame has finished, sizing the shadow maps and fitting their
+    /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in flight
+    /// and otherwise in a later call, once that frame has finished, creating the scene targets after a swapchain
+    /// creation or a render scale change (VulkanRenderer::set_render_scale), sizing the shadow maps and fitting their
     /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
     /// fence_wait_ms waited for, reading the display times that set present_interval_ms, and for a UiContext frame,
     /// copying its vertices, creating the UI pipeline when first needed and uploading each new UI texture, which waits
@@ -224,7 +233,8 @@ struct FrameProfile {
     /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
     /// and placements, palette writes, sorting the objects with opaque and masked draws front to back and the blended
     /// draws back to front, creating the opaque depth and color copies that custom materials read (on the first frame
-    /// that needs them after each swapchain creation), and writing the frame's shadow cascades and environment.
+    /// that needs them after each swapchain creation or resizing of the scene targets), and writing the frame's shadow
+    /// cascades and environment.
     double upload_ms{};
     /// Swapchain image acquisition.
     double acquire_ms{};
@@ -309,8 +319,9 @@ struct ResourceStats {
     /// Whether the latest preparation draws a custom material that reads opaque depth or color, so that its frame
     /// copies both after the opaque draws.
     bool opaque_inputs{};
-    /// Allocation bytes of the opaque depth and color copies, which exist from the first frame that copies them
-    /// until the swapchain is recreated.
+    /// Allocation bytes of the opaque depth and color copies, which are the scene targets' size (see
+    /// VulkanRenderer::set_render_scale) and exist from the first frame that copies them until the swapchain is
+    /// recreated or the scene targets are resized.
     std::uint64_t opaque_input_bytes{};
     /// Allocation bytes of the pose buffers, one for each frame in flight (RendererOptions::frames_in_flight), each of
     /// which holds every instance palette of the frames that it serves.
@@ -363,7 +374,10 @@ struct ResourceStats {
     /// Device allocation bytes of the atmosphere's transmittance, multiple scattering and sky view tables, allocated
     /// with the renderer whether the atmosphere is enabled or not.
     std::uint64_t atmosphere_bytes{};
-    /// Allocation bytes of the scene color and depth targets; excludes the swapchain and shadow images.
+    /// Allocation bytes of the scene color and depth targets, which the render scale sizes (see
+    /// VulkanRenderer::set_render_scale), and 0 while there are none: before the first draw() and after a draw() that
+    /// failed to create them. Excludes the swapchain and shadow images, the opaque input copies, and targets that a
+    /// resize replaced but a frame in flight still uses.
     std::uint64_t world_target_bytes{};
 };
 
@@ -371,7 +385,9 @@ struct ResourceStats {
 ///
 /// Each frame renders the sun's shadow maps, then into a linear `RGBA16F` target the opaque and masked meshes, the
 /// optional sky, which shades only the pixels that they leave at the far plane, and the blended meshes; it converts
-/// the target for display and composites UI last. The window must outlive the renderer, which never destroys it.
+/// the target for display at the window's pixel size and composites UI last. That target and the view's depth buffer
+/// are the scene targets, whose size is the window's pixel size times the render scale (set_render_scale()). The
+/// window must outlive the renderer, which never destroys it.
 ///
 /// The sun's shadow maps are its cascades (ShadowCascades), which each frame fits to the current view as
 /// fit_shadow_cascades() does and extends toward the sun over the casters that each one's square reaches, as layers of
@@ -434,8 +450,8 @@ struct ResourceStats {
 /// through animaVisibility() and animaDissolved(), as custom_material.hpp describes.
 ///
 /// A draw with levels of detail (IndexedDraw::levels) draws, for each object or placement cluster, the coarsest level
-/// whose error stays within set_lod_threshold() pixels on screen; its index buffer holds every level, uploaded with
-/// the mesh, and choosing one costs no upload or allocation.
+/// whose error stays within set_lod_threshold() pixels of the scene targets, which set_render_scale() sizes; its index
+/// buffer holds every level, uploaded with the mesh, and choosing one costs no upload or allocation.
 ///
 /// A Mesh compiled with Mesh::compile_impostor() draws as an impostor (impostor.hpp): each object or placed copy is one
 /// quad, which faces the eye across the front of the sphere of its ImpostorFrames, covering the sphere's silhouette,
@@ -536,34 +552,42 @@ struct ResourceStats {
 /// material whose fragment shader reads opaque depth or color (CustomMaterial::reads_opaque_depth,
 /// CustomMaterial::reads_opaque_color), the world pass ends after the opaque draws, the renderer copies the depth
 /// and color targets into images that those shaders sample, and a second pass loads the targets and draws the
-/// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and
-/// released with the swapchain. A custom material casts shadows only through its depth-only variant, which draws
-/// into each shadow pass, each cascade and the detail region, with that pass's view-projection; without one it casts
-/// none. Custom shaders read no shadow maps, and fog is theirs to apply, through `animaFogged()` or from the
-/// documented inputs, while exposure and tone mapping apply to the whole target at display conversion. A
-/// CustomMaterial's shader modules, pipelines, parameter
-/// buffer, textures and descriptors are created the first time a preparation draws it and are released as cached
-/// meshes are, once only the renderer references the material; creating them fails as a mesh upload does.
+/// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and released
+/// with the swapchain or when the scene targets are resized. A custom material casts shadows only through its
+/// depth-only variant, which draws into each shadow pass, each cascade and the detail region, with that pass's
+/// view-projection; without one it casts none. Custom shaders read no shadow maps, and fog is theirs to apply, through
+/// `animaFogged()` or from the documented inputs, while exposure and tone mapping apply to the whole target at display
+/// conversion. A CustomMaterial's shader modules, pipelines, parameter buffer, textures and descriptors are created the
+/// first time a preparation draws it and are released as cached meshes are, once only the renderer references the
+/// material; creating them fails as a mesh upload does.
 ///
 /// Swapchains follow the window's pixel size and present in the mode that set_present_mode() requests where the surface
-/// offers it, otherwise in PresentMode::fifo. Each swapchain is created with a `minImageCount` of one more than the
-/// fewest images that the surface allows in every mode and, where the instance supports `VK_EXT_surface_maintenance1`,
-/// in the swapchain's mode, but no more than the most that it allows in them; Vulkan lets the driver create more
-/// images than that. Recreation after a resize, a change of present mode or an out-of-date or suboptimal result waits
-/// for the device to go idle, so it can stall briefly. Where the device supports `VK_KHR_present_id` and
-/// `VK_KHR_present_wait` (waits_for_presents()), presents in the FIFO modes carry ids, which wait_for_frame() and
-/// draw() wait for. Display output is sRGB-encoded once: by an sRGB swapchain format when the surface offers one,
-/// otherwise in the display shader for 8-bit UNORM formats. Presentation semaphores belong to swapchain images. Where
-/// the instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain
-/// resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a device wait-idle is used,
-/// which unextended Vulkan does not guarantee to cover presentation. Portability enumeration and
-/// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard output.
+/// offers it, otherwise in PresentMode::fifo, and the scene targets follow the swapchain's size times the render scale.
+/// Each swapchain is created with a `minImageCount` of one more than the fewest images that the surface allows in every
+/// mode and, where the instance supports `VK_EXT_surface_maintenance1`, in the swapchain's mode, but no more than the
+/// most that it allows in them; Vulkan lets the driver create more images than that. Recreation after a resize, a
+/// change of present mode or an out-of-date or suboptimal result waits for the device to go idle, so it can stall
+/// briefly, and releases the scene targets, which the same draw() then creates as set_render_scale() describes; a
+/// render scale change recreates only the scene targets, without that wait. Where the device supports
+/// `VK_KHR_present_id` and `VK_KHR_present_wait` (waits_for_presents()), presents in the FIFO modes carry ids, which
+/// wait_for_frame() and draw() wait for. Display output is sRGB-encoded once: by an sRGB swapchain format when the
+/// surface offers one, otherwise in the display shader for 8-bit UNORM formats. Presentation semaphores belong to
+/// swapchain images. Where the instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are
+/// waited before swapchain resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a
+/// device wait-idle is used, which unextended Vulkan does not guarantee to cover presentation. Portability enumeration
+/// and `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics are printed to standard
+/// output.
 ///
 /// After shutdown(), request_capture(), set_view(), set_frustum_culling(), set_lod_threshold(), set_present_mode(),
-/// set_environment(), set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame() and draw() throw
-/// `std::logic_error`; after a RendererFatalError they throw RendererFatalError.
+/// set_render_scale(), set_environment(), set_time(), set_scenes(), prepare_meshes(), prepare_mesh(), wait_for_frame()
+/// and draw() throw `std::logic_error`; after a RendererFatalError they throw RendererFatalError.
 class VulkanRenderer {
   public:
+    /// Smallest render scale that set_render_scale() and RendererOptions::render_scale accept.
+    static constexpr float min_render_scale = .25F;
+    /// Largest render scale that set_render_scale() and RendererOptions::render_scale accept.
+    static constexpr float max_render_scale = 2;
+
     /// Creates the Vulkan instance, surface and device for @p window, then selects RendererOptions::scenes.
     ///
     /// @p window must be live and created with `SDL_WINDOW_VULKAN`. Uses the first Vulkan 1.1 device that supports
@@ -573,11 +597,13 @@ class VulkanRenderer {
     /// RendererOptions::max_anisotropy that is not finite or is below 1 ("Maximum anisotropy must be finite and at
     /// least 1"), for a RendererOptions::lod_threshold that is not finite or is negative ("LOD threshold must be finite
     /// and nonnegative"), for a RendererOptions::frames_in_flight other than 1 or 2 ("Frames in flight must be 1 or
-    /// 2"), for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode") and for a
-    /// null @p window; RendererUnavailableError when no driver or device can present to the window; what set_scenes()
-    /// throws for the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and
-    /// `std::runtime_error` for other failures, including failed Vulkan calls. Completed stages are released before the
-    /// exception propagates.
+    /// 2"), for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
+    /// RendererOptions::render_scale that is not finite or lies outside min_render_scale to max_render_scale ("Render
+    /// scale must be finite and from 0.25 to 2"), or without asset support is not 1 ("Render scale requires asset
+    /// support"), and for a null @p window; RendererUnavailableError when no driver or device can present to the
+    /// window; what set_scenes() throws for the initial selection; InjectedRendererFailure for
+    /// RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
+    /// Completed stages are released before the exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -624,9 +650,10 @@ class VulkanRenderer {
     /// changes scenes, visibility or the mesh cache. Shadow casters are always culled against their shadow
     /// regions instead, so casters outside the view still cast. Disable it for an unculled reference.
     void set_frustum_culling(bool enabled);
-    /// Sets the largest error, in pixels of the view's height, that a level of detail (DrawLevel) may add on screen,
-    /// from the next draw(); it starts as RendererOptions::lod_threshold, and 0 always draws the full draws, as Godot's
-    /// mesh LOD threshold pixels do.
+    /// Sets the largest error, in pixels of the scene targets' height, that a level of detail (DrawLevel) may add on
+    /// screen, from the next draw(); it starts as RendererOptions::lod_threshold, and 0 always draws the full draws, as
+    /// Godot's mesh LOD threshold pixels do. The scene targets are the window's pixel size times render_scale(), so
+    /// at a render scale of 0.5 the same threshold allows twice the error in window pixels.
     ///
     /// Each draw of an object, and each placement cluster's copies of it, uses the coarsest of the draw's levels
     /// whose error, scaled by the largest axis scale among the matrices that may place the draw (its node's, or its
@@ -650,6 +677,36 @@ class VulkanRenderer {
     /// `presentId` and `presentWait` features, which the renderer then enables. The other modes queue no presents
     /// behind one another, so frames in them never wait for presents. RenderStats::present_waits counts the waits.
     [[nodiscard]] bool waits_for_presents() const noexcept;
+    /// Sets the render scale from the next draw(): the scene targets, the linear color target and the view's depth
+    /// buffer, are the window's pixel size times @p scale, each side rounded to the nearest pixel and kept from 1 to
+    /// the device's 2D image and framebuffer limits. It starts as RendererOptions::render_scale.
+    ///
+    /// Shading, sky, meshes and custom materials render at the scene targets' size, and display conversion maps the
+    /// whole color target onto the window. While the targets are no larger than the window, it interpolates their
+    /// linear color bilinearly, before exposure and tone mapping, so below 1 the view renders fewer pixels and shows
+    /// them magnified. Once they are larger, each window pixel shows the mean of the target pixels that its area
+    /// covers, each weighted by the area it covers and taken after exposure, tone mapping and clamping to the
+    /// display's range of 0 to 1, so that an edge blends in proportion to its coverage however bright either side is;
+    /// at 2, unless the device's limits reduce the targets, that is a 2x2 block of them. The swapchain, UI, captures
+    /// and shadow maps keep their sizes. The view's pixels are the scene targets': custom shaders' `gl_FragCoord` and
+    /// the frame block's `viewport` (custom_material.hpp) count them, the opaque depth and color copies hold them,
+    /// set_lod_threshold() measures errors in them, and the ordered dither of visibility ranges repeats every 4 of
+    /// them.
+    ///
+    /// The first draw() whose scene targets would change size, once it has waited for its frame, creates targets of
+    /// the new size without waiting for the device; the replaced targets and opaque copies stay allocated until no
+    /// frame in flight can use them, and the next frame that needs the copies creates them at the new size. If
+    /// creating the targets fails, that draw() throws SceneResourceError and keeps the previous ones, and the next
+    /// draw() tries again. A swapchain recreation releases the targets, and the draw() that recreates it creates them
+    /// in the same way, so a failure there throws SceneResourceError too, keeping no targets: each later draw() throws
+    /// it until creating them succeeds, as it may at a lower render scale.
+    ///
+    /// Throws `std::invalid_argument` unless @p scale is finite and from min_render_scale to max_render_scale ("Render
+    /// scale must be finite and from 0.25 to 2"), keeping the previous scale, and then, without asset support,
+    /// `std::logic_error` ("Render scale requires asset support").
+    void set_render_scale(float scale);
+    /// The render scale that RendererOptions::render_scale or the latest accepted set_render_scale() set.
+    [[nodiscard]] float render_scale() const noexcept;
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and the detail region, enabled or not, with
@@ -752,7 +809,8 @@ class VulkanRenderer {
     ///
     /// Each call waits for the frame submitted RendererOptions::frames_in_flight submissions before the one that it
     /// submits and, as wait_for_frame() describes, for the present of the frame submitted one submission before that,
-    /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, culls,
+    /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, creates
+    /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), culls,
     /// uploads meshes that became visible or cast shadows (prepare_meshes() can upload them earlier) and writes every
     /// prepared instance's palette. The palettes of one frame must fit the device's storage-buffer range. Throws
     /// SceneResourceError when that preparation fails recoverably; RendererFatalError for device or surface loss, a
