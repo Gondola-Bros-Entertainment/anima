@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/assets/asset.hpp>
+#include <iosfwd>
 
 /// @file
 /// CPU-posed geometry snapshots for inspection, validation and reference output.
@@ -23,8 +24,8 @@ struct MeshVertex {
     /// Vertex alpha; the material alpha is not applied.
     float alpha = 1;
 };
-/// One draw range of a MeshSnapshot.
-struct Primitive {
+/// One draw range of a MeshSnapshot: the posed triangles of one SourcePrimitive, or of one copy of a MeshPrimitive.
+struct SnapshotPrimitive {
     /// Name of the node that instances the mesh.
     std::string node_name;
     /// Name of the glTF mesh.
@@ -51,8 +52,8 @@ struct MeshSnapshot {
     /// the swap keeps every triangle's source winding relative to its normals. A skinned triangle whose corners blend
     /// to matrices of opposite determinant signs follows its first corner, as VulkanRenderer does.
     std::vector<MeshVertex> vertices;
-    std::vector<Primitive> primitives;
-    /// Materials that Primitive::material_index refers to.
+    std::vector<SnapshotPrimitive> primitives;
+    /// Materials that SnapshotPrimitive::material_index refers to.
     std::vector<Material> materials;
     /// Textures that the materials refer to. They share their images with the Asset or Mesh they
     /// came from instead of copying them, including images without texels (see TexelRetention).
@@ -84,18 +85,20 @@ struct MeshSnapshot {
 /// Normals follow normal(), so a joint scaled to zero is valid, and corners follow MeshSnapshot::vertices. Throws
 /// `std::runtime_error` unless @p pose has one world matrix per node, and for a nonfinite result.
 [[nodiscard]] MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose);
-/// Overwrites the vertices of @p asset's primitives in @p scene, starting at vertex
+/// Overwrites the vertices of @p asset's primitives in @p snapshot, starting at vertex
 /// @p first_vertex, with @p asset posed by @p pose and then transformed by @p attachment.
 ///
-/// Draw ranges of @p scene that start where one of the primitives is written get that primitive's
+/// Draw ranges of @p snapshot that start where one of the primitives is written get that primitive's
 /// node matrix; topology and materials are unchanged. Normals and corners follow make_mesh_snapshot(). Throws
 /// `std::runtime_error` unless @p pose has one world matrix per node and for a nonfinite result, and
 /// `std::out_of_range` when the vertices do not fit. A failure can leave the range partly written.
-void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &scene, std::size_t first_vertex = 0,
+void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &snapshot, std::size_t first_vertex = 0,
                         const Mat4 &attachment = identity());
-/// Imports the GLB at @p path with load_asset and snapshots its rest pose. Needs no manifest or
-/// playback metadata.
-[[nodiscard]] MeshSnapshot load_glb(const std::filesystem::path &path);
-/// Writes a human-readable summary of @p scene to `std::cout`.
-void print_mesh_report(const MeshSnapshot &scene);
+/// Imports the GLB at @p path with load_asset and snapshots its rest pose with make_mesh_snapshot(), throwing what
+/// either throws. Needs no manifest or playback metadata.
+[[nodiscard]] MeshSnapshot load_mesh_snapshot(const std::filesystem::path &path);
+/// Writes a human-readable summary of @p snapshot to @p out: a line of its counts, a line of its bounds, then a line
+/// per primitive, clip and notice. Uses @p out's formatting and leaves a write failure in its state, throwing only as
+/// its exception mask asks.
+void print_mesh_report(const MeshSnapshot &snapshot, std::ostream &out);
 } // namespace anima

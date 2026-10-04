@@ -1,5 +1,6 @@
 #pragma once
-#include <anima/scene.hpp>
+#include <anima/mesh.hpp>
+#include <array>
 
 /// @file
 /// Conservative frustum culling in Vulkan clip space. Part of the `anima::assets` target.

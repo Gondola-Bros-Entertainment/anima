@@ -2,11 +2,11 @@
 // The order of the main view's opaque and masked draws against VulkanRenderer's contract: the draw calls that cannot
 // discard before those that may, a placement cluster's included; each group's objects nearest first, in perspective and
 // orthographic views, and at equal distances in selection and instance order; and each object's draws in
-// Mesh::draws() order within a group. Depth testing hides the order except between surfaces at equal depth, where the
-// one drawn first shows, so each case adds coincident unlit quads in the order opposite to the one the contract gives,
-// or ties them where the contract keeps the order they were added in, and requires the frame of the quad that must
-// draw first, drawn alone. A masked card in front of an opaque quad, added first, must still hide the quad with its
-// kept half and show it through its cut half.
+// Mesh::primitives() order within a group. Depth testing hides the order except between surfaces at equal depth, where
+// the one drawn first shows, so each case adds coincident unlit quads in the order opposite to the one the contract
+// gives, or ties them where the contract keeps the order they were added in, and requires the frame of the quad that
+// must draw first, drawn alone. A masked card in front of an opaque quad, added first, must still hide the quad with
+// its kept half and show it through its cut half.
 //
 // Coincident quads reach equal depth through different pipelines because their positions are computed exactly: the
 // views' camera sits at the origin looking down -Z, every world matrix and placement is the identity, and the corners
@@ -55,7 +55,7 @@ enum class Reach : std::uint8_t {
     // object's world bounds that near the camera.
     toward_camera
 };
-// A mesh of one coincident quad of each of @p surfaces, in this order in Mesh::draws(), from -1 to 1 in X and Y at
+// A mesh of one coincident quad of each of @p surfaces, in this order in Mesh::primitives(), from -1 to 1 in X and Y at
 // depth @p z, wound counterclockwise toward the camera.
 inline std::shared_ptr<const anima::Mesh> layered(std::initializer_list<anima::Material> surfaces, float z = plane,
                                                   Coverage coverage = Coverage::whole, Reach reach = Reach::quad) {
@@ -148,10 +148,10 @@ inline void check_groups(blending_test::Harness &harness) {
     harness.images.discard({"opaque", "masked-first", "empty", "dissolving", "dissolving-first"});
 }
 
-// One object's draws in Mesh::draws() order within a group: a placed copy, in a margin of its visibility range, of a
-// mesh whose masked first draw coincides with an opaque second one. The copy's cluster draws both through the pipeline
-// that may discard, in its group, the opaque draw included although its own pipeline cannot discard; there the masked
-// draw, first in Mesh::draws(), records first and shows.
+// One object's draws in Mesh::primitives() order within a group: a placed copy, in a margin of its visibility range, of
+// a mesh whose masked first draw coincides with an opaque second one. The copy's cluster draws both through the
+// pipeline that may discard, in its group, the opaque draw included although its own pipeline cannot discard; there the
+// masked draw, first in Mesh::primitives(), records first and shows.
 inline void check_object_draws(blending_test::Harness &harness) {
     const auto view = blending_test::perspective_view(harness.aspect());
     render(harness, "empty", {scene_of({})}, view, 0, 0);

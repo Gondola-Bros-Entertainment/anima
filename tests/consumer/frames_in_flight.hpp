@@ -64,7 +64,7 @@ class Sequence {
         std::vector<anima::Mat4> copies;
         for (const float x : {-1.5F, -1.F, -.5F})
             copies.push_back(translation({x, .9F, -2}));
-        scene_->set_placements(placed_, anima::MeshPlacements::create(scene_->instance(placed_).asset, copies));
+        scene_->set_placements(placed_, anima::MeshPlacements::create(scene_->instance(placed_).mesh, copies));
         // Water reads the opaque depth and color that each frame copies.
         (void)custom_material_test::add(*scene_, custom_material_test::surface({0, .3F, -2}, 1, .3F),
                                         custom_material_test::water_material({{.05, .2, .3}, .8}));

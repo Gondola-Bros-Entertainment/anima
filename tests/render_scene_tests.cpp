@@ -80,11 +80,11 @@ void parity(const anima::Asset &source, const anima::Scene::Instance &instance, 
     auto reference = anima::make_mesh_snapshot(source, pose);
     anima::pose_mesh_snapshot(source, pose, reference, 0, world);
     std::size_t corner = 0, primitive = 0;
-    for (const auto &draw : instance.asset->draws()) {
+    for (const auto &draw : instance.mesh->primitives()) {
         CAPTURE(primitive);
         for (std::size_t i = draw.first_index; i < draw.first_index + draw.index_count; ++i, ++corner) {
             CAPTURE(corner);
-            const auto &vertex = instance.asset->vertices()[instance.asset->indices()[i]];
+            const auto &vertex = instance.mesh->vertices()[instance.mesh->indices()[i]];
             auto matrix = instance.palette[draw.palette_offset];
             if (draw.skinned) {
                 matrix = {};
@@ -118,7 +118,7 @@ TEST_CASE("Posed instances share one indexed mesh and match the reference deform
     CHECK(asset->vertices().size() == 6); // Exact duplicates share one vertex.
     anima::Scene scene;
     const auto a = scene.add(asset), b = scene.add(asset);
-    CHECK(scene.instance(a).asset == scene.instance(b).asset);
+    CHECK(scene.instance(a).mesh == scene.instance(b).mesh);
     for (float time : {0.F, .2F, .7F, 1.F}) {
         CAPTURE(time);
         const auto pose = pose_at(source, time);
@@ -139,7 +139,7 @@ TEST_CASE("A rejected pose or snapshot budget leaves the accepted palette") {
     const auto accepted = scene.instance(a).palette;
     auto invalid = pose;
     invalid.world.pop_back();
-    CHECK_THROWS_WITH_AS(scene.set_pose(a, invalid), "Pose does not match render asset", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(scene.set_pose(a, invalid), "Pose does not match the mesh", std::invalid_argument);
     invalid = pose;
     invalid.world[0][0] = std::numeric_limits<float>::quiet_NaN();
     CHECK_THROWS_WITH_AS(scene.set_pose(a, invalid), "Non-finite instance transform", std::invalid_argument);

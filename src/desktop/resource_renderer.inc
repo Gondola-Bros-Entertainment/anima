@@ -1,6 +1,6 @@
 // Included inside VulkanRenderer::Impl. No backend types enter the public scene API.
-struct GpuAsset {
-    std::shared_ptr<const Mesh> asset;
+struct GpuMesh {
+    std::shared_ptr<const Mesh> mesh;
     std::unique_ptr<ResourceBuffer> vertices, indices;
     std::unique_ptr<GpuMaterials> materials;
 };
@@ -18,14 +18,14 @@ struct GpuPlacements {
     std::vector<Orientation> orientations;
 };
 struct ResourceInstance {
-    std::shared_ptr<GpuAsset> gpu;
+    std::shared_ptr<GpuMesh> gpu;
     const Scene::Instance *source{};
     // Where the instance's matrices start in the pose buffer: its palette, or with placements the rest pose's node
     // matrices, which object_offset's world matrix and each placement place.
     std::uint32_t palette_offset{};
     // Ranges of resource_draws, the instance's opaque and masked main-view draws: the first opaque_draw_count those
     // whose view_pipeline() cannot discard, then those whose pipeline may; and of resource_shadow_draws, its casters:
-    // the first opaque_shadow_count opaque, then the masked ones. Each part keeps the order of Mesh::draws().
+    // the first opaque_shadow_count opaque, then the masked ones. Each part keeps the order of Mesh::primitives().
     std::size_t first_draw{}, draw_count{}, opaque_draw_count{}, first_shadow{}, shadow_count{}, opaque_shadow_count{};
     // With placements, their GPU rows. With placements or a visibility range, the pose buffer holds the object's world
     // matrix at object_offset, then a matrix whose first column is the range, as range_columns() encodes it, and whose
@@ -88,7 +88,7 @@ struct ShadowPass;
 struct BlendedDraw {
     // Index into resource_instances.
     std::size_t instance{};
-    // Index into the instance's Mesh::draws().
+    // Index into the instance's Mesh::primitives().
     std::size_t draw{};
     // blend_order_key() of the draw's world bounds; larger is farther.
     double key{};
@@ -99,7 +99,7 @@ struct BlendedDraw {
 struct CustomDraw {
     // Index into resource_instances.
     std::size_t instance{};
-    // Index into the instance's Mesh::draws().
+    // Index into the instance's Mesh::primitives().
     std::size_t draw{};
     const GpuCustomMaterial *custom{};
 };
@@ -153,14 +153,14 @@ VkPipeline shadow_impostor_pipeline{};
 // Holds each frame slot's pose set (FrameSlot::pose_set).
 VkDescriptorPool pose_pool{};
 std::vector<std::shared_ptr<const Scene>> resource_scenes;
-std::map<const Mesh *, std::shared_ptr<GpuAsset>> resource_cache;
+std::map<const Mesh *, std::shared_ptr<GpuMesh>> resource_cache;
 std::map<const MeshPlacements *, std::shared_ptr<GpuPlacements>> placement_cache;
 // One identity placement, bound at binding 1 for instances without placements.
 std::unique_ptr<ResourceBuffer> identity_placement;
 // The runs that the instance being recorded draws in the current pass.
 std::vector<PlacementRun> placement_runs;
 std::vector<ResourceInstance> resource_instances;
-// The opaque and masked draws of the main view: each one's index into its instance's Mesh::draws() and its
+// The opaque and masked draws of the main view: each one's index into its instance's Mesh::primitives() and its
 // view_pipeline().
 struct ViewDraw {
     std::size_t draw{};
@@ -174,7 +174,7 @@ struct ViewObject {
 };
 // The objects with main-view draws in resource_draws, nearest first, and at equal keys in selection and instance order.
 std::vector<ViewObject> resource_view_order;
-// Indices into Mesh::draws() of the shadow casters.
+// Indices into Mesh::primitives() of the shadow casters.
 std::vector<std::size_t> resource_shadow_draws;
 std::vector<BlendedDraw> resource_blended_draws;
 std::vector<CustomDraw> resource_custom_draws, resource_custom_shadow_draws;
@@ -362,7 +362,7 @@ static MeshPipeline culling(Orientation placed) {
 // Material, where @p dissolving says whether the object may lie in a margin of its visibility range. With placements it
 // is the pipeline for copies whose placements keep their winding and lie outside the range's margins; run_pipeline()
 // gives each cluster's.
-static MeshPipeline view_pipeline(const Scene::Instance &source, const IndexedDraw &draw, const Material *material,
+static MeshPipeline view_pipeline(const Scene::Instance &source, const MeshPrimitive &draw, const Material *material,
                                   bool dissolving) {
     if (dissolving || (material && material->alpha_mode == AlphaMode::mask))
         return MeshPipeline::discarding;
@@ -375,7 +375,7 @@ static MeshPipeline view_pipeline(const Scene::Instance &source, const IndexedDr
     // composes them.
     if (source.placements)
         return culling(
-            compose(orientation(source.world), orientation(source.asset->rest_pose().world.at(draw.palette_offset))));
+            compose(orientation(source.world), orientation(source.mesh->rest_pose().world.at(draw.palette_offset))));
     return culling(orientation(source.palette.at(draw.palette_offset)));
 }
 // The pipeline that draws the copies in @p run of a draw whose view_pipeline() is @p draw_pipeline: the discarding one
@@ -516,12 +516,12 @@ double lod_projection() const {
 }
 // The coarsest level of @p draw whose error, scaled by @p scale and projected at @p distance from the eye, covers at
 // most the LOD threshold in pixels; null for the full draw.
-const DrawLevel *level_for(const IndexedDraw &draw, double distance, double scale) const {
+const PrimitiveLevel *level_for(const MeshPrimitive &draw, double distance, double scale) const {
     const bool perspective = view_origin[3] != 0;
     if (draw.levels.empty() || options.lod_threshold <= 0 || (perspective && distance <= 0))
         return nullptr;
     const double pixels = lod_projection() * scale / (perspective ? distance : 1);
-    const DrawLevel *chosen = nullptr;
+    const PrimitiveLevel *chosen = nullptr;
     for (const auto &level : draw.levels) {
         if (double(level.error) * pixels > options.lod_threshold)
             break;
@@ -560,22 +560,22 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
                                       range && may_dissolve(*range, eye(), bounds.minimum, bounds.maximum)});
     }
 }
-std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, RendererFailureStage failure,
-                                    const MeshPreparation *prepared = nullptr) {
-    if (auto found = resource_cache.find(asset.get()); found != resource_cache.end())
+std::shared_ptr<GpuMesh> gpu_mesh(const std::shared_ptr<const Mesh> &mesh, RendererFailureStage failure,
+                                  const MeshPreparation *prepared = nullptr) {
+    if (auto found = resource_cache.find(mesh.get()); found != resource_cache.end())
         return found->second;
-    auto value = std::make_shared<GpuAsset>();
-    value->asset = asset;
-    const auto vertices = asset->vertices().size_bytes(), indices = asset->indices().size_bytes();
+    auto value = std::make_shared<GpuMesh>();
+    value->mesh = mesh;
+    const auto vertices = mesh->vertices().size_bytes(), indices = mesh->indices().size_bytes();
     value->materials = std::make_unique<GpuMaterials>();
     value->materials->device = device;
     value->materials->allocator = allocator;
-    value->materials->source = asset->description();
+    value->materials->source = mesh->description();
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
-    if (!asset->vertices().empty() && asset->vertices().size() - 1 > properties.limits.maxDrawIndexedIndexValue)
+    if (!mesh->vertices().empty() && mesh->vertices().size() - 1 > properties.limits.maxDrawIndexedIndexValue)
         throw std::invalid_argument("Resource index exceeds device indexed-draw range");
-    for (const auto &texture : asset->description()->textures)
+    for (const auto &texture : mesh->description()->textures)
         if (texture.image->width > properties.limits.maxImageDimension2D ||
             texture.image->height > properties.limits.maxImageDimension2D)
             throw std::invalid_argument("Resource texture exceeds device image dimensions");
@@ -584,15 +584,15 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         // A preparation holds every image it uploads. Otherwise read the texels before allocating anything, since a
         // Mesh compiled with TexelRetention::until_upload may have let them go.
         if (!prepared)
-            texels = asset->texel_images();
+            texels = mesh->texel_images();
         value->vertices =
             resource_buffer(vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        upload_resource_buffer(*value->vertices, asset->vertices().data(), VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+        upload_resource_buffer(*value->vertices, mesh->vertices().data(), VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
         inject_scene(failure, RendererFailureStage::vertex, false);
         value->indices = resource_buffer(indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        upload_resource_buffer(*value->indices, asset->indices().data(), VK_ACCESS_INDEX_READ_BIT);
+        upload_resource_buffer(*value->indices, mesh->indices().data(), VK_ACCESS_INDEX_READ_BIT);
         inject_scene(failure, RendererFailureStage::index, false);
         UploadBatch upload;
         upload.device = device;
@@ -602,11 +602,11 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         upload.create(graphics_family);
         upload_textures(*value->materials, upload, failure, false, texels, prepared);
     }
-    resource_cache.emplace(asset.get(), value);
+    resource_cache.emplace(mesh.get(), value);
     ++resources.mesh_uploads;
     resources.geometry_uploaded_bytes += vertices + indices;
     // Every copy has completed, so a Mesh compiled with TexelRetention::until_upload no longer needs its texels.
-    asset->release_texels();
+    mesh->release_texels();
     return value;
 }
 void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, RendererFailureStage failure = {},
@@ -629,14 +629,14 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     for (const auto &source : sources)
         for (auto id : source->instances()) {
             const auto &render_instance = source->instance(id);
-            if (!render_instance.visible || !render_instance.active || render_instance.asset->draws().empty())
+            if (!render_instance.visible || !render_instance.active || render_instance.mesh->primitives().empty())
                 continue;
             // An object outside its visibility range draws in no pass, and one in a margin dissolves; placed copies are
             // culled and dissolve by cluster instead.
             bool dissolving = false;
             if (const auto *range = use_frustum ? culling_range(render_instance) : nullptr;
                 range && !render_instance.placements) {
-                const auto center = point(render_instance.world, range_center(*render_instance.asset));
+                const auto center = point(render_instance.world, range_center(*render_instance.mesh));
                 if (!within_range(*range, eye(), center, center)) {
                     ++range_culled;
                     continue;
@@ -646,7 +646,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size(),
                        first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size();
             bool candidate = false;
-            const auto source_draws = render_instance.asset->draws();
+            const auto source_draws = render_instance.mesh->primitives();
             const bool cull = use_frustum && options.frustum_culling;
             const bool outside = cull && !resource_frustum.intersects(render_instance.bounds);
             for (std::size_t i = 0; i < source_draws.size(); ++i) {
@@ -656,7 +656,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 ++candidate_draws;
                 const auto material_index = source_draws[i].material;
                 const auto *material =
-                    material_index < 0 ? nullptr : &render_instance.asset->description()->materials[material_index];
+                    material_index < 0 ? nullptr : &render_instance.mesh->description()->materials[material_index];
                 // A custom material in the draw's material slot replaces its Material in every pass.
                 const auto *custom =
                     material_index < 0 ? nullptr : render_instance.custom_materials[material_index].get();
@@ -723,7 +723,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             // With placements or a visibility range, the object's world matrix and the range with the point it measures
             // to, then with placements the rest pose's node matrices, which the vertex shaders compose with each
             // placement, or else the palette.
-            const auto &rest = render_instance.asset->rest_pose().world;
+            const auto &rest = render_instance.mesh->rest_pose().world;
             const bool ranged = render_instance.visibility_range != VisibilityRange{};
             const bool header = render_instance.placements || ranged;
             const auto matrices =
@@ -732,7 +732,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             if (palettes.size() > max_matrices || matrices > max_matrices - palettes.size())
                 throw std::length_error("Instance palettes exceed device storage-buffer range");
             const auto first_matrix = static_cast<std::uint32_t>(palettes.size());
-            ResourceInstance prepared{gpu_asset(render_instance.asset, failure),
+            ResourceInstance prepared{gpu_mesh(render_instance.mesh, failure),
                                       &render_instance,
                                       first_matrix,
                                       first_draw,
@@ -749,7 +749,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 prepared.palette_offset = first_matrix + 2;
                 palettes.push_back(render_instance.world);
                 palettes.push_back(
-                    range_columns(render_instance.visibility_range, range_center(*render_instance.asset)));
+                    range_columns(render_instance.visibility_range, range_center(*render_instance.mesh)));
             }
             if (render_instance.placements) {
                 prepared.placements = gpu_placements(render_instance.placements);
@@ -873,7 +873,7 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
     resource_scenes = std::move(sources);
     ++stats.scene_generations;
 }
-void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const ResourcePreparationOptions &settings,
+void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> meshes, const ResourcePreparationOptions &settings,
                     const MeshPreparation *prepared = nullptr) {
     running();
     const auto &failure = settings.fail_after;
@@ -883,18 +883,18 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
         failure != RendererFailureStage::ready && failure != RendererFailureStage::upload_timeout &&
         failure != RendererFailureStage::device_lost)
         throw std::invalid_argument("Unknown resource preparation failure stage");
-    for (const auto &asset : assets)
-        if (!asset)
-            throw std::invalid_argument("Cannot prepare a null render asset");
-    if (assets.empty())
+    for (const auto &mesh : meshes)
+        if (!mesh)
+            throw std::invalid_argument("Cannot prepare a null mesh");
+    if (meshes.empty())
         return;
-    // Nothing here waits for the frames in flight, since none of them uses anything that gpu_asset() changes: it
+    // Nothing here waits for the frames in flight, since none of them uses anything that gpu_mesh() changes: it
     // returns a cached mesh as it is, and an upload writes only objects that it creates, sharing existing samplers
     // unchanged. Each upload waits for its own copies, whose fences Vulkan signals only after every command submitted
     // to the queue before them, so those waits also last until the frames in flight have finished.
     try {
-        for (const auto &asset : assets)
-            (void)gpu_asset(asset, failure, prepared);
+        for (const auto &mesh : meshes)
+            (void)gpu_mesh(mesh, failure, prepared);
         inject_scene(failure, RendererFailureStage::ready, false);
     } catch (const VulkanFailure &error) {
         if (fatal || error.result == VK_TIMEOUT || error.result == VK_ERROR_DEVICE_LOST) {
@@ -927,25 +927,25 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
                  std::optional<ViewRouting> routing = std::nullopt) {
     const auto command = frame().command;
     const auto &source = *render_instance.source;
-    const auto &draw = source.asset->draws()[draw_index];
+    const auto &draw = source.mesh->primitives()[draw_index];
     const Material fallback;
-    const auto &material = draw.material < 0 ? fallback : source.asset->description()->materials.at(draw.material);
+    const auto &material = draw.material < 0 ? fallback : source.mesh->description()->materials.at(draw.material);
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
     // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
     // its frames per side and layout where they say whether they are skinned, which an impostor never is.
-    const auto *impostor_frames = source.asset->impostor();
-    const ResourcePush push{view,
-                            view_origin,
-                            impostor_frames ? std::array{impostor_frames->center.x, impostor_frames->center.y,
-                                                         impostor_frames->center.z, impostor_frames->radius}
-                                            : std::array{material.metallic, material.roughness, 0.F, 0.F},
-                            {render_instance.palette_offset + draw.palette_offset,
-                             impostor_frames ? impostor_frames->count | std::uint32_t(impostor_frames->layout) << 8
-                             : draw.skinned  ? 1U
-                                             : 0U,
-                             render_instance.object_offset,
-                             (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
-                            {factor.x, factor.y, factor.z, 1}};
+    const auto *impostor_frames = source.mesh->impostor();
+    const ResourcePush push{
+        view,
+        view_origin,
+        impostor_frames ? std::array{impostor_frames->center.x, impostor_frames->center.y, impostor_frames->center.z,
+                                     impostor_frames->radius}
+                        : std::array{material.metallic, material.roughness, 0.F, 0.F},
+        {render_instance.palette_offset + draw.palette_offset,
+         impostor_frames ? impostor_frames->frames_per_side | std::uint32_t(impostor_frames->layout) << 8
+         : draw.skinned  ? 1U
+                         : 0U,
+         render_instance.object_offset, (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
+        {factor.x, factor.y, factor.z, 1}};
     vkCmdPushConstants(command, resource_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
     const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
@@ -964,11 +964,11 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
 bool record_indexed(const ResourceInstance &render_instance, std::size_t draw_index, bool shadow,
                     std::optional<ViewRouting> routing = std::nullopt) {
     const auto &source = *render_instance.source;
-    const auto &draw = source.asset->draws()[draw_index];
+    const auto &draw = source.mesh->primitives()[draw_index];
     // Without placements the draw's own bounds and placing matrices choose its level, the largest scale among its
     // node's matrix or its skin's joint matrices; with them, each run's cluster and the node's rest matrix, which the
     // copies' placements multiply.
-    const auto level_of = [&](const PlacementRun &run) -> const DrawLevel * {
+    const auto level_of = [&](const PlacementRun &run) -> const PrimitiveLevel * {
         // Before scanning a skin's joints, which may number hundreds.
         if (draw.levels.empty() || options.lod_threshold <= 0)
             return nullptr;
@@ -979,10 +979,11 @@ bool record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
                 scale = std::max(scale, axis_scale(source.palette[draw.palette_offset + j]));
             return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum), scale);
         }
-        return level_for(draw, run.distance, run.scale * axis_scale(source.asset->rest_pose().world[draw.node]));
+        return level_for(draw, run.distance, run.scale * axis_scale(source.mesh->rest_pose().world[draw.node]));
     };
     const auto command = frame().command;
-    const auto record = [&](const DrawLevel *level, std::uint32_t first, std::uint32_t count, MeshPipeline through) {
+    const auto record = [&](const PrimitiveLevel *level, std::uint32_t first, std::uint32_t count,
+                            MeshPipeline through) {
         if (routing) {
             const auto bound = resource_pipelines[std::size_t(through)][uses_height_fog()];
             if (bound != bound_mesh_pipeline)
@@ -1003,7 +1004,7 @@ bool record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
             resources.lod_draws += level != nullptr;
         }
     };
-    const DrawLevel *pending_level = nullptr;
+    const PrimitiveLevel *pending_level = nullptr;
     auto pending_pipeline = MeshPipeline::discarding;
     std::uint32_t pending_first = 0, pending_count = 0;
     bool left = false;
@@ -1036,7 +1037,7 @@ bool record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
 // objects in resource_view_order, nearest first, so that a GPU that tests depth before shading skips more of the
 // surfaces that nearer ones hide, and its masked group also takes the runs that the opaque group left. A shadow pass
 // records objects in selection and instance order, since a shadow map keeps the least depth of each texel whatever the
-// order. Within a group each object's draws keep the order of Mesh::draws(), those that the masked group revisits
+// order. Within a group each object's draws keep the order of Mesh::primitives(), those that the masked group revisits
 // included.
 void record_resources(const ShadowPass *shadow = nullptr) {
     const auto command = frame().command;
@@ -1059,13 +1060,13 @@ void record_resources(const ShadowPass *shadow = nullptr) {
         bool bound = false;
         for (std::size_t object = 0; object < objects; ++object) {
             auto &render_instance = resource_instances[shadow ? object : resource_view_order[object].instance];
-            if ((render_instance.gpu->asset->impostor() != nullptr) != impostors)
+            if ((render_instance.gpu->mesh->impostor() != nullptr) != impostors)
                 continue;
-            // The instance's draws lie in two parts, each in Mesh::draws() order: those whose view_pipeline() cannot
-            // discard, or in a shadow pass the opaque casters, then the others. The opaque group records the first
-            // part; the masked group the second and, in the main view, the first again where the opaque group left
-            // runs of it; and the impostor group both, since an impostor's draws all record through its own pipeline.
-            // A group that records from both parts merges them back into Mesh::draws() order.
+            // The instance's draws lie in two parts, each in Mesh::primitives() order: those whose view_pipeline()
+            // cannot discard, or in a shadow pass the opaque casters, then the others. The opaque group records the
+            // first part; the masked group the second and, in the main view, the first again where the opaque group
+            // left runs of it; and the impostor group both, since an impostor's draws all record through its own
+            // pipeline. A group that records from both parts merges them back into Mesh::primitives() order.
             const auto first = shadow ? render_instance.first_shadow : render_instance.first_draw;
             const auto split =
                 first + (shadow ? render_instance.opaque_shadow_count : render_instance.opaque_draw_count);
@@ -1199,7 +1200,7 @@ void retire_resources() {
                 ++it;
         }
     };
-    release(resource_cache, [](const GpuAsset &gpu) -> const auto & { return gpu.asset; });
+    release(resource_cache, [](const GpuMesh &gpu) -> const auto & { return gpu.mesh; });
     release(custom_cache, [](const GpuCustomMaterial &gpu) -> const auto & { return gpu.source; });
     release(placement_cache, [](const GpuPlacements &gpu) -> const auto & { return gpu.source; });
 }

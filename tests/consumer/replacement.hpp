@@ -365,7 +365,7 @@ inline int run(int argc, char **argv) {
     };
     auto malformed = saved;
     malformed.world.pop_back();
-    mutation([&] { a->set_pose(id, malformed); }, "Pose does not match render asset");
+    mutation([&] { a->set_pose(id, malformed); }, "Pose does not match the mesh");
     malformed = saved;
     malformed.world[0][0] = std::numeric_limits<float>::quiet_NaN();
     mutation([&] { a->set_pose(id, malformed); }, "Non-finite instance transform");

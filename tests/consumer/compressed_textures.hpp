@@ -156,8 +156,9 @@ inline int run(int argc, char **argv) {
                far_bc7 = anima::Mesh::compile(*substituted(*far, srgb));
     // A preparation of a mesh that holds its BC7 texels only until upload, from a copy that nothing else keeps: the
     // first renderer's upload lets the mesh's texels go, and the preparation still uploads to the second.
-    const auto prepared_bc7 = anima::MeshPreparation(anima::Mesh::compile(
-        *substituted(*close, std::make_shared<const anima::Image>(*srgb)), anima::TexelRetention::until_upload));
+    const auto prepared_bc7 =
+        anima::MeshPreparation(anima::Mesh::compile(*substituted(*close, std::make_shared<const anima::Image>(*srgb)),
+                                                    {.texel_retention = anima::TexelRetention::until_upload}));
     // The linear pair samples the texels as data through the consumer's effect shader, on the close quad.
     const auto effect = [&](std::shared_ptr<const anima::Image> image) {
         auto definition = custom_material_test::effect_definition("pattern", anima::CustomBlend::opaque, {{1, 1, 1}});
@@ -186,7 +187,7 @@ inline int run(int argc, char **argv) {
     };
     const auto prepare = [&](Harness &harness, const std::string &name) {
         harness.renderer().prepare_mesh(prepared_bc7);
-        draw(harness, name, texture_memory_test::scene_of(prepared_bc7.asset()));
+        draw(harness, name, texture_memory_test::scene_of(prepared_bc7.mesh()));
     };
 
     gpu_check::Captures captures(output);

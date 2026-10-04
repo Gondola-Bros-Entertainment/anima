@@ -13,8 +13,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -259,35 +261,35 @@ TEST_CASE("The geometry and motion loaders reject each other's resources") {
 
 TEST_CASE("Materials keep their alpha mode, metallic-roughness factors, sidedness and glTF defaults") {
     const Temp temp;
-    const auto masked = load_glb(fixture(temp, "mask"));
+    const auto masked = load_mesh_snapshot(fixture(temp, "mask"));
     CHECK(masked.materials.at(0).alpha_mode == AlphaMode::mask);
     CHECK(masked.materials[0].alpha_cutoff == Near{.35F, tolerance});
     CHECK(masked.materials[0].alpha == Near{.7F, tolerance});
     CHECK(masked.vertices.at(0).alpha == Near{0, tolerance}); // The vertex colour's alpha.
-    const auto blended = load_glb(fixture(temp, "alpha"));
+    const auto blended = load_mesh_snapshot(fixture(temp, "alpha"));
     CHECK(blended.materials.at(0).alpha_mode == AlphaMode::blend);
     CHECK(blended.materials[0].alpha == Near{.4F, tolerance});
     CHECK(blended.materials.at(1).alpha_mode == AlphaMode::opaque); // glTF's default mode.
-    const auto pbr = load_glb(fixture(temp, "pbr"));
+    const auto pbr = load_mesh_snapshot(fixture(temp, "pbr"));
     CHECK(pbr.materials.at(0).metallic == Near{.7F, tolerance});
     CHECK(pbr.materials[0].roughness == Near{.23F, tolerance});
     // glTF's defaults for factors a material omits.
     CHECK(pbr.materials.at(1).metallic == Near{1, tolerance});
     CHECK(pbr.materials[1].roughness == Near{1, tolerance});
     // A primitive without a material uses the spec's default material.
-    const auto implicit = load_glb(fixture(temp, "implicit-material"));
+    const auto implicit = load_mesh_snapshot(fixture(temp, "implicit-material"));
     const auto &fallback = implicit.materials.at(implicit.primitives.at(0).material_index);
     CHECK(fallback.metallic == Near{1, tolerance});
     CHECK_FALSE(fallback.double_sided);
     // glTF materials are single-sided unless they say otherwise; programmatic ones render both sides.
     CHECK_FALSE(masked.materials[0].double_sided);
-    CHECK(load_glb(fixture(temp, "double-sided")).materials.at(0).double_sided);
+    CHECK(load_mesh_snapshot(fixture(temp, "double-sided")).materials.at(0).double_sided);
     CHECK(Material{}.double_sided);
 }
 
 TEST_CASE("The default scene keeps each primitive and instance with its transform, normals and material") {
     const Temp temp;
-    const auto scene = load_glb(fixture(temp, "instances"));
+    const auto scene = load_mesh_snapshot(fixture(temp, "instances"));
     CHECK(scene.mesh_nodes == 2);
     REQUIRE(scene.primitives.size() == 4);
     REQUIRE(scene.vertices.size() == 12);
@@ -308,14 +310,39 @@ TEST_CASE("The default scene keeps each primitive and instance with its transfor
 
 TEST_CASE("A skin applies its joint's transform, and inverse binds cancel it") {
     const Temp temp;
-    const auto skinned = load_glb(fixture(temp, "skin"));
+    const auto skinned = load_mesh_snapshot(fixture(temp, "skin"));
     CHECK(skinned.skinned_vertices == 6);
     CHECK_FALSE(skinned.default_is_bind_pose);
     CHECK(skinned.minimum.y == Near{5, tolerance});
     CHECK(skinned.minimum.x == Near{0, tolerance}); // The skinned mesh node's own transform is ignored.
-    const auto bind = load_glb(fixture(temp, "bind"));
+    const auto bind = load_mesh_snapshot(fixture(temp, "bind"));
     CHECK(bind.default_is_bind_pose);
     CHECK(bind.minimum.y == Near{0, tolerance});
+}
+
+TEST_CASE("A mesh report writes a snapshot's counts, bounds, primitives, clips and notices to the given stream") {
+    MeshSnapshot snapshot;
+    snapshot.vertices.resize(6);
+    snapshot.primitives = {{"Body", "body", "Skin", identity(), 0, 6, 0, true}};
+    snapshot.materials.resize(1);
+    snapshot.minimum = {-1, 0, -2};
+    snapshot.maximum = {1, 2.5F, 2};
+    snapshot.mesh_nodes = 1;
+    snapshot.skins = 1;
+    snapshot.joints = 3;
+    snapshot.skinned_vertices = 6;
+    snapshot.clips = {"Walk"};
+    snapshot.notices = {"Note"};
+    snapshot.bind_deviation = .25F;
+    snapshot.default_is_bind_pose = false;
+    std::ostringstream out;
+    print_mesh_report(snapshot, out);
+    CHECK(out.str() == "ASSET mesh_nodes=1 primitives=1 materials=1 triangles=2 skins=1 joints=3 skinned_vertices=6 "
+                       "bind_deviation=0.25 pose=default\n"
+                       "Bounds: [-1,0,-2] to [1,2.5,2]\n"
+                       "  Body / Skin: 2 triangles\n"
+                       "  Available clip: Walk\n"
+                       "NOTICE: Note\n");
 }
 
 TEST_CASE("A model without clips previews statically, and rejected playback leaves it unchanged") {
@@ -374,21 +401,22 @@ TEST_CASE("Unsupported animation samplers and channels are rejected with their r
 TEST_CASE("Invalid and unsupported GLB content is rejected with its reason") {
     const Temp temp;
     // cgltf's validation reports an index beyond the vertices as cgltf_result_data_too_short.
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-index")),
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "bad-index")),
                          "Validate GLB structure/accessor bounds failed (cgltf 1)", std::runtime_error);
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-view")), "Buffer view exceeds embedded buffer bounds",
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "bad-view")), "Buffer view exceeds embedded buffer bounds",
                          std::runtime_error);
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "sparse")), "Sparse accessors are unsupported", std::runtime_error);
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "extension")), "Required glTF extension is unsupported",
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "sparse")), "Sparse accessors are unsupported",
                          std::runtime_error);
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "truncated")), truncated_glb, std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "extension")), "Required glTF extension is unsupported",
+                         std::runtime_error);
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "truncated")), truncated_glb, std::runtime_error);
 }
 
 TEST_CASE("Material factors outside their ranges are rejected by validate_material") {
     // validate_material owns the factor ranges.
     const Temp temp;
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-metallic")), invalid_factors, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(load_glb(fixture(temp, "bad-roughness")), invalid_factors, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "bad-metallic")), invalid_factors, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(load_mesh_snapshot(fixture(temp, "bad-roughness")), invalid_factors, std::invalid_argument);
 }
 
 TEST_CASE("A perspective projection maps the near and far planes to reversed Vulkan depths 1 and 0") {
@@ -410,7 +438,7 @@ TEST_CASE("Reversed depth keeps surfaces 1 cm apart at 450 m in order") {
 
 TEST_CASE("An orbit camera's view origin and horizontal axes follow its orientation within its bounds") {
     const Temp temp;
-    const auto scene = load_glb(fixture(temp, "instances"));
+    const auto scene = load_mesh_snapshot(fixture(temp, "instances"));
     OrbitCamera camera;
     camera.frame(scene.minimum, scene.maximum);
     const auto origin = view_origin(camera.matrix(1.5F));
@@ -459,11 +487,11 @@ TEST_CASE("An orthographic view origin is the direction toward the camera, and a
 
 TEST_CASE(exported_test) {
     REQUIRE(exported_glb);
-    const auto asset = load_glb(*exported_glb);
+    const auto asset = load_mesh_snapshot(*exported_glb);
     CHECK(asset.mesh_nodes > 0);
     CHECK_FALSE(asset.vertices.empty());
     CHECK(asset.default_is_bind_pose);
-    print_mesh_report(asset);
+    print_mesh_report(asset, std::cout);
 }
 
 int main(int argc, char **argv) {

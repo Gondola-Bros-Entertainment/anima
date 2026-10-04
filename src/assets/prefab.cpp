@@ -49,7 +49,7 @@ struct ScenePersistence {
         node.key = source.key;
         node.active = source.active_self;
         node.local = source.local;
-        node.mesh = source.value.asset;
+        node.mesh = source.value.mesh;
         node.pose = source.pose;
         if (node.mesh) {
             node.visible = source.value.visible;

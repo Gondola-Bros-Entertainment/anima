@@ -342,7 +342,8 @@ struct ResourceStats {
     /// Objects without placements, and placement clusters of objects with a main-view draw, that their visibility
     /// ranges (VisibilityRange) hid in the latest frame.
     std::uint64_t range_culled{};
-    /// Main-view draw calls of the latest frame that drew a simplified level (DrawLevel) instead of the full draw.
+    /// Main-view draw calls of the latest frame that drew a simplified level (PrimitiveLevel) instead of the full
+    /// primitive.
     std::uint64_t lod_draws{};
     /// Main-view draw calls of the latest frame that drew a mesh other than an impostor with an opaque or masked
     /// Material through the pipeline whose fragment shader may discard: those of masked materials, of objects and
@@ -433,12 +434,12 @@ struct ResourceStats {
 /// resources once no frame in flight can draw them; a draw() that returns early because the window is not drawable
 /// releases nothing. Selection, culling and visibility never evict, and there is no size budget.
 ///
-/// An object with placements (Scene::set_placements) draws each of its mesh's draws as instances of one indexed draw,
-/// one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that draw the
-/// same level of detail: the main view culls clusters by their world bounds when frustum culling is on, and each
-/// shadow pass culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements uploads
-/// its transforms once into a device buffer, cached per object and released as meshes are, and the vertex shaders
-/// compose each placement with the object's world matrix and the mesh's rest pose.
+/// An object with placements (Scene::set_placements) draws each of its mesh's primitives as instances of one indexed
+/// draw, one call per run of adjacent placement clusters (MeshPlacements::clusters()) that the pass can see and that
+/// draw the same level of detail: the main view culls clusters by their world bounds when frustum culling is on, and
+/// each shadow pass culls them against itself, so copies outside the view still cast shadows. Each MeshPlacements
+/// uploads its transforms once into a device buffer, cached per object and released as meshes are, and the vertex
+/// shaders compose each placement with the object's world matrix and the mesh's rest pose.
 ///
 /// An object with a visibility range (Scene::set_visibility_range) draws only at the distances the range allows from
 /// the eye of the current view, in the shadow passes too, measured to the center of its mesh's rest bounds
@@ -449,9 +450,9 @@ struct ResourceStats {
 /// hide the copies outside the range in a cluster that is not culled. Custom materials fade and hide copies only
 /// through animaVisibility() and animaDissolved(), as custom_material.hpp describes.
 ///
-/// A draw with levels of detail (IndexedDraw::levels) draws, for each object or placement cluster, the coarsest level
-/// whose error stays within set_lod_threshold() pixels of the scene targets, which set_render_scale() sizes; its index
-/// buffer holds every level, uploaded with the mesh, and choosing one costs no upload or allocation.
+/// A primitive with levels of detail (MeshPrimitive::levels) draws, for each object or placement cluster, the coarsest
+/// level whose error stays within set_lod_threshold() pixels of the scene targets, which set_render_scale() sizes; its
+/// index buffer holds every level, uploaded with the mesh, and choosing one costs no upload or allocation.
 ///
 /// A Mesh compiled with Mesh::compile_impostor() draws as an impostor (impostor.hpp): each object or placed copy is one
 /// quad, which faces the eye across the front of the sphere of its ImpostorFrames, covering the sphere's silhouette,
@@ -510,11 +511,11 @@ struct ResourceStats {
 /// whose fragment shader may discard and writes depth. Each group draws its objects nearest first, by the distance from
 /// the eye to the nearest point of their world bounds (Scene::Instance::bounds) in a perspective view, or along the
 /// view direction in an orthographic one, and objects at equal distances in selection and instance order; within a
-/// group an object's draws keep their order (Mesh::draws()), and a draw's placement clusters theirs. A GPU that tests
-/// depth before shading then skips more of the surfaces that nearer ones hide, and one that removes hidden surfaces
-/// before shading, as Apple GPUs do, receives every fragment that cannot discard before any that may. These draws test
-/// depth with `GREATER` and write it, so they show the nearest surface whatever the order, except that of two surfaces
-/// at equal depth the one drawn first shows.
+/// group an object's draws keep the order of its mesh's primitives (Mesh::primitives()), and a primitive's placement
+/// clusters theirs. A GPU that tests depth before shading then skips more of the surfaces that nearer ones hide, and
+/// one that removes hidden surfaces before shading, as Apple GPUs do, receives every fragment that cannot discard
+/// before any that may. These draws test depth with `GREATER` and write it, so they show the nearest surface whatever
+/// the order, except that of two surfaces at equal depth the one drawn first shows.
 ///
 /// Blended materials (AlphaMode::blend) draw in the same pass, after every opaque and masked draw of every
 /// selected scene. They test depth with `GREATER`, since the view's depth is reversed, and write none, so nearer opaque
@@ -650,16 +651,16 @@ class VulkanRenderer {
     /// changes scenes, visibility or the mesh cache. Shadow casters are always culled against their shadow
     /// regions instead, so casters outside the view still cast. Disable it for an unculled reference.
     void set_frustum_culling(bool enabled);
-    /// Sets the largest error, in pixels of the scene targets' height, that a level of detail (DrawLevel) may add on
-    /// screen, from the next draw(); it starts as RendererOptions::lod_threshold, and 0 always draws the full draws, as
-    /// Godot's mesh LOD threshold pixels do. The scene targets are the window's pixel size times render_scale(), so
-    /// at a render scale of 0.5 the same threshold allows twice the error in window pixels.
+    /// Sets the largest error, in pixels of the scene targets' height, that a level of detail (PrimitiveLevel) may add
+    /// on screen, from the next draw(); it starts as RendererOptions::lod_threshold, and 0 always draws the full
+    /// primitives, as Godot's mesh LOD threshold pixels do. The scene targets are the window's pixel size times
+    /// render_scale(), so at a render scale of 0.5 the same threshold allows twice the error in window pixels.
     ///
-    /// Each draw of an object, and each placement cluster's copies of it, uses the coarsest of the draw's levels
-    /// whose error, scaled by the largest axis scale among the matrices that may place the draw (its node's, or its
-    /// skin's joints', IndexedDraw::palette_count of them), covers at most @p pixels when projected
-    /// at the distance from the eye to the nearest point of the draw's, or the cluster's, world bounds; from inside
-    /// those bounds it uses the full draw. An orthographic view projects errors without distance. Shadow passes
+    /// Each primitive of an object, and each placement cluster's copies of it, uses the coarsest of the primitive's
+    /// levels whose error, scaled by the largest axis scale among the matrices that may place the primitive (its
+    /// node's, or its skin's joints', MeshPrimitive::palette_count of them), covers at most @p pixels when projected at
+    /// the distance from the eye to the nearest point of the primitive's, or the cluster's, world bounds; from inside
+    /// those bounds it uses the full primitive. An orthographic view projects errors without distance. Shadow passes
     /// draw the levels the view chose. Throws `std::invalid_argument` unless @p pixels is finite and nonnegative
     /// ("LOD threshold must be finite and nonnegative"), keeping the previous threshold.
     void set_lod_threshold(float pixels);
@@ -740,10 +741,10 @@ class VulkanRenderer {
     /// Selected scenes remain the caller's to change between draws; each draw() prepares their current content.
     /// A scene that its SceneSet unloads or replaces stays selected but is empty.
     void set_scenes(std::vector<std::shared_ptr<const Scene>> scenes, SceneReplacementOptions options = {});
-    /// Uploads @p assets into the mesh cache without selecting or drawing them, for example while loading.
+    /// Uploads @p meshes into the mesh cache without selecting or drawing them, for example while loading.
     /// Cached or repeated meshes are reused.
     ///
-    /// Throws `std::invalid_argument` for a null pointer anywhere in @p assets before any upload; an empty span
+    /// Throws `std::invalid_argument` for a null pointer anywhere in @p meshes before any upload; an empty span
     /// does nothing. Leaves the selection, view and poses unchanged. Does not wait for the frames in flight: a call
     /// whose meshes are all cached submits no GPU work and returns without waiting, and the resources that earlier
     /// calls released while frames that may use them were in flight stay until a later draw() or set_scenes() has
@@ -755,8 +756,8 @@ class VulkanRenderer {
     /// texels that TexelRetention::until_upload let go, `std::runtime_error` for other upload failures,
     /// including failed Vulkan calls, InjectedRendererFailure as ResourcePreparationOptions::fail_after
     /// requests, and RendererFatalError for device loss or a fence timeout.
-    void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, ResourcePreparationOptions options = {});
-    /// Uploads MeshPreparation::asset() as prepare_meshes() does, using the preparation's mip chains and
+    void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> meshes, ResourcePreparationOptions options = {});
+    /// Uploads MeshPreparation::mesh() as prepare_meshes() does, using the preparation's mip chains and
     /// block-compressed images instead of reading texels from the Mesh, so it also uploads a Mesh whose
     /// TexelRetention::until_upload texels an earlier upload let go. Allocation and upload still run synchronously on
     /// this thread. @p preparation is read only during the call, and not at all if the mesh is already cached, in which

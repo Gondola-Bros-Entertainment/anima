@@ -144,7 +144,7 @@ inline int run(int argc, char **argv) {
     renderer.set_environment(environment);
 
     const auto sphere = anima::Mesh::compile(sphere_asset(), {.lods = {.levels = 6}});
-    require(sphere->draws()[0].levels.size() >= 3, "The sphere did not simplify into levels");
+    require(sphere->primitives()[0].levels.size() >= 3, "The sphere did not simplify into levels");
     std::vector<anima::Mat4> field;
     for (int z = 0; z < 20; ++z)
         for (int x = 0; x < 20; ++x) {

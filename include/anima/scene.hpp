@@ -137,14 +137,14 @@ class Scene {
     /// a primitive whose material slot has a custom material, when that material casts shadows.
     struct Instance {
         /// Shared immutable mesh.
-        std::shared_ptr<const Mesh> asset;
+        std::shared_ptr<const Mesh> mesh;
         /// World matrix of each mesh node, followed by one skinning matrix per joint of each skin. With
         /// #placements, the copy that one identity placement would draw.
         std::vector<Mat4> palette;
         /// Linear RGB factor per mesh material: the authored value or this object's override.
         std::vector<Vec3> factors;
         /// Custom material per mesh material, which draws that material's primitives in place of it;
-        /// null keeps the mesh's Material. Primitives without a material (IndexedDraw::material -1)
+        /// null keeps the mesh's Material. Primitives without a material (MeshPrimitive::material -1)
         /// always draw with the default Material.
         std::vector<std::shared_ptr<const CustomMaterial>> custom_materials;
         /// Visibility per mesh primitive.
@@ -232,9 +232,9 @@ class Scene {
     [[nodiscard]] bool contains(Id id) const noexcept;
     /// Number of live objects, including those without renderers.
     [[nodiscard]] std::size_t size() const noexcept { return object_count_; }
-    /// Creates an unnamed root object rendering @p asset, as create() does, and returns its Id.
+    /// Creates an unnamed root object rendering @p mesh, as create() does, and returns its Id.
     /// Throws `std::invalid_argument` for a null mesh.
-    [[nodiscard]] Id add(std::shared_ptr<const Mesh> asset);
+    [[nodiscard]] Id add(std::shared_ptr<const Mesh> mesh);
     /// Destroys object @p id and its descendants, as GameObject::destroy does.
     void remove(Id id);
     /// Sets the animation pose of @p id's renderer together with its world matrix, as
@@ -304,8 +304,8 @@ class Scene {
     /// when each of theirs does, while MeshSnapshot::skinned_vertices counts the snapshot's own skinned vertices,
     /// copies included.
     ///
-    /// Each draw contributes its own triangles, never its levels of detail (IndexedDraw::levels), once per
-    /// copy: a renderer with placements gives one primitive per placement and draw, in
+    /// Each mesh primitive contributes its own triangles, never its levels of detail (MeshPrimitive::levels), once per
+    /// copy: a renderer with placements gives one snapshot primitive per placement and mesh primitive, in
     /// MeshPlacements::transforms() order, placed as set_placements() describes, and visibility ranges
     /// leave every copy in. Primitives that are hidden, or whose renderer is hidden or on an inactive object, are
     /// included but marked invisible and left out of the snapshot bounds. Normals follow normal(), and
@@ -385,7 +385,7 @@ class Scene {
     static void run_components(std::span<Scene *const> scenes, double seconds, bool fixed, bool lifecycle_only = false);
     Instance &get(Id id);
     static void pose(Instance &instance, const Pose &pose, const Mat4 &world);
-    static RenderBounds append_pose(const Mesh &asset, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
+    static RenderBounds append_pose(const Mesh &mesh, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
                                     std::vector<RenderBounds> &bounds);
     // Writes the world bounds of @p placements' copies of each primitive under @p world into @p bounds and
     // returns their union.

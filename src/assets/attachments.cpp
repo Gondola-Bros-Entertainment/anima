@@ -315,9 +315,9 @@ void AttachmentSet::add_to(Scene &scene, const GameObject *owner) {
     bool visible = true;
     if (owner) {
         const auto &body = scene.slot(owner->id());
-        if (!body.value.asset)
+        if (!body.value.mesh)
             throw std::invalid_argument("Attachment owner requires a mesh");
-        const auto &pose = body.pose ? *body.pose : body.value.asset->rest_pose();
+        const auto &pose = body.pose ? *body.pose : body.value.mesh->rest_pose();
         visible = body.value.visible;
         for (const auto &[role, item] : roles)
             placements.emplace(role, attachment_placement(pose, item.binding));

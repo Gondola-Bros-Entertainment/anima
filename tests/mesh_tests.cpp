@@ -147,11 +147,11 @@ TEST_CASE("A texture limit alone leaves static geometry unsplit") {
     const auto meshes = Mesh::compile_static(source, {.max_texture_edge = reduced_edge});
     REQUIRE(meshes.size() == 1);
     const auto &mesh = *meshes.front();
-    REQUIRE(mesh.draws().size() == source.primitives.size());
+    REQUIRE(mesh.primitives().size() == source.primitives.size());
     CHECK(mesh.indices().size() == source.primitives.size() * triangle_corners);
     const auto &description = *mesh.description();
     for (std::size_t i = 0; i < source.primitives.size(); ++i) {
-        const auto &material = description.materials.at(mesh.draws()[i].material);
+        const auto &material = description.materials.at(mesh.primitives()[i].material);
         CHECK(material.name == source.materials.at(source.primitives[i].material).name);
         if (material.texture >= 0)
             CHECK(description.textures.at(material.texture).image->width == reduced_edge);
@@ -164,7 +164,7 @@ TEST_CASE("A vertex limit starts a new static mesh at each material change") {
     const auto meshes = Mesh::compile_static(source, {.max_vertices = source.primitives.size() * triangle_corners});
     REQUIRE(meshes.size() == source.primitives.size());
     for (std::size_t i = 0; i < meshes.size(); ++i) {
-        REQUIRE(meshes[i]->draws().size() == 1);
+        REQUIRE(meshes[i]->primitives().size() == 1);
         CHECK(meshes[i]->description()->materials.at(0).name ==
               source.materials.at(source.primitives[i].material).name);
     }
@@ -179,7 +179,7 @@ TEST_CASE("A static source without primitives compiles into one empty mesh under
         CAPTURE(options.max_texture_edge);
         const auto meshes = Mesh::compile_static(source, options);
         REQUIRE(meshes.size() == 1);
-        CHECK(meshes.front()->draws().empty());
+        CHECK(meshes.front()->primitives().empty());
         CHECK(meshes.front()->palette_size() == source.nodes.size());
     }
 }
@@ -580,7 +580,7 @@ TEST_CASE("Moving a mesh copies it, so the mesh moved from keeps its content") {
          std::initializer_list<const Mesh *>{&constructed_from, &assigned_from, &constructed, &assigned}) {
         REQUIRE(mesh->description() == compiled->description());
         CHECK(mesh->vertices().size() == compiled->vertices().size());
-        CHECK(mesh->draws().size() == compiled->draws().size());
+        CHECK(mesh->primitives().size() == compiled->primitives().size());
         CHECK_NOTHROW((void)scene.add(std::make_shared<const Mesh>(*mesh)));
     }
 }

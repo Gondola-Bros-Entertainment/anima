@@ -2604,19 +2604,19 @@ void VulkanRenderer::set_scenes(std::vector<std::shared_ptr<const Scene>> source
     throw std::logic_error("Resource rendering requires the asset library");
 #endif
 }
-void VulkanRenderer::prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets,
+void VulkanRenderer::prepare_meshes(std::span<const std::shared_ptr<const Mesh>> meshes,
                                     ResourcePreparationOptions options) {
 #ifdef ANIMA_HAS_ASSETS
-    impl_->prepare_meshes(assets, options);
+    impl_->prepare_meshes(meshes, options);
 #else
-    (void)assets;
+    (void)meshes;
     (void)options;
     throw std::logic_error("Resource rendering requires the asset library");
 #endif
 }
 void VulkanRenderer::prepare_mesh(const MeshPreparation &preparation, ResourcePreparationOptions options) {
 #ifdef ANIMA_HAS_ASSETS
-    impl_->prepare_meshes(std::span(&preparation.asset(), 1), options, &preparation);
+    impl_->prepare_meshes(std::span(&preparation.mesh(), 1), options, &preparation);
 #else
     (void)preparation;
     (void)options;

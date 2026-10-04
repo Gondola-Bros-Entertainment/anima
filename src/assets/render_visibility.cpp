@@ -1,5 +1,7 @@
 #include <anima/assets/render_visibility.hpp>
+#include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace anima {
 RenderFrustum::RenderFrustum(const Mat4 &view) {

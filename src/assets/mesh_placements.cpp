@@ -61,9 +61,9 @@ std::uint64_t spread(std::uint64_t v) {
 std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<const Mesh> mesh,
                                                              std::span<const Mat4> transforms) {
     require(bool(mesh), "Placements require a mesh");
-    require(
-        std::none_of(mesh->draws_.begin(), mesh->draws_.end(), [](const IndexedDraw &draw) { return draw.skinned; }),
-        "Placements draw only rigid meshes");
+    require(std::none_of(mesh->primitives_.begin(), mesh->primitives_.end(),
+                         [](const MeshPrimitive &draw) { return draw.skinned; }),
+            "Placements draw only rigid meshes");
     require(!transforms.empty() && transforms.size() <= max_count, "Placement count must be from 1 to 1048576");
     for (const auto &m : transforms)
         require(std::all_of(m.begin(), m.end(), [](float v) { return std::isfinite(v); }) &&
@@ -95,7 +95,7 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
     std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return keys[a] < keys[b]; });
 
     // Each bounds part's corners in mesh space under its rest node, so each copy only transforms points.
-    const auto &draws = mesh->draws_;
+    const auto &draws = mesh->primitives_;
     const auto &rest = mesh->rest_.world;
     std::vector<std::vector<std::array<Vec3, 8>>> corners(draws.size());
     for (std::size_t i = 0; i < draws.size(); ++i)

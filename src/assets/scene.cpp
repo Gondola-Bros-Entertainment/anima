@@ -145,10 +145,10 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
         const auto joint_count = primitive.skin < 0 ? 1 : source.skins[primitive.skin].joints.size();
         const auto first_vertex = result->vertices_.size();
         vertex_ranges.push_back(first_vertex);
-        result->draws_.push_back({static_cast<std::uint32_t>(result->indices_.size()),
-                                  static_cast<std::uint32_t>(corners), offset, static_cast<std::uint32_t>(joint_count),
-                                  primitive.skin >= 0, primitive.material, static_cast<std::uint32_t>(primitive.node),
-                                  source.nodes[primitive.node].name, primitive.mesh_name});
+        result->primitives_.push_back(
+            {static_cast<std::uint32_t>(result->indices_.size()), static_cast<std::uint32_t>(corners), offset,
+             static_cast<std::uint32_t>(joint_count), primitive.skin >= 0, primitive.material,
+             static_cast<std::uint32_t>(primitive.node), source.nodes[primitive.node].name, primitive.mesh_name});
         if (primitive.skin >= 0)
             description->skinned_vertices += corners;
         std::vector<RenderBounds> bounds(joint_count);
@@ -211,8 +211,8 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
     // map, vertex alpha, and in a skinned draw the joints and weights, which would tear the surface once posed.
     std::vector<unsigned> position_remap;
     std::vector<unsigned char> vertex_locks;
-    for (std::size_t d = 0; lods.levels && d < result->draws_.size(); ++d) {
-        auto &draw = result->draws_[d];
+    for (std::size_t d = 0; lods.levels && d < result->primitives_.size(); ++d) {
+        auto &draw = result->primitives_[d];
         const auto alpha_mode =
             draw.material >= 0 ? description->materials[std::size_t(draw.material)].alpha_mode : AlphaMode::opaque;
         if (alpha_mode == AlphaMode::mask)
@@ -383,7 +383,7 @@ Scene::Slot &Scene::slot(Id id) {
 const Scene::Slot &Scene::slot(Id id) const { return const_cast<Scene *>(this)->slot(id); }
 Scene::Instance &Scene::get(Id id) {
     auto &value = slot(id).value;
-    if (!value.asset)
+    if (!value.mesh)
         throw std::logic_error("GameObject has no MeshRenderer");
     return value;
 }
@@ -391,9 +391,9 @@ const Scene::Instance &Scene::instance(Id id) const { return const_cast<Scene *>
 void Scene::pose(Instance &value, const Pose &pose, const Mat4 &world) {
     std::vector<Mat4> palette;
     std::vector<RenderBounds> bounds;
-    palette.reserve(value.asset->palette_size_);
-    bounds.reserve(value.asset->draws_.size());
-    auto combined = append_pose(*value.asset, pose, world, palette, bounds);
+    palette.reserve(value.mesh->palette_size_);
+    bounds.reserve(value.mesh->primitives_.size());
+    auto combined = append_pose(*value.mesh, pose, world, palette, bounds);
     if (value.placements)
         combined = place(*value.placements, world, bounds);
     // All validation and allocations completed before publishing pose and bounds.
@@ -419,9 +419,9 @@ RenderBounds Scene::place(const MeshPlacements &placements, const Mat4 &world, s
     }
     return combined;
 }
-RenderBounds Scene::append_pose(const Mesh &asset, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
+RenderBounds Scene::append_pose(const Mesh &mesh, const Pose &pose, const Mat4 &world, std::vector<Mat4> &palette,
                                 std::vector<RenderBounds> &bounds) {
-    require(pose.world.size() == asset.rest_.world.size(), "Pose does not match render asset");
+    require(pose.world.size() == mesh.rest_.world.size(), "Pose does not match the mesh");
     affine(world);
     const auto first_matrix = palette.size(), first_bound = bounds.size();
     for (const auto &node : pose.world) {
@@ -429,15 +429,15 @@ RenderBounds Scene::append_pose(const Mesh &asset, const Pose &pose, const Mat4 
         palette.push_back(world * node);
         affine(palette.back());
     }
-    for (const auto &skin : asset.skins_)
+    for (const auto &skin : mesh.skins_)
         for (std::size_t j = 0; j < skin.joints.size(); ++j) {
             palette.push_back(world * pose.world[skin.joints[j]] * skin.inverse_bind[j]);
             affine(palette.back());
         }
-    bounds.resize(first_bound + asset.draws_.size());
+    bounds.resize(first_bound + mesh.primitives_.size());
     const auto posed = std::span(bounds).subspan(first_bound);
     for (std::size_t i = 0; i < posed.size(); ++i)
-        for (const auto &part : asset.bounds_[i])
+        for (const auto &part : mesh.bounds_[i])
             for (unsigned corner = 0; corner < 8; ++corner) {
                 const auto &b = part.bound;
                 expand(posed[i], point(palette[first_matrix + part.palette],
@@ -527,15 +527,15 @@ std::vector<GameObject> Scene::roots() {
             result.push_back(object({owner_, slots_[i].generation, i}));
     return result;
 }
-Scene::Id Scene::add(std::shared_ptr<const Mesh> asset) {
-    require(bool(asset), "Null mesh");
-    return create({}, std::move(asset)).id();
+Scene::Id Scene::add(std::shared_ptr<const Mesh> mesh) {
+    require(bool(mesh), "Null mesh");
+    return create({}, std::move(mesh)).id();
 }
 void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *initial_pose) {
     auto &entry = slot(id);
     require(mesh || !initial_pose, "An initial pose requires a mesh");
     if (!mesh) {
-        if (entry.value.asset)
+        if (entry.value.mesh)
             retire_instance(entry);
         entry.value = {};
         entry.pose.reset();
@@ -543,18 +543,18 @@ void Scene::assign_mesh(Id id, std::shared_ptr<const Mesh> mesh, const Pose *ini
         return;
     }
     Instance next;
-    next.asset = std::move(mesh);
+    next.mesh = std::move(mesh);
     std::optional<Pose> next_pose;
     if (initial_pose)
         next_pose = *initial_pose;
-    for (const auto &material : next.asset->description_->materials)
+    for (const auto &material : next.mesh->description_->materials)
         next.factors.push_back(material.factor);
     next.custom_materials.resize(next.factors.size());
-    next.primitive_visible.resize(next.asset->draws_.size(), true);
-    pose(next, next_pose ? *next_pose : next.asset->rest_, entry.world);
+    next.primitive_visible.resize(next.mesh->primitives_.size(), true);
+    pose(next, next_pose ? *next_pose : next.mesh->rest_, entry.world);
     // Allocate before publishing. Replacement keeps the object's transform, but
     // resets overrides and uses either the authored initial pose or mesh defaults.
-    if (!entry.value.asset) {
+    if (!entry.value.mesh) {
         auto renderer = std::make_shared<detail::ComponentRecord>(object(id), typeid(MeshRenderer), false);
         renderer->value = std::make_unique<detail::ComponentBox<MeshRenderer>>(object(id), MeshRenderer(object(id)));
         entry.components.emplace(typeid(MeshRenderer), renderer);
@@ -642,7 +642,7 @@ void Scene::remove(Id id) {
         const auto parent = entry.parent;
         if (parent)
             unlink_child(current);
-        if (entry.value.asset)
+        if (entry.value.mesh)
             retire_instance(entry);
         entry.value = {};
         entry.name.clear();
@@ -722,7 +722,7 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
     // Most animated objects are leaves or keep their placement between samples, so only a moved
     // object with children re-poses more than itself.
     const bool moved = world != entry.world, descendants = moved && entry.first_child != no_slot;
-    if (descendants || (entry.value.asset && (replacement || moved))) {
+    if (descendants || (entry.value.mesh && (replacement || moved))) {
         // Validate every affected palette and bound in the working lists before publishing any.
         posed_objects_.clear();
         posed_palettes_.clear();
@@ -733,18 +733,19 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
             const auto placed = posed_objects_[i].world;
             const auto &source = slots_[current.slot];
             affine(placed);
-            if (source.value.asset) {
+            if (source.value.mesh) {
                 posed_objects_[i].palette = posed_palettes_.size();
                 posed_objects_[i].bounds = posed_bounds_.size();
-                posed_objects_[i].combined = append_pose(*source.value.asset,
+                posed_objects_[i].combined = append_pose(*source.value.mesh,
                                                          current == id && replacement ? *replacement
                                                          : source.pose                ? *source.pose
-                                                                                      : source.value.asset->rest_,
+                                                                                      : source.value.mesh->rest_,
                                                          placed, posed_palettes_, posed_bounds_);
                 if (source.value.placements)
-                    posed_objects_[i].combined = place(
-                        *source.value.placements, placed,
-                        std::span(posed_bounds_).subspan(posed_objects_[i].bounds, source.value.asset->draws_.size()));
+                    posed_objects_[i].combined =
+                        place(*source.value.placements, placed,
+                              std::span(posed_bounds_)
+                                  .subspan(posed_objects_[i].bounds, source.value.mesh->primitives_.size()));
             }
             if (descendants)
                 for (auto child = source.first_child; child != no_slot; child = slots_[child].next_sibling)
@@ -755,7 +756,7 @@ void Scene::update_transform(Id id, const Mat4 &local, const Mat4 &world, const 
             auto &target = slots_[posed.id.slot];
             target.world = posed.world;
             auto &value = target.value;
-            if (!value.asset)
+            if (!value.mesh)
                 continue;
             std::copy_n(posed_palettes_.begin() + static_cast<std::ptrdiff_t>(posed.palette), value.palette.size(),
                         value.palette.begin());
@@ -880,7 +881,7 @@ void GameObject::set_position(Vec3 position) {
 }
 void GameObject::set_transform(const Transform &transform) { set_world_matrix(matrix(transform)); }
 void GameObject::set_world_matrix(const Mat4 &world) { scene().set_transform(id_, world); }
-bool GameObject::has_renderer() const { return bool(scene().slot(id_).value.asset); }
+bool GameObject::has_renderer() const { return bool(scene().slot(id_).value.mesh); }
 MeshRenderer GameObject::add_mesh(std::shared_ptr<const Mesh> mesh) {
     require(bool(mesh), "Null mesh");
     if (has_renderer())
@@ -894,7 +895,7 @@ MeshRenderer GameObject::renderer() const {
 }
 void GameObject::remove_mesh() { scene().assign_mesh(id_, {}); }
 void GameObject::destroy() { scene().remove(id_); }
-std::shared_ptr<const Mesh> MeshRenderer::mesh() const { return object_.scene().instance(object_.id_).asset; }
+std::shared_ptr<const Mesh> MeshRenderer::mesh() const { return object_.scene().instance(object_.id_).mesh; }
 void MeshRenderer::set_mesh(std::shared_ptr<const Mesh> mesh) {
     require(bool(mesh), "Null mesh");
     (void)object_.scene().instance(object_.id_);
@@ -937,7 +938,7 @@ void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
 }
 void Scene::clear_material_factor(Id id, std::size_t material) {
     auto &value = get(id);
-    value.factors.at(material) = value.asset->description_->materials.at(material).factor;
+    value.factors.at(material) = value.mesh->description_->materials.at(material).factor;
 }
 void Scene::set_custom_material(Id id, std::size_t material, std::shared_ptr<const CustomMaterial> custom) {
     auto &value = get(id);
@@ -974,7 +975,7 @@ void Scene::set_placements(Id id, std::shared_ptr<const MeshPlacements> placemen
     auto &entry = slot(id);
     auto &value = get(id);
     if (placements) {
-        require(placements->mesh() == value.asset, "Placements copy another mesh");
+        require(placements->mesh() == value.mesh, "Placements copy another mesh");
         require(std::all_of(value.custom_materials.begin(), value.custom_materials.end(),
                             [](const auto &custom) { return !custom || custom->reads_placements(); }),
                 "A custom material that draws placements must read them");
@@ -985,7 +986,7 @@ void Scene::set_placements(Id id, std::shared_ptr<const MeshPlacements> placemen
     std::vector<Mat4> palette;
     std::vector<RenderBounds> bounds;
     auto combined =
-        append_pose(*value.asset, entry.pose ? *entry.pose : value.asset->rest_, entry.world, palette, bounds);
+        append_pose(*value.mesh, entry.pose ? *entry.pose : value.mesh->rest_, entry.world, palette, bounds);
     if (placements)
         combined = place(*placements, entry.world, bounds);
     value.primitive_bounds.swap(bounds);
@@ -1014,7 +1015,7 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
         const auto copies = value.placements ? value.placements->transforms().size() : 1;
         // Each draw's own indices; levels of detail follow them in Mesh::indices() and are not snapshotted.
         std::size_t size = 0;
-        for (const auto &draw : value.asset->draws_)
+        for (const auto &draw : value.mesh->primitives_)
             size += draw.index_count;
         require(size <= (std::numeric_limits<std::size_t>::max() - corners) / copies, "Snapshot vertex overflow");
         corners += size * copies;
@@ -1025,8 +1026,8 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     RenderBounds bounds;
     for (auto id : objects) {
         const auto &value = instance(id);
-        const auto &asset = *value.asset;
-        const auto &description = *asset.description();
+        const auto &mesh = *value.mesh;
+        const auto &description = *mesh.description();
         const auto material_offset = result.materials.size(), texture_offset = result.textures.size();
         require(description.materials.size() <= INT_MAX && description.textures.size() <= INT_MAX &&
                     material_offset <= INT_MAX - description.materials.size() &&
@@ -1057,12 +1058,12 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
         for (std::size_t copy = 0; copy < std::max<std::size_t>(placements.size(), 1); ++copy) {
             if (!placements.empty()) {
                 copy_palette.clear();
-                for (const auto &node : asset.rest_.world)
+                for (const auto &node : mesh.rest_.world)
                     copy_palette.push_back(value.world * placements[copy] * node);
             }
             const auto &palette = placements.empty() ? value.palette : copy_palette;
-            for (std::size_t i = 0; i < asset.draws().size(); ++i) {
-                const auto &draw = asset.draws()[i];
+            for (std::size_t i = 0; i < mesh.primitives().size(); ++i) {
+                const auto &draw = mesh.primitives()[i];
                 const bool visible = value.visible && value.active && value.primitive_visible[i];
                 const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : value.factors[draw.material];
                 result.primitives.push_back(
@@ -1075,7 +1076,7 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                 bool reversed = false;
                 for (std::size_t j = draw.first_index; j < std::size_t(draw.first_index) + draw.index_count; ++j) {
                     const auto corner = j - draw.first_index;
-                    const auto &source = asset.vertices()[asset.indices()[j]];
+                    const auto &source = mesh.vertices()[mesh.indices()[j]];
                     auto transform = palette[draw.palette_offset];
                     if (draw.skinned) {
                         transform = {};

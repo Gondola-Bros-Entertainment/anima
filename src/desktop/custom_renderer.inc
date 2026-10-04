@@ -394,7 +394,7 @@ void bind_custom(const GpuCustomMaterial &gpu, bool shadow) {
 void record_custom_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view,
                         bool shadow) {
     const auto &source = *render_instance.source;
-    const auto &draw = source.asset->draws()[draw_index];
+    const auto &draw = source.mesh->primitives()[draw_index];
     const auto factor = source.factors.at(static_cast<std::size_t>(draw.material));
     const CustomPush push{view,
                           render_instance.palette_offset + draw.palette_offset,

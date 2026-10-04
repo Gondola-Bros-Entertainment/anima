@@ -182,7 +182,7 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
         } else
             SDL_Delay(10);
     }
-    require(right_object.renderer().mesh() == instances->instance(left).asset,
+    require(right_object.renderer().mesh() == instances->instance(left).mesh,
             "Scenes stopped sharing geometry during rendering");
     require(renderer.resource_stats().mesh_uploads == 1, "Multi-scene selection uploaded a shared mesh twice");
     auto capture = [&](const char *name) {

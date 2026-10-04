@@ -6,7 +6,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     try {
-        anima::print_mesh_report(anima::load_glb(argv[1]));
+        anima::print_mesh_report(anima::load_mesh_snapshot(argv[1]), std::cout);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "GLB: " << error.what() << '\n';

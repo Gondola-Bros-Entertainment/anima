@@ -104,16 +104,16 @@ Frame documented_frame(ImpostorLayout layout, std::uint32_t count, std::uint32_t
 // Texel (s, t) of frame (i, j) of @p texture, as RGBA bytes.
 std::array<int, 4> texel(const ImpostorAtlas &atlas, const Texture &texture, std::uint32_t i, std::uint32_t j,
                          std::uint32_t s, std::uint32_t t) {
-    const auto size = atlas.color.image->width / atlas.frames.count;
+    const auto size = atlas.color.image->width / atlas.frames.frames_per_side;
     const auto &image = *texture.image;
     const auto *p = &image.rgba[(std::size_t(j * size + t) * image.width + i * size + s) * 4];
     return {p[0], p[1], p[2], p[3]};
 }
-ImpostorOptions options(std::uint32_t frames, std::uint32_t frame_size, std::uint32_t samples,
+ImpostorOptions options(std::uint32_t frames_per_side, std::uint32_t frame_size, std::uint32_t samples,
                         ImpostorLayout layout = ImpostorLayout::hemisphere) {
     ImpostorOptions value;
     value.layout = layout;
-    value.frames = frames;
+    value.frames_per_side = frames_per_side;
     value.frame_size = frame_size;
     value.samples = samples;
     return value;
@@ -163,7 +163,7 @@ TEST_CASE("Each frame views the mesh from its documented direction") {
         CAPTURE(int(layout));
         const auto atlas = bake_impostor(*mesh, options(4, 32, 4, layout));
         CHECK(atlas.frames.layout == layout);
-        CHECK(atlas.frames.count == 4);
+        CHECK(atlas.frames.frames_per_side == 4);
         CHECK(length(atlas.frames.center) < 1e-6F);
         CHECK(atlas.frames.radius == doctest::Approx(1).epsilon(1e-6));
         CHECK(atlas.color.image->width == 128);
@@ -321,12 +321,12 @@ TEST_CASE("An impostor mesh draws one quad around its source's center") {
         const auto mesh = Mesh::compile_impostor(atlas, retention);
         REQUIRE(mesh->impostor());
         CHECK(mesh->impostor()->layout == ImpostorLayout::sphere);
-        CHECK(mesh->impostor()->count == 4);
+        CHECK(mesh->impostor()->frames_per_side == 4);
         CHECK(mesh->impostor()->radius == atlas.frames.radius);
         CHECK(mesh->texel_retention() == retention);
-        REQUIRE(mesh->draws().size() == 1);
-        CHECK(mesh->draws()[0].index_count == 6);
-        CHECK(mesh->draws()[0].levels.empty());
+        REQUIRE(mesh->primitives().size() == 1);
+        CHECK(mesh->primitives()[0].index_count == 6);
+        CHECK(mesh->primitives()[0].levels.empty());
         const auto &bounds = mesh->rest_bounds();
         const auto &expected = source->rest_bounds();
         for (const auto axis : {0, 1, 2}) {
@@ -412,7 +412,7 @@ TEST_CASE("Compiling an impostor rejects frames and images it cannot draw") {
     };
     for (const auto count : {1U, 33U, 3U}) {
         auto value = atlas;
-        value.frames.count = count;
+        value.frames.frames_per_side = count;
         // 64 texels do not divide into 3 frames.
         rejects(value, count == 3 ? images_message : frames_message);
     }

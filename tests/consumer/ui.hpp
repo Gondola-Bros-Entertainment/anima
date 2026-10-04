@@ -572,7 +572,7 @@ inline int run(int argc, char **argv) {
     mesh->vertices = {{{-1, -1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}},
                       {{1, -1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}},
                       {{0, 1, .4F}, {0, 0, 1}, {.1F, .3F, .8F}, {}}};
-    anima::Primitive primitive;
+    anima::SnapshotPrimitive primitive;
     primitive.vertex_count = 3;
     mesh->primitives.push_back(primitive);
     renderer.set_scenes({reference_test::scene(*mesh)});

@@ -2,12 +2,12 @@
 #include <stdexcept>
 
 namespace anima {
-MeshPreparation::MeshPreparation(std::shared_ptr<const Mesh> asset) : asset_(std::move(asset)) {
-    if (!asset_)
-        throw std::invalid_argument("Cannot prepare a null render asset");
-    const auto &source = *asset_->description();
+MeshPreparation::MeshPreparation(std::shared_ptr<const Mesh> mesh) : mesh_(std::move(mesh)) {
+    if (!mesh_)
+        throw std::invalid_argument("Cannot prepare a null mesh");
+    const auto &source = *mesh_->description();
     plan_ = material_texture_plan(source.materials, source.textures);
-    const auto texels = asset_->texel_images();
+    const auto texels = mesh_->texel_images();
     images_.reserve(plan_.images.size());
     compressed_images_.reserve(plan_.images.size());
     const Texture white{std::make_shared<Image>(Image{1, 1, {255, 255, 255, 255}}), {}};
