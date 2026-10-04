@@ -67,23 +67,24 @@ TEST_CASE("Grid routes avoid expensive cells and never cut a blocked corner") {
 }
 
 TEST_CASE("A follower steers toward its next waypoint and advances only on observed arrival") {
+    constexpr n::SteerSettings fast{.speed = 100, .arrival_distance = 0};
     n::Follower follower({{0, 0, 0}, {1, 0, 0}, {1, 0, 1}});
-    auto velocity = follower.steer({}, 100, .1, 0);
+    auto velocity = follower.steer({}, .1, fast);
     CHECK(follower.next() == 1u);
     CHECK_MESSAGE(velocity.x == 10, "Steering overshot route corner");
     CHECK(velocity.z == 0);
-    velocity = follower.steer({}, 100, .1, 0);
+    velocity = follower.steer({}, .1, fast);
     CHECK_MESSAGE(follower.next() == 1u, "Blocked motor consumed its route");
     CHECK(velocity.x == 10);
-    velocity = follower.steer({1, 0, 0}, 100, .1, 0);
+    velocity = follower.steer({1, 0, 0}, .1, fast);
     CHECK_MESSAGE(follower.next() == 2u, "Observed arrival failed to advance");
     CHECK(velocity.z == 10);
-    velocity = follower.steer({1, 0, 1}, 100, .1, 0);
+    velocity = follower.steer({1, 0, 1}, .1, fast);
     CHECK(follower.finished());
     CHECK_MESSAGE(anima::length(velocity) == 0, "Finished route still steers");
     follower.set_route({{1, 0, 0}});
     auto copy = follower;
-    (void)copy.steer({1, 0, 0}, 1, .1);
+    (void)copy.steer({1, 0, 0}, .1);
     CHECK(copy.finished());
     CHECK_FALSE_MESSAGE(follower.finished(), "Follower copies share mutable cursor");
     CHECK_THROWS_WITH_AS(follower.set_route({{NAN, 0, 0}}), "Navigation position outside finite supported range",
@@ -91,9 +92,69 @@ TEST_CASE("A follower steers toward its next waypoint and advances only on obser
     // The rejected replacement keeps the accepted route and cursor.
     CHECK(follower.route().size() == 1u);
     CHECK(follower.next() == 0u);
-    CHECK_THROWS_WITH_AS(follower.steer({}, -1, .1), "Invalid navigation speed/arrival distance",
+    CHECK_THROWS_WITH_AS(follower.steer({}, .1, {.speed = -1}), "Invalid navigation speed/arrival distance",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(follower.steer({}, 1, 0), "Navigation step must be in [0.000001, 0.1] seconds",
+    CHECK_THROWS_WITH_AS(follower.steer({}, .1, {.arrival_distance = NAN}), "Invalid navigation speed/arrival distance",
+                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(follower.steer({}, .1, {.plane = static_cast<n::SteerPlane>(2)}),
+                         "Unknown navigation steer plane", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(follower.steer({}, 0), "Navigation step must be in [0.000001, 0.1] seconds",
+                         std::invalid_argument);
+    CHECK(follower.next() == 0u);
+}
+
+TEST_CASE("A follower in the XZ plane arrives and steers regardless of height") {
+    const std::vector<Vec3> route{{0, 0, 0}, {1, 0, 0}};
+    // One unit above the route, a 3D follower neither arrives nor steers level.
+    n::Follower spatial(route);
+    auto velocity = spatial.steer({0, 1, 0}, .1, {.speed = 100});
+    CHECK(spatial.next() == 0u);
+    CHECK(velocity.y == -10);
+    n::Follower planar(route);
+    velocity = planar.steer({0, 1, 0}, .1, {.speed = 100, .plane = n::SteerPlane::xz});
+    CHECK_MESSAGE(planar.next() == 1u, "Planar follower measured arrival with height");
+    // The speed cap uses the planar distance, so the step ends at the waypoint's X and Z.
+    CHECK(velocity.x == 10);
+    CHECK_MESSAGE(velocity.y == 0, "Planar velocity left the XZ plane");
+    CHECK(velocity.z == 0);
+    velocity = planar.steer({0, 5, 0}, .1, {.speed = 2, .plane = n::SteerPlane::xz});
+    CHECK(velocity.x == 2);
+    CHECK(velocity.y == 0);
+    // A waypoint directly below or above counts as reached, and a finished route stops steering.
+    velocity = planar.steer({1, -3, 0}, .1, {.arrival_distance = 0, .plane = n::SteerPlane::xz});
+    CHECK(planar.finished());
+    CHECK(anima::length(velocity) == 0);
+}
+
+TEST_CASE("Grid lookup finds the cell around a position and nothing beyond the grid") {
+    const n::Grid grid{3, 2, {10, 3, -4}, 2, {1, 0, 1, 1, 1, 1}, true};
+    const auto map = n::make_grid(grid);
+    // Each cell center maps to its own node, at any height and whether walkable or not.
+    for (n::NodeId id = 0; id < map.nodes().size(); ++id) {
+        CAPTURE(id);
+        const auto center = map.nodes()[id].position;
+        CHECK(n::grid_node(grid, center) == id);
+        CHECK(n::grid_node(grid, center + Vec3{.9F, 50, -.9F}) == id);
+    }
+    // Each cell reaches half a cell either side of its center, and an edge between cells belongs to the +X or +Z one.
+    CHECK(n::grid_node(grid, {11, 0, -4}) == 1u);
+    CHECK(n::grid_node(grid, {10, 0, -3}) == 3u);
+    CHECK(n::grid_node(grid, {9, 0, -5}) == 0u);
+    CHECK(n::grid_node(grid, {14.99F, 0, -2.01F}) == 5u);
+    for (const auto outside : {Vec3{8.99F, 0, -4}, Vec3{10, 0, -5.01F}, Vec3{15, 0, -4}, Vec3{10, 0, -1}}) {
+        CAPTURE(outside.x);
+        CAPTURE(outside.z);
+        CHECK_FALSE_MESSAGE(n::grid_node(grid, outside).has_value(), "Lookup returned a node outside the grid");
+    }
+    CHECK_THROWS_WITH_AS((void)n::grid_node(grid, {NAN, 0, 0}), "Navigation position outside finite supported range",
+                         std::invalid_argument);
+    auto bad = grid;
+    bad.costs.pop_back();
+    CHECK_THROWS_WITH_AS((void)n::grid_node(bad, {}), "Invalid navigation grid dimensions/cost count",
+                         std::invalid_argument);
+    bad = grid;
+    bad.cell_size = 0;
+    CHECK_THROWS_WITH_AS((void)n::grid_node(bad, {}), "Invalid navigation grid dimensions/cost count",
                          std::invalid_argument);
 }
 

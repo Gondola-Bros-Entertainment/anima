@@ -85,7 +85,8 @@ inline void frame_cadence() {
     listener.add_component<AudioListener>();
     auto actions = steering.add_component<input::ActionInput>(
         input::Map{{"advance", input::ActionType::button, {{{input::ControlKind::key, 44}}}}});
-    auto agent = steering.add_component<navigation::Agent>(std::vector<Vec3>{{0, 0, 0}, {10, 0, 0}}, 2.F, 0.F);
+    auto agent = steering.add_component<navigation::Agent>(
+        std::vector<Vec3>{{0, 0, 0}, {10, 0, 0}}, navigation::SteerSettings{.speed = 2, .arrival_distance = 0});
     steering.add_component<FrameProbe>(agent, emitter, &counts);
     physics::BodySettings settings3;
     settings3.motion = physics::Motion::dynamic;
