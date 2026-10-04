@@ -1,8 +1,9 @@
 #pragma once
 // Block-compressed textures through the public API: BC7 images from KTX2 files, drawn as a mesh's base color and
 // through a custom material, against their uncompressed sources, on the device's BC7 path and on the CPU decoding
-// that devices without BC7 get, with the device and CPU memory of a representative texture in each format. The
-// fixtures, their sources and the commands that made them are in tests/textures.
+// that devices without BC7 get, whole and without their top level (VulkanRenderer::set_texture_mip_skip), with the
+// device and CPU memory of a representative texture in each format. The fixtures, their sources and the commands that
+// made them are in tests/textures.
 #include "custom_materials.hpp"
 #include "gltf_fixture.hpp"
 #include "gpu_checks.hpp"
@@ -30,6 +31,7 @@ namespace compressed_texture_test {
 using rejection::rejects;
 using texture_memory_test::Harness;
 using texture_memory_test::require;
+using texture_memory_test::require_quartered;
 
 inline std::vector<std::uint8_t> read_file(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -188,9 +190,15 @@ inline int run(int argc, char **argv) {
         harness.renderer().prepare_mesh(prepared_bc7);
         draw(harness, name, texture_memory_test::scene_of(prepared_bc7.asset()));
     };
+    // The far quad from a new Mesh, uploaded without the image's top level: it reads the same stored levels, since it
+    // minifies past the first.
+    const auto skip_top = [&](Harness &harness, const std::string &name) {
+        harness.renderer().set_texture_mip_skip(1);
+        draw(harness, name, texture_memory_test::scene_of(anima::Mesh::compile(*substituted(*far, srgb))));
+    };
 
     gpu_check::Captures captures(output);
-    std::uint64_t rgba_device{}, bc7_device{}, decoded_device{};
+    std::uint64_t rgba_device{}, bc7_device{}, decoded_device{}, bc7_skip_device{}, decoded_skip_device{};
     bool sampled{};
     {
         Harness harness(output);
@@ -203,7 +211,10 @@ inline int run(int argc, char **argv) {
         prepare(harness, "prepared_bc7");
         rgba_device = memory(harness, false);
         bc7_device = memory(harness, true);
-        for (const auto *name : {"close_rgba8", "close_bc7", "far_bc7", "effect_rgba8", "effect_bc7", "prepared_bc7"})
+        skip_top(harness, "far_bc7_skip");
+        bc7_skip_device = memory(harness, true);
+        for (const auto *name :
+             {"close_rgba8", "close_bc7", "far_bc7", "effect_rgba8", "effect_bc7", "prepared_bc7", "far_bc7_skip"})
             captures.add(name, harness.images[name]);
         harness.finish();
     }
@@ -216,7 +227,10 @@ inline int run(int argc, char **argv) {
         draw(harness, "effect_decoded", effect_bc7);
         prepare(harness, "prepared_decoded");
         decoded_device = memory(harness, true);
-        for (const auto *name : {"close_decoded", "far_decoded", "effect_decoded", "prepared_decoded"})
+        skip_top(harness, "far_decoded_skip");
+        decoded_skip_device = memory(harness, true);
+        for (const auto *name :
+             {"close_decoded", "far_decoded", "effect_decoded", "prepared_decoded", "far_decoded_skip"})
             captures.add(name, harness.images[name]);
         harness.finish();
     }
@@ -235,15 +249,20 @@ inline int run(int argc, char **argv) {
     captures.require_same("close_bc7", "prepared_bc7", "A prepared BC7 upload drew differently");
     captures.require_same("close_decoded", "prepared_decoded",
                           "A preparation drew differently after an earlier upload let its mesh's texels go");
+    require_within(captures, "far_bc7", "far_bc7_skip", path_tolerance, "BC7 sampled without its top level");
+    require_within(captures, "far_decoded", "far_decoded_skip", path_tolerance, "BC7 decoded without its top level");
     const auto rgba_bytes = measured(false)->rgba.size(), bc7_bytes = measured(true)->blocks.size();
     std::cout << "COMPRESSED TEXTURES " << measured_edge << "x" << measured_edge << " texture with mips, device bytes: "
               << "RGBA8 " << rgba_device << ", BC7 " << bc7_device << (sampled ? " sampled" : " decoded")
-              << ", BC7 decoded " << decoded_device << "; CPU texel bytes: RGBA8 " << rgba_bytes
+              << ", BC7 decoded " << decoded_device << "; without the top level: BC7 " << bc7_skip_device
+              << ", BC7 decoded " << decoded_skip_device << "; CPU texel bytes: RGBA8 " << rgba_bytes
               << " (base level; mips are built at upload), BC7 " << bc7_bytes << " (every level)\n";
     // RGBA8 takes 4 bytes a texel and BC7 1, so BC7 takes a quarter of the device memory where it is sampled.
     require(!sampled || bc7_device * 4 <= rgba_device + rgba_device / 64,
             "Sampled BC7 images must take about a quarter of the device memory of RGBA8 ones");
     require(decoded_device == rgba_device, "Decoded BC7 images must take the device memory of RGBA8 ones");
+    require_quartered(bc7_device, bc7_skip_device, "The top level of a BC7 image");
+    require_quartered(decoded_device, decoded_skip_device, "The top level of a decoded BC7 image");
     std::cout << "PASS compressed textures: BC7 images from KTX2 drew within their encoding error of their sources, "
               << (sampled ? "sampled as BC7" : "decoded on the CPU, since this device does not sample BC7")
               << ", and matched their CPU decoding\n";

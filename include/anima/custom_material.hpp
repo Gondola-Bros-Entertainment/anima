@@ -62,8 +62,9 @@
 /// - Set 2, binding 0, any stage: the parameter block, a uniform block that holds
 ///   CustomMaterialDefinition::parameters from its start, laid out as the shader declares it.
 /// - Set 2, bindings 1 to 4, any stage: `sampler2D` for CustomMaterialDefinition::textures 0 to 3, sampled as their
-///   Sampler states, through mip chains built as texture_mips() builds them when Sampler::mipmapped is set, and
-///   filtered anisotropically as VulkanRenderer::max_anisotropy() describes.
+///   Sampler states, through mip chains built as texture_mips() builds them when Sampler::mipmapped is set, less the
+///   top levels that VulkanRenderer::set_texture_mip_skip() drops, and filtered anisotropically as
+///   VulkanRenderer::max_anisotropy() describes.
 ///
 /// Push constants, any stage: the block `AnimaDraw`, per draw. At offset 0 `mat4 viewProjection`, the matrix of
 /// the pass being drawn: the camera's, or in the depth-only variant a shadow pass's, a shadow cascade's or the detail

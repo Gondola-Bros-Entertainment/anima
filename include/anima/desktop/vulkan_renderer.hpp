@@ -162,6 +162,9 @@ struct RendererOptions {
     /// see VulkanRenderer::scene_color_format. A value that is not a SceneColorFormat enumerator makes construction
     /// throw `std::invalid_argument` ("Unknown scene color format").
     SceneColorFormat scene_color_format = SceneColorFormat::rgba16f;
+    /// Initial levels that each mipmapped material texture drops from the top of its mip chain when it is uploaded;
+    /// see VulkanRenderer::set_texture_mip_skip. Every value is accepted, and 0 uploads every level.
+    std::uint32_t texture_mip_skip = 0;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -527,7 +530,8 @@ struct ResourceStats {
 /// the base level for an unmipmapped texture, and a single stored level samples as an unmipmapped texture does: as
 /// `VK_FORMAT_BC7_SRGB_BLOCK` or `VK_FORMAT_BC7_UNORM_BLOCK` by the texture's encoding where samples_bc7() is true,
 /// and otherwise decoded to RGBA8 on the CPU as decode_image() decodes them, which takes four times the device
-/// memory. Missing textures sample white, and a primitive's textures share one UV set.
+/// memory. Mipmapped textures upload without the top levels that set_texture_mip_skip() drops. Missing textures
+/// sample white, and a primitive's textures share one UV set.
 /// Normal maps use the authored tangent frame, whose handedness survives skinning and mirrored transforms, or
 /// else a screen-derivative frame; degenerate UVs keep the interpolated normal. Masked materials discard
 /// fragments whose texture alpha times material alpha times vertex alpha is below the cutoff, in the color
@@ -794,6 +798,30 @@ class VulkanRenderer {
     /// The impostor frame count that RendererOptions::impostor_frames or the latest accepted set_impostor_frames()
     /// requested.
     [[nodiscard]] std::uint32_t impostor_frames() const noexcept;
+    /// Sets how many levels each mipmapped material texture, custom materials' included, drops from the top of its mip
+    /// chain when it is uploaded, to save device memory and bandwidth; it starts as RendererOptions::texture_mip_skip.
+    ///
+    /// A texture whose Sampler::mipmapped is set uploads the levels that it otherwise would, the chain that
+    /// texture_mips() builds or the levels that an ImageFormat::bc7 image stores, from level `min(levels, n - 1)` of
+    /// those `n`, so it keeps at least its last level. Each level dropped halves both dimensions, rounding down to at
+    /// least 1, which saves about three quarters of the device memory that the texture would take without it
+    /// (ResourceStats::resident_texture_bytes). Samples choose among the kept levels as they would among the whole
+    /// chain, so where they would read a dropped level they read the first kept one, magnified. A texture left with one
+    /// level samples as an unmipmapped texture does. Unmipmapped textures upload whole. An impostor's atlas
+    /// (Mesh::compile_impostor()) drops at most the levels after which each of its frames is still a whole number of
+    /// texels across, and at least 4, since the impostor's shaders find its frames' texels from the first level that it
+    /// uploads. The texels on the CPU are unchanged: an RGBA8 texture's upload still builds the levels it drops, and
+    /// MeshPreparation prepares the whole chain. The device's 2D image limit that mesh uploads enforce (set_scenes())
+    /// applies to a texture's own size, before any level is dropped. Custom shaders that read a texture's size or fetch
+    /// its texels by index see the kept levels.
+    ///
+    /// Only uploads after the call drop the new count: meshes and custom materials already in the GPU cache keep their
+    /// device images until draw() releases them, once only the renderer references them, and upload again with the
+    /// count set then. Without asset support the renderer uploads no material textures, so the count has no effect.
+    /// Every value is accepted.
+    void set_texture_mip_skip(std::uint32_t levels);
+    /// The level count that RendererOptions::texture_mip_skip or the latest set_texture_mip_skip() set.
+    [[nodiscard]] std::uint32_t texture_mip_skip() const noexcept;
     /// The format of the scene's linear color target (SceneColorFormat), which the constructor settles once from
     /// RendererOptions::scene_color_format. SceneColorFormat::b10g11r11 is used only where the device's optimal tiling
     /// can attach, blend, sample with linear filtering, and copy to and from it, as the opaque color copy needs, and
