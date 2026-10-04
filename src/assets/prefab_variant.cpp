@@ -1,3 +1,4 @@
+#include "../detail/affine.hpp"
 #include "../detail/json.hpp"
 #include "../detail/visibility_range_json.hpp"
 #include <algorithm>
@@ -35,7 +36,7 @@ Mat4 matrix_value(const Json &value) {
         result[i] = scalar(value[i]);
     return result;
 }
-void validate_native(Scene &validation, const PrefabVariant::Override &value) {
+void validate_native(const PrefabVariant::Override &value) {
     const auto *renderer = value.renderer ? &*value.renderer : nullptr;
     require(!renderer || renderer->mesh ||
                 (!renderer->pose && renderer->visible && renderer->material_factors.empty() &&
@@ -46,20 +47,17 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
             "Prefab variant placements must copy the renderer's mesh, which has no pose");
     if (renderer)
         validate_visibility_range(renderer->visibility_range);
-    auto object = validation.create();
     if (value.local)
-        object.set_local_matrix(*value.local);
-    if (!renderer || !renderer->mesh) {
-        object.destroy();
+        detail::require_affine(*value.local);
+    if (!renderer || !renderer->mesh)
         return;
-    }
     // The base parent is not available yet. Validate authored matrices without
     // a renderer; resolving checks their actual world composition and bounds.
     if (renderer->pose) {
         require(renderer->pose->world.size() == renderer->mesh->rest_pose().world.size(),
                 "Prefab variant pose does not match the mesh");
         for (const auto &world : renderer->pose->world)
-            object.set_local_matrix(world);
+            detail::require_affine(world);
     }
     require(renderer->material_factors.empty() ||
                 renderer->material_factors.size() == renderer->mesh->description()->materials.size(),
@@ -73,7 +71,6 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     for (auto factor : renderer->material_factors)
         for (auto channel : {factor.x, factor.y, factor.z})
             require(std::isfinite(channel) && channel >= 0 && channel <= 1, "Invalid prefab variant material factor");
-    object.destroy();
 }
 // Names written into one document.
 struct ResourceNames {
@@ -212,7 +209,6 @@ PrefabVariant::PrefabVariant(std::string base_key, std::vector<Override> overrid
     validate_key(base_key_);
     require(overrides_.size() <= maximum_overrides, "Invalid prefab variant override count");
     std::set<ObjectKey> keys;
-    Scene validation;
     for (const auto &value : overrides_) {
         require(value.key.value && keys.insert(value.key).second, "Null or duplicate prefab variant object key");
         require(value.name || value.local || value.active || value.renderer || !value.set_components.empty() ||
@@ -230,7 +226,7 @@ PrefabVariant::PrefabVariant(std::string base_key, std::vector<Override> overrid
             validate_key(type);
             require(types.insert(type).second, "Duplicate or conflicting prefab variant component removal");
         }
-        validate_native(validation, value);
+        validate_native(value);
     }
 }
 

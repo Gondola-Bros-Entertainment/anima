@@ -1,4 +1,5 @@
 #include "../detail/staging.hpp"
+#include "bind_pose.hpp"
 #include "mesh_limits.hpp"
 #include "rotation_matrix.hpp"
 #include "winding.hpp"
@@ -680,14 +681,9 @@ MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose) {
     for (const auto &clip : asset.animations)
         snapshot.clips.push_back(clip.name);
     const auto rest = sample_pose(asset);
-    for (const auto &skin : asset.skins) {
+    for (const auto &skin : asset.skins)
         snapshot.joints += skin.joints.size();
-        for (std::size_t j = 0; j < skin.joints.size(); ++j) {
-            const auto bind = rest.world.at(skin.joints[j]) * skin.inverse_bind.at(j), unit = identity();
-            for (unsigned k = 0; k < 16; ++k)
-                snapshot.bind_deviation = std::max(snapshot.bind_deviation, std::abs(bind[k] - unit[k]));
-        }
-    }
+    snapshot.bind_deviation = detail::bind_deviation(rest, asset.skins);
     snapshot.default_is_bind_pose = snapshot.bind_deviation < mesh_limits::bind_pose_tolerance;
     for (const auto &p : asset.primitives) {
         snapshot.primitives.push_back({asset.nodes.at(p.node).name, p.mesh_name,
