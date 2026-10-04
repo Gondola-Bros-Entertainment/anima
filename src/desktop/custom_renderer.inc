@@ -148,8 +148,9 @@ void create_custom_layout() {
     pool.pPoolSizes = sizes;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &custom_frame_pool), "Create custom frame pool");
     for (auto &slot : frames) {
-        slot.custom_frame_buffer = resource_buffer(sizeof(CustomFrameUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        slot.custom_frame_buffer =
+            resource_buffer(sizeof(CustomFrameUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocate.descriptorPool = custom_frame_pool;
         allocate.descriptorSetCount = 1;
@@ -228,7 +229,7 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         value->shadow_fragment = custom_module(definition.shadow_fragment_shader);
     if (!definition.parameters.empty()) {
         value->parameters = resource_buffer(definition.parameters.size(), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         std::memcpy(value->parameters->mapping, definition.parameters.data(), definition.parameters.size());
         flush_resource(*value->parameters);
     }

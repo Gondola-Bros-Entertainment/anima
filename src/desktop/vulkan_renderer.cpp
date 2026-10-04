@@ -1857,7 +1857,7 @@ struct VulkanRenderer::Impl {
         buffer_create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         void *const material_mapping =
             create_buffer(buffer_create, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, target.material_buffer,
-                          target.material_allocation, "Create material buffer")
+                          target.material_allocation, "Create material buffer", VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
                 .pMappedData;
         std::vector<std::byte> uniforms(static_cast<std::size_t>(stride * count));
         for (std::uint32_t i = 0; i < count; ++i) {
