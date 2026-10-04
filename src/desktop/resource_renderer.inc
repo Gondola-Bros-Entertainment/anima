@@ -516,10 +516,10 @@ static double copy_radius(const Scene::Instance &render_instance) {
     return bounds_radius(render_instance.mesh->rest_bounds()) * axis_scale(render_instance.world);
 }
 // Whether @p bounds may hold a point at a distance from @p eye strictly inside one of @p range's margins, where
-// visibilityAt() gives a copy measured to that point a share of its pixels between 0 and 1. At a margin's edges a copy
-// draws whole or not at all, and dissolved() keeps every pixel of a share above 15.5/16 and none below 0.5/16, so where
-// rounding moves a distance across an edge by less than 1/32 of the margin, the shader's float distance and this test's
-// double one draw the same pixels.
+// animaVisibilityAt() (anima/visibility.glsl) gives a copy measured to that point a share of its pixels between 0 and
+// 1. At a margin's edges a copy draws whole or not at all, and animaDissolved() keeps every pixel of a share above
+// 15.5/16 and none below 0.5/16, so where rounding moves a distance across an edge by less than 1/32 of the margin, the
+// shader's float distance and this test's double one draw the same pixels.
 static bool may_dissolve(const VisibilityRange &range, Vec3 eye, const RenderBounds &bounds) {
     const auto nearest = nearest_distance(eye, bounds), farthest = farthest_distance(eye, bounds);
     const auto overlaps = [&](double from, double to) { return from < to && nearest < to && farthest > from; };

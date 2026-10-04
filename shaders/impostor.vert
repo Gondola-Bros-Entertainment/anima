@@ -34,7 +34,7 @@ layout(push_constant) uniform Draw {
 draw;
 // Set in the shadow pipeline, which views along the sun, whose direction the shadow pass's projection gives.
 layout(constant_id = ANIMA_SPEC_SHADOW_PASS) const bool shadowPass = false;
-#include "visibility.glsl"
+#include "../include/anima/visibility.glsl"
 #include "impostor.glsl"
 void main() {
     mat4 transform = poses.matrices[draw.indices.x];
@@ -81,10 +81,11 @@ void main() {
     visibility = 1.0;
     if (ranged) {
         mat4 range = poses.matrices[draw.indices.z + ANIMA_POSE_HEADER_RANGE];
-        visibility = visibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0], draw.origin);
+        visibility = animaVisibilityAt((object * vec4(range[1].xyz, 1.0)).xyz, range[0], draw.origin);
     }
     // A copy that its range hides draws nothing, nor does one seen from inside its sphere; in the shadow pass, a copy
-    // casts while more than half of it draws, as the standard material's does.
-    if ((shadowPass ? abs(visibility) <= 0.5 : visibility == 0.0) || (!parallel && distanceToCenter <= radius))
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    // casts while more than animaShadowCastShare of it draws, as the standard material's does.
+    if ((shadowPass ? abs(visibility) <= animaShadowCastShare : visibility == 0.0) ||
+        (!parallel && distanceToCenter <= radius))
+        gl_Position = animaCulledPosition;
 }

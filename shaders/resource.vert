@@ -31,7 +31,7 @@ layout(push_constant) uniform Draw {
     layout(offset = 112) vec4 factor;
 }
 draw;
-#include "visibility.glsl"
+#include "../include/anima/visibility.glsl"
 // The point @p p placed by this copy's placement, whose rows dot it as a homogeneous point.
 vec3 placePoint(vec3 p) {
     vec4 h = vec4(p, 1.0);
@@ -81,11 +81,11 @@ void main() {
     if (ranged) {
         mat4 range = poses.matrices[draw.indices.z + ANIMA_POSE_HEADER_RANGE];
         vec3 center = placed ? placePoint(range[1].xyz) : range[1].xyz;
-        visibility = visibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin);
+        visibility = animaVisibilityAt(mat3(object) * center + object[3].xyz, range[0], draw.origin);
     }
     // A copy that its range hides draws nothing: every corner leaves the view volume.
     if (visibility == 0.0)
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        gl_Position = animaCulledPosition;
     baseColor = color * draw.factor.rgb;
     texcoord = uv;
 }
