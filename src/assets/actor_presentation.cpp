@@ -1,4 +1,5 @@
 #include "presentation_data.hpp"
+#include "texel_hold.hpp"
 #include <anima/assets/actor_presentation.hpp>
 namespace anima {
 namespace {
@@ -6,7 +7,8 @@ namespace {
 constexpr int profile_version = 2;
 } // namespace
 ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
-                                     std::optional<std::filesystem::path> manifest_override) {
+                                     std::optional<std::filesystem::path> manifest_override,
+                                     TexelRetention texel_retention, const StagingOptions &options) {
     using namespace presentation_data;
     using anima::operator*;
     // The JSON library's own failures, such as a value of the wrong type, become std::invalid_argument; the readers
@@ -22,10 +24,13 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
         const auto relative = relative_document_path(text(document.at("manifest")), {},
                                                      "Actor manifest must be inside its profile directory");
         manifest = anima::read_manifest(manifest_override.value_or(profile.parent_path() / relative));
-        const auto model = anima::load_asset(manifest.directory / manifest.model);
+        auto model = anima::load_asset(manifest.directory / manifest.model, options);
         anima::validate_manifest(manifest, *model);
-        actor.motion = MotionRuntime::load(model, manifest);
-        render = anima::Mesh::compile(*model);
+        render = anima::Mesh::compile(*model, texel_retention);
+        // The motion runtime holds the model, which the interaction actor reads through it, so it gets the copy that
+        // keeps none of the texels that the Mesh lets go.
+        model = anima::detail::without_texels(std::move(model), *render);
+        actor.motion = MotionRuntime::load(model, manifest, options);
         const auto rest = anima::sample_pose(*model);
         for (const auto &[name, socket] : document.at("sockets").items()) {
             anima::detail::json_fields(socket, {"node", "frame"});

@@ -10,12 +10,14 @@ namespace anima {
 /// shows the model alone; applications assemble attachments and fitted meshes.
 class AssetPreview {
   public:
-    /// Loads the manifest at @p manifest and its model, compiles the model's Mesh with
-    /// @p texel_retention and keeps only the model's nodes and clips for its Animator, so that the
-    /// Mesh alone holds the geometry and textures; then plays the first manifest clip, or shows the
-    /// bind pose when there is none. Throws as read_manifest, load_asset, validate_manifest and
-    /// Mesh::compile do.
-    explicit AssetPreview(const std::filesystem::path &manifest, TexelRetention texel_retention = TexelRetention::keep);
+    /// Loads the manifest at @p manifest and its model, which it imports with load_asset and
+    /// @p options, compiles the model's Mesh with @p texel_retention and keeps only the model's
+    /// nodes and clips for its Animator, so that the Mesh alone holds the geometry and textures;
+    /// then plays the first manifest clip, or shows the bind pose when there is none. @p options
+    /// cancel and count the import only. Throws as read_manifest, load_asset (including
+    /// StagingCancelled), validate_manifest and Mesh::compile do.
+    explicit AssetPreview(const std::filesystem::path &manifest, TexelRetention texel_retention = TexelRetention::keep,
+                          const StagingOptions &options = {});
     AssetPreview(const AssetPreview &) = delete;
     AssetPreview &operator=(const AssetPreview &) = delete;
     AssetPreview(AssetPreview &&) noexcept = default;

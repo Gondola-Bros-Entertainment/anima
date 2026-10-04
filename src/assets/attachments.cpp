@@ -207,12 +207,13 @@ const AttachmentHandling &AttachmentLibrary::handling(std::string_view item_id) 
     return presentation_data::lookup(state_->catalog.handling,
                                      item_id.empty() ? state_->catalog.empty_handling : item(item_id).handling);
 }
-std::shared_ptr<const AttachmentAsset> AttachmentLibrary::load(std::string_view visual_id) const {
+std::shared_ptr<const AttachmentAsset> AttachmentLibrary::load(std::string_view visual_id,
+                                                               const StagingOptions &options) const {
     const auto &definition = visual(visual_id);
     const auto path = std::filesystem::weakly_canonical(state_->catalog.directory / definition.model);
     const auto texel_retention = state_->texel_retention;
-    auto result = state_->models.load(path, [&](std::shared_ptr<const anima::Mesh> resident) {
-        auto source = anima::load_asset(path);
+    auto result = state_->models.load(path, options.stop, [&](std::shared_ptr<const anima::Mesh> resident) {
+        auto source = anima::load_asset(path, options);
         auto render = anima::detail::resident_or_compile(*source, std::move(resident), texel_retention);
         source = anima::detail::without_texels(std::move(source), *render);
         return std::make_shared<const AttachmentAsset>(AttachmentAsset{std::move(source), std::move(render)});
@@ -320,7 +321,8 @@ bool AttachmentSet::matches(const std::map<std::string, std::string, std::less<>
     return true;
 }
 AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library, const AttachmentSockets &sockets,
-                                     const std::map<std::string, std::string, std::less<>> &desired) {
+                                     const std::map<std::string, std::string, std::less<>> &desired,
+                                     const StagingOptions &options) {
     AttachmentSet result;
     for (const auto &[role, id] : desired) {
         if (role.empty() || id.empty())
@@ -330,7 +332,7 @@ AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library, const Att
         held.item_id = id;
         held.binding = bind_attachment(presentation_data::lookup(sockets, library.handling(id).socket),
                                        library.visual(item.visual));
-        held.asset = library.load(item.visual);
+        held.asset = library.load(item.visual, options);
         result.roles.emplace(role, std::move(held));
     }
     return result;
