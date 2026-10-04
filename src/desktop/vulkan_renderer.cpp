@@ -920,9 +920,9 @@ struct VulkanRenderer::Impl {
         make_shaders(impostor_vertex_code, impostor_fragment_code, impostor_vertex_shader, impostor_fragment_shader);
         make_fragment(impostor_shadow_fragment_code, impostor_shadow_fragment_shader);
         create_shadow_pass();
-        create_pipeline(PipelineKind::shadow_opaque, shadow_opaque_pipeline);
-        create_pipeline(PipelineKind::shadow_masked, shadow_masked_pipeline);
-        create_pipeline(PipelineKind::shadow_impostor, shadow_impostor_pipeline);
+        shadow_opaque_pipeline = create_pipeline(PipelineKind::shadow_opaque);
+        shadow_masked_pipeline = create_pipeline(PipelineKind::shadow_masked);
+        shadow_impostor_pipeline = create_pipeline(PipelineKind::shadow_impostor);
         create_view_pipelines();
 #endif
     }
@@ -1147,17 +1147,18 @@ struct VulkanRenderer::Impl {
     // so each swapchain creation creates them for its format and destroy_swapchain() destroys them.
     void create_view_pipelines() {
         create_render_pass();
-        create_pipeline(PipelineKind::diagnostic, pipeline);
+        pipeline = create_pipeline(PipelineKind::diagnostic);
 #ifdef ANIMA_HAS_ASSETS
         for (const bool height_fog : {false, true}) {
             for (std::size_t mesh = 0; mesh < mesh_pipeline_count; ++mesh)
-                create_pipeline(MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
-                                                                               : PipelineKind::opaque_resource,
-                                resource_pipelines[mesh][height_fog], height_fog, mesh_pipeline_culling[mesh]);
-            create_pipeline(PipelineKind::blended_resource, blended_resource_pipelines[height_fog], height_fog);
-            create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
+                resource_pipelines[mesh][height_fog] =
+                    create_pipeline(MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
+                                                                                   : PipelineKind::opaque_resource,
+                                    height_fog, mesh_pipeline_culling[mesh]);
+            blended_resource_pipelines[height_fog] = create_pipeline(PipelineKind::blended_resource, height_fog);
+            impostor_pipelines[height_fog] = create_pipeline(PipelineKind::impostor, height_fog);
         }
-        create_pipeline(PipelineKind::sky, sky_pipeline);
+        sky_pipeline = create_pipeline(PipelineKind::sky);
 #endif
     }
     void destroy_view_pipelines() noexcept {
@@ -1271,11 +1272,67 @@ struct VulkanRenderer::Impl {
         impostor,
         shadow_impostor
     };
-    // Creates the pipeline of @p mode in @p output, culling the faces that @p cull_mode names; one that draws the view
-    // with mesh.frag or impostor.frag compiles the height fog's code only with @p height_fog.
-    void create_pipeline(PipelineKind mode, VkPipeline &output, [[maybe_unused]] bool height_fog = true,
-                         VkCullModeFlags cull_mode = VK_CULL_MODE_NONE) {
-        const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
+    // What a graphics pipeline sets beyond create_graphics_pipeline()'s fixed state. What it points to needs to stay
+    // valid only until create_graphics_pipeline() returns.
+    struct GraphicsPipelineState {
+        // The shader stages, the vertex stage first. Without a fragment stage, rasterization still writes each
+        // covered texel's depth.
+        std::span<const VkPipelineShaderStageCreateInfo> stages;
+        VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        VkCullModeFlags cull_mode = VK_CULL_MODE_NONE;
+        // The color attachment's blending, or none for a pass without a color attachment.
+        std::optional<VkPipelineColorBlendAttachmentState> blend;
+        VkPipelineLayout layout{};
+        VkRenderPass pass{};
+    };
+    // Creates the pipeline that @p state describes, drawing filled triangle lists with counter-clockwise front faces
+    // through one dynamic viewport and scissor, at one sample per pixel. The caller owns the result. Throws
+    // `VulkanFailure` naming @p action when creation fails.
+    [[nodiscard]] VkPipeline create_graphics_pipeline(const GraphicsPipelineState &state, const char *action) const {
+        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewport.viewportCount = 1;
+        viewport.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = state.cull_mode;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth = 1.0F;
+        VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        if (state.blend) {
+            blend.attachmentCount = 1;
+            blend.pAttachments = &*state.blend;
+        }
+        const VkDynamicState dynamic_states[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamic.dynamicStateCount = static_cast<std::uint32_t>(std::size(dynamic_states));
+        dynamic.pDynamicStates = dynamic_states;
+        VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        info.stageCount = static_cast<std::uint32_t>(state.stages.size());
+        info.pStages = state.stages.data();
+        info.pVertexInputState = &state.vertex;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewport;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = &state.depth;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamic;
+        info.layout = state.layout;
+        info.renderPass = state.pass;
+        VkPipeline created{};
+        check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &created), action);
+        return created;
+    }
+    // Returns a new pipeline of @p mode, which the caller owns, culling the faces that @p cull_mode names; one that
+    // draws the view with mesh.frag or impostor.frag compiles the height fog's code only with @p height_fog.
+    [[nodiscard]] VkPipeline create_pipeline(PipelineKind mode, [[maybe_unused]] bool height_fog = true,
+                                             VkCullModeFlags cull_mode = VK_CULL_MODE_NONE) const {
+        [[maybe_unused]] const bool impostor = mode == PipelineKind::impostor || mode == PipelineKind::shadow_impostor;
         const bool shadow = mode == PipelineKind::shadow_opaque || mode == PipelineKind::shadow_masked ||
                             mode == PipelineKind::shadow_impostor;
         const bool blended = mode == PipelineKind::blended_resource;
@@ -1333,7 +1390,8 @@ struct VulkanRenderer::Impl {
                 stages[0].pSpecializationInfo = &constant_enabled;
         }
 #endif
-        VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        GraphicsPipelineState state;
+        state.cull_mode = cull_mode;
 #ifdef ANIMA_HAS_ASSETS
         // Mesh vertices from binding 0 and placement rows from binding 1.
         std::array<VkVertexInputAttributeDescription, resource_attributes.size() + placement_attributes.size()>
@@ -1342,24 +1400,25 @@ struct VulkanRenderer::Impl {
         std::copy(placement_attributes.begin(), placement_attributes.end(),
                   placed_attributes.begin() + resource_attributes.size());
         if (resource) {
-            vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(resource_bindings.size());
-            vertex.pVertexBindingDescriptions = resource_bindings.data();
-            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(placed_attributes.size());
-            vertex.pVertexAttributeDescriptions = placed_attributes.data();
+            state.vertex.vertexBindingDescriptionCount = static_cast<std::uint32_t>(resource_bindings.size());
+            state.vertex.pVertexBindingDescriptions = resource_bindings.data();
+            state.vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(placed_attributes.size());
+            state.vertex.pVertexAttributeDescriptions = placed_attributes.data();
         }
         const VkVertexInputAttributeDescription shadow_resource_attributes[]{
             resource_attributes[0], resource_attributes[3],  resource_attributes[4],  resource_attributes[5],
             resource_attributes[7], placement_attributes[0], placement_attributes[1], placement_attributes[2]};
         if (shadow) {
-            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(shadow_resource_attributes));
-            vertex.pVertexAttributeDescriptions = shadow_resource_attributes;
+            state.vertex.vertexAttributeDescriptionCount =
+                static_cast<std::uint32_t>(std::size(shadow_resource_attributes));
+            state.vertex.pVertexAttributeDescriptions = shadow_resource_attributes;
         }
         // An impostor's corner is its texture coordinate alone.
         const VkVertexInputAttributeDescription impostor_attributes[]{resource_attributes[3], placement_attributes[0],
                                                                       placement_attributes[1], placement_attributes[2]};
         if (impostor) {
-            vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(impostor_attributes));
-            vertex.pVertexAttributeDescriptions = impostor_attributes;
+            state.vertex.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(std::size(impostor_attributes));
+            state.vertex.pVertexAttributeDescriptions = impostor_attributes;
         }
 #endif
 #ifdef ANIMA_UI
@@ -1369,77 +1428,49 @@ struct VulkanRenderer::Impl {
             {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(detail::UiVertex, color)},
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(detail::UiVertex, u)}};
         if (ui) {
-            vertex.vertexBindingDescriptionCount = 1;
-            vertex.pVertexBindingDescriptions = &ui_binding;
-            vertex.vertexAttributeDescriptionCount = 3;
-            vertex.pVertexAttributeDescriptions = ui_attributes;
+            state.vertex.vertexBindingDescriptionCount = 1;
+            state.vertex.pVertexBindingDescriptions = &ui_binding;
+            state.vertex.vertexAttributeDescriptionCount = 3;
+            state.vertex.pVertexAttributeDescriptions = ui_attributes;
         }
 #endif
-        VkPipelineDepthStencilStateCreateInfo depth_state{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         // The diagnostic triangle is a screen overlay, not part of the view.
-        depth_state.depthTestEnable = !ui && mode != PipelineKind::diagnostic;
+        state.depth.depthTestEnable = !ui && mode != PipelineKind::diagnostic;
         // Blended surfaces are hidden by nearer opaque and masked ones, and hide nothing themselves.
-        depth_state.depthWriteEnable = !ui && !sky && !blended;
+        state.depth.depthWriteEnable = !ui && !sky && !blended;
         // The view uses reversed depth, where nearer surfaces have greater depth and the sky lies at the far
         // plane, depth 0. Shadow passes are orthographic, where depth is linear in distance, and keep forward depth.
-        depth_state.depthCompareOp = shadow ? VK_COMPARE_OP_LESS
+        state.depth.depthCompareOp = shadow ? VK_COMPARE_OP_LESS
                                      : sky  ? VK_COMPARE_OP_GREATER_OR_EQUAL
                                             : VK_COMPARE_OP_GREATER;
-        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-        viewport.viewportCount = 1;
-        viewport.scissorCount = 1;
-        VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        raster.polygonMode = VK_POLYGON_MODE_FILL;
-        raster.cullMode = cull_mode;
-        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        raster.lineWidth = 1.0F;
-        VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-        // UI and blended meshes composite premultiplied linear color with the "over" operator.
-        VkPipelineColorBlendAttachmentState blend_attachment{};
-        blend_attachment.blendEnable = ui || blended;
-        blend_attachment.srcColorBlendFactor = blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        blend_attachment.dstColorBlendFactor = blend_attachment.dstAlphaBlendFactor =
-            VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        blend_attachment.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        blend.attachmentCount = shadow ? 0 : 1;
-        blend.pAttachments = &blend_attachment;
-        const VkDynamicState dynamic_states[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-        VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-        dynamic.dynamicStateCount = 2;
-        dynamic.pDynamicStates = dynamic_states;
-        VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        // Without a fragment shader, rasterization still writes each covered texel's depth.
-        info.stageCount = mode == PipelineKind::shadow_opaque ? 1 : 2;
-        info.pStages = stages.data();
-        info.pVertexInputState = &vertex;
-        info.pInputAssemblyState = &assembly;
-        info.pViewportState = &viewport;
-        info.pRasterizationState = &raster;
-        info.pMultisampleState = &multisample;
-        info.pColorBlendState = &blend;
-        info.pDepthStencilState = &depth_state;
-        info.pDynamicState = &dynamic;
-        info.layout = ui ? ui_pipeline_layout : pipeline_layout;
+        // UI and blended meshes composite premultiplied linear color with the "over" operator. Shadow passes have no
+        // color attachment.
+        if (!shadow) {
+            VkPipelineColorBlendAttachmentState blend{};
+            blend.blendEnable = ui || blended;
+            blend.srcColorBlendFactor = blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            blend.dstColorBlendFactor = blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                                   VK_COLOR_COMPONENT_A_BIT;
+            state.blend = blend;
+        }
+        // shadow_opaque draws without a fragment shader.
+        state.stages = std::span(stages).first(mode == PipelineKind::shadow_opaque ? 1 : 2);
+        state.layout = ui ? ui_pipeline_layout : pipeline_layout;
 #ifdef ANIMA_HAS_ASSETS
         if (resource)
-            info.layout = resource_pipeline_layout;
+            state.layout = resource_pipeline_layout;
         if (sky)
-            info.layout = environment_pipeline_layout;
+            state.layout = environment_pipeline_layout;
 #endif
-        info.renderPass = render_pass;
+        state.pass = render_pass;
 #ifdef ANIMA_HAS_ASSETS
         if (shadow)
-            info.renderPass = shadow_pass;
+            state.pass = shadow_pass;
         if (ui)
-            info.renderPass = present_pass;
+            state.pass = present_pass;
 #endif
-        check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &output),
-              "Create graphics pipeline");
+        return create_graphics_pipeline(state, "Create graphics pipeline");
     }
     // Creates @p info's image in device-local memory from the allocator, bound, and returns the size of its
     // allocation. With @p preferred, the allocator prefers a memory type that also has those properties. Throws

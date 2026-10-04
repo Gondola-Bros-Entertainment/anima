@@ -210,7 +210,8 @@ void ensure_scene_targets() {
     release_after_frames(std::move(next_world));
     release_after_frames(std::move(opaque_inputs));
 }
-void create_display_pipeline() {
+// Returns a new pipeline, which the caller owns, that draws the world target into present_pass.
+[[nodiscard]] VkPipeline create_display_pipeline() const {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     for (auto &s : stages) {
         s.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -226,43 +227,16 @@ void create_display_pipeline() {
     const VkSpecializationMapEntry entry{0, 0, sizeof(encode)};
     const VkSpecializationInfo specialization{1, &entry, sizeof(encode), &encode};
     stages[1].pSpecializationInfo = &specialization;
-    VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewport.viewportCount = viewport.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.lineWidth = 1;
-    VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    VkPipelineColorBlendAttachmentState attachment{};
-    attachment.colorWriteMask =
+    // A fullscreen triangle without vertex input, depth or blending.
+    GraphicsPipelineState state;
+    state.stages = stages;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    blend.attachmentCount = 1;
-    blend.pAttachments = &attachment;
-    const VkDynamicState states[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = 2;
-    dynamic.pDynamicStates = states;
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    info.stageCount = 2;
-    info.pStages = stages.data();
-    info.pVertexInputState = &vertex;
-    info.pInputAssemblyState = &assembly;
-    info.pViewportState = &viewport;
-    info.pRasterizationState = &raster;
-    info.pMultisampleState = &samples;
-    info.pDepthStencilState = &depth;
-    info.pColorBlendState = &blend;
-    info.pDynamicState = &dynamic;
-    info.layout = post_pipeline_layout;
-    info.renderPass = present_pass;
-    check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &resolve_pipeline),
-          "Create world output pipeline");
+    state.blend = blend;
+    state.layout = post_pipeline_layout;
+    state.pass = present_pass;
+    return create_graphics_pipeline(state, "Create world output pipeline");
 }
 void record_display(VkFramebuffer framebuffer) {
     const auto command = frame().command;
@@ -305,9 +279,9 @@ void ensure_display() {
     const bool ui = ui_pipeline != VK_NULL_HANDLE;
     destroy_display();
     present_pass = create_display_pass();
-    create_display_pipeline();
+    resolve_pipeline = create_display_pipeline();
     if (ui)
-        create_pipeline(PipelineKind::ui, ui_pipeline);
+        ui_pipeline = create_pipeline(PipelineKind::ui);
     display_format = format;
 }
 void destroy_display() noexcept {

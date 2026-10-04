@@ -191,7 +191,7 @@ void prepare_ui(const detail::UiFrame &ui_frame) {
     if (ui_frame.vertices.empty())
         return;
     if (!ui_pipeline)
-        create_pipeline(PipelineKind::ui, ui_pipeline);
+        ui_pipeline = create_pipeline(PipelineKind::ui);
     const auto bytes = VkDeviceSize(ui_frame.vertices.size()) * sizeof(detail::UiVertex);
     // The vertices go to the buffer of the slot that records the next frame, whose previous frame has finished, so a
     // smaller buffer is destroyed at once.
