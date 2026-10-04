@@ -97,7 +97,8 @@ std::uint64_t opaque_generation{};
 VkRenderPass opaque_pass{}, composite_pass{};
 
 // Whether the world color and depth formats can be copied, and the depth format sampled, for opaque inputs. The
-// world targets are created as copy sources only when they can.
+// world color target is created as a copy source only when they can, and the depth target becomes one only on the
+// first frame that copies them (make_depth_copy_source()).
 bool opaque_copies_supported() const {
     VkFormatProperties color_features{}, depth_features{};
     vkGetPhysicalDeviceFormatProperties(physical, world_color_format, &color_features);
@@ -454,12 +455,18 @@ void destroy_opaque_input_passes() noexcept {
         *pass = VK_NULL_HANDLE;
     }
 }
-// Creates the opaque depth and color copies for the current scene targets, if they do not exist, and points the frame
-// set of the slot that records the next frame at them, unless it already does. Throws `std::runtime_error` when the
-// device cannot copy or sample them.
+// Makes the depth target a copy source, unless it is one, creates the opaque depth and color copies for the current
+// scene targets, if they do not exist, and points the frame set of the slot that records the next frame at them, unless
+// it already does. Throws `std::runtime_error` when the device cannot copy or sample them or a Vulkan call fails.
 void ensure_opaque_inputs() {
-    if (!opaque_inputs)
-        create_opaque_inputs();
+    if (!depth_target->copy_source || !opaque_inputs) {
+        if (!opaque_copies_supported())
+            throw std::runtime_error("Device cannot copy the world color and depth that custom materials read");
+        if (!depth_target->copy_source)
+            make_depth_copy_source();
+        if (!opaque_inputs)
+            create_opaque_inputs();
+    }
     auto &slot = frame();
     if (slot.opaque_generation == opaque_generation)
         return;
@@ -481,11 +488,24 @@ void ensure_opaque_inputs() {
     vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     slot.opaque_generation = opaque_generation;
 }
-// Creates the opaque depth and color copies of the scene targets' size. Throws `std::runtime_error` when the device
-// cannot copy or sample them.
+// Replaces the transient depth target with a copy source of its size, and the world framebuffer that attaches it. The
+// depth target's contents need not survive, since every world pass clears it. Until the swapchain is recreated, the
+// scene targets keep a depth target that is a copy source, at each size (ensure_scene_targets()). The replaced depth
+// target and framebuffer are destroyed once no frame in flight can use them. Throws `std::runtime_error` when a Vulkan
+// call fails, keeping the current ones.
+void make_depth_copy_source() {
+    auto next = create_depth(scene_extent, true);
+    auto retired = std::make_unique<RetiredFramebuffer>();
+    retired->device = device;
+    retired->framebuffer = create_world_framebuffer(world_target->color.view, next->view, scene_extent);
+    std::swap(retired->framebuffer, world_target->framebuffer);
+    depth_target.swap(next);
+    release_after_frames(std::move(retired));
+    release_after_frames(std::move(next));
+}
+// Creates the opaque depth and color copies of the scene targets' size, which the caller has checked the device can
+// copy and sample. Throws `std::runtime_error` when a Vulkan call fails.
 void create_opaque_inputs() {
-    if (!opaque_copies_supported())
-        throw std::runtime_error("Device cannot copy the world color and depth that custom materials read");
     auto next = std::make_unique<OpaqueInputs>();
     next->device = device;
     next->allocator = allocator;

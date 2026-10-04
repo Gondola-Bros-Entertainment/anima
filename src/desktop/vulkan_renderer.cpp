@@ -409,6 +409,10 @@ struct VulkanRenderer::Impl {
         VmaAllocation allocation{};
         VkImageView view{};
         VkDeviceSize allocation_bytes{};
+        // Whether custom materials can copy the image for opaque depth. Otherwise it is a transient attachment.
+        bool copy_source{};
+        // Whether the image is in lazily allocated memory, which the device backs only as rendering needs it.
+        bool lazily_allocated{};
         ~DepthTarget() {
             if (view)
                 vkDestroyImageView(device, view, nullptr);
@@ -1053,7 +1057,7 @@ struct VulkanRenderer::Impl {
 #else
         // The view renders into the swapchain images, with a depth buffer of their size.
         scene_extent = extent;
-        depth_target = create_depth(scene_extent);
+        depth_target = create_depth(scene_extent, false);
         create_view_pipelines();
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
@@ -1396,11 +1400,16 @@ struct VulkanRenderer::Impl {
               "Create graphics pipeline");
     }
     // Creates @p info's image in device-local memory from the allocator, bound, and returns the size of its
-    // allocation. Throws `std::runtime_error` naming @p action when creation, allocation or binding fails.
+    // allocation. With @p preferred, the allocator prefers a memory type that also has those properties. Throws
+    // `std::runtime_error` naming @p action when creation, allocation or binding fails.
     VkDeviceSize create_image(const VkImageCreateInfo &info, VkImage &image, VmaAllocation &allocation,
-                              const char *action) const {
+                              const char *action, VkMemoryPropertyFlags preferred = 0) const {
         VmaAllocationCreateInfo placement{};
         placement.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        placement.preferredFlags = preferred;
+        // Lazily allocated memory backs one image alone, as the allocator's own usage for it does.
+        if (preferred & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
+            placement.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         VmaAllocationInfo allocated{};
         check(vmaCreateImage(allocator, &info, &placement, &image, &allocation, &allocated), action);
         return allocated.size;
@@ -1441,9 +1450,11 @@ struct VulkanRenderer::Impl {
         if (depth_format == VK_FORMAT_UNDEFINED)
             throw std::runtime_error("No depth attachment format");
     }
-    // Creates a depth attachment of @p size in depth_format. Throws `std::runtime_error` when a Vulkan call fails,
-    // releasing what it created.
-    std::unique_ptr<DepthTarget> create_depth(VkExtent2D size) const {
+    // Creates a depth attachment of @p size in depth_format. With @p copy_source, custom materials can copy it for
+    // their opaque depth. Otherwise it is a transient attachment, which no pass stores, in lazily allocated memory
+    // where the device has a type for it and in other device-local memory elsewhere. Throws `std::runtime_error` when a
+    // Vulkan call fails, releasing what it created.
+    std::unique_ptr<DepthTarget> create_depth(VkExtent2D size, bool copy_source) const {
         auto target = std::make_unique<DepthTarget>();
         target->device = device;
         target->allocator = allocator;
@@ -1454,14 +1465,18 @@ struct VulkanRenderer::Impl {
         image.mipLevels = image.arrayLayers = 1;
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-#ifdef ANIMA_HAS_ASSETS
-        // Custom materials that read opaque depth sample a copy of this image.
-        if (opaque_copies_supported())
-            image.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-#endif
+        // A transient attachment allows no other usage, so a depth that custom materials copy cannot be one.
+        image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                      (copy_source ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
         image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        target->allocation_bytes = create_image(image, target->image, target->allocation, "Create depth image");
+        target->allocation_bytes =
+            create_image(image, target->image, target->allocation, "Create depth image",
+                         copy_source ? VkMemoryPropertyFlags{}
+                                     : static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT));
+        target->copy_source = copy_source;
+        VkMemoryPropertyFlags properties{};
+        vmaGetAllocationMemoryProperties(allocator, target->allocation, &properties);
+        target->lazily_allocated = (properties & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) != 0;
         VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         view.image = target->image;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -2649,9 +2664,12 @@ void VulkanRenderer::prepare_mesh(const MeshPreparation &preparation, ResourcePr
 ResourceStats VulkanRenderer::resource_stats() const noexcept {
 #ifdef ANIMA_HAS_ASSETS
     auto stats = impl_->resource_stats();
-    // The depth target exists whenever the world target does.
-    if (impl_->world_target)
-        stats.world_target_bytes = impl_->world_target->color.allocation_bytes + impl_->depth_target->allocation_bytes;
+    // The depth target exists whenever the world target does. Lazily allocated memory counts no bytes.
+    if (impl_->world_target) {
+        const auto &depth = *impl_->depth_target;
+        stats.world_target_bytes =
+            impl_->world_target->color.allocation_bytes + (depth.lazily_allocated ? 0 : depth.allocation_bytes);
+    }
     return stats;
 #else
     return {};

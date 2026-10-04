@@ -376,8 +376,12 @@ struct ResourceStats {
     std::uint64_t atmosphere_bytes{};
     /// Allocation bytes of the scene color and depth targets, which the render scale sizes (see
     /// VulkanRenderer::set_render_scale), and 0 while there are none: before the first draw() and after a draw() that
-    /// failed to create them. Excludes the swapchain and shadow images, the opaque input copies, and targets that a
-    /// resize replaced but a frame in flight still uses.
+    /// failed to create them. Excludes the swapchain and shadow images, the opaque input copies, targets that a resize
+    /// or the depth target's replacement retired but a frame in flight still uses, and a depth target in lazily
+    /// allocated memory, which the device backs only as rendering needs it. The depth target is a transient
+    /// attachment, in lazily allocated memory where the device has a type for it, until the first frame that copies
+    /// opaque inputs (opaque_inputs) replaces it with a device-local one that can be copied. Scene targets keep a
+    /// depth target of that kind, through resizes, until the swapchain is recreated.
     std::uint64_t world_target_bytes{};
 };
 
