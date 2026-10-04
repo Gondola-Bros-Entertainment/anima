@@ -321,6 +321,7 @@ int main(int argc, char **argv) {
         render_scale_test::reject_invalid_render_scale();
         material_test::reject_invalid_anisotropy();
         cascades_test::reject_unknown_shadow_filter();
+        impostor_test::reject_invalid_impostor_frames();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--fog")

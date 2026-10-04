@@ -1,8 +1,9 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 // An impostor's pixel: where its ray crosses the plane of each of the three frames nearest the viewing direction, the
-// atlas's texels blended by the frames' weights, at the depth of the surface point that they store, lit as the
-// standard material lights a surface.
+// atlas's texels blended by the frames' weights, or with singleImpostorFrame (impostor_sample.glsl) those of the
+// heaviest frame alone, at the depth of the surface point that they store, lit as the standard material lights a
+// surface.
 layout(location = 0) in vec3 rayOrigin;
 layout(location = 1) in vec3 rayDirection;
 layout(location = 2) flat in vec3 frameWeights;

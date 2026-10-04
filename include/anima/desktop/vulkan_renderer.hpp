@@ -138,6 +138,9 @@ struct RendererOptions {
     /// Initial shadow filter; see VulkanRenderer::set_shadow_filter. A value that is not a ShadowFilter enumerator
     /// makes construction throw `std::invalid_argument` ("Unknown shadow filter").
     ShadowFilter shadow_filter = ShadowFilter::kernel_4x4;
+    /// Initial frames that an impostor's pixel reads; see VulkanRenderer::set_impostor_frames. Must be 1 or 3, or
+    /// construction throws `std::invalid_argument` ("Impostor frames must be 1 or 3").
+    std::uint32_t impostor_frames = 3;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -177,11 +180,11 @@ class RendererFatalError : public std::runtime_error {
 };
 /// draw() could not prepare the selected scenes, the environment's shadow maps, the scene targets
 /// (VulkanRenderer::set_render_scale) or the view's pipelines for a new shadow filter
-/// (VulkanRenderer::set_shadow_filter).
+/// (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames).
 ///
 /// Thrown before an image is acquired, so no frame was submitted. The renderer stays usable and the next
 /// draw() prepares again: repair the selected scenes or environment, change the selection, lower the render scale, or
-/// request the previous shadow filter.
+/// request the previous shadow filter or impostor frame count.
 class SceneResourceError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -245,11 +248,11 @@ struct FrameProfile {
     /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in flight
     /// and otherwise in a later call, once that frame has finished, creating the scene targets after a swapchain
     /// creation or a render scale change (VulkanRenderer::set_render_scale), compiling the view's pipelines after a
-    /// shadow filter change (VulkanRenderer::set_shadow_filter), sizing the shadow maps and fitting their
-    /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
-    /// fence_wait_ms waited for, reading the display times that set present_interval_ms, and for a UiContext frame,
-    /// copying its vertices, creating the UI pipeline when first needed and uploading each new UI texture, which waits
-    /// for the GPU.
+    /// shadow filter change (VulkanRenderer::set_shadow_filter) or an impostor frame count change
+    /// (VulkanRenderer::set_impostor_frames), sizing the shadow maps and fitting their cascades to the view, writing
+    /// the custom materials' frame block, reading the GPU timestamps of the frame that fence_wait_ms waited for,
+    /// reading the display times that set present_interval_ms, and for a UiContext frame, copying its vertices,
+    /// creating the UI pipeline when first needed and uploading each new UI texture, which waits for the GPU.
     double prepare_ms{};
     /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
     /// and placements, palette writes, sorting the objects with opaque and masked draws front to back and the blended
@@ -479,16 +482,17 @@ struct ResourceStats {
 /// quad, which faces the eye across the front of the sphere of its ImpostorFrames, covering the sphere's silhouette,
 /// computed in the mesh's space, so that any affine world matrix or placement keeps it exact. Each pixel blends the
 /// three frames whose directions surround the direction toward the eye, weighted by their barycentric position on the
-/// grid: in each, where the pixel's ray crosses the frame's plane, the ray steps once to the height stored there, as
-/// parallax mapping steps, and samples the frame there, from the mip level its footprint chooses, but none coarser than
-/// four texels across a frame or than one whose texels each lie within a single frame, half a texel of the coarser
-/// level it reads inside the frame's edges. The blended coverage is tested against the material's cutoff, the pixel's
-/// depth is that of the blended surface point, or the quad's where the parallax step carries that point in front of the
-/// quad, and it is lit as the standard material lights a surface, with the blended normal, base color times the
-/// object's material factor, occlusion, roughness, metallic and emission, and shadows received without a receiver
-/// plane. Into the shadow maps the impostor draws along the sun with the frames nearest the sun's direction. A copy
-/// seen from inside its sphere draws nothing, and visibility ranges apply as to any copy. A custom material assigned to
-/// its material slot draws it as a quad instead.
+/// grid, or reads the one with the largest weight alone, as set_impostor_frames() requests: in each, where the pixel's
+/// ray crosses the frame's plane, the ray steps once to the height stored there, as parallax mapping steps, and samples
+/// the frame there, from the mip level its footprint chooses, but none coarser than four texels across a frame or than
+/// one whose texels each lie within a single frame, half a texel of the coarser level it reads inside the frame's
+/// edges. The blended coverage is tested against the material's cutoff, the pixel's depth is that of the blended
+/// surface point, or the quad's where the parallax step carries that point in front of the quad, and it is lit as the
+/// standard material lights a surface, with the blended normal, base color times the object's material factor,
+/// occlusion, roughness, metallic and emission, and shadows received without a receiver plane. Into the shadow maps the
+/// impostor draws along the sun, blending the three frames nearest the sun's direction whatever set_impostor_frames()
+/// requests. A copy seen from inside its sphere draws nothing, and visibility ranges apply as to any copy. A custom
+/// material assigned to its material slot draws it as a quad instead.
 ///
 /// Materials render with glTF metallic-roughness shading: isotropic GGX, height-correlated Smith
 /// visibility and Schlick Fresnel, perceptual roughness floored at `0.045` before squaring and `0.04`
@@ -622,11 +626,11 @@ class VulkanRenderer {
     /// 2"), for a RendererOptions::present_mode that is not a PresentMode enumerator ("Unknown present mode"), for a
     /// RendererOptions::render_scale that is not finite or lies outside min_render_scale to max_render_scale ("Render
     /// scale must be finite and from 0.25 to 2"), or without asset support is not 1 ("Render scale requires asset
-    /// support"), for a RendererOptions::shadow_filter that is not a ShadowFilter enumerator ("Unknown shadow
-    /// filter"), and for a null @p window; RendererUnavailableError when no driver or device can present to the
-    /// window; what set_scenes() throws for the initial selection; InjectedRendererFailure for
-    /// RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
-    /// Completed stages are released before the exception propagates.
+    /// support"), for a RendererOptions::shadow_filter that is not a ShadowFilter enumerator ("Unknown shadow filter"),
+    /// for a RendererOptions::impostor_frames other than 1 or 3 ("Impostor frames must be 1 or 3"), and for a null
+    /// @p window; RendererUnavailableError when no driver or device can present to the window; what set_scenes() throws
+    /// for the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and `std::runtime_error` for
+    /// other failures, including failed Vulkan calls. Completed stages are released before the exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -745,6 +749,28 @@ class VulkanRenderer {
     void set_shadow_filter(ShadowFilter filter);
     /// The shadow filter that RendererOptions::shadow_filter or the latest accepted set_shadow_filter() requested.
     [[nodiscard]] ShadowFilter shadow_filter() const noexcept;
+    /// Requests that each pixel of an impostor in the view read @p frames of its atlas's frames; it starts as
+    /// RendererOptions::impostor_frames. With 3, a pixel blends the three frames whose directions surround the
+    /// direction toward the eye, as the impostor paragraph above describes: it reads a height and a color from each,
+    /// and unless its coverage or a visibility range's dither discards it, a normal and the surface values from each,
+    /// and emission for an emissive material, up to 12 or 15 atlas samples. With 1, it reads alone the one of those
+    /// frames with the largest weight, a third of the samples, for less shading work wherever impostors cover the view;
+    /// each copy then shows one frame whole and pops to another as the direction toward the eye crosses from one
+    /// frame's share of the grid to the next, where three frames blend across it. The shadow passes blend three frames
+    /// either way.
+    ///
+    /// The view's impostor pipelines compile the count, so changing it compiles them anew, as set_shadow_filter()
+    /// describes for its pipelines: the first draw() that prepares a frame while they have another count compiles them
+    /// for the requested one once it has waited for its frame, without waiting for the device; if compiling fails,
+    /// that draw() throws SceneResourceError and keeps the previous count's pipelines, and the next draw() tries again;
+    /// and each swapchain creation also compiles them for the requested count. Only the latest request counts, so a
+    /// draw() compiles nothing when it names the count that the pipelines have. Without asset support the renderer
+    /// draws no impostors, so the request has no effect. Throws `std::invalid_argument` for a value other than 1 or 3
+    /// ("Impostor frames must be 1 or 3"), keeping the previous request.
+    void set_impostor_frames(std::uint32_t frames);
+    /// The impostor frame count that RendererOptions::impostor_frames or the latest accepted set_impostor_frames()
+    /// requested.
+    [[nodiscard]] std::uint32_t impostor_frames() const noexcept;
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and the detail region, enabled or not, with
@@ -849,13 +875,14 @@ class VulkanRenderer {
     /// submits and, as wait_for_frame() describes, for the present of the frame submitted one submission before that,
     /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, creates
     /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), compiles the view's
-    /// pipelines after a shadow filter change (set_shadow_filter()), culls, uploads meshes that became visible or cast
-    /// shadows (prepare_meshes() can upload them earlier) and writes every prepared instance's palette. The palettes of
-    /// one frame must fit the device's storage-buffer range. Throws SceneResourceError when that preparation fails
-    /// recoverably; RendererFatalError for device or surface loss, a fence timeout, any other Vulkan failure, or any
-    /// failure to build a new swapchain once the previous one is released; and `std::runtime_error` for other
-    /// failures, such as a surface that offers no usable format, which leaves the current swapchain in place, or a
-    /// capture request that fails, which only that call reports (see request_capture()).
+    /// pipelines after a shadow filter change (set_shadow_filter()) or an impostor frame count change
+    /// (set_impostor_frames()), culls, uploads meshes that became visible or cast shadows (prepare_meshes() can upload
+    /// them earlier) and writes every prepared instance's palette. The palettes of one frame must fit the device's
+    /// storage-buffer range. Throws SceneResourceError when that preparation fails recoverably; RendererFatalError for
+    /// device or surface loss, a fence timeout, any other Vulkan failure, or any failure to build a new swapchain once
+    /// the previous one is released; and `std::runtime_error` for other failures, such as a surface that offers no
+    /// usable format, which leaves the current swapchain in place, or a capture request that fails, which only that
+    /// call reports (see request_capture()).
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;
