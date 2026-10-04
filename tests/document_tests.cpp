@@ -43,6 +43,32 @@ std::string changed(std::string text, std::string_view from, std::string_view to
     REQUIRE(at != std::string::npos);
     return text.replace(at, from.size(), to);
 }
+// Every field of a scene or prefab object, in the order serialize_scene lists them, with the values of an object
+// without a mesh.
+constexpr std::pair<std::string_view, std::string_view> object_fields[]{
+    {"key", R"("1")"},          {"name", R"("a")"},
+    {"parent", "null"},         {"local", "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]"},
+    {"mesh", "null"},           {"pose", "null"},
+    {"visible", "true"},        {"active", "true"},
+    {"casts_shadows", "true"},  {"material_factors", "[]"},
+    {"custom_materials", "[]"}, {"primitive_visible", "[]"},
+    {"placements", "null"},     {"visibility_range", "null"},
+    {"components", "[]"},
+};
+// The JSON text of an object without a mesh that has every field except @p omitted.
+std::string object_without(std::string_view omitted = {}) {
+    std::string text;
+    for (const auto &[name, value] : object_fields)
+        if (name != omitted)
+            text += (text.empty() ? "{\"" : ",\"") + std::string(name) + "\":" + std::string(value);
+    return text + '}';
+}
+std::string scene_document(const std::string &objects) {
+    return R"({"version":4,"kind":"anima.scene","next_key":"2","objects":[)" + objects + "]}";
+}
+std::string prefab_document(const std::string &objects) {
+    return R"({"version":4,"kind":"anima.prefab","objects":[)" + objects + "]}";
+}
 } // namespace
 
 TEST_CASE("Malformed document text is rejected as std::invalid_argument") {
@@ -66,25 +92,62 @@ TEST_CASE("A mistyped document field is rejected as std::invalid_argument") {
 }
 
 TEST_CASE("Scene and prefab documents reject renderer state without a mesh under the scene messages") {
-    const std::string object =
-        R"({"key":"1","name":"a","parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null})";
-    const auto scene = [](const std::string &value) {
-        return R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[)" + value + "]}";
+    const auto object = object_without();
+    CHECK_NOTHROW((void)load_scene(scene_document(object), {}));
+    CHECK_NOTHROW((void)Prefab::deserialize(prefab_document(object), {}));
+    struct Setting {
+        const char *from, *to, *reason;
     };
-    const auto prefab = [](const std::string &value) {
-        return R"({"version":3,"kind":"anima.prefab","objects":[)" + value + "]}";
-    };
-    CHECK_NOTHROW((void)load_scene(scene(object), {}));
-    CHECK_NOTHROW((void)Prefab::deserialize(prefab(object), {}));
-    for (const auto &[setting, reason] :
-         {std::pair{R"("mesh":null,"visible":false)", "Empty scene object has renderer state"},
-          std::pair{R"("mesh":null,"primitive_visible":[true])", "Empty scene object has renderer state"},
-          std::pair{R"("mesh":null,"placements":[[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]])",
-                    "Scene placements must copy the object's mesh, which has no pose"}}) {
-        const auto document = changed(object, R"("mesh":null)", setting);
-        CHECK_THROWS_WITH_AS((void)load_scene(scene(document), {}), reason, std::invalid_argument);
-        CHECK_THROWS_WITH_AS((void)Prefab::deserialize(prefab(document), {}), reason, std::invalid_argument);
+    for (const auto &[from, to, reason] :
+         {Setting{R"("visible":true)", R"("visible":false)", "Empty scene object has renderer state"},
+          Setting{R"("primitive_visible":[])", R"("primitive_visible":[true])",
+                  "Empty scene object has renderer state"},
+          Setting{R"("placements":null)", R"("placements":[[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]])",
+                  "Scene placements must copy the object's mesh, which has no pose"}}) {
+        const auto document = changed(object, from, to);
+        CHECK_THROWS_WITH_AS((void)load_scene(scene_document(document), {}), reason, std::invalid_argument);
+        CHECK_THROWS_WITH_AS((void)Prefab::deserialize(prefab_document(document), {}), reason, std::invalid_argument);
     }
+}
+
+TEST_CASE("Scene and prefab objects require every field, and written documents read back as written") {
+    for (const auto &[name, value] : object_fields) {
+        CAPTURE(name);
+        const auto missing = "Missing JSON field: " + std::string(name);
+        CHECK_THROWS_WITH_AS((void)load_scene(scene_document(object_without(name)), {}), missing.c_str(),
+                             std::invalid_argument);
+        CHECK_THROWS_WITH_AS((void)Prefab::deserialize(prefab_document(object_without(name)), {}), missing.c_str(),
+                             std::invalid_argument);
+    }
+    // A document of version 3, whose objects could omit settings, is rejected for its version before its fields.
+    const auto previous = [](const std::string &document) {
+        return changed(document, R"("version":4)", R"("version":3)");
+    };
+    CHECK_THROWS_WITH_AS((void)load_scene(previous(scene_document(object_without("pose"))), {}),
+                         "Unsupported scene document version", std::invalid_argument);
+    CHECK_THROWS_WITH_AS((void)Prefab::deserialize(previous(prefab_document(object_without("pose"))), {}),
+                         "Unsupported scene document version", std::invalid_argument);
+    // Null is not an omission, so a field that cannot be null rejects it.
+    CHECK_THROWS_WITH_AS(
+        (void)load_scene(scene_document(changed(object_without(), R"("active":true)", R"("active":null)")), {}),
+        "[json.exception.type_error.302] type must be boolean, but is null", std::invalid_argument);
+
+    // The writers write every field at version 4, and a written document reads back to the same text.
+    Scene scene;
+    auto root = scene.create("root");
+    scene.create("child").set_parent(root);
+    root.set_active(false);
+    const auto written = serialize_scene(scene, {});
+    CHECK(written.find(R"("version": 4)") != std::string::npos);
+    const auto prefab = Prefab::capture(root).serialize({});
+    CHECK(prefab.find(R"("version": 4)") != std::string::npos);
+    for (const auto &[name, value] : object_fields) {
+        CAPTURE(name);
+        CHECK(written.find('"' + std::string(name) + "\":") != std::string::npos);
+        CHECK(prefab.find('"' + std::string(name) + "\":") != std::string::npos);
+    }
+    CHECK(serialize_scene(*load_scene(written, {}), {}) == written);
+    CHECK(Prefab::deserialize(prefab, {}).serialize({}) == prefab);
 }
 
 TEST_CASE("Component state that is not UTF-8 is rejected on output as std::invalid_argument") {

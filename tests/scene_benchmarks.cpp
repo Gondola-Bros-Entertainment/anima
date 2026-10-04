@@ -4,7 +4,8 @@
 //
 // Each scenario builds its own scene, times only the operation it names and checks the result, so
 // a smaller count doubles as a smoke test. It prints the median of R runs. Build it in Release to
-// measure; the default object count is the scene document limit.
+// measure; the default object count is the scene document object limit. The load scenarios load as
+// many of the objects as one document holds within its byte limit.
 #include <anima/prefab.hpp>
 
 #include <algorithm>
@@ -24,7 +25,8 @@ namespace {
 using namespace anima;
 using Clock = std::chrono::steady_clock;
 
-constexpr std::size_t default_object_count = 65'536; // The scene and prefab document object limit.
+constexpr std::size_t default_object_count = 65'536;             // The scene and prefab document object limit.
+constexpr std::size_t maximum_document_bytes = 16 * 1024 * 1024; // The scene document byte limit.
 constexpr std::size_t maximum_benchmark_objects = 1U << 24;
 constexpr std::size_t default_repetitions = 5;
 constexpr std::size_t maximum_benchmark_repetitions = 1000;
@@ -78,20 +80,34 @@ void hierarchy(Scene &scene, std::size_t count, bool deep, const std::shared_ptr
     }
 }
 
-// A compact scene document: the indented one serialize_scene writes exceeds the byte limit at
-// the object limit.
-std::string document(std::size_t count, bool deep) {
-    std::string text =
-        R"({"version":3,"kind":"anima.scene","next_key":")" + std::to_string(count + 1) + R"(","objects":[)";
-    for (std::size_t i = 0; i < count; ++i) {
-        if (i)
-            text += ',';
-        text += R"({"key":")" + std::to_string(i + 1) + R"(","name":"","parent":)";
-        text += i == 0 ? "null" : std::to_string(deep ? i - 1 : 0);
-        text += R"(,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null,"pose":null,"visible":true,)"
-                R"("active":true,"material_factors":[],"primitive_visible":[],"components":[]})";
+// A compact scene document and the number of objects it holds.
+struct Document {
+    std::string text;
+    std::size_t objects = 0;
+};
+// A compact scene document of @p count objects, or of as many as fit the byte limit. Even compact,
+// an object with every field takes about 280 bytes, so the limit holds about 60,000 of them, and
+// the indented document that serialize_scene writes holds fewer.
+Document document(std::size_t count, bool deep) {
+    const auto envelope = [](std::size_t objects) {
+        return R"({"version":4,"kind":"anima.scene","next_key":")" + std::to_string(objects + 1) + R"(","objects":[)";
+    };
+    // The envelope with the longest next_key that this call can write.
+    const auto envelope_bytes = envelope(count).size() + std::string_view("]}").size();
+    std::string objects;
+    std::size_t written = 0;
+    for (; written < count; ++written) {
+        std::string object = written ? "," : "";
+        object += R"({"key":")" + std::to_string(written + 1) + R"(","name":"","parent":)";
+        object += written == 0 ? "null" : std::to_string(deep ? written - 1 : 0);
+        object += R"(,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null,"pose":null,"visible":true,)"
+                  R"("active":true,"material_factors":[],"custom_materials":[],"primitive_visible":[],)"
+                  R"("casts_shadows":true,"placements":null,"visibility_range":null,"components":[]})";
+        if (envelope_bytes + objects.size() + object.size() > maximum_document_bytes)
+            break;
+        objects += object;
     }
-    return text + "]}";
+    return {envelope(written) + objects + "]}", written};
 }
 
 double attach(std::size_t count, bool deep) {
@@ -109,11 +125,10 @@ double attach(std::size_t count, bool deep) {
     return elapsed;
 }
 
-double load(std::size_t count, bool deep) {
-    const auto text = document(count, deep);
+double load(const Document &document) {
     std::shared_ptr<Scene> loaded;
-    const auto elapsed = seconds([&] { loaded = load_scene(text, {}); });
-    require(loaded->size() == count && loaded->roots().size() == 1, "Loading built the wrong hierarchy");
+    const auto elapsed = seconds([&] { loaded = load_scene(document.text, {}); });
+    require(loaded->size() == document.objects && loaded->roots().size() == 1, "Loading built the wrong hierarchy");
     return elapsed;
 }
 
@@ -289,8 +304,9 @@ int main(int argc, char **argv) {
         std::printf("%-22s %10s %12s %12s\n", "scenario", "objects", "median ms", "ns/object");
         report("attach_wide", count, repetitions, [&] { return attach(count, false); });
         report("attach_deep", count, repetitions, [&] { return attach(count, true); });
-        report("load_wide", count, repetitions, [&] { return load(count, false); });
-        report("load_deep", count, repetitions, [&] { return load(count, true); });
+        const auto wide_document = document(count, false), deep_document = document(count, true);
+        report("load_wide", wide_document.objects, repetitions, [&] { return load(wide_document); });
+        report("load_deep", deep_document.objects, repetitions, [&] { return load(deep_document); });
         report("destroy_children", count, repetitions, [&] { return destroy_children(count); });
         report("destroy_renderers", count, repetitions, [&] { return destroy_renderers(count, mesh); });
         report("destroy_wide_subtree", count, repetitions, [&] { return destroy_subtree(count, false, mesh); });

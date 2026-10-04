@@ -11,7 +11,8 @@ using namespace anima;
 namespace {
 constexpr auto marker_component = R"({"type":"test.marker.v1","state":"ok","enabled":true})";
 constexpr auto empty_renderer =
-    R"({"mesh":null,"pose":null,"visible":true,"material_factors":[],"primitive_visible":[]})";
+    R"({"mesh":null,"pose":null,"visible":true,"material_factors":[],"custom_materials":[],)"
+    R"("primitive_visible":[],"casts_shadows":true,"placements":null,"visibility_range":null})";
 constexpr auto missing_version = "Missing JSON field: version";
 constexpr auto unsupported_version = "Unsupported prefab variant document version";
 constexpr auto duplicate_field = "Duplicate JSON document field";
@@ -38,7 +39,7 @@ std::string change() {
            "\"set_components\":[],\"remove_components\":[]}";
 }
 std::string envelope(const std::string &overrides) {
-    return "{\"version\":1,\"kind\":\"anima.prefab-variant\",\"base\":\"base\",\"overrides\":[" + overrides + "]}";
+    return "{\"version\":2,\"kind\":\"anima.prefab-variant\",\"base\":\"base\",\"overrides\":[" + overrides + "]}";
 }
 PrefabVariant decode(const std::string &document) { return PrefabVariant::deserialize(document, {}); }
 } // namespace
@@ -67,22 +68,25 @@ TEST_CASE("A canonical variant document decodes its override, a component, an em
 TEST_CASE("Malformed variant documents are rejected with their reason") {
     const auto valid = envelope(change());
     CHECK_THROWS_WITH_AS(decode("{}"), missing_version, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1", "\"version\":2")), unsupported_version,
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":2", "\"version\":1")), unsupported_version,
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1", "\"version\":1.0")), unsupported_version,
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":2", "\"version\":2.0")), unsupported_version,
                          std::invalid_argument);
-    // A removed field does not hide another version.
+    // A removed field does not hide another version, nor does an override that omits a field.
     CHECK_THROWS_WITH_AS(
-        decode(substitute(substitute(valid, "\"version\":1", "\"version\":2"), "{", "{\"removed\":0,")),
+        decode(substitute(substitute(valid, "\"version\":2", "\"version\":3"), "{", "{\"removed\":0,")),
         unsupported_version, std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":1,", "")), missing_version, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(substitute(valid, "\"version\":2", "\"version\":1"), "\"renderer\":null,", "")),
+        unsupported_version, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"version\":2,", "")), missing_version, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "anima.prefab-variant", "anima.prefab")),
                          "Invalid prefab variant document kind", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"unexpected\":null,")), "Unknown JSON field: unexpected",
                          std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"version\":1,")), duplicate_field, std::invalid_argument);
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"version\":2,")), duplicate_field, std::invalid_argument);
     // A key that decodes to one already present is a duplicate.
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"ver\\u0073ion\":1,")), duplicate_field,
+    CHECK_THROWS_WITH_AS(decode(substitute(valid, "{", "{\"ver\\u0073ion\":2,")), duplicate_field,
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"base\":\"base\"", "\"base\":\"\"")), invalid_key,
                          std::invalid_argument);
@@ -111,9 +115,6 @@ TEST_CASE("Malformed variant documents are rejected with their reason") {
                          "Empty prefab variant override", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\"", "\"name\":42")), not_string,
                          std::invalid_argument);
-    // An omitted name inherits, as null does, so the override again changes nothing.
-    CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"name\":\"override\",", "")), "Empty prefab variant override",
-                         std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"local\":null", "\"local\":[]")),
                          "Prefab variant matrix requires 16 scalars", std::invalid_argument);
     CHECK_THROWS_WITH_AS(
@@ -123,14 +124,17 @@ TEST_CASE("Malformed variant documents are rejected with their reason") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null", "\"renderer\":{}")), "Missing JSON field: mesh",
                          std::invalid_argument);
-    // Omitted settings take their defaults: an inherited renderer and no component changes.
-    const auto defaults =
-        decode(substitute(substitute(substitute(valid, "\"renderer\":null,", ""), "\"set_components\":[],", ""),
-                          ",\"remove_components\":[]", ""));
-    REQUIRE(defaults.overrides().size() == 1);
-    CHECK_FALSE(defaults.overrides()[0].renderer);
-    CHECK(defaults.overrides()[0].set_components.empty());
-    CHECK(defaults.overrides()[0].remove_components.empty());
+    // Every field of an override is required: null, not omission, inherits from the base.
+    for (const auto &[field, missing] :
+         {std::pair{"\"name\":\"override\",", "Missing JSON field: name"},
+          std::pair{"\"local\":null,", "Missing JSON field: local"},
+          std::pair{"\"active\":null,", "Missing JSON field: active"},
+          std::pair{"\"renderer\":null,", "Missing JSON field: renderer"},
+          std::pair{"\"set_components\":[],", "Missing JSON field: set_components"},
+          std::pair{",\"remove_components\":[]", "Missing JSON field: remove_components"}}) {
+        CAPTURE(missing);
+        CHECK_THROWS_WITH_AS(decode(substitute(valid, field, "")), missing, std::invalid_argument);
+    }
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"renderer\":null", "\"renderer\":null,\"parent\":null")),
                          "Unknown JSON field: parent", std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(valid, "\"set_components\":[]", "\"set_components\":null")), component_count,
@@ -188,23 +192,31 @@ TEST_CASE("Malformed renderer overrides are rejected with their reason") {
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"pose\":null", "\"pose\":[]")), pose_mismatch,
                          std::invalid_argument);
     // Without a mesh there is no renderer to stop casting.
-    CHECK_THROWS_WITH_AS(
-        decode(substitute(with_renderer, "\"visible\":true", "\"visible\":true,\"casts_shadows\":false")),
-        renderer_state, std::invalid_argument);
-    // An omitted pose is the rest pose, as null is.
-    const auto rest = decode(substitute(with_renderer, "\"pose\":null,", ""));
-    REQUIRE(rest.overrides()[0].renderer);
-    CHECK_FALSE(rest.overrides()[0].renderer->pose);
+    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"casts_shadows\":true", "\"casts_shadows\":false")),
+                         renderer_state, std::invalid_argument);
+    // Every field of a renderer is required, as for a scene object.
+    for (const auto &[field, missing] :
+         {std::pair{"\"mesh\":null,", "Missing JSON field: mesh"},
+          std::pair{"\"pose\":null,", "Missing JSON field: pose"},
+          std::pair{"\"visible\":true,", "Missing JSON field: visible"},
+          std::pair{"\"material_factors\":[],", "Missing JSON field: material_factors"},
+          std::pair{"\"custom_materials\":[],", "Missing JSON field: custom_materials"},
+          std::pair{"\"primitive_visible\":[],", "Missing JSON field: primitive_visible"},
+          std::pair{"\"casts_shadows\":true,", "Missing JSON field: casts_shadows"},
+          std::pair{"\"placements\":null,", "Missing JSON field: placements"},
+          std::pair{",\"visibility_range\":null", "Missing JSON field: visibility_range"}}) {
+        CAPTURE(missing);
+        CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, field, "")), missing, std::invalid_argument);
+    }
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"primitive_visible\":[]", "\"primitive_visible\":[false]")),
                          renderer_state, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"material_factors\":[]", "\"material_factors\":[[1,1,1]]")),
                          renderer_state, std::invalid_argument);
     CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"mesh\":null", "\"mesh\":null,\"unknown\":0")),
                          "Unknown JSON field: unknown", std::invalid_argument);
-    CHECK_THROWS_WITH_AS(decode(substitute(with_renderer, "\"mesh\":null",
-                                           "\"mesh\":null,\"placements\":[[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]]")),
-                         "Prefab variant placements must copy the renderer's mesh, which has no pose",
-                         std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        decode(substitute(with_renderer, "\"placements\":null", "\"placements\":[[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]]")),
+        "Prefab variant placements must copy the renderer's mesh, which has no pose", std::invalid_argument);
 }
 
 TEST_CASE("A renderer override holds the RendererState of a prefab node, which both readers decode alike") {

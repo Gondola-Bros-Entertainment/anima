@@ -400,9 +400,9 @@ TEST_CASE("Each staged rejection crosses threads with the synchronous type and m
     const auto counted_type = "\"type\": \"" + std::string(counted_key) + '"';
     const std::pair<std::string, const char *> scenes[]{
         {"[]", "Invalid scene document"},
-        {substitute(documents.scene, "\"version\": 3", "\"version\": 2"), "Unsupported scene document version"},
+        {substitute(documents.scene, "\"version\": 4", "\"version\": 3"), "Unsupported scene document version"},
         {substitute(documents.scene, "\"anima.scene\"", "\"anima.prefab\""), "Invalid scene document kind"},
-        {substitute(documents.scene, "{", "{\"version\": 3,"), "Duplicate JSON document field"},
+        {substitute(documents.scene, "{", "{\"version\": 4,"), "Duplicate JSON document field"},
         {substitute(documents.scene, "\"next_key\": \"", "\"next_key\": \"0"), "Invalid object key"},
         {substitute(documents.scene, "\"name\": \"root-0\"", "\"name\": 0"),
          "[json.exception.type_error.302] type must be string, but is number"},
@@ -460,33 +460,38 @@ TEST_CASE("Retained bytes count the decoded objects, payloads and tables") {
     const Meshes meshes = compiled_meshes();
     const MeshResolver resolve = [&](std::string_view key) { return meshes.find(key); };
     constexpr std::string_view identity = "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]";
-    const auto object = [&](std::string_view key, std::string_view name, std::string_view parent,
-                            std::string_view rest) {
+    // An object with @p mesh, @p pose, @p factors, @p flags and @p components as its `mesh`, `pose`,
+    // `material_factors`, `primitive_visible` and `components`, and the other fields of an object without a mesh.
+    const auto object = [&](std::string_view key, std::string_view name, std::string_view parent, std::string_view mesh,
+                            std::string_view pose, std::string_view factors, std::string_view flags,
+                            std::string_view components) {
         return R"({"key":")" + std::string(key) + R"(","name":")" + std::string(name) + R"(","parent":)" +
-               std::string(parent) + R"(,"local":)" + std::string(identity) + std::string(rest) + '}';
+               std::string(parent) + R"(,"local":)" + std::string(identity) + R"(,"active":true,"mesh":)" +
+               std::string(mesh) + R"(,"pose":)" + std::string(pose) + R"(,"visible":true,"material_factors":)" +
+               std::string(factors) + R"(,"custom_materials":[],"primitive_visible":)" + std::string(flags) +
+               R"(,"casts_shadows":true,"placements":null,"visibility_range":null,"components":)" +
+               std::string(components) + '}';
     };
     // One object with a pose, a material factor, a visibility flag and a component; one without a mesh; one with
     // two visibility flags.
-    const auto objects = object("1", "a", "null",
-                                R"(,"mesh":"one","pose":[)" + std::string(identity) +
-                                    R"(],"material_factors":[[1,1,1]],"primitive_visible":[true],"components":)"
-                                    R"([{"type":"test.counted.v1","state":"0:xyz","enabled":true}])") +
-                         ',' + object("2", "bb", "0", R"(,"mesh":null)") + ',' +
-                         object("3", "", "null", R"(,"mesh":"two","primitive_visible":[true,false])");
+    const auto objects = object("1", "a", "null", R"("one")", "[" + std::string(identity) + "]", "[[1,1,1]]", "[true]",
+                                R"([{"type":"test.counted.v1","state":"0:xyz","enabled":true}])") +
+                         ',' + object("2", "bb", "0", "null", "null", "[]", "[]", "[]") + ',' +
+                         object("3", "", "null", R"("two")", "null", "[]", "[true,false]", "[]");
     const auto scene_bytes = 3 * sizeof(Prefab::Node) + (1 + 2 + 0) + sizeof(Mat4) + sizeof(Vec3) + 1 + 1 +
                              sizeof(ComponentData) + counted_key.size() + std::string_view("0:xyz").size();
-    const auto document = R"({"version":3,"kind":"anima.scene","next_key":"4","objects":[)" + objects + "]}";
+    const auto document = R"({"version":4,"kind":"anima.scene","next_key":"4","objects":[)" + objects + "]}";
     const auto staged = stage_scene(document, resolve);
     CHECK(staged.retained_bytes() == scene_bytes);
     const auto copy = staged;
     CHECK(copy.retained_bytes() == scene_bytes);
-    CHECK(stage_scene(R"({"version":3,"kind":"anima.scene","next_key":"1","objects":[]})", resolve).retained_bytes() ==
+    CHECK(stage_scene(R"({"version":4,"kind":"anima.scene","next_key":"1","objects":[]})", resolve).retained_bytes() ==
           0);
 
-    const auto set = R"({"version":1,"kind":"anima.scene-set","active":"alpha","scenes":[{"key":"alpha",)"
+    const auto set = R"({"version":2,"kind":"anima.scene-set","active":"alpha","scenes":[{"key":"alpha",)"
                      R"("next_key":"4","objects":[)" +
                      objects + R"(]},{"key":"b","next_key":"2","objects":[)" +
-                     object("1", "n", "null", R"(,"mesh":null)") +
+                     object("1", "n", "null", "null", "null", "[]", "[]", "[]") +
                      R"(]}],"references":[{"key":"1","scene":"alpha","object":"1"},)"
                      R"({"key":"2","scene":"alpha","object":"2"},{"key":"3","scene":"alpha","object":"3"},)"
                      R"({"key":"4","scene":"b","object":"1"}]})";
@@ -527,9 +532,12 @@ struct UpdatingCommitter {
 struct DecodingCommitter {};
 
 TEST_CASE("Staged commits refuse a busy set with the message of its activity") {
-    const auto document = R"({"version":3,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a",)"
-                          R"("parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null}]})";
-    const auto set_document = R"({"version":1,"kind":"anima.scene-set","active":"level","scenes":[{"key":"level",)"
+    const auto document = R"({"version":4,"kind":"anima.scene","next_key":"2","objects":[{"key":"1","name":"a",)"
+                          R"("parent":null,"local":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"mesh":null,"pose":null,)"
+                          R"("visible":true,"active":true,"material_factors":[],"custom_materials":[],)"
+                          R"("primitive_visible":[],"casts_shadows":true,"placements":null,"visibility_range":null,)"
+                          R"("components":[]}]})";
+    const auto set_document = R"({"version":2,"kind":"anima.scene-set","active":"level","scenes":[{"key":"level",)"
                               R"("next_key":"1","objects":[]}],"references":[]})";
     const auto staged = stage_scene(document, {});
     const auto staged_set = stage_scene_set(set_document, {});
