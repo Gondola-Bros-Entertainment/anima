@@ -129,8 +129,11 @@ HeightFog fog(const Json &j) {
             number(j.at("sky_distance"))};
 }
 // Each ToneMapping enumerator with the name that the payload stores it under.
-constexpr std::array<std::pair<ToneMapping, std::string_view>, 2> tone_mappings{
-    {{ToneMapping::none, "none"}, {ToneMapping::reinhard, "reinhard"}}};
+constexpr std::array<std::pair<ToneMapping, std::string_view>, 4> tone_mappings{
+    {{ToneMapping::none, "none"},
+     {ToneMapping::reinhard, "reinhard"},
+     {ToneMapping::agx, "agx"},
+     {ToneMapping::pbr_neutral, "pbr_neutral"}}};
 Json tone_mapping_json(ToneMapping mapping) {
     for (const auto &[value, name] : tone_mappings)
         if (value == mapping)

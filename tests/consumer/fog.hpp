@@ -5,14 +5,15 @@
 // quad composited over a fogged one as each is fogged at its own distance; uniform fog, with and without sunlight,
 // whose height leaves the same frame; the sky fogged at HeightFog::sky_distance, so that a quad there meets it without
 // a seam that the unfogged sky shows, and the atmosphere's sky dimmed there by the fog; the background of an
-// environment without an atmosphere, exposed and tone mapped as set, and fogged at the sky distance as the sky is;
-// animaFogged(), which fogs a custom material as the standard material is fogged; and the cap on the fog's light, which
-// a fog color above the largest half float meets on every path without sunlight. Last, a renderer that requests the
-// packed SceneColorFormat::b10g11r11 scene target draws sunlit height fog, water that reads the opaque copies, and the
-// atmosphere's sky within a few levels of the default target, which itself stays the default.
+// environment without an atmosphere, exposed and through each tone mapping curve, and fogged at the sky distance as
+// the sky is; animaFogged(), which fogs a custom material as the standard material is fogged; and the cap on the fog's
+// light, which a fog color above the largest half float meets on every path without sunlight. Last, a renderer that
+// requests the packed SceneColorFormat::b10g11r11 scene target draws sunlit height fog, water that reads the opaque
+// copies, and the atmosphere's sky within a few levels of the default target, which itself stays the default.
 #include "blending.hpp"
 #include "custom_materials.hpp"
 #include "rejection.hpp"
+#include "tone_mapping_reference.hpp"
 #include <algorithm>
 #include <anima/environment.hpp>
 #include <array>
@@ -287,8 +288,8 @@ inline void check_sky(blending_test::Harness &harness) {
     harness.images.discard({"horizon", "horizon-unfogged", "sky-unfogged", "sky-fogged"});
 }
 
-// With the atmosphere disabled, the background shows its color times the exposure wherever no mesh draws, and Reinhard
-// tone mapping compresses it as it does the scene. Fog leaves it as set until the fog reaches the sky, at its sky
+// With the atmosphere disabled, the background shows its color times the exposure wherever no mesh draws, and each
+// tone mapping curve compresses it as it does the scene. Fog leaves it as set until the fog reaches the sky, at its sky
 // distance, where the background fades as a quad of its color there does, so the two meet without a seam; an
 // orthographic view, which is not fogged, still shows it as set.
 inline void check_background(blending_test::Harness &harness) {
@@ -298,28 +299,28 @@ inline void check_background(blending_test::Harness &harness) {
     environment.background = {.4F, .1F, .02F};
     environment.exposure = 1.25F;
     const Color background{environment.background.x, environment.background.y, environment.background.z};
-    // The environment's background as the display shows it, exposed and, with Reinhard tone mapping, compressed.
+    // The environment's background as the display shows it: exposed, then through its tone mapping curve as
+    // tone_mapping_reference.hpp evaluates it.
+    const tone_mapping_reference::Curves curves;
     const auto exposed = [&] {
         const auto &set = environment.background;
-        const Color color{set.x, set.y, set.z};
-        Color result{};
-        for (std::size_t c = 0; c < result.size(); ++c) {
-            const auto value = color[c] * environment.exposure;
-            result[c] = environment.tone_mapping == anima::ToneMapping::reinhard ? value / (1 + value) : value;
-        }
-        return result;
+        return curves.displayed({set.x, set.y, set.z}, environment.exposure, environment.tone_mapping);
     };
     auto scene = std::make_shared<anima::Scene>();
     (void)scene->create({}, blending_test::facing(blending_test::opaque(background), {0, eye.y, -distance}, 6, 6));
     const anima::Vec3 on_quad{4, eye.y, -distance}, on_background{8, eye.y, -distance};
     harness.render("background", {scene}, view_projection, environment);
     harness.expect("background", view_projection, on_background, exposed(), "The background without an atmosphere");
-    // A background bright enough that tone mapping changes it plainly.
+    // A background bright enough that every curve changes it plainly.
     environment.background = {4, 1, .2F};
-    environment.tone_mapping = anima::ToneMapping::reinhard;
-    harness.render("background-tone-mapped", {scene}, view_projection, environment);
-    harness.expect("background-tone-mapped", view_projection, on_background, exposed(),
-                   "The background through Reinhard tone mapping");
+    for (const auto mapping : tone_mapping_reference::mappings) {
+        environment.tone_mapping = mapping;
+        const auto name = "background-" + std::string(tone_mapping_reference::name(mapping));
+        harness.render(name, {scene}, view_projection, environment);
+        harness.expect(name, view_projection, on_background, exposed(),
+                       "The background through tone mapping " + std::string(tone_mapping_reference::name(mapping)));
+        harness.images.discard({name});
+    }
     environment.background = {.4F, .1F, .02F};
     environment.tone_mapping = anima::ToneMapping::none;
     // A fog far from the background's color in red, so that fogging it shows plainly.
@@ -363,8 +364,7 @@ inline void check_background(blending_test::Harness &harness) {
     harness.render("background-orthographic", {scene}, orthographic, environment);
     harness.expect("background-orthographic", orthographic, on_background, exposed(),
                    "The background of an orthographic view in fog");
-    harness.images.discard({"background", "background-tone-mapped", "background-unfogged", "background-fogged",
-                            "background-orthographic"});
+    harness.images.discard({"background", "background-unfogged", "background-fogged", "background-orthographic"});
 }
 
 // The color that fogged_probe() writes animaFogged() of.

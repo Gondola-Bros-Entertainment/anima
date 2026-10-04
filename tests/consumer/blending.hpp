@@ -147,6 +147,8 @@ class Harness {
     }
     /// The scene color format that the renderer settled on.
     [[nodiscard]] anima::SceneColorFormat scene_color_format() const noexcept { return renderer_.scene_color_format(); }
+    /// Sets the render scale of later frames, as VulkanRenderer::set_render_scale does.
+    void set_render_scale(float scale) { renderer_.set_render_scale(scale); }
     /// Draws @p scenes through @p view_projection in @p environment and reads the frame back as @p name.
     void render(const std::string &name, std::vector<std::shared_ptr<const anima::Scene>> scenes,
                 const anima::Mat4 &view_projection, const anima::Environment &environment) {

@@ -101,9 +101,9 @@ class SceneEnvironment {
 /// exactly the HeightFog field names, `shadow_cascades` exactly `enabled`, `count`, `distance`, `logarithmic_split`,
 /// `blend`, `resolution` and `bias`, `detail_shadow` exactly the DirectionalShadow field names, and each `bias`
 /// exactly `constant` and `slope`. Colors, coefficients and centers are three numbers and flags are booleans.
-/// `tone_mapping` is the name of a ToneMapping enumerator, `"none"` or `"reinhard"`, and another string fails with
-/// "Unknown tone mapping". Each count and resolution is an integer from 1 to 4,294,967,295 that
-/// validate_environment_settings() then limits. Numbers must be finite, and payloads are at most 64 KiB. Unknown,
+/// `tone_mapping` is the name of a ToneMapping enumerator, `"none"`, `"reinhard"`, `"agx"` or `"pbr_neutral"`, and
+/// another string fails with "Unknown tone mapping". Each count and resolution is an integer from 1 to 4,294,967,295
+/// that validate_environment_settings() then limits. Numbers must be finite, and payloads are at most 64 KiB. Unknown,
 /// missing or duplicate fields, wrong types and invalid values are rejected, with the messages of
 /// validate_environment_settings() for values that it rejects. The scene or prefab stores transforms and enabled
 /// state. A missing or inactive light is not a decoding error; lighting_environment() rejects it later. The

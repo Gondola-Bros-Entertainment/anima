@@ -248,6 +248,7 @@ TEST_CASE("Invalid environment settings are rejected and keep the accepted envir
         {[](auto &bad) { bad.fog.sun_scattering.z = -1; }, "Fog sun_scattering must be finite and nonnegative"},
         {[](auto &bad) { bad.fog.height = infinite; }, "Fog height must be finite"},
         {[](auto &bad) { bad.fog.sky_distance = 2e9F; }, "Fog sky_distance must lie from 0 to 1,000,000,000"},
+        {[](auto &bad) { bad.tone_mapping = static_cast<ToneMapping>(4); }, unknown_tone_mapping},
         {[](auto &bad) { bad.tone_mapping = static_cast<ToneMapping>(255); }, unknown_tone_mapping},
         {[](auto &bad) { bad.shadow_cascades.count = 5; }, "Shadow cascade count must be from 1 to 4"},
         {[](auto &bad) { bad.shadow_cascades.resolution = 15; }, "Shadow cascade resolution must be at least 16"},
@@ -422,6 +423,23 @@ TEST_CASE_FIXTURE(Rig, "Lighting links remap per prefab instance, and settings a
     CHECK(same(accepted, lighting_environment(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs))));
 }
 
+TEST_CASE_FIXTURE(Rig, "Each tone mapping persists as its enumerator's name") {
+    for (const auto &[mapping, name] :
+         {std::pair{ToneMapping::none, "none"}, std::pair{ToneMapping::reinhard, "reinhard"},
+          std::pair{ToneMapping::agx, "agx"}, std::pair{ToneMapping::pbr_neutral, "pbr_neutral"}}) {
+        CAPTURE(name);
+        settings.tone_mapping = mapping;
+        selected->configure(settings);
+        const auto prefab = Prefab::capture(root, codecs);
+        CHECK(prefab.nodes()[0].components[0].state.find("\"tone_mapping\":\"" + std::string(name) + "\"") !=
+              std::string::npos);
+        const auto accepted = lighting_environment(scene);
+        const auto restored = lighting_environment(*load_scene(serialize_scene(scene, {}, codecs), {}, codecs));
+        CHECK(restored.tone_mapping == mapping);
+        CHECK(same(accepted, restored));
+    }
+}
+
 TEST_CASE_FIXTURE(Rig, "Capturing a light outside the prefab is rejected, and a null link stays null") {
     selected->sun = light(scene);
     CHECK_THROWS_WITH_AS(Prefab::capture(root, codecs), outside_graph, std::invalid_argument);
@@ -461,7 +479,8 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
             payloads.push_back({replace(valid, "\"tone_mapping\":\"reinhard\"", "\"tone_mapping\":1"), needs_string});
             payloads.push_back(
                 {replace(valid, "\"tone_mapping\":\"reinhard\"", "\"tone_mapping\":true"), needs_string});
-            for (const auto *bad : {"\"Reinhard\"", "\"aces\"", "\"\""})
+            for (const auto *bad : {"\"Reinhard\"", "\"aces\"", "\"\"", "\"AgX\"", "\"agx \"", "\"pbr-neutral\"",
+                                    "\"pbr_neutral_\"", "\"neutral\""})
                 payloads.push_back(
                     {replace(valid, "\"tone_mapping\":\"reinhard\"", "\"tone_mapping\":" + std::string(bad)),
                      unknown_tone_mapping});

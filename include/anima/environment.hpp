@@ -287,12 +287,37 @@ inline void validate_height_fog(const HeightFog &fog) {
             "Fog sky_distance must lie from 0 to 1,000,000,000");
 }
 /// A curve that compresses exposed linear scene color before display encoding: EnvironmentSettings::tone_mapping. The
-/// `anima.scene-environment.v4` payload stores it as its enumerator's name.
+/// `anima.scene-environment.v4` payload stores it as its enumerator's name. Each curve receives linear Rec.709 color
+/// after exposure, clamped to 0 to 65504 in each channel, and returns linear Rec.709 color, which the display clamps to
+/// 0 to 1 and encodes.
 enum class ToneMapping : std::uint8_t {
     /// Applies no curve.
     none,
     /// Compresses each exposed channel `c` to `c / (1 + c)`.
     reinhard,
+    /// AgX, the image that Blender's AgX view forms for an sRGB display, evaluated in closed form with the constants
+    /// that Blender 4.0 through 5.2.2 (commit d13f752e3b9c) use, rather than through their `AgX_Base_sRGB.cube`
+    /// table; later changes to Blender's AgX are not followed. The color is converted to Rec.2020 and inset toward
+    /// white by Blender's AgX matrix. Each channel's base 2 logarithm is mapped linearly, 10 stops below 0.18 to 0 and
+    /// 6.5 stops above it to 1, and through a sigmoid of slope 2.4 with powers 1.5 on both sides of the pivot
+    /// (10 / 16.5, 0.18^(1/2.4)), which passes through (0, 0) and (1, 1) and continues past both; the sigmoid's values
+    /// below 0 become 0, and the rest are raised to the power 2.4. The HSV hue then keeps 40% of the change that the
+    /// curve made to it, taken the shorter way around, with the largest and smallest channels kept, and the outset
+    /// matrix and the conversion back to Rec.709 follow. Each channel of the result is clamped to 0 to 1. Blender's
+    /// table instead offsets a color with a negative channel until none is negative and scales it back toward its
+    /// luminance, so colors that the outset takes outside Rec.709, such as saturated reds and greens, can show up to
+    /// about 20 levels of 8-bit sRGB from the image that Blender forms. A neutral color maps 0.18 to 0.18, anything
+    /// below 0.18 * 2^-10 (about 1.76e-4) to 0, and 0.18 * 2^6.5 (about 16.29) and anything above it to 1.
+    agx,
+    /// Khronos PBR Neutral, as its specification (KhronosGroup/ToneMapping, PBR_Neutral) defines it. With `x` the
+    /// smallest channel, every channel loses `x - 6.25 * x * x` when `x` is at most 0.08 and 0.04 otherwise; where the
+    /// largest channel `p` then exceeds 0.76, the color is scaled to the peak `n = 1 - 0.0576 / (p - 0.52)` and mixed
+    /// toward `(n, n, n)` by `1 - 1 / (0.15 * (p - n) + 1)`. A color whose channels all lie from 0.08 to 0.8 shows
+    /// each 0.04 lower, and every color stays in the plane through itself and white. The offset darkens shade: a
+    /// color whose smallest channel `x` lies below 0.08, as in shade lit only by ambient light, keeps `6.25 * x * x`
+    /// of that channel before any compression, and every channel loses as much, so the color shows darker and more
+    /// saturated; a neutral 0.02 shows as 0.0025.
+    pbr_neutral,
 };
 /// Lighting settings other than the two lights, shared by SceneEnvironment and Environment.
 ///
@@ -383,7 +408,9 @@ inline void validate_environment_settings(const EnvironmentSettings &e) {
             "Environment background must be finite nonnegative linear RGB of at most 65504");
     validate_height_fog(e.fog);
     require(positive(e.exposure), "Environment exposure must be finite and positive");
-    require(e.tone_mapping == ToneMapping::none || e.tone_mapping == ToneMapping::reinhard, "Unknown tone mapping");
+    require(e.tone_mapping == ToneMapping::none || e.tone_mapping == ToneMapping::reinhard ||
+                e.tone_mapping == ToneMapping::agx || e.tone_mapping == ToneMapping::pbr_neutral,
+            "Unknown tone mapping");
     constexpr float maximum_distance = 1e9F;
     const auto &c = e.shadow_cascades;
     require(c.count >= 1 && c.count <= ShadowCascades::max_count, "Shadow cascade count must be from 1 to 4");
