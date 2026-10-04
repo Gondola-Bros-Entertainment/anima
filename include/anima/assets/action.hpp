@@ -170,25 +170,36 @@ class ActionTimeline {
     std::vector<ActionPhase> phases_;
     bool held_{};
 };
-/// Reports each cue of one action instance once, when its time is reached.
+/// Reports the cues that the frames of one action instance reach, each at most once until a rewind.
 ///
 /// Use one cursor per observer of an action instance. A new instance starts at time 0, so its first
 /// advance() reports every cue it has reached, even when that first frame lands after 0. An
-/// observer that joins an instance already under way calls seek() first, and a rewind seeks
-/// silently instead of replaying earlier cues. Repeated frames never report a cue twice. Call
-/// reset() on cancellation.
+/// observer that joins an instance already under way calls seek() first. A rewind, any frame
+/// earlier than the one before it, seeks silently: later frames report the cues after its time
+/// again, but none at or before it. Repeated frames never report a cue twice. A release that
+/// arrives late still reports the cues it places behind the previous frame, unless they lie at or
+/// before the latest seek() or rewind, however small that rewind's step back. Call reset() on
+/// cancellation.
 class ActionCueCursor {
   public:
-    /// Returns the cues of @p timeline reached since the previous call for the same @p action and
-    /// @p instance, in timeline order; for a new instance, every cue from time 0 through @p elapsed.
-    /// Throws for an empty @p action, a zero @p instance, or times that ActionTimeline::sample
-    /// rejects.
+    /// Returns, in timeline order, the cues of @p timeline at or before @p elapsed that the cursor
+    /// has not yet passed for @p action and @p instance, except cues at or before the time of the
+    /// instance's latest seek() or rewind. Each call passes the cues it reaches, reported or not, and
+    /// identifies a cue by its phase index and id. A rewind, a call with an earlier @p elapsed than
+    /// the previous call's, forgets the cues passed before it. A call for another action or instance
+    /// than the previous call's starts that instance anew, with no cue passed and no seek or rewind
+    /// time. So a frame reports the cues reached since the previous call; when advance() starts an
+    /// instance, it reports every cue from time 0 through @p elapsed; and a cue that a late or
+    /// changed @p released_at, or a @p timeline unlike the previous call's, places at or before the
+    /// previous call's time is reported by the first advance() that reaches it. Throws for an empty
+    /// @p action, a zero @p instance, or times that ActionTimeline::sample rejects.
     std::vector<TimedActionCue> advance(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline,
                                         double elapsed, std::optional<double> released_at = {}) {
         return move(action, instance, timeline, elapsed, released_at, true);
     }
     /// Moves to @p elapsed without reporting cues, as for an observer that joins @p instance after it
-    /// started; later advance() calls report only cues after @p elapsed. Throws as advance() does.
+    /// started. Until a rewind or a call for another instance, later advance() calls report no cue at
+    /// or before @p elapsed, whatever release time they pass. Throws as advance() does.
     void seek(std::string_view action, std::uint64_t instance, const ActionTimeline &timeline, double elapsed,
               std::optional<double> released_at = {}) {
         (void)move(action, instance, timeline, elapsed, released_at, false);
@@ -204,19 +215,25 @@ class ActionCueCursor {
             throw std::invalid_argument("Action cue cursor needs an instance identity");
         const bool fresh = action_ != action || instance_ != instance;
         const bool rewound = !fresh && elapsed < elapsed_;
-        const auto previous = elapsed_;
         if (fresh || rewound) {
             emitted_.clear();
             action_ = action;
             instance_ = instance;
         }
         elapsed_ = elapsed;
+        // Only a seek or a rewind passes over time silently, and an instance that advance() starts has no
+        // silent time. A later advance keeps the bound, so a cue placed behind the previous advance, as by a
+        // late release, is still reported once.
+        if (!report || rewound)
+            silent_through_ = elapsed;
+        else if (fresh)
+            silent_through_.reset();
         std::vector<TimedActionCue> result;
         for (auto cue : timeline.cues(released_at)) {
             if (cue.time > elapsed)
                 continue;
             const bool first = emitted_.insert({cue.phase, cue.id}).second;
-            if (first && report && !rewound && (fresh || cue.time > previous))
+            if (first && (!silent_through_ || cue.time > *silent_through_))
                 result.push_back(std::move(cue));
         }
         return result;
@@ -224,6 +241,8 @@ class ActionCueCursor {
     std::string action_;
     std::uint64_t instance_{};
     double elapsed_{};
+    // Time of the latest seek or rewind of this instance; advance() reports no cue at or before it.
+    std::optional<double> silent_through_;
     std::set<std::pair<std::size_t, std::string>> emitted_;
 };
 } // namespace anima
