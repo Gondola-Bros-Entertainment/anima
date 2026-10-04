@@ -248,14 +248,14 @@ static void sort_back_to_front(std::vector<BlendedDraw> &draws) {
                      [](const BlendedDraw &a, const BlendedDraw &b) { return a.key > b.key; });
 }
 // The distance by which the main view orders the objects whose opaque and masked meshes it draws, nearest first: to
-// the nearest point of @p bounds, from the eye in a perspective view, which is 0 for bounds that hold the eye, or along
-// the view direction in an orthographic one, where view_origin holds the unit direction toward the camera and the
-// distance is measured from the plane through the world origin, so that it may be negative. Bounds that overflowed to
-// infinity can leave the distance undefined (NaN), and such a key orders last.
+// the nearest point of @p bounds, from the eye in a perspective view, which is 0 for bounds that hold the eye or are
+// invalid (nearest_distance()), or along the view direction in an orthographic one, where view_origin holds the unit
+// direction toward the camera and the distance is measured from the plane through the world origin, so that it may be
+// negative. Bounds that overflowed to infinity can leave the distance undefined (NaN), and such a key orders last.
 double view_order_key(const RenderBounds &bounds) const {
     double key = 0;
     if (view_origin[3] != 0)
-        key = nearest_distance(eye(), bounds.minimum, bounds.maximum);
+        key = nearest_distance(eye(), bounds);
     else
         for (const auto [lo, hi, toward] : {std::array{bounds.minimum.x, bounds.maximum.x, view_origin[0]},
                                             std::array{bounds.minimum.y, bounds.maximum.y, view_origin[1]},
@@ -462,16 +462,6 @@ std::shared_ptr<GpuPlacements> gpu_placements(const std::shared_ptr<const MeshPl
     placement_cache.emplace(placements.get(), value);
     return value;
 }
-// The distance from @p eye to the nearest point of the box from @p minimum to @p maximum, 0 inside it.
-static double nearest_distance(Vec3 eye, Vec3 minimum, Vec3 maximum) {
-    double squared = 0;
-    for (const auto [lo, hi, at] : {std::array{minimum.x, maximum.x, eye.x}, std::array{minimum.y, maximum.y, eye.y},
-                                    std::array{minimum.z, maximum.z, eye.z}}) {
-        const double gap = std::max({double(lo) - at, double(at) - hi, 0.0});
-        squared += gap * gap;
-    }
-    return std::sqrt(squared);
-}
 // The length of the longest of the first three columns of @p m: the largest scale it applies along an axis.
 static double axis_scale(const Mat4 &m) {
     return std::max({double(length(axis_x(m))), double(length(axis_y(m))), double(length(axis_z(m)))});
@@ -489,30 +479,13 @@ static double bounds_radius(const RenderBounds &bounds) {
 static double copy_radius(const Scene::Instance &render_instance) {
     return bounds_radius(render_instance.asset->rest_bounds()) * axis_scale(render_instance.world);
 }
-// The distances from @p eye to the nearest and to the farthest point of the box from @p minimum to @p maximum.
-static std::pair<double, double> distance_span(Vec3 eye, Vec3 minimum, Vec3 maximum) {
-    double nearest = 0, farthest = 0;
-    for (const auto [lo, hi, at] : {std::array{minimum.x, maximum.x, eye.x}, std::array{minimum.y, maximum.y, eye.y},
-                                    std::array{minimum.z, maximum.z, eye.z}}) {
-        const double gap = std::max({double(lo) - at, double(at) - hi, 0.0});
-        const double reach = std::max(std::abs(double(lo) - at), std::abs(double(hi) - at));
-        nearest += gap * gap;
-        farthest += reach * reach;
-    }
-    return {std::sqrt(nearest), std::sqrt(farthest)};
-}
-// Whether a box from @p minimum to @p maximum may hold a point at a distance from @p eye inside @p range.
-static bool within_range(const VisibilityRange &range, Vec3 eye, Vec3 minimum, Vec3 maximum) {
-    const auto [nearest, farthest] = distance_span(eye, minimum, maximum);
-    return nearest < range.end && farthest >= range.begin;
-}
-// Whether a box from @p minimum to @p maximum may hold a point at a distance from @p eye strictly inside one of
-// @p range's margins, where visibilityAt() gives a copy measured to that point a share of its pixels between 0 and 1.
-// At a margin's edges a copy draws whole or not at all, and dissolved() keeps every pixel of a share above 15.5/16 and
-// none below 0.5/16, so where rounding moves a distance across an edge by less than 1/32 of the margin, the shader's
-// float distance and this test's double one draw the same pixels.
-static bool may_dissolve(const VisibilityRange &range, Vec3 eye, Vec3 minimum, Vec3 maximum) {
-    const auto [nearest, farthest] = distance_span(eye, minimum, maximum);
+// Whether @p bounds may hold a point at a distance from @p eye strictly inside one of @p range's margins, where
+// visibilityAt() gives a copy measured to that point a share of its pixels between 0 and 1. At a margin's edges a copy
+// draws whole or not at all, and dissolved() keeps every pixel of a share above 15.5/16 and none below 0.5/16, so where
+// rounding moves a distance across an edge by less than 1/32 of the margin, the shader's float distance and this test's
+// double one draw the same pixels.
+static bool may_dissolve(const VisibilityRange &range, Vec3 eye, const RenderBounds &bounds) {
+    const auto nearest = nearest_distance(eye, bounds), farthest = farthest_distance(eye, bounds);
     const auto overlaps = [&](double from, double to) { return from < to && nearest < to && farthest > from; };
     return overlaps(range.begin, double(range.begin) + range.begin_margin) ||
            overlaps(double(range.end) - range.end_margin, range.end);
@@ -557,8 +530,7 @@ static RenderBounds cluster_bounds(const MeshPlacements::Cluster &cluster, const
 // @p eye.
 static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *frustum,
                             const std::optional<VisibilityRange> &range, Vec3 eye) {
-    return (!frustum || frustum->intersects(bounds)) &&
-           (!range || within_range(*range, eye, bounds.minimum, bounds.maximum));
+    return (!frustum || frustum->intersects(bounds)) && (!range || within_visibility_range(*range, eye, bounds));
 }
 // Pixels of the view's height per unit of error at distance 1, or at any distance in an orthographic view: the length
 // of the view-projection's second row, which is the projection's vertical scale, times half the scene targets' height,
@@ -568,20 +540,12 @@ double lod_projection() const {
                      double(view_projection[9]) * view_projection[9]) *
            scene_extent.height / 2;
 }
-// The coarsest level of @p draw whose error, scaled by @p scale and projected at @p distance from the eye, covers at
-// most the LOD threshold in pixels; null for the full draw.
+// The level of @p draw that lod_level() chooses for the view at @p distance from the eye under @p scale; null for the
+// full draw.
 const DrawLevel *level_for(const IndexedDraw &draw, double distance, double scale) const {
-    const bool perspective = view_origin[3] != 0;
-    if (draw.levels.empty() || options.lod_threshold <= 0 || (perspective && distance <= 0))
-        return nullptr;
-    const double pixels = lod_projection() * scale / (perspective ? distance : 1);
-    const DrawLevel *chosen = nullptr;
-    for (const auto &level : draw.levels) {
-        if (double(level.error) * pixels > options.lod_threshold)
-            break;
-        chosen = &level;
-    }
-    return chosen;
+    const auto level =
+        lod_level(draw.levels, distance, scale, lod_projection(), view_origin[3] != 0, options.lod_threshold);
+    return level ? &draw.levels[*level] : nullptr;
 }
 // The level of draw @p draw_index of @p render_instance, an object without placements, that the view chooses: by the
 // distance to the draw's world bounds and the largest scale among the matrices that place it, its node's matrix or its
@@ -592,7 +556,7 @@ const DrawLevel *object_level(const Scene::Instance &render_instance, std::size_
     double scale = 0;
     for (std::uint32_t j = 0; j < draw.palette_count; ++j)
         scale = std::max(scale, axis_scale(render_instance.palette[draw.palette_offset + j]));
-    return level_for(draw, nearest_distance(eye(), bounds.minimum, bounds.maximum), scale);
+    return level_for(draw, nearest_distance(eye(), bounds), scale);
 }
 // @p range with its begin, end and margins times the view distance scale (VulkanRenderer::set_view_distance_scale()),
 // multiplied in double and rounded to float. A finite distance that the product carries past the largest float is
@@ -637,10 +601,9 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
         if (unit_copy * cluster.scale < min_caster_radius)
             continue;
         if (cluster_visible(bounds, frustum, range, eye()))
-            placement_runs.push_back({cluster.first, cluster.count,
-                                      nearest_distance(eye(), bounds.minimum, bounds.maximum),
+            placement_runs.push_back({cluster.first, cluster.count, nearest_distance(eye(), bounds),
                                       world_scale * cluster.scale, render_instance.placements->orientations[i],
-                                      range && may_dissolve(*range, eye(), bounds.minimum, bounds.maximum)});
+                                      range && may_dissolve(*range, eye(), bounds)});
     }
 }
 // Whether shadow pass @p shadow draws draw @p draw_index of @p render_instance, a caster: its world bounds, which cover
@@ -743,11 +706,12 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             if (const auto range = use_frustum ? culling_range(render_instance) : std::nullopt;
                 range && !render_instance.placements) {
                 const auto center = point(render_instance.world, range_center(*render_instance.asset));
-                if (!within_range(*range, eye(), center, center)) {
+                const RenderBounds measured{center, center, true};
+                if (!within_visibility_range(*range, eye(), measured)) {
                     ++range_culled;
                     continue;
                 }
-                dissolving = may_dissolve(*range, eye(), center, center);
+                dissolving = may_dissolve(*range, eye(), measured);
             }
             const auto first_draw = draws.size(), first_shadow = shadows.size(), first_blended = blended.size(),
                        first_custom = custom_draws.size(), first_custom_shadow = custom_shadows.size(),

@@ -1,7 +1,28 @@
+#include <algorithm>
 #include <anima/assets/render_visibility.hpp>
+#include <array>
+#include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace anima {
+namespace {
+// The length of the three axes' measures of @p bounds from @p eye, each @p measure of the amount by which the eye lies
+// below the minimum and that by which it lies above the maximum; NaN when either amount is.
+template <class Measure> double axis_length(Vec3 eye, const RenderBounds &bounds, Measure measure) noexcept {
+    double squared = 0;
+    for (const auto [lo, hi, at] :
+         {std::array{bounds.minimum.x, bounds.maximum.x, eye.x}, std::array{bounds.minimum.y, bounds.maximum.y, eye.y},
+          std::array{bounds.minimum.z, bounds.maximum.z, eye.z}}) {
+        const double below = double(lo) - at, above = double(at) - hi;
+        if (std::isnan(below) || std::isnan(above))
+            return std::numeric_limits<double>::quiet_NaN();
+        const double length = measure(below, above);
+        squared += length * length;
+    }
+    return std::sqrt(squared);
+}
+} // namespace
 RenderFrustum::RenderFrustum(const Mat4 &view) {
     for (const auto value : view)
         if (!std::isfinite(value))
@@ -44,5 +65,35 @@ bool RenderFrustum::intersects(const RenderBounds &bounds) const noexcept {
             return false;
     }
     return true;
+}
+double nearest_distance(Vec3 eye, const RenderBounds &bounds) noexcept {
+    if (!bounds.valid)
+        return 0;
+    return axis_length(eye, bounds, [](double below, double above) { return std::max({below, above, 0.0}); });
+}
+double farthest_distance(Vec3 eye, const RenderBounds &bounds) noexcept {
+    if (!bounds.valid)
+        return std::numeric_limits<double>::infinity();
+    return axis_length(eye, bounds,
+                       [](double below, double above) { return std::max(std::abs(below), std::abs(above)); });
+}
+bool within_visibility_range(const VisibilityRange &range, Vec3 eye, const RenderBounds &bounds) noexcept {
+    // Negated comparisons keep bounds and ranges whose distances are NaN.
+    return !bounds.valid ||
+           (!(nearest_distance(eye, bounds) >= range.end) && !(farthest_distance(eye, bounds) < range.begin));
+}
+std::optional<std::size_t> lod_level(std::span<const DrawLevel> levels, double distance, double scale,
+                                     double pixels_per_unit_error, bool perspective, float threshold_pixels) noexcept {
+    if (levels.empty() || !(threshold_pixels > 0) || (perspective && !(distance > 0)))
+        return std::nullopt;
+    const double pixels = pixels_per_unit_error * scale / (perspective ? distance : 1);
+    std::optional<std::size_t> chosen;
+    for (std::size_t i = 0; i < levels.size(); ++i) {
+        // Negated, so that a NaN product does not fit.
+        if (!(double(levels[i].error) * pixels <= threshold_pixels))
+            break;
+        chosen = i;
+    }
+    return chosen;
 }
 } // namespace anima
