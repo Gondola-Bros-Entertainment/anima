@@ -1,7 +1,8 @@
 // Included inside Impl. Set 1, each frame slot's environment set, is shared by world passes; material set 0 and
 // palette set 2 stay independent.
 Environment environment;
-// The sun at the ground, atmosphere_sunlight() of the environment, which set_environment() computes once.
+// The sun at the ground, atmosphere_sunlight() of the environment, which set_environment() keeps with it and
+// integrates again only when an input of it changes (ground_sunlight()).
 Vec3 sunlight = Environment{}.sun.radiance;
 // As shaders/environment.glsl lays it out, in std140.
 struct EnvironmentUniform {

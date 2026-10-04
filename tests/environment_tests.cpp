@@ -40,11 +40,14 @@ Environment cascaded() {
 Mat4 wide_view(Vec3 eye = {4, 3, 9}, Vec3 target = {0, 1, 0}, float far_plane = 480) {
     return perspective(16.F / 9, .03F, far_plane) * look_at(eye, target);
 }
-// The axes along which the sun's shadow projections lie, as directional shadows document them: right and up across
-// the sun, and forward away from it.
+// The axes along which the sun's shadow projections lie: right and up across the sun, and forward away from it. Right
+// is perpendicular to the sun and to the world's Y axis, or to its X axis where the Y of the sun's unit direction lies
+// beyond .99 either way.
 std::array<Vec3, 3> sun_axes(Vec3 sun) {
+    constexpr double vertical = .99;
     const auto forward = normalized(sun) * -1.F;
-    const auto right = normalized(cross(forward, std::abs(forward.y) > .99F ? Vec3{1, 0, 0} : Vec3{0, 1, 0}));
+    const auto right =
+        normalized(cross(forward, std::abs(double(forward.y)) > vertical ? Vec3{1, 0, 0} : Vec3{0, 1, 0}));
     return {right, cross(right, forward), forward};
 }
 // Split @p k of @p count over view depths from @p near_depth to @p far_depth, as ShadowCascades states it.
@@ -138,6 +141,32 @@ TEST_CASE("The detail region maps its depth to [0, 1] and snaps its origin to te
     CHECK(detail != detail_shadow_matrix(env));
 }
 
+TEST_CASE("The detail region lies along the cascades' axes across the sun, however near vertical the sun is") {
+    // A sun whose unit direction has a Y of exactly .99F, the only float above .99 and not above .99F, where comparing
+    // in float and comparing in double choose different axes. The vector's length rounds to exactly 1, so normalizing
+    // keeps that Y.
+    constexpr float vertical = .99F;
+    const Vec3 near_vertical{float(std::sqrt(1 - double(vertical) * vertical)), vertical, 0};
+    REQUIRE(normalized(near_vertical).y == vertical);
+    for (const auto sun : {Vec3{-.5F, .72F, .38F}, Vec3{0, 1, 0}, near_vertical, Vec3{.3F, -.2F, .9F}}) {
+        CAPTURE(sun.x);
+        CAPTURE(sun.y);
+        auto env = cascaded();
+        env.sun.direction = sun;
+        env.detail_shadow.enabled = true;
+        const auto detail = detail_shadow_matrix(env);
+        const auto cascades = fit_shadow_cascades(env, wide_view());
+        REQUIRE(!cascades.empty());
+        const auto &cascade = cascades.front().view_projection;
+        // Rows 0 and 1 of each projection hold the axes across the sun over the half width of its square.
+        for (std::size_t row = 0; row < 2; ++row) {
+            CAPTURE(row);
+            const auto across = [&](const Mat4 &m) { return normalized({m[row], m[4 + row], m[8 + row]}); };
+            CHECK(dot(across(detail), across(cascade)) == Near{1, tolerance});
+        }
+    }
+}
+
 TEST_CASE("Invalid lights, exposure, fog and shadow settings are rejected") {
     const auto env = overhead_sun();
     auto bad = env;
@@ -166,6 +195,15 @@ TEST_CASE("Invalid lights, exposure, fog and shadow settings are rejected") {
     bad = env;
     bad.detail_shadow.extent = std::numeric_limits<float>::denorm_min();
     CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), texel_range, std::invalid_argument);
+    // Half a denormal depth vanishes in double beside the center's distance along the sun, 2 m, so the region's depth
+    // range is zero and its depth row is not finite.
+    bad = env;
+    bad.detail_shadow.depth = std::numeric_limits<float>::denorm_min();
+    CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), "Shadow projection exceeds finite range", std::invalid_argument);
+    // With the center at no distance along the sun the range keeps the denormal depth, whose reciprocal overflows
+    // float.
+    bad.detail_shadow.center.y = 0;
+    CHECK_THROWS_WITH_AS(detail_shadow_matrix(bad), "Shadow projection exceeds finite range", std::invalid_argument);
     bad = env;
     bad.detail_shadow.center.y = std::numeric_limits<float>::quiet_NaN();
     CHECK_THROWS_WITH_AS(validate_environment(bad), "Invalid directional shadow region", std::invalid_argument);

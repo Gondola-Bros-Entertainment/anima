@@ -205,7 +205,12 @@ struct FrameProfile {
     bool gpu_available{};
     /// The whole command buffer.
     double gpu_ms{};
-    /// The atmosphere's compute dispatches, which build its tables while it is enabled.
+    /// The atmosphere's compute dispatches, which write its tables while it is enabled. The first frame drawn with it
+    /// enabled, and each frame whose Atmosphere differs from the one the tables were last built for in a field other
+    /// than `enabled`, `ground_height`, `mie_anisotropy` and `sun_angular_radius`, rebuilds the transmittance and
+    /// multiple scattering tables and redraws the sky view table. Any other frame redraws only the sky view table, when
+    /// the altitude that the sky is seen from (EnvironmentSettings::atmosphere), the sun's elevation or
+    /// `mie_anisotropy` differs from that table's last write, and otherwise dispatches nothing.
     double gpu_atmosphere_ms{};
     /// Every shadow pass: each shadow cascade and the detail region.
     double gpu_shadow_ms{};

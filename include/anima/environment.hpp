@@ -82,8 +82,9 @@ struct ShadowCascades {
 /// An orthographic shadow region of Environment::sun fixed in world space: EnvironmentSettings::detail_shadow.
 ///
 /// The region is a box around #center, `2 * extent` wide on both axes across the light and #depth deep
-/// along it, so a texel spans `2 * extent / resolution`. The center snaps to whole texels across the light,
-/// which reduces shimmer when a region follows a subject. Only casters inside the box cast. Inside the box the
+/// along it, so a texel spans `2 * extent / resolution`. Its axes across the light are those of the shadow cascades'
+/// squares (ShadowCascades), which depend only on the light's direction, and the center snaps to whole texels along
+/// them, which reduces shimmer when a region follows a subject. Only casters inside the box cast. Inside the box the
 /// region's result replaces the cascades' (EnvironmentSettings::shadow_cascades), blending into theirs over the
 /// outer 4 percent of the box on each axis.
 ///
@@ -304,18 +305,9 @@ inline void validate_environment(const Environment &e) {
             throw std::invalid_argument("Invalid directional light");
     }
 }
-/// The share of light, per channel, that crosses @p a from @p altitude meters above the ground to its top, along the
-/// direction whose cosine with the zenith is @p cos_zenith: `exp(-t)`, where `t` integrates the extinction along the
-/// straight path, Rayleigh scattering, Mie scattering and absorption and ozone absorption, each its coefficient times
-/// its density. Zero where the path meets the ground, which a path below the horizon does from the ground; a path
-/// along the horizon from the ground is open. The integral takes 1,024 midpoint steps in the square root of the
-/// distance, which crowds them toward the start, in double precision. Throws `std::invalid_argument` as
-/// validate_atmosphere() does, or with "Invalid atmosphere sample" unless @p altitude lies from 0 to the thickness and
-/// @p cos_zenith from -1 to 1.
-[[nodiscard]] inline Vec3 atmosphere_transmittance(const Atmosphere &a, double altitude, double cos_zenith) {
-    validate_atmosphere(a);
-    if (!(altitude >= 0 && altitude <= a.thickness) || !(cos_zenith >= -1 && cos_zenith <= 1))
-        throw std::invalid_argument("Invalid atmosphere sample");
+namespace detail {
+/// atmosphere_transmittance() of an atmosphere and a sample that it accepts, without validating them.
+[[nodiscard]] inline Vec3 atmosphere_transmittance_of(const Atmosphere &a, double altitude, double cos_zenith) {
     const double ground = a.planet_radius, top = ground + double(a.thickness), r = ground + altitude, mu = cos_zenith;
     if (mu < 0 && r * r * (mu * mu - 1) + ground * ground >= 0)
         return {0, 0, 0};
@@ -342,14 +334,8 @@ inline void validate_environment(const Environment &e) {
     }
     return {float(std::exp(-depth[0])), float(std::exp(-depth[1])), float(std::exp(-depth[2]))};
 }
-/// The radiance of @p e's sun as it reaches the ground. With the atmosphere enabled, Environment::sun's radiance is
-/// the light above the atmosphere, and this is that times atmosphere_transmittance() from the ground toward the sun,
-/// along the horizon once the sun is below it, times the share of its disc above the horizon, `clamp((elevation +
-/// r) / (2 * r), 0, 1)` for the sun's elevation and angular radius `r`; so the sun dims and reddens toward the horizon
-/// and fades out across it. With the atmosphere disabled it is the sun's radiance. Throws `std::invalid_argument` as
-/// validate_environment() does.
-[[nodiscard]] inline Vec3 atmosphere_sunlight(const Environment &e) {
-    validate_environment(e);
+/// atmosphere_sunlight() of an environment that validate_environment() accepts, without validating it.
+[[nodiscard]] inline Vec3 atmosphere_sunlight_of(const Environment &e) {
     const auto &a = e.atmosphere;
     if (!a.enabled)
         return e.sun.radiance;
@@ -358,17 +344,46 @@ inline void validate_environment(const Environment &e) {
     const double share = std::clamp((elevation + radius) / (2 * radius), 0.0, 1.0);
     if (share <= 0)
         return {0, 0, 0};
-    const auto through = atmosphere_transmittance(a, 0, std::max(double(toward.y), 0.0));
+    const auto through = atmosphere_transmittance_of(a, 0, std::max(double(toward.y), 0.0));
     return {float(double(e.sun.radiance.x) * through.x * share), float(double(e.sun.radiance.y) * through.y * share),
             float(double(e.sun.radiance.z) * through.z * share)};
 }
+} // namespace detail
+/// The share of light, per channel, that crosses @p a from @p altitude meters above the ground to its top, along the
+/// direction whose cosine with the zenith is @p cos_zenith: `exp(-t)`, where `t` integrates the extinction along the
+/// straight path, Rayleigh scattering, Mie scattering and absorption and ozone absorption, each its coefficient times
+/// its density. Zero where the path meets the ground, which a path below the horizon does from the ground; a path
+/// along the horizon from the ground is open. The integral takes 1,024 midpoint steps in the square root of the
+/// distance, which crowds them toward the start, in double precision. Throws `std::invalid_argument` as
+/// validate_atmosphere() does, or with "Invalid atmosphere sample" unless @p altitude lies from 0 to the thickness and
+/// @p cos_zenith from -1 to 1.
+[[nodiscard]] inline Vec3 atmosphere_transmittance(const Atmosphere &a, double altitude, double cos_zenith) {
+    validate_atmosphere(a);
+    if (!(altitude >= 0 && altitude <= a.thickness) || !(cos_zenith >= -1 && cos_zenith <= 1))
+        throw std::invalid_argument("Invalid atmosphere sample");
+    return detail::atmosphere_transmittance_of(a, altitude, cos_zenith);
+}
+/// The radiance of @p e's sun as it reaches the ground. With the atmosphere enabled, Environment::sun's radiance is
+/// the light above the atmosphere, and this is that times atmosphere_transmittance() from the ground toward the sun,
+/// along the horizon once the sun is below it, times the share of its disc above the horizon, `clamp((elevation +
+/// r) / (2 * r), 0, 1)` for the sun's elevation and angular radius `r`; so the sun dims and reddens toward the horizon
+/// and fades out across it. With the atmosphere disabled it is the sun's radiance. Throws `std::invalid_argument` as
+/// validate_environment() does.
+[[nodiscard]] inline Vec3 atmosphere_sunlight(const Environment &e) {
+    validate_environment(e);
+    return detail::atmosphere_sunlight_of(e);
+}
 namespace detail {
+/// The magnitude of the Y of the sun's unit direction above which sun_axes() crosses that direction with the world's X
+/// axis instead of its Y axis, whose cross product with a sun that near vertical is too short to point precisely.
+inline constexpr double vertical_sun_cosine = .99;
 /// Axes of a view along the sun with direction @p sun toward it: right, up and forward (away from the sun), in
 /// double. They depend only on the sun's direction.
 inline std::array<std::array<double, 3>, 3> sun_axes(Vec3 sun) {
     const auto light = normalized(sun);
     const std::array<double, 3> forward{-double(light.x), -double(light.y), -double(light.z)};
-    const std::array<double, 3> hint = std::abs(forward[1]) > .99 ? std::array{1., 0., 0.} : std::array{0., 1., 0.};
+    const std::array<double, 3> hint =
+        std::abs(forward[1]) > vertical_sun_cosine ? std::array{1., 0., 0.} : std::array{0., 1., 0.};
     std::array<double, 3> right{forward[1] * hint[2] - forward[2] * hint[1],
                                 forward[2] * hint[0] - forward[0] * hint[2],
                                 forward[0] * hint[1] - forward[1] * hint[0]};
@@ -403,36 +418,40 @@ inline Mat4 sun_projection(const std::array<std::array<double, 3>, 3> &axes, std
             throw std::invalid_argument("Shadow projection exceeds finite range");
     return m;
 }
+/// detail_shadow_matrix() of an environment that validate_environment() accepts, without validating it again; it
+/// throws as detail_shadow_matrix() states.
+[[nodiscard]] inline Mat4 detail_shadow_matrix_of(const Environment &e) {
+    const auto &region = e.detail_shadow;
+    if (const auto texel = 2.F * region.extent / static_cast<float>(region.resolution);
+        !std::isfinite(texel) || texel <= 0)
+        throw std::invalid_argument("Shadow texel size exceeds finite range");
+    const auto axes = sun_axes(e.sun.direction);
+    const auto &[right, up, forward] = axes;
+    const std::array<double, 3> center{region.center.x, region.center.y, region.center.z};
+    const auto along = [&](const std::array<double, 3> &axis) {
+        return axis[0] * center[0] + axis[1] * center[1] + axis[2] * center[2];
+    };
+    // The center snaps to whole texels across the sun, which keeps a following region's texels in place.
+    const double texel = 2.0 * region.extent / region.resolution;
+    const std::array across{std::round(along(right) / texel) * texel, std::round(along(up) / texel) * texel};
+    const double depth = along(forward), half_depth = region.depth / 2.0;
+    const auto matrix = sun_projection(axes, across, region.extent, depth - half_depth, depth + half_depth);
+    (void)inverse(matrix);
+    return matrix;
+}
 } // namespace detail
 /// Column-major view-projection of the sun's EnvironmentSettings::detail_shadow region, whether or not it is enabled.
 ///
 /// Maps the region's snapped box (see DirectionalShadow) to Vulkan clip space: Y down, depth 0 to 1 with 0 on
 /// the side facing the light. Validates @p e with validate_environment() first. Throws `std::invalid_argument`
-/// when the texel size or the matrix is not finite, and anima::MathError when the matrix cannot be inverted.
-inline Mat4 detail_shadow_matrix(const Environment &e) {
+/// with "Shadow texel size exceeds finite range" unless the texel size, `2 * extent / resolution` computed in float,
+/// is finite and positive, and with "Shadow projection exceeds finite range" when an element of the matrix is not
+/// finite as a float: among others when the depth is so thin that its reciprocal overflows float, or so thin beside
+/// the center's distance along the light that the box's near and far depths, formed from that distance in double,
+/// round to the same value; and anima::MathError when the matrix cannot be inverted.
+[[nodiscard]] inline Mat4 detail_shadow_matrix(const Environment &e) {
     validate_environment(e);
-    const auto &region = e.detail_shadow;
-    const auto forward = normalized(e.sun.direction) * -1.F;
-    const auto up_hint = std::abs(forward.y) > .99F ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
-    const auto right = normalized(cross(forward, up_hint)), up = cross(right, forward);
-    auto center = region.center;
-    // Snap the light-space origin to shadow texels to keep a following region stable.
-    const auto texel = 2.F * region.extent / static_cast<float>(region.resolution);
-    if (!std::isfinite(texel) || texel <= 0)
-        throw std::invalid_argument("Shadow texel size exceeds finite range");
-    center = center + right * (std::round(dot(right, center) / texel) * texel - dot(right, center)) +
-             up * (std::round(dot(up, center) / texel) * texel - dot(up, center));
-    const auto eye = center - forward * (region.depth * .5F);
-    const Mat4 view{right.x, up.x, -forward.x, 0, right.y,          up.y,          -forward.y,        0,
-                    right.z, up.z, -forward.z, 0, -dot(right, eye), -dot(up, eye), dot(forward, eye), 1};
-    const float r = region.extent, d = region.depth;
-    const Mat4 projection{1 / r, 0, 0, 0, 0, -1 / r, 0, 0, 0, 0, -1 / d, 0, 0, 0, 0, 1};
-    const auto matrix = projection * view;
-    for (const auto value : matrix)
-        if (!std::isfinite(value))
-            throw std::invalid_argument("Shadow matrix exceeds finite range");
-    (void)inverse(matrix);
-    return matrix;
+    return detail::detail_shadow_matrix_of(e);
 }
 /// One of the sun's shadow cascades (ShadowCascades) fitted to a view by fit_shadow_cascades().
 struct ShadowCascade {

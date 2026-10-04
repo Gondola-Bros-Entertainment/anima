@@ -3,9 +3,11 @@
 // documented integral: pixels toward the sun and away from it, near the horizon, high, near the zenith and on the
 // ground below the horizon, from an eye 1.7 m up under suns from noon to 6 degrees below the horizon, and from 2 km up
 // in a hazy atmosphere. Then the horizon reddening toward a low sun and the sky darkening through twilight; surfaces
-// lit by atmosphere_sunlight(); tables rebuilt when the medium changes and the first frame back when it returns, and
-// left as they were when any other input changes; the same frame when the eye and the ground move together; and the
-// time and memory the tables take.
+// lit by atmosphere_sunlight(), which follows each of its inputs the frame it changes; tables rebuilt when the medium
+// changes and the first frame back when it returns, left as they were when any other input changes, and the sky view
+// table redrawn when one of its inputs changes; the same frame when the eye and the ground move together; the time and
+// memory the tables take, with frames that change none of their inputs dispatching nothing; and the time
+// set_environment() takes, which integrates the sun's transmittance again only when an input of the sunlight changes.
 #include "atmosphere_reference.hpp"
 #include "blending.hpp"
 #include "gpu_checks.hpp"
@@ -21,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace atmosphere_test {
@@ -73,7 +76,9 @@ class Rig {
     // the name is empty.
     void draw(const std::string &name, const anima::Mat4 &view_projection, const anima::Environment &environment,
               std::vector<std::shared_ptr<const anima::Scene>> scenes = {}) {
+        const auto before = std::chrono::steady_clock::now();
         renderer.set_environment(environment);
+        environment_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - before).count();
         renderer.set_scenes(std::move(scenes));
         renderer.set_view(view_projection);
         if (!name.empty())
@@ -123,6 +128,8 @@ class Rig {
   public:
     anima::VulkanRenderer renderer;
     gpu_check::Captures images;
+    // Microseconds that the latest draw()'s call to set_environment() took.
+    double environment_us{};
 };
 
 inline anima::Vec3 vec(const Direction &d) { return {float(d.x), float(d.y), float(d.z)}; }
@@ -321,8 +328,88 @@ inline void check_sunlight(Rig &rig) {
     }
 }
 
+// The sun at the ground follows each input of atmosphere_sunlight() from the frame it changes: a lit quad drawn right
+// after a change shows the changed environment's sunlight, the same pixels as with the atmosphere disabled and the
+// sun's radiance set to it, and not the sunlight from before the change, which differs. The inputs are the sun's
+// direction and radiance, the sun's angular radius, which only a sun on the horizon shows, the medium, here its Mie
+// scattering, and whether the atmosphere is enabled. The two frames that the changed one is compared with each follow
+// a frame that differs from them in every one of those inputs, so that even a renderer that misses one of them lights
+// them afresh. Setting the same environment again draws the same frame.
+inline void check_sunlight_updates(Rig &rig) {
+    const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 0, 0);
+    auto scene = std::make_shared<anima::Scene>();
+    const anima::Vec3 center{0, 1.7F, -5};
+    (void)scene->add(blending_test::facing(blending_test::opaque({.8, .8, .8}, true), center, 1, 1));
+    // Behind the eye, so that the quad faces it.
+    const auto behind = [](double elevation) { return vec(atmosphere_reference::direction(elevation, 180)); };
+    auto high = earth();
+    high.sun.radiance = {3, 3, 3};
+    high.sun.direction = behind(10);
+    // A tenth of a degree below the horizon, where about a third of the disc shows, bright enough to light the quad.
+    auto low = high;
+    low.sun.direction = behind(-.1);
+    low.sun.radiance = {30, 30, 30};
+    // Differs from every environment below in each input of the sunlight.
+    auto other = earth();
+    other.sun.direction = behind(30);
+    other.sun.radiance = {1, 1, 1};
+    other.atmosphere.sun_angular_radius = .01F;
+    other.atmosphere.mie_scattering = {1e-5F, 1e-5F, 1e-5F};
+    rig.draw("first", view_projection, high, {scene});
+    rig.draw("again", view_projection, high, {scene});
+    rig.images.require_same("first", "again", "Setting the same environment again changed the frame");
+    rig.images.discard({"first", "again"});
+    struct Change {
+        const char *input;
+        const anima::Environment &before;
+        void (*apply)(anima::Environment &);
+    };
+    using anima::Environment;
+    const Change changes[]{
+        {"sun.direction", high, [](Environment &e) { e.sun.direction = vec(atmosphere_reference::direction(3, 180)); }},
+        {"sun.radiance", high, [](Environment &e) { e.sun.radiance = {2, 2, 2}; }},
+        {"atmosphere.mie_scattering", high,
+         [](Environment &e) { e.atmosphere.mie_scattering = {5e-5F, 5e-5F, 5e-5F}; }},
+        {"atmosphere.sun_angular_radius", low, [](Environment &e) { e.atmosphere.sun_angular_radius = .02F; }},
+        {"atmosphere.enabled", high, [](Environment &e) { e.atmosphere.enabled = false; }},
+    };
+    for (const auto &change : changes) {
+        auto after = change.before;
+        change.apply(after);
+        // The changed environment with the atmosphere disabled and the sun's radiance set to @p sunlight.
+        const auto lit_by = [&](anima::Vec3 sunlight) {
+            auto disabled = after;
+            disabled.atmosphere.enabled = false;
+            disabled.sun.radiance = sunlight;
+            return disabled;
+        };
+        rig.draw("", view_projection, change.before, {scene});
+        rig.draw("changed", view_projection, after, {scene});
+        rig.draw("", view_projection, other, {scene});
+        rig.draw("expected", view_projection, lit_by(anima::atmosphere_sunlight(after)), {scene});
+        rig.draw("", view_projection, other, {scene});
+        rig.draw("stale", view_projection, lit_by(anima::atmosphere_sunlight(change.before)), {scene});
+        const auto at = blending_test::pixel_of(view_projection, center, rig.images["changed"]);
+        const auto shown = gpu_check::pixel(rig.images["changed"], at[0], at[1]);
+        const auto expected = gpu_check::pixel(rig.images["expected"], at[0], at[1]);
+        const auto stale = gpu_check::pixel(rig.images["stale"], at[0], at[1]);
+        std::cout << "ATMOSPHERE sunlit quad after changing " << change.input << ": " << gpu_check::text(shown)
+                  << ", expected " << gpu_check::text(expected) << ", with the sunlight from before "
+                  << gpu_check::text(stale) << '\n';
+        rig.images.require(expected[0] > 20 && gpu_check::difference(shown, expected) <= 1,
+                           std::string("A quad lit right after changing ") + change.input +
+                               " does not show atmosphere_sunlight() of the changed environment",
+                           {"changed", "expected"});
+        rig.images.require(gpu_check::difference(expected, stale) > 10,
+                           std::string("Changing ") + change.input +
+                               " hardly changed the sunlight on the quad, so the check is blind",
+                           {"expected", "stale"});
+        rig.images.discard({"changed", "expected", "stale"});
+    }
+}
+
 // What reads an input of the sky: the transmittance and multiple scattering tables, which a change to it must rebuild,
-// or only the sky view table and the sky, which are drawn every frame, so that a change to it need not.
+// or only the sky view table and the sky, which follow it without that rebuild.
 enum class Reader { tables, sky };
 
 // Each field that the transmittance and multiple scattering tables read rebuilds them when it changes: the frame drawn
@@ -331,9 +418,11 @@ enum class Reader { tables, sky };
 // tables, which differs, since each change is large and the sun low, where the tables weigh most. The same comparison
 // shows that the tables read none of the sky's other inputs, which do not rebuild them: the ground's height, through
 // the eye's altitude above it, Mie scattering's asymmetry, the sun's angular radius, and its direction and radiance.
-// The changes cover every field of Atmosphere but `enabled`, which is true whenever the tables are built. Changing only
-// what the sky view table reads every frame changes the frame too. Moving the eye and the ground together leaves the
-// frame as it was, to within a level of rounding.
+// Since the renderer redraws the sky view table only on a frame that changes what it reads, the comparison also shows
+// that the eye's altitude, Mie scattering's asymmetry and the sun's direction each redraw it: a table left as it was
+// would show the sky from before the change. The changes cover every field of Atmosphere but `enabled`, which is true
+// whenever the tables are built. Changing only what the sky view table reads changes the frame too. Moving the eye and
+// the ground together leaves the frame as it was, to within a level of rounding.
 inline void check_updates(Rig &rig) {
     const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 10, 25);
     auto environment = earth();
@@ -393,8 +482,9 @@ inline void check_updates(Rig &rig) {
                                        std::string("Changing ") + change.input + " left the sky as it was");
         } else {
             rig.images.require_same("changed", "rebuilt",
-                                    std::string("The atmosphere's tables read ") + change.input +
-                                        ", which does not rebuild them");
+                                    std::string("Changing ") + change.input +
+                                        " drew another sky than rebuilding every table: a table that it does not "
+                                        "rebuild reads it, or the sky view table missed it");
         }
     }
     auto broader = environment;
@@ -416,39 +506,114 @@ inline void check_updates(Rig &rig) {
     rig.images.discard({"first", "changed", "rebuilt", "broader", "level", "raised"});
 }
 
-// The tables' memory, and the time their dispatches take: the sky view table alone while the medium stays, and every
-// table while it changes each frame, as medians of 60 frames after 10 more.
+// What report_cost() changes every frame, in the order it measures them.
+enum class Changing { nothing, eye_altitude, sun_elevation, medium };
+
+// The median of @p values, or -1 when there are none.
+inline double median(std::vector<double> values) {
+    if (values.empty())
+        return -1;
+    std::nth_element(values.begin(), values.begin() + std::ptrdiff_t(values.size() / 2), values.end());
+    return values[values.size() / 2];
+}
+
+// The share of the time that some work takes, under which a frame or a call that should skip that work shows that it
+// did. A skip leaves none of the work's time and doing the work again all of it, so half leaves room for noise both
+// ways.
+constexpr double skipped_share = .5;
+
+// The tables' memory, the time their dispatches take and the CPU time that set_environment() takes, as medians of 60
+// frames after 10 more: while nothing changes; while the eye's altitude changes every frame, which the sky view table
+// reads; while the sun's elevation changes, which the sky view table and the sun at the ground read; and while the
+// medium changes, which every table and the sun at the ground read. Where the device reports timestamps, the frames
+// that change nothing, whose timestamps around the atmosphere bracket no commands, must take under skipped_share of
+// the atmosphere time of the frames that move the eye, which redraw the 192 by 108 sky view table: FrameProfile states
+// that they dispatch nothing.
 inline void report_cost(Rig &rig) {
     const auto stats = rig.renderer.resource_stats();
     constexpr std::uint64_t texels = 256 * 64 + 64 * 32 + 192 * 108;
     require(stats.atmosphere_bytes >= texels * 8,
             "The atmosphere's tables take fewer bytes than their half-float texels: " +
                 std::to_string(stats.atmosphere_bytes));
-    const auto view_projection = camera(rig.aspect(), {0, 1.7F, 0}, 10, 25);
-    auto environment = earth();
-    environment.sun.direction = vec(atmosphere_reference::direction(10, 0));
-    const auto median = [](std::vector<double> values) {
-        if (values.empty())
-            return -1.0;
-        std::nth_element(values.begin(), values.begin() + std::ptrdiff_t(values.size() / 2), values.end());
-        return values[values.size() / 2];
-    };
-    for (const bool rebuilt : {false, true}) {
-        std::vector<double> atmosphere_ms, gpu_ms;
-        for (int frame = 0; frame < 70; ++frame) {
-            if (rebuilt)
-                environment.atmosphere.rayleigh_scale_height = frame % 2 ? 8'000.F : 8'001.F;
-            rig.draw("", view_projection, environment);
+    constexpr std::array modes{
+        std::pair{Changing::nothing, "nothing"}, std::pair{Changing::eye_altitude, "eye altitude"},
+        std::pair{Changing::sun_elevation, "sun elevation"}, std::pair{Changing::medium, "medium"}};
+    constexpr int warmup_frames = 10, measured_frames = 60;
+    std::array<double, modes.size()> atmosphere_medians{};
+    for (const auto &[changing, name] : modes) {
+        std::vector<double> atmosphere_ms, gpu_ms, environment_us;
+        for (int frame = 0; frame < warmup_frames + measured_frames; ++frame) {
+            const bool odd = frame % 2 != 0;
+            auto environment = earth();
+            environment.sun.direction = vec(atmosphere_reference::direction(10, 0));
+            anima::Vec3 eye{0, 1.7F, 0};
+            switch (changing) {
+            case Changing::nothing:
+                break;
+            case Changing::eye_altitude:
+                eye.y = odd ? 1.8F : 1.7F;
+                break;
+            case Changing::sun_elevation:
+                environment.sun.direction = vec(atmosphere_reference::direction(odd ? 10.5 : 10, 0));
+                break;
+            case Changing::medium:
+                environment.atmosphere.rayleigh_scale_height = odd ? 8'000.F : 8'001.F;
+                break;
+            }
+            rig.draw("", camera(rig.aspect(), eye, 10, 25), environment);
             const auto profile = rig.renderer.frame_profile();
-            if (frame >= 10 && profile.gpu_available) {
-                atmosphere_ms.push_back(profile.gpu_atmosphere_ms);
-                gpu_ms.push_back(profile.gpu_ms);
+            if (frame >= warmup_frames) {
+                environment_us.push_back(rig.environment_us);
+                if (profile.gpu_available) {
+                    atmosphere_ms.push_back(profile.gpu_atmosphere_ms);
+                    gpu_ms.push_back(profile.gpu_ms);
+                }
             }
         }
-        std::cout << "BENCH {\"atmosphere\":\"" << (rebuilt ? "every table" : "sky view")
-                  << "\",\"atmosphere_bytes\":" << stats.atmosphere_bytes
-                  << ",\"atmosphere_ms\":" << median(atmosphere_ms) << ",\"gpu_ms\":" << median(gpu_ms) << "}\n";
+        auto &atmosphere = atmosphere_medians[std::size_t(changing)];
+        atmosphere = median(atmosphere_ms);
+        std::cout << "BENCH {\"atmosphere_changing\":\"" << name << "\",\"atmosphere_bytes\":" << stats.atmosphere_bytes
+                  << ",\"atmosphere_ms\":" << atmosphere << ",\"gpu_ms\":" << median(gpu_ms)
+                  << ",\"set_environment_us\":" << median(environment_us) << "}\n";
     }
+    const auto skipping = atmosphere_medians[std::size_t(Changing::nothing)],
+               redrawing = atmosphere_medians[std::size_t(Changing::eye_altitude)];
+    // Both are -1 without timestamps.
+    if (skipping >= 0 && redrawing >= 0)
+        require(skipping < skipped_share * redrawing,
+                "Frames that change none of the atmosphere's inputs took " + std::to_string(skipping) +
+                    " ms of atmosphere dispatches, not under half of the " + std::to_string(redrawing) +
+                    " ms of frames that move the eye, so they still dispatch");
+}
+
+// set_environment() integrates the sun's transmittance again only when an input of atmosphere_sunlight() changes: over
+// 200 pairs of calls, each setting an environment whose sun has moved and then the same environment again, the median
+// time of the repeated calls must stay under skipped_share of the changed calls'. The two calls of a pair run moments
+// apart, so that the load on the machine, which the device's own threads add to on a software driver, weighs on both.
+inline void check_sunlight_cache(Rig &rig) {
+    constexpr int pairs = 200;
+    auto low = earth();
+    low.sun.direction = vec(atmosphere_reference::direction(10, 0));
+    auto high = low;
+    high.sun.direction = vec(atmosphere_reference::direction(10.5, 0));
+    const auto microseconds = [&](const anima::Environment &environment) {
+        const auto before = std::chrono::steady_clock::now();
+        rig.renderer.set_environment(environment);
+        return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - before).count();
+    };
+    std::vector<double> changed, repeated;
+    for (int pair = 0; pair < pairs; ++pair) {
+        const auto &environment = pair % 2 != 0 ? low : high;
+        changed.push_back(microseconds(environment));
+        repeated.push_back(microseconds(environment));
+    }
+    const auto integrating = median(changed), holding = median(repeated);
+    std::cout << "ATMOSPHERE set_environment() took " << integrating << " microseconds after the sun moved and "
+              << holding << " for the same environment again\n";
+    require(holding < skipped_share * integrating,
+            "Setting the same environment again took " + std::to_string(holding) +
+                " microseconds, not under half of the " + std::to_string(integrating) +
+                " that setting one whose sun moved took, so it integrated the sunlight again");
 }
 
 inline int run(int argc, char **argv) {
@@ -458,14 +623,17 @@ inline int run(int argc, char **argv) {
     check_earth(rig);
     check_haze(rig);
     check_sunlight(rig);
+    check_sunlight_updates(rig);
     check_updates(rig);
     report_cost(rig);
+    check_sunlight_cache(rig);
     const auto stats = rig.renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Atmosphere validation failed");
     std::cout << "PASS atmosphere: the sky from the ground and from 2 km in haze matches an independent evaluation of "
                  "the documented integral, reddens toward a low sun and darkens through twilight, lit surfaces show "
-                 "atmosphere_sunlight(), the medium alone rebuilds its tables and the sky follows the eye's altitude, "
-                 "with clean validation\n";
+                 "atmosphere_sunlight() from the frame its inputs change, the medium alone rebuilds its tables and the "
+                 "sky follows the eye's altitude, frames that change none of the tables' inputs dispatch nothing and "
+                 "set_environment() integrates the sunlight only when its inputs change, with clean validation\n";
     return 0;
 }
 } // namespace atmosphere_test

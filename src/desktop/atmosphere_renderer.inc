@@ -1,7 +1,8 @@
-// The atmosphere's tables (shaders/atmosphere.glsl), which compute dispatches build at the start of each frame that
-// draws the sky: the transmittance and multiple scattering tables when the medium changes, and the sky view table
-// every frame, from the eye's altitude and the sun's direction. Included inside Impl. The tables stay in the GENERAL
-// layout from their first frame, which both their storage writes and their sampled reads accept.
+// The atmosphere's tables (shaders/atmosphere.glsl), which compute dispatches build at the start of a frame that draws
+// the sky: the transmittance and multiple scattering tables when the medium changes, and the sky view table when they
+// do or when the eye's altitude, the sun's elevation or Mie scattering's asymmetry changes. Included inside Impl. The
+// tables stay in the GENERAL layout from their first frame, which both their storage writes and their sampled reads
+// accept.
 struct AtmosphereTable {
     VkImage image{};
     VmaAllocation allocation{};
@@ -29,9 +30,11 @@ static constexpr auto medium_fields =
                &Atmosphere::mie_scale_height,      &Atmosphere::ozone_absorption, &Atmosphere::ozone_altitude,
                &Atmosphere::ozone_width,           &Atmosphere::ground_albedo};
 // The fields that neither shader reads: `enabled`, which is true whenever the tables are built, and three that only the
-// sky view table and the sky read. The atmosphere GPU check, check_updates() in tests/consumer/atmosphere.hpp, changes
-// each field of both lists but `enabled`, and the sun's direction and radiance. It requires a medium field's change to
-// rebuild the tables, and the frame drawn after any other change to match one drawn after a rebuild.
+// sky view table and the sky read: the ground's height, through the eye's altitude above it, Mie scattering's
+// asymmetry, which sky_view_inputs holds with that altitude, and the sun's angular radius, which only the sky reads.
+// The atmosphere GPU check, check_updates() in tests/consumer/atmosphere.hpp, changes each field of both lists but
+// `enabled`, and the sun's direction and radiance. It requires a medium field's change to rebuild the tables, and the
+// frame drawn after any other change to match one drawn after a rebuild.
 static constexpr auto unread_fields = std::tuple{&Atmosphere::enabled, &Atmosphere::ground_height,
                                                  &Atmosphere::mie_anisotropy, &Atmosphere::sun_angular_radius};
 // The lists name every field of Atmosphere: removing or renaming one stops the build at its name, and adding one stops
@@ -43,6 +46,10 @@ static_assert(
 // scattering tables hold.
 bool atmosphere_ready{};
 std::optional<Atmosphere> atmosphere_built;
+// The sky view table's inputs besides the medium when it was last written, as atmosphere-sky.comp reads them from the
+// environment's uniform block: Mie scattering's asymmetry, the eye's altitude and the Y of the unit direction toward
+// the sun, as update_environment() writes them. None until the table is first written.
+std::optional<std::array<float, 3>> sky_view_inputs;
 
 // Whether @p a and @p b give the same transmittance and multiple scattering tables: whether they hold the same value in
 // each of medium_fields, every channel of a Vec3.
@@ -55,6 +62,19 @@ static bool same_medium(const Atmosphere &a, const Atmosphere &b) {
             return x == y;
     };
     return std::apply([&](auto... field) { return (same(field) && ...); }, medium_fields);
+}
+// The sun at the ground for @p e, which validate_environment() accepted, as atmosphere_sunlight() gives it: #sunlight,
+// which holds it for #environment, while the two environments' suns match and their atmospheres match in `enabled`, the
+// sun's angular radius and the medium; else integrated afresh. The medium holds every field that the transmittance
+// reads, on the CPU as on the GPU, and the ground's albedo besides, so set_environment() integrates the transmittance
+// only when an input of the sunlight changes. The atmosphere GPU check's check_sunlight_cache() requires that.
+[[nodiscard]] Vec3 ground_sunlight(const Environment &e) const {
+    const auto same = [](Vec3 a, Vec3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
+    const auto &held = environment.atmosphere, &next = e.atmosphere;
+    if (same(environment.sun.direction, e.sun.direction) && same(environment.sun.radiance, e.sun.radiance) &&
+        held.enabled == next.enabled && held.sun_angular_radius == next.sun_angular_radius && same_medium(held, next))
+        return sunlight;
+    return detail::atmosphere_sunlight_of(e);
 }
 // Creates the tables, their compute pipelines and descriptors, and points bindings 3 and 4 of each frame slot's
 // environment set at the sky view and transmittance tables. Needs the environment sets. Throws `std::runtime_error`
@@ -191,12 +211,22 @@ void destroy_atmosphere() noexcept {
     }
 }
 // Records the atmosphere's dispatches while it is enabled: the transmittance and multiple scattering tables when the
-// medium differs from the one they hold, then the sky view table, then a barrier that makes every write visible to
-// the frame's later shaders. Every recording after the first begins with a barrier that waits for the fragment
-// shaders submitted before it, which include the sky's reads of the tables in earlier frames.
+// medium differs from the one they hold, then the sky view table when they were rebuilt or sky_view_inputs differ,
+// then a barrier that makes every write visible to the frame's later shaders. A recording that writes begins, after
+// the first, with a barrier that waits for the fragment shaders submitted before it, which include the sky's reads of
+// the tables in earlier frames that may still be in flight. A frame that writes no table records nothing: the barrier
+// after the tables' last writes reaches every command submitted to the queue after it, so it makes them visible to this
+// frame's shaders too, and without a write there is no earlier read to wait for. The atmosphere GPU check's
+// report_cost() requires the frames that record nothing to take under half the time of frames that redraw the sky view
+// table.
 void record_atmosphere() {
     const auto &atmosphere = environment.atmosphere;
     if (!atmosphere.enabled)
+        return;
+    const bool rebuild = !atmosphere_ready || !atmosphere_built || !same_medium(*atmosphere_built, atmosphere);
+    const std::array sky_inputs{atmosphere.mie_anisotropy, float(eye_altitude()),
+                                normalized(environment.sun.direction).y};
+    if (!rebuild && sky_view_inputs == sky_inputs)
         return;
     const auto command = frame().command;
     VkMemoryBarrier written{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -238,7 +268,7 @@ void record_atmosphere() {
     };
     // Groups of 8 by 8 invocations, except the multiple scattering table's one group of 64 per texel.
     const auto cover = [](VkExtent2D size) { return VkExtent2D{(size.width + 7) / 8, (size.height + 7) / 8}; };
-    if (!atmosphere_built || !same_medium(*atmosphere_built, atmosphere)) {
+    if (rebuild) {
         dispatch(transmittance_table, cover(atmosphere_table_sizes[transmittance_table]));
         then();
         dispatch(multiple_scattering_table, atmosphere_table_sizes[multiple_scattering_table]);
@@ -248,6 +278,7 @@ void record_atmosphere() {
     dispatch(sky_view_table, cover(atmosphere_table_sizes[sky_view_table]));
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1,
                          &written, 0, nullptr, 0, nullptr);
+    sky_view_inputs = sky_inputs;
 }
 // Bytes of the atmosphere's tables.
 std::uint64_t atmosphere_bytes() const {
