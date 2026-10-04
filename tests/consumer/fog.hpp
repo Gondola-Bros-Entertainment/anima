@@ -288,7 +288,7 @@ inline void check_background(blending_test::Harness &harness) {
         return result;
     };
     auto scene = std::make_shared<anima::Scene>();
-    (void)scene->add(blending_test::facing(blending_test::opaque(background), {0, eye.y, -distance}, 6, 6));
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(background), {0, eye.y, -distance}, 6, 6));
     const anima::Vec3 on_quad{4, eye.y, -distance}, on_background{8, eye.y, -distance};
     harness.render("background", {scene}, view_projection, environment);
     harness.expect("background", view_projection, on_background, exposed(), "The background without an atmosphere");
