@@ -295,7 +295,7 @@ inline void run() {
         FittedLibrary fitted(actor.actor.motion->model(), actor.manifest, "consumer.profile", fits);
         auto shell = fitted.load("shell");
         check(shell == fitted.load("shell") && shell == fitted.load("shell.alt") &&
-                  fitted.resident_assets().size() == 1,
+                  fitted.resident_meshes().size() == 1,
               "Independent fitted mesh cache failed");
         const auto fit_pose = shell->pose(baseline);
         for (const auto &[fit, owner] : shell->joints)
@@ -430,7 +430,7 @@ inline void run() {
             set.reset();
         }
         shell.reset();
-        check(fitted.resident_assets().empty(), "Unused fitted mesh remained resident");
+        check(fitted.resident_meshes().empty(), "Unused fitted mesh remained resident");
         const std::array<std::string_view, 2> layer_clips{"layer.port", "layer.starboard"};
         const auto carried = motion->compose_layers("drift", .5, layer_clips);
         check(carried.world[0] == baseline.world[0], "Layer clips replaced root locomotion");

@@ -1,24 +1,26 @@
+#include "model_cache.hpp"
 #include "presentation_data.hpp"
 #include "texel_hold.hpp"
 #include <anima/assets/fitted.hpp>
-#include <mutex>
 namespace anima {
 struct FittedLibrary::State {
     std::shared_ptr<const anima::Asset> body;
     std::filesystem::path directory;
     TexelRetention texel_retention;
-    std::mutex mutex;
-    std::map<std::filesystem::path, std::weak_ptr<const FittedAsset>> models;
+    anima::detail::ModelCache<FittedAsset> models;
     State(std::shared_ptr<const anima::Asset> b, std::filesystem::path d, TexelRetention t)
         : body(std::move(b)), directory(std::move(d)), texel_retention(t) {}
 };
 FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::Asset> fitted,
                          TexelRetention texel_retention)
+    : FittedAsset(body, std::move(fitted), texel_retention, nullptr) {}
+FittedAsset::FittedAsset(const anima::Asset &body, std::shared_ptr<const anima::Asset> fitted,
+                         TexelRetention texel_retention, std::shared_ptr<const anima::Mesh> resident)
     : source(std::move(fitted)), joints(source ? anima::compatible_skin(body, *source)
                                                : throw std::invalid_argument("Fitted asset requires a source")) {
     if (!source->animations.empty())
         throw std::invalid_argument("Fitted models follow the body pose and cannot own motion");
-    render = anima::Mesh::compile(*source, texel_retention);
+    render = anima::detail::resident_or_compile(*source, std::move(resident), texel_retention);
     source = anima::detail::without_texels(std::move(source), *render);
 }
 anima::Pose FittedAsset::pose(const anima::Pose &body) const {
@@ -77,25 +79,15 @@ const FittedDefinition &FittedLibrary::definition(std::string_view id) const {
 std::shared_ptr<const FittedAsset> FittedLibrary::load(std::string_view id) const {
     const auto &definition = presentation_data::lookup(definitions_, id);
     const auto path = std::filesystem::weakly_canonical(state_->directory / definition.model);
-    const std::scoped_lock lock(state_->mutex);
-    if (const auto found = state_->models.find(path); found != state_->models.end())
-        if (auto result = found->second.lock())
-            return result;
-    auto result = std::make_shared<FittedAsset>(*state_->body, anima::load_asset(path), state_->texel_retention);
-    state_->models[path] = result;
-    return result;
+    return state_->models.load(path, [&](std::shared_ptr<const anima::Mesh> resident) {
+        return std::make_shared<const FittedAsset>(
+            FittedAsset(*state_->body, anima::load_asset(path), state_->texel_retention, std::move(resident)));
+    });
 }
-std::vector<std::shared_ptr<const anima::Mesh>> FittedLibrary::resident_assets() const {
-    std::vector<std::shared_ptr<const anima::Mesh>> result;
+std::vector<std::shared_ptr<const anima::Mesh>> FittedLibrary::resident_meshes() const {
     if (!state_)
-        return result;
-    const std::scoped_lock lock(state_->mutex);
-    for (const auto &[key, value] : state_->models) {
-        (void)key;
-        if (auto asset = value.lock())
-            result.push_back(asset->render);
-    }
-    return result;
+        return {};
+    return state_->models.resident_meshes();
 }
 
 FittedSet::FittedSet(GameObject owner, FittedLibrary library)
