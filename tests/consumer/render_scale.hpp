@@ -63,7 +63,8 @@ inline std::vector<float> invalid_scales() {
 }
 
 // Construction rejects a RendererOptions::render_scale that is not finite or lies outside 0.25 to 2, after the frames
-// in flight and before it needs a window or GPU, and accepts the scene targets' failure stage, which draw() fires.
+// in flight and the present mode and before it needs a window or GPU, and accepts the scene targets' failure stage,
+// which draw() fires.
 inline void reject_invalid_render_scale() {
     const auto construct = [](float scale, std::uint32_t frames) {
         anima::RendererOptions options;
