@@ -1,8 +1,9 @@
 #pragma once
 // Texture memory through the public API: how long compiled meshes and custom materials hold the texels of their
-// textures on the CPU (TexelRetention), and what their device images take (ResourceStats::resident_texture_bytes).
-// Geometry memory: the bytes each mesh's indices upload at, 2 for a mesh with at most 65,536 vertices and otherwise
-// 4 (ResourceStats::geometry_uploaded_bytes), and that both widths draw the same.
+// textures on the CPU (TexelRetention), and what their device images take (ResourceStats::resident_texture_bytes),
+// whole and without the top mip levels that VulkanRenderer::set_texture_mip_skip() drops. Geometry memory: the bytes
+// each mesh's indices upload at, 2 for a mesh with at most 65,536 vertices and otherwise 4
+// (ResourceStats::geometry_uploaded_bytes), and that both widths draw the same.
 // CPU memory is measured as the bytes of texel storage still alive, through weak references to each source Image: an
 // image counts until its last holder lets it go, whoever that is.
 #include "blending.hpp"
@@ -11,6 +12,7 @@
 #include "rejection.hpp"
 #include <anima/assets/mesh_preparation.hpp>
 #include <anima/desktop/vulkan_renderer.hpp>
+#include <anima/impostor.hpp>
 #include <anima/scene.hpp>
 #include <array>
 #include <chrono>
@@ -127,10 +129,11 @@ inline std::shared_ptr<anima::Scene> scene_of(const std::shared_ptr<const anima:
 // One renderer on one window, drawing selections and keeping each frame read back by name.
 class Harness {
   public:
-    /// A harness whose renderer decodes BC7 images to RGBA8 when @p decode_bc7 (RendererOptions::decode_bc7).
-    explicit Harness(const std::filesystem::path &output, bool decode_bc7 = false)
+    /// A harness whose renderer decodes BC7 images to RGBA8 when @p decode_bc7 (RendererOptions::decode_bc7) and
+    /// starts at @p texture_mip_skip (RendererOptions::texture_mip_skip).
+    explicit Harness(const std::filesystem::path &output, bool decode_bc7 = false, std::uint32_t texture_mip_skip = 0)
         : window_(gpu_check::window("Anima texture memory verification", 640, 480)),
-          renderer_(window_.get(), options(decode_bc7)), images(output) {
+          renderer_(window_.get(), options(decode_bc7, texture_mip_skip)), images(output) {
         int width = 0, height = 0;
         require(SDL_GetWindowSizeInPixels(window_.get(), &width, &height) && width > 0 && height > 0,
                 "Texture memory window has no drawable size");
@@ -165,10 +168,11 @@ class Harness {
     }
 
   private:
-    static anima::RendererOptions options(bool decode_bc7) {
+    static anima::RendererOptions options(bool decode_bc7, std::uint32_t texture_mip_skip) {
         anima::RendererOptions settings;
         settings.validation = true;
         settings.decode_bc7 = decode_bc7;
+        settings.texture_mip_skip = texture_mip_skip;
         return settings;
     }
     gpu_check::Video video_;
@@ -204,6 +208,102 @@ inline void check_index_widths(Harness &harness) {
         harness.render(width.name);
         harness.images.require_same("plain quad", width.name, "The " + width.name + " quad drew differently");
     }
+}
+
+// Requires dropping one more top level to have saved about three quarters of the device bytes, from @p whole to
+// @p kept: a level holds three quarters of the texels of the chain that it heads.
+inline void require_quartered(std::uint64_t whole, std::uint64_t kept, const std::string &what) {
+    require(kept < whole && (whole - kept) * 100 >= whole * 70 && (whole - kept) * 100 <= whole * 76,
+            what + ": dropping a level left " + std::to_string(kept) + " of " + std::to_string(whole) +
+                " device bytes, not about a quarter");
+}
+// Top mip levels dropped at upload, from RendererOptions::texture_mip_skip and then set_texture_mip_skip(): device
+// bytes of the ramp mipmapped and unmipmapped, drawn frames, and impostor atlases, whose frames limit the levels.
+inline void check_mip_skip(const std::filesystem::path &output) {
+    Harness harness(output, false, 1);
+    auto &renderer = harness.renderer();
+    require(renderer.texture_mip_skip() == 1, "The renderer must start at RendererOptions::texture_mip_skip");
+    // Each upload compiles its own Mesh, which stays cached while this holds it; its bytes count the 1x1 white of its
+    // missing maps too.
+    std::vector<std::shared_ptr<const anima::Mesh>> meshes;
+    const auto upload = [&](std::shared_ptr<const anima::Mesh> mesh) {
+        const auto before = renderer.resource_stats().resident_texture_bytes;
+        meshes.push_back(std::move(mesh));
+        renderer.prepare_meshes(std::span(&meshes.back(), 1));
+        return renderer.resource_stats().resident_texture_bytes - before;
+    };
+    const auto mipmapped = textured_quad(ramp());
+    auto unmipmapped = *mipmapped;
+    unmipmapped.textures.at(0).sampler.mipmapped = false;
+    const auto one = upload(anima::Mesh::compile(*mipmapped));
+    const auto skipped_mesh = meshes.back();
+    const auto unmipmapped_one = upload(anima::Mesh::compile(unmipmapped));
+    harness.select({scene_of(skipped_mesh)});
+    harness.render("skip-1");
+
+    const auto resident = renderer.resource_stats().resident_texture_bytes;
+    renderer.set_texture_mip_skip(0);
+    require(renderer.texture_mip_skip() == 0, "set_texture_mip_skip() must set the count");
+    require(renderer.resource_stats().resident_texture_bytes == resident,
+            "set_texture_mip_skip() must not change uploaded textures");
+    renderer.prepare_meshes(std::span(&skipped_mesh, 1));
+    require(renderer.resource_stats().resident_texture_bytes == resident,
+            "A cached mesh must keep the levels it was uploaded with");
+    const auto none = upload(anima::Mesh::compile(*mipmapped));
+    const auto whole_mesh = meshes.back();
+    const auto unmipmapped_none = upload(anima::Mesh::compile(unmipmapped));
+    harness.select({scene_of(whole_mesh)});
+    harness.render("skip-0");
+    renderer.set_texture_mip_skip(2);
+    const auto two = upload(anima::Mesh::compile(*mipmapped));
+    // More levels than the chain holds leave its last, 1x1, which shows one color.
+    renderer.set_texture_mip_skip(100);
+    const auto all = upload(anima::Mesh::compile(*mipmapped));
+    const auto flat_mesh = meshes.back();
+    const auto unmipmapped_all = upload(anima::Mesh::compile(unmipmapped));
+    harness.select({scene_of(flat_mesh)});
+    harness.render("skip-all");
+
+    // An impostor atlas of @p frames by @p frames frames of @p frame texels each, uploaded at @p skip.
+    const auto impostor = [&](std::uint32_t frames, std::uint32_t frame, std::uint32_t skip) {
+        const auto atlas_edge = frames * frame;
+        const auto image = std::make_shared<const anima::Image>(anima::Image{
+            atlas_edge, atlas_edge, std::vector<std::uint8_t>(std::size_t{atlas_edge} * atlas_edge * 4, 128)});
+        anima::ImpostorAtlas atlas;
+        atlas.frames = {anima::ImpostorLayout::hemisphere, frames, {0, 0, 0}, 1};
+        atlas.color = {image, {}, anima::TextureEncoding::srgb};
+        atlas.normal_depth = {image, {}, anima::TextureEncoding::linear};
+        atlas.surface = {image, {}, anima::TextureEncoding::linear};
+        renderer.set_texture_mip_skip(skip);
+        return upload(anima::Mesh::compile_impostor(atlas));
+    };
+    // Frames of 72 texels, 9 times 8: 3 levels leave frames of 9 whole texels, and a 4th would split texels between
+    // frames.
+    const auto split_2 = impostor(8, 72, 2), split_3 = impostor(8, 72, 3), split_4 = impostor(8, 72, 4),
+               split_all = impostor(8, 72, 100);
+    // Frames of 64 texels: 4 levels leave frames of 4 texels, and a 5th would leave 2.
+    const auto narrow_3 = impostor(16, 64, 3), narrow_4 = impostor(16, 64, 4), narrow_5 = impostor(16, 64, 5);
+    harness.finish();
+
+    std::cout << "TEXTURE MIP SKIP device bytes of each mesh's images, the " << edge << "x" << edge
+              << " RGBA8 texture with mips and the 1x1 fallback: skip 0 " << none << ", 1 " << one << ", 2 " << two
+              << ", all but the last " << all << "; unmipmapped at 0, 1 and all " << unmipmapped_none << ", "
+              << unmipmapped_one << ", " << unmipmapped_all << "; impostors of 72-texel frames at 2, 3, 4 and all "
+              << split_2 << ", " << split_3 << ", " << split_4 << ", " << split_all
+              << ", of 64-texel frames at 3, 4 and 5 " << narrow_3 << ", " << narrow_4 << ", " << narrow_5 << '\n';
+    require_quartered(none, one, "The first level of a mipmapped texture");
+    require_quartered(one, two, "The second level of a mipmapped texture");
+    require(all < two, "Dropping every level but the last must leave less than dropping 2");
+    require(unmipmapped_one == unmipmapped_none && unmipmapped_all == unmipmapped_none,
+            "An unmipmapped texture must upload whole whatever the skip");
+    require(split_3 < split_2 && split_4 == split_3 && split_all == split_3,
+            "An impostor atlas must drop levels only while its frames stay whole numbers of texels across");
+    require(narrow_4 < narrow_3 && narrow_5 == narrow_4,
+            "An impostor atlas must drop levels only while its frames stay at least 4 texels across");
+    // The quad minifies the ramp past its first level, so dropping it leaves the levels that the quad reads.
+    harness.images.require_foreground("skip-0", "The textured quad is not visible");
+    harness.images.require_parity("skip-0", "skip-1");
+    harness.images.require_changed("skip-0", "skip-all", .2, "The last level alone must draw one color");
 }
 
 inline int run(int argc, char **argv) {
@@ -273,6 +373,8 @@ inline int run(int argc, char **argv) {
         harness.finish();
     }
 
+    check_mip_skip(output);
+
     // Another renderer, as after a RendererFatalError, needs the texels again, and they are gone.
     Harness second(output);
     second.images.add("kept", std::move(kept_frame));
@@ -308,8 +410,9 @@ inline int run(int argc, char **argv) {
     second.images.require_foreground("effect", "The custom material is not visible");
     second.finish();
     std::cout << "PASS texture memory: meshes and custom materials compiled until upload let their texels go once "
-                 "uploaded, keep drawing, and report their release when uploaded again; meshes of up to 65,536 "
-                 "vertices upload 16-bit indices and larger ones 32-bit, and both draw the same\n";
+                 "uploaded, keep drawing, and report their release when uploaded again; mipmapped textures drop "
+                 "the top levels that the renderer asks for, impostor atlases within their frames; meshes of up to "
+                 "65,536 vertices upload 16-bit indices and larger ones 32-bit, and both draw the same\n";
     return 0;
 }
 } // namespace texture_memory_test

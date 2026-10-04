@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1855,11 +1856,13 @@ struct VulkanRenderer::Impl {
     //
     // An RGBA8 image uploads @p prepared when given, or else its mip chain built with @p mip_options, or its base level
     // alone when @p source is not mipmapped. A BC7 image uploads the levels it stores, or its base level alone when
-    // @p source is not mipmapped: as BC7 where the device samples it, and otherwise decoded to RGBA8. One stored level
-    // samples as an unmipmapped texture does. The image must have texels unless @p prepared supplies them.
+    // @p source is not mipmapped: as BC7 where the device samples it, and otherwise decoded to RGBA8. A mipmapped image
+    // then drops @p mip_skip levels from the top of those, keeping at least the last, as
+    // VulkanRenderer::set_texture_mip_skip() describes. One level left by the skip, and one stored BC7 level, sample as
+    // an unmipmapped texture does. The image must have texels unless @p prepared supplies them.
     std::uint32_t upload_image(GpuTexture &texture, const Texture &source, const std::vector<MipLevel> *prepared,
-                               const TextureMipOptions &mip_options, UploadBatch &upload, RendererFailureStage failure,
-                               bool initial, bool first) {
+                               const TextureMipOptions &mip_options, std::uint32_t mip_skip, UploadBatch &upload,
+                               RendererFailureStage failure, bool initial, bool first) {
         const auto &pixels = *source.image;
         const bool srgb = source.encoding == TextureEncoding::srgb;
         auto sampling = source.sampler;
@@ -1867,38 +1870,68 @@ struct VulkanRenderer::Impl {
         std::vector<TexelLevel> levels;
         // RGBA8 levels built here, which levels refers to.
         std::vector<MipLevel> built;
+        // The levels dropped from the top of a chain of @p count: none of an unmipmapped texture's single level.
+        const auto skipped = [&](std::size_t count) {
+            return sampling.mipmapped ? std::min<std::size_t>(mip_skip, count - 1) : std::size_t{0};
+        };
+        std::size_t skip = 0;
         if (pixels.format == ImageFormat::bc7) {
-            const auto count = sampling.mipmapped ? pixels.levels : 1U;
+            const auto stored = sampling.mipmapped ? pixels.levels : 1U;
+            skip = skipped(stored);
+            const auto first_kept = static_cast<std::uint32_t>(skip), count = stored - first_kept;
             if (count == 1)
                 sampling.mipmapped = false;
+            const auto level_bytes = [&](std::uint32_t level) {
+                return detail::bc7_level_bytes(std::max(pixels.width >> level, 1U),
+                                               std::max(pixels.height >> level, 1U));
+            };
+            std::size_t offset = 0;
+            for (std::uint32_t level = 0; level < first_kept; ++level)
+                offset += level_bytes(level);
             if (bc7_sampled) {
                 image_format = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
-                std::size_t offset = 0;
-                for (std::uint32_t level = 0; level < count; ++level) {
-                    const auto width = std::max(pixels.width >> level, 1U),
-                               height = std::max(pixels.height >> level, 1U);
-                    const auto bytes = detail::bc7_level_bytes(width, height);
-                    levels.push_back({width, height, std::span(pixels.blocks).subspan(offset, bytes)});
+                for (std::uint32_t level = first_kept; level < stored; ++level) {
+                    const auto bytes = level_bytes(level);
+                    levels.push_back({std::max(pixels.width >> level, 1U), std::max(pixels.height >> level, 1U),
+                                      std::span(pixels.blocks).subspan(offset, bytes)});
                     offset += bytes;
                 }
-            } else
+            } else if (first_kept == 0)
                 built = decode_image(pixels, count);
-        } else if (prepared)
-            for (const auto &mip : *prepared)
-                levels.push_back({mip.width, mip.height, mip.rgba});
-        else if (sampling.mipmapped)
+            else {
+                // Decode only the kept levels, as an image whose base level is the first of them. Each level of an
+                // Image halves the one before, so the kept levels are that image's own chain of `count`.
+                const anima::Image kept{
+                    std::max(pixels.width >> first_kept, 1U),
+                    std::max(pixels.height >> first_kept, 1U),
+                    {},
+                    ImageFormat::bc7,
+                    count,
+                    {pixels.blocks.begin() + static_cast<std::ptrdiff_t>(offset), pixels.blocks.end()}};
+                built = decode_image(kept);
+            }
+        } else if (prepared) {
+            skip = skipped(prepared->size());
+            for (auto mip = prepared->begin() + static_cast<std::ptrdiff_t>(skip); mip != prepared->end(); ++mip)
+                levels.push_back({mip->width, mip->height, mip->rgba});
+        } else if (sampling.mipmapped) {
             built = texture_mips(source, mip_options);
-        else
+            skip = skipped(built.size());
+            built.erase(built.begin(), built.begin() + static_cast<std::ptrdiff_t>(skip));
+        } else
             levels.push_back({pixels.width, pixels.height, pixels.rgba});
         for (const auto &mip : built)
             levels.push_back({mip.width, mip.height, mip.rgba});
+        if (skip > 0 && levels.size() == 1)
+            sampling.mipmapped = false;
         upload_texture(texture, sampling, image_format, levels, upload, failure, initial, first);
         return static_cast<std::uint32_t>(levels.size());
     }
-    // Uploads the images of @p target's material plan, or of @p prepared's, and writes its material descriptors.
-    // Without @p prepared, @p texels holds the image of each source texture with its texels (Mesh::texel_images).
+    // Uploads the images of @p target's material plan, or of @p prepared's, each mipmapped one without @p mip_skip
+    // levels from its top (upload_image()), and writes its material descriptors. Without @p prepared, @p texels holds
+    // the image of each source texture with its texels (Mesh::texel_images).
     void upload_textures(GpuMaterials &target, UploadBatch &upload, RendererFailureStage failure, bool initial,
-                         std::span<const std::shared_ptr<const anima::Image>> texels,
+                         std::uint32_t mip_skip, std::span<const std::shared_ptr<const anima::Image>> texels,
                          const MeshPreparation *prepared = nullptr) {
         require_texture_formats();
         const auto generated_plan =
@@ -1922,8 +1955,8 @@ struct VulkanRenderer::Impl {
                     mips = &prepared->images().at(i);
             } else if (planned.source >= 0)
                 source.image = texels[planned.source];
-            total_mips +=
-                upload_image(target.textures[i], source, mips, planned.mips, upload, failure, initial, i == 0);
+            total_mips += upload_image(target.textures[i], source, mips, planned.mips, mip_skip, upload, failure,
+                                       initial, i == 0);
         }
         target.material_sets.resize(target.source->materials.size() + 1);
         const auto count = static_cast<std::uint32_t>(target.material_sets.size());
@@ -2908,6 +2941,12 @@ void VulkanRenderer::set_impostor_frames(std::uint32_t frames) {
     impl_->options.impostor_frames = frames;
 }
 std::uint32_t VulkanRenderer::impostor_frames() const noexcept { return impl_->options.impostor_frames; }
+void VulkanRenderer::set_texture_mip_skip(std::uint32_t levels) {
+    impl_->running();
+    // Uploads read it as they create each texture; cached ones keep their levels.
+    impl_->options.texture_mip_skip = levels;
+}
+std::uint32_t VulkanRenderer::texture_mip_skip() const noexcept { return impl_->options.texture_mip_skip; }
 SceneColorFormat VulkanRenderer::scene_color_format() const noexcept {
 #ifdef ANIMA_HAS_ASSETS
     if (impl_->world_color_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
