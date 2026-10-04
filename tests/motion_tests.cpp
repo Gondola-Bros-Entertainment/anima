@@ -812,10 +812,15 @@ TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership ch
     CHECK(library.handling("").layer_for("base").empty()); // The empty handling layers nothing.
     // Over the base clip the prop layers the side joint and the brace the limb, so they can be held together.
     const auto disjoint = AttachmentSet::prepare(library, fixture.sockets, {{"first", "prop"}, {"second", "brace"}});
-    CHECK_NOTHROW(validate_attachment_ownership(runtime, library, disjoint, fixture.sockets, false));
+    CHECK_NOTHROW(
+        validate_attachment_ownership(runtime, library, disjoint, fixture.sockets, PrimarySocketSharing::shared));
+    // Both hold their props on one socket, which only shared primary sockets allow.
+    CHECK_THROWS_WITH_AS(validate_attachment_ownership(runtime, library, disjoint, fixture.sockets),
+                         "Attachment roles share an exclusive primary socket", std::invalid_argument);
     const auto doubled = AttachmentSet::prepare(library, fixture.sockets, {{"first", "prop"}, {"second", "prop"}});
-    CHECK_THROWS_WITH_AS(validate_attachment_ownership(runtime, library, doubled, fixture.sockets, false),
-                         "Motion layers have overlapping joint ownership", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(
+        validate_attachment_ownership(runtime, library, doubled, fixture.sockets, PrimarySocketSharing::shared),
+        "Motion layers have overlapping joint ownership", std::invalid_argument);
 }
 
 TEST_CASE("An attachment catalog accepts only version 3 and none of the removed fields") {
@@ -1033,7 +1038,8 @@ TEST_CASE("Attachment tracks and markers report invalid requests") {
                          std::invalid_argument);
     CHECK_THROWS_WITH_AS(sample_attachment_pose(*prop, visual, "spin", .5),
                          "Attachment visual lacks required track: spin", std::invalid_argument);
-    CHECK(sample_attachment_pose(*prop, visual, "spin", .5, false).world.size() == 1); // An optional track rests.
+    CHECK(sample_attachment_pose(*prop, visual, "spin", .5, TrackRequirement::optional).world.size() ==
+          1); // An optional track rests.
     AttachmentVisual following;
     following.markers.emplace("tip", identity());
     following.marker_nodes.emplace("tip", "prop");

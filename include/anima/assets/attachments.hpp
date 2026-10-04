@@ -189,12 +189,18 @@ AttachmentBinding bind_attachment(const AttachmentSocket &socket, const Attachme
 /// default @p actor it is in the body's model space. Throws `std::out_of_range` for a node outside
 /// @p pose.
 Mat4 attachment_placement(const Pose &pose, const AttachmentBinding &binding, const Mat4 &actor = identity());
+/// Whether sample_attachment_pose requires the visual to declare the track it names.
+enum class TrackRequirement {
+    required, ///< A track the visual lacks throws `std::invalid_argument`.
+    optional  ///< A track the visual lacks gives the rest pose.
+};
 /// Prop pose for semantic @p track at normalized @p progress in [0, 1]: its clip sampled at
-/// `progress * duration`. An empty track, or a track the visual lacks when @p required is false,
-/// gives the rest pose. Throws `std::invalid_argument` for @p progress that is not finite or lies
-/// outside [0, 1] and for a missing required track, and as find_animation and sample_pose do.
+/// `progress * duration`. An empty track, or a track the visual lacks when @p requirement is
+/// TrackRequirement::optional, gives the rest pose. Throws `std::invalid_argument` for @p progress
+/// that is not finite or lies outside [0, 1] and for a missing required track, and as
+/// find_animation and sample_pose do.
 Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual, std::string_view track = {},
-                            double progress = 0, bool required = true);
+                            double progress = 0, TrackRequirement requirement = TrackRequirement::required);
 /// @p binding, made by bind_attachment for @p visual, adjusted so that the grip as
 /// AttachmentVisual::primary_node moves it in @p pose meets the socket.
 ///
@@ -345,19 +351,26 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const P
                                            const Asset *prop_asset = nullptr, const Pose *prop_pose = nullptr,
                                            std::string_view action = {},
                                            const std::map<std::string, float, std::less<>> *weights = nullptr);
+/// Whether validate_attachment_ownership lets two roles hold their props on one primary socket node.
+enum class PrimarySocketSharing {
+    /// Each role's primary socket node is its own; a shared one throws `std::invalid_argument`.
+    exclusive,
+    /// Roles may share a primary socket node.
+    shared
+};
 /// Checks that the items of @p attachments can be held together; call it before adding a prepared
 /// set to a scene.
 ///
 /// For every base clip, the layer clips that the roles' handling profiles apply to it (see
-/// AttachmentHandling::layer_for) must not overlap (see MotionRuntime::validate_layers). With
-/// @p exclusive_primary, no two roles may share a primary socket node; pose layers and contact
-/// chains always need unique ownership. Each support contact chain must end at its declared
-/// socket's node, overlap no other contact chain and move no role's primary socket. Throws
-/// `std::out_of_range` for an unknown chain or socket.
+/// AttachmentHandling::layer_for) must not overlap (see MotionRuntime::validate_layers). When
+/// @p primary_sharing is PrimarySocketSharing::exclusive, no two roles may share a primary socket
+/// node; pose layers and contact chains always need unique ownership. Each support contact chain
+/// must end at its declared socket's node, overlap no other contact chain and move no role's
+/// primary socket. Throws `std::out_of_range` for an unknown chain or socket.
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
                                    const AttachmentSet &attachments,
                                    const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                                   bool exclusive_primary = true);
+                                   PrimarySocketSharing primary_sharing = PrimarySocketSharing::exclusive);
 /// Checks that @p attachments can perform @p action: the handling profiles of the attached items
 /// must meet the action's required roles (see ActionRuntime::validate_roles), and every required
 /// prop track of the action must be a track of the visual attached for its role.

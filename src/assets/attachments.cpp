@@ -255,14 +255,14 @@ anima::Mat4 attachment_placement(const anima::Pose &pose, const AttachmentBindin
     return anima::operator*(anima::operator*(actor, pose.world.at(binding.node)), binding.local);
 }
 anima::Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual, std::string_view track,
-                                   double progress, bool required) {
+                                   double progress, TrackRequirement requirement) {
     if (!std::isfinite(progress) || progress < 0 || progress > 1)
         throw std::invalid_argument("Invalid attachment track progress");
     if (track.empty())
         return asset.render->rest_pose();
     const auto found = visual.animation_tracks.find(track);
     if (found == visual.animation_tracks.end()) {
-        if (required)
+        if (requirement == TrackRequirement::required)
             throw std::invalid_argument("Attachment visual lacks required track: " + std::string(track));
         return asset.render->rest_pose();
     }
@@ -490,7 +490,7 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const a
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
                                    const AttachmentSet &attachments,
                                    const std::map<std::string, AttachmentSocket, std::less<>> &sockets,
-                                   bool exclusive_primary) {
+                                   PrimarySocketSharing primary_sharing) {
     for (const auto &[clip, metadata] : runtime.clips()) {
         (void)metadata;
         std::vector<std::string_view> layers;
@@ -503,7 +503,7 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
     std::set<std::size_t> nodes;
     std::set<std::string> chains;
     for (const auto &[role, item] : attachments.roles) {
-        if (exclusive_primary && !nodes.insert(item.binding.node).second)
+        if (primary_sharing == PrimarySocketSharing::exclusive && !nodes.insert(item.binding.node).second)
             throw std::invalid_argument("Attachment roles share an exclusive primary socket");
         for (const auto &contact : library.handling(item.item_id).support_contacts) {
             if (runtime.contact_end_node(contact.chain) != presentation_data::lookup(sockets, contact.socket).node)

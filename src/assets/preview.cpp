@@ -14,7 +14,7 @@ bool wraps(const Animation &animation, const ClipMetadata &metadata) noexcept {
     return metadata.loop && animation.duration > 0;
 }
 } // namespace
-void Playback::select(const Animation &animation, const ClipMetadata &metadata, bool play) {
+void Playback::select(const Animation &animation, const ClipMetadata &metadata, PlaybackStart start) {
     if (animation.name != metadata.name)
         throw std::invalid_argument("Clip metadata names another clip: " + metadata.name);
     if (!std::isfinite(animation.duration) || animation.duration < 0)
@@ -25,7 +25,7 @@ void Playback::select(const Animation &animation, const ClipMetadata &metadata, 
     animation_ = &animation;
     metadata_ = metadata;
     restart();
-    playing_ = play;
+    playing_ = start == PlaybackStart::playing;
 }
 void Playback::restart() {
     if (!animation_)
@@ -174,12 +174,12 @@ AssetPreview::AssetPreview(const std::filesystem::path &manifest, TexelRetention
     else
         select(manifest_.clips.front().name);
 }
-void AssetPreview::select(const std::string &clip, bool play) {
+void AssetPreview::select(const std::string &clip, PlaybackStart start) {
     const auto found = std::find_if(manifest_.clips.begin(), manifest_.clips.end(),
                                     [&](const auto &value) { return value.name == clip; });
     if (found == manifest_.clips.end())
         throw std::out_of_range("Clip has no manifest playback policy: " + clip);
-    animator_->select(*found, play);
+    animator_->select(*found, start);
     bind_ = false;
 }
 void AssetPreview::bind_pose() {

@@ -511,6 +511,31 @@ TEST_CASE("An Animator plays a clip of zero duration as its pose") {
     CHECK(root_x() == Near{3, tolerance});
 }
 
+TEST_CASE("A clip selected paused holds its start until resumed") {
+    const auto asset = fixture();
+    Playback player;
+    player.select(asset.animations[0], {"test", false, {{0, "start"}}}, PlaybackStart::paused);
+    CHECK_FALSE(player.playing());
+    CHECK(player.advance(.5).empty());
+    CHECK(player.time() == 0);
+    player.resume();
+    const auto events = player.advance(.25); // Its events at 0 wait for the first step that plays.
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].name == "start");
+    CHECK(player.time() == Near{.25, tolerance});
+
+    const auto source = std::make_shared<const Asset>(asset);
+    Scene scene;
+    Animator animator(scene.create("body", Mesh::compile(*source)), source);
+    animator.select({"test", true, {}}, PlaybackStart::paused);
+    CHECK_FALSE(animator.playback().playing());
+    CHECK(animator.update(.5).empty());
+    CHECK(deviation(animator.pose(), sample_pose(*source, &source->animations[0], 0)) < tolerance);
+    animator.resume();
+    (void)animator.update(.5);
+    CHECK(deviation(animator.pose(), sample_pose(*source, &source->animations[0], .5)) < tolerance);
+}
+
 TEST_CASE("A fitted model binds to the body's joints by name") {
     const auto asset = fixture();
     CHECK(compatible_skin(asset, asset).size() == 2);
