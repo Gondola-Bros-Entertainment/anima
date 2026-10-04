@@ -2317,8 +2317,9 @@ void VulkanRenderer::set_environment(const Environment &environment) {
     impl_->running();
     validate_environment(environment);
 #ifdef ANIMA_HAS_ASSETS
-    const auto detail = detail_shadow_matrix(environment);
-    const RenderFrustum detail_frustum(detail);
+    // Validated above, so neither the region's projection nor the sunlight validates it again.
+    const auto detail_view = detail::detail_shadow_matrix_of(environment);
+    const RenderFrustum detail_frustum(detail_view);
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(impl_->physical, &properties);
     const auto &limits = properties.limits;
@@ -2331,9 +2332,10 @@ void VulkanRenderer::set_environment(const Environment &environment) {
     if ((cascades.enabled && (!fits(cascades.resolution) || cascades.count > limits.maxImageArrayLayers)) ||
         (environment.detail_shadow.enabled && !fits(environment.detail_shadow.resolution)))
         throw std::invalid_argument("Shadow resolution exceeds device capabilities");
+    const auto sunlight = impl_->ground_sunlight(environment);
     impl_->environment = environment;
-    impl_->sunlight = atmosphere_sunlight(environment);
-    impl_->detail_pass = {detail, detail_frustum};
+    impl_->sunlight = sunlight;
+    impl_->detail_pass = {detail_view, detail_frustum};
 #else
     throw std::logic_error("Environment rendering requires asset support");
 #endif
