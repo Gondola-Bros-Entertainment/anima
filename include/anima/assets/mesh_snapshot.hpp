@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/assets/asset.hpp>
+#include <anima/mesh.hpp>
 #include <iosfwd>
 
 /// @file
@@ -58,11 +59,9 @@ struct MeshSnapshot {
     /// Textures that the materials refer to. They share their images with the Asset or Mesh they
     /// came from instead of copying them, including images without texels (see TexelRetention).
     std::vector<Texture> textures;
-    /// Minimum corner of the posed vertices' bounding box; Scene::snapshot counts visible
-    /// primitives only.
-    Vec3 minimum{};
-    /// Maximum corner of the bounding box; see #minimum.
-    Vec3 maximum{};
+    /// Bounding box of the posed vertices' positions, invalid when there are none; Scene::snapshot counts the vertices
+    /// of visible primitives only, so its bounds are invalid when no primitive is visible.
+    RenderBounds bounds;
     /// Number of mesh-bearing nodes.
     std::size_t mesh_nodes{};
     /// Number of skins.
@@ -97,8 +96,8 @@ void pose_mesh_snapshot(const Asset &asset, const Pose &pose, MeshSnapshot &snap
 /// Imports the GLB at @p path with load_asset and snapshots its rest pose with make_mesh_snapshot(), throwing what
 /// either throws. Needs no manifest or playback metadata.
 [[nodiscard]] MeshSnapshot load_mesh_snapshot(const std::filesystem::path &path);
-/// Writes a human-readable summary of @p snapshot to @p out: a line of its counts, a line of its bounds, then a line
-/// per primitive, clip and notice. Uses @p out's formatting and leaves a write failure in its state, throwing only as
-/// its exception mask asks.
+/// Writes a human-readable summary of @p snapshot to @p out: a line of its counts, a line of its bounds, which reads
+/// `Bounds: none` when they are invalid, then a line per primitive, clip and notice. Uses @p out's formatting and
+/// leaves a write failure in its state, throwing only as its exception mask asks.
 void print_mesh_report(const MeshSnapshot &snapshot, std::ostream &out);
 } // namespace anima

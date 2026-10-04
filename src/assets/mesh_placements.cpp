@@ -18,14 +18,7 @@ void require(bool value, const char *message) {
 }
 void expand(RenderBounds &bounds, Vec3 v) {
     require(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z), "Placed copies exceed the finite range");
-    if (!bounds.valid) {
-        bounds = {v, v, true};
-        return;
-    }
-    bounds.minimum = {std::min(bounds.minimum.x, v.x), std::min(bounds.minimum.y, v.y),
-                      std::min(bounds.minimum.z, v.z)};
-    bounds.maximum = {std::max(bounds.maximum.x, v.x), std::max(bounds.maximum.y, v.y),
-                      std::max(bounds.maximum.z, v.z)};
+    encapsulate(bounds, v);
 }
 void expand(RenderBounds &bounds, const RenderBounds &other) {
     if (other.valid) {
@@ -110,7 +103,7 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
     // The center of the mesh's rest bounds, which visibility ranges measure each copy to; a cluster's bounds hold it
     // for every copy, so culling a cluster by its bounds never hides a copy that its range still draws.
     const auto &rest_bounds = mesh->rest_bounds_;
-    const auto center = (rest_bounds.minimum + rest_bounds.maximum) * .5F;
+    const auto rest_center = center(rest_bounds);
 
     auto result = std::shared_ptr<MeshPlacements>(new MeshPlacements);
     result->mesh_ = std::move(mesh);
@@ -133,7 +126,7 @@ std::shared_ptr<const MeshPlacements> MeshPlacements::create(std::shared_ptr<con
                         expand(result->primitive_bounds_[i], v);
                     }
             if (rest_bounds.valid)
-                expand(cluster.bounds, point(placement, center));
+                expand(cluster.bounds, point(placement, rest_center));
         }
         pad(cluster.bounds);
         result->clusters_.push_back(cluster);

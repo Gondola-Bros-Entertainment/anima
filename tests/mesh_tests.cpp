@@ -2,16 +2,19 @@
 #include <anima/assets/mesh_preparation.hpp>
 #include <anima/assets/scene_validation.hpp>
 #include <anima/mesh.hpp>
+#include <anima/mesh_placements.hpp>
 #include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -40,6 +43,12 @@ constexpr auto released_texels = "Mesh texture texels were released after upload
 constexpr auto unknown_retention = "Unknown texel retention";
 constexpr auto invalid_parent = "Invalid node parent";
 constexpr auto invalid_vertex = "Invalid render vertex";
+
+bool same(Vec3 a, Vec3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
+bool finite(const RenderBounds &bounds) {
+    return std::isfinite(bounds.minimum.x) && std::isfinite(bounds.minimum.y) && std::isfinite(bounds.minimum.z) &&
+           std::isfinite(bounds.maximum.x) && std::isfinite(bounds.maximum.y) && std::isfinite(bounds.maximum.z);
+}
 
 // A texture over new pixels, with the default sampler and sRGB encoding.
 Texture texture_of(Image image) { return {std::make_shared<Image>(std::move(image)), {}}; }
@@ -601,4 +610,147 @@ TEST_CASE("Compilation rejects an unknown texel retention and images without tex
     described.textures =
         Mesh::compile(source, {.texel_retention = TexelRetention::until_upload})->description()->textures;
     rejects_like_compile<std::invalid_argument>(described, no_texels);
+}
+
+TEST_CASE("A box's center and extents halve its corners first, and an invalid box has neither") {
+    static_assert(noexcept(center(RenderBounds{})) && noexcept(extents(RenderBounds{})));
+    const RenderBounds box{{-1, 2, -6}, {3, 4, 0}, true};
+    CHECK(same(center(box), {1, 3, -3}));
+    CHECK(same(extents(box), {2, 1, 3}));
+    // Adding or subtracting the corners first would overflow; halving them first keeps both finite.
+    const auto largest = std::numeric_limits<float>::max();
+    const RenderBounds widest{{-largest, largest, -largest}, {largest, largest, -largest}, true};
+    CHECK(same(center(widest), {0, largest, -largest}));
+    CHECK(same(extents(widest), {largest, 0, 0}));
+    // An invalid box's corners mean nothing, whatever they hold.
+    const RenderBounds invalid{{1, 2, 3}, {4, 5, 6}, false};
+    CHECK(same(center(invalid), {}));
+    CHECK(same(extents(invalid), {}));
+}
+
+TEST_CASE("Encapsulating grows a box to hold points and valid boxes, starting from the first") {
+    static_assert(noexcept(encapsulate(std::declval<RenderBounds &>(), Vec3{})) &&
+                  noexcept(encapsulate(std::declval<RenderBounds &>(), RenderBounds{})));
+    RenderBounds bounds;
+    encapsulate(bounds, Vec3{1, 2, 3});
+    CHECK(bounds.valid);
+    CHECK(same(bounds.minimum, {1, 2, 3}));
+    CHECK(same(bounds.maximum, {1, 2, 3}));
+    encapsulate(bounds, Vec3{-1, 5, 3});
+    CHECK(same(bounds.minimum, {-1, 2, 3}));
+    CHECK(same(bounds.maximum, {1, 5, 3}));
+    // An invalid box adds nothing, whatever its corners hold.
+    encapsulate(bounds, RenderBounds{{-9, -9, -9}, {9, 9, 9}, false});
+    CHECK(same(bounds.minimum, {-1, 2, 3}));
+    CHECK(same(bounds.maximum, {1, 5, 3}));
+    encapsulate(bounds, RenderBounds{{0, -4, 0}, {2, 0, 8}, true});
+    CHECK(same(bounds.minimum, {-1, -4, 0}));
+    CHECK(same(bounds.maximum, {2, 5, 8}));
+    // An invalid box takes a valid one whole.
+    RenderBounds empty{{7, 7, 7}, {7, 7, 7}, false};
+    encapsulate(empty, bounds);
+    CHECK(empty.valid);
+    CHECK(same(empty.minimum, bounds.minimum));
+    CHECK(same(empty.maximum, bounds.maximum));
+}
+
+TEST_CASE("A coordinate that is not finite leaves an encapsulating box not finite on its axis") {
+    const auto infinity = std::numeric_limits<float>::infinity();
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    RenderBounds bounds{{0, 0, 0}, {1, 1, 1}, true};
+    // A NaN coordinate, which std::min and std::max would drop after a finite one, takes both corners.
+    encapsulate(bounds, Vec3{nan, .5F, .5F});
+    CHECK(std::isnan(bounds.minimum.x));
+    CHECK(std::isnan(bounds.maximum.x));
+    encapsulate(bounds, Vec3{.5F, .5F, .5F});
+    encapsulate(bounds, RenderBounds{{-2, -2, -2}, {2, 2, 2}, true});
+    CHECK(std::isnan(bounds.minimum.x));
+    CHECK(std::isnan(bounds.maximum.x));
+    CHECK(bounds.minimum.y == -2);
+    CHECK(bounds.maximum.z == 2);
+    // An infinite coordinate extends the corner on its side, which nothing finite brings back.
+    RenderBounds open;
+    encapsulate(open, Vec3{infinity, 0, -infinity});
+    encapsulate(open, Vec3{1, 0, 1});
+    CHECK(open.minimum.x == 1);
+    CHECK(open.maximum.x == infinity);
+    CHECK(open.minimum.z == -infinity);
+    CHECK(open.maximum.z == 1);
+    CHECK_FALSE(finite(open));
+}
+
+TEST_CASE("A transformed box holds its transformed corners, and an invalid box stays invalid") {
+    static_assert(noexcept(transformed(RenderBounds{}, Mat4{})));
+    const RenderBounds box{{-1, -2, -3}, {1, 2, 3}, true};
+    // A quarter turn about +Y, which takes +Z to +X and +X to -Z, then a translation.
+    const Mat4 turn{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 5, 6, 7, 1};
+    const auto turned = transformed(box, turn);
+    CHECK(turned.valid);
+    CHECK(same(turned.minimum, {2, 4, 6}));
+    CHECK(same(turned.maximum, {8, 8, 8}));
+    // An oblique matrix, whose every output axis mixes every input axis: the box of all eight corners as point()
+    // places them.
+    const Mat4 oblique{.7F, .2F, -.7F, 0, .1F, 1.5F, 0, 0, .7F, -.3F, .7F, 0, -4, 0, 2, 1};
+    RenderBounds corners;
+    for (const auto x : {box.minimum.x, box.maximum.x})
+        for (const auto y : {box.minimum.y, box.maximum.y})
+            for (const auto z : {box.minimum.z, box.maximum.z})
+                encapsulate(corners, point(oblique, {x, y, z}));
+    const auto placed = transformed(box, oblique);
+    CHECK(placed.valid);
+    CHECK(same(placed.minimum, corners.minimum));
+    CHECK(same(placed.maximum, corners.maximum));
+    // Corners that overflow leave the result infinite for its caller to reject.
+    const auto huge = 1e30F;
+    const Mat4 scale{huge, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const auto overflowed = transformed(RenderBounds{{-1e20F, 0, 0}, {1e20F, 1, 1}, true}, scale);
+    CHECK(overflowed.minimum.x == -std::numeric_limits<float>::infinity());
+    CHECK(overflowed.maximum.x == std::numeric_limits<float>::infinity());
+    CHECK_FALSE(transformed(RenderBounds{{1, 1, 1}, {2, 2, 2}, false}, turn).valid);
+}
+
+TEST_CASE("Posed and placed bounds whose transformed corners overflow are rejected") {
+    constexpr float far = 1e20F;
+    Mat4 stretch = identity();
+    stretch[0] = far;
+    Scene scene;
+    // A vertex far along X, which the stretch takes past the largest float as it poses the mesh.
+    auto source = static_source({1});
+    source.primitives[0].vertices[1].position.x = far;
+    auto posed = scene.create("Posed", Mesh::compile(source));
+    CHECK_THROWS_WITH_AS(posed.set_world_matrix(stretch), "Non-finite render bounds", std::invalid_argument);
+    // The rejected matrix leaves the bounds of the identity, which posed bounds pad by a small fraction.
+    constexpr double padded = .001;
+    CHECK(posed.renderer().bounds().maximum.x == doctest::Approx(far).epsilon(padded));
+    // A unit triangle, which the stretch poses within range, placed as far along X, which it takes out of range.
+    Mat4 offset = identity();
+    offset[12] = far;
+    auto placed = scene.create("Placed", Mesh::compile(static_source({1})));
+    placed.renderer().set_placements(MeshPlacements::create(placed.renderer().mesh(), std::array<Mat4, 1>{offset}));
+    CHECK_THROWS_WITH_AS(placed.set_world_matrix(stretch), "Non-finite render bounds", std::invalid_argument);
+    CHECK(placed.renderer().bounds().minimum.x == doctest::Approx(far).epsilon(padded));
+    CHECK(finite(placed.renderer().bounds()));
+}
+
+TEST_CASE("A snapshot without vertices, or without visible ones, has invalid bounds") {
+    Asset empty;
+    empty.nodes.resize(1);
+    const auto described = make_mesh_snapshot(empty, sample_pose(empty));
+    CHECK_FALSE(described.bounds.valid);
+    CHECK_NOTHROW(validate_scene(described));
+    std::ostringstream report;
+    print_mesh_report(described, report);
+    CHECK(report.str().find("\nBounds: none\n") != std::string::npos);
+    CHECK_FALSE(Scene().snapshot().bounds.valid);
+    // Hidden primitives keep their vertices but add nothing to the bounds.
+    Scene scene;
+    auto object = scene.create("Triangle", Mesh::compile(static_source({1})));
+    const auto shown = scene.snapshot();
+    CHECK(shown.bounds.valid);
+    CHECK(same(shown.bounds.minimum, {0, 0, 0}));
+    CHECK(same(shown.bounds.maximum, {1, 1, 0}));
+    object.renderer().set_visible(false);
+    const auto hidden = scene.snapshot();
+    CHECK(hidden.vertices.size() == triangle_corners);
+    CHECK_FALSE(hidden.bounds.valid);
 }

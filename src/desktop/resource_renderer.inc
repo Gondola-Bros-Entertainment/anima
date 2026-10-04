@@ -461,10 +461,7 @@ static bool may_dissolve(const VisibilityRange &range, Vec3 eye, Vec3 minimum, V
 }
 // The center of @p mesh's rest bounds, which visibility ranges measure to once an object or copy places it, as Godot
 // measures to the center of an instance's bounds; the mesh's origin when it has no bounds.
-static Vec3 range_center(const Mesh &mesh) {
-    const auto &bounds = mesh.rest_bounds();
-    return bounds.valid ? (bounds.minimum + bounds.maximum) * .5F : Vec3{};
-}
+static Vec3 range_center(const Mesh &mesh) { return center(mesh.rest_bounds()); }
 // The pose buffer matrix after a ranged object's world matrix: @p range's begin, begin margin, end and end margin, then
 // @p center. Shaders may assume that no value is infinite, so an endless range, which validation leaves no end margin,
 // ends at the largest float, which no distance reaches.
@@ -479,22 +476,6 @@ static Mat4 range_columns(const VisibilityRange &range, Vec3 center) {
     columns[6] = center.z;
     return columns;
 }
-// The world bounds of @p cluster's copies under @p world.
-static RenderBounds cluster_bounds(const MeshPlacements::Cluster &cluster, const Mat4 &world) {
-    RenderBounds bounds;
-    const auto &b = cluster.bounds;
-    for (unsigned corner = 0; corner < 8; ++corner) {
-        const auto v = point(world, {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
-                                     corner & 4 ? b.maximum.z : b.minimum.z});
-        if (!bounds.valid)
-            bounds = {v, v, true};
-        bounds.minimum = {std::min(bounds.minimum.x, v.x), std::min(bounds.minimum.y, v.y),
-                          std::min(bounds.minimum.z, v.z)};
-        bounds.maximum = {std::max(bounds.maximum.x, v.x), std::max(bounds.maximum.y, v.y),
-                          std::max(bounds.maximum.z, v.z)};
-    }
-    return bounds;
-}
 // Whether @p frustum, when given, contains @p bounds, and @p range, when given, can draw a copy at their distance from
 // @p eye.
 static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *frustum, const VisibilityRange *range,
@@ -504,7 +485,7 @@ static bool cluster_visible(const RenderBounds &bounds, const RenderFrustum *fru
 }
 static bool cluster_visible(const MeshPlacements::Cluster &cluster, const Mat4 &world, const RenderFrustum *frustum,
                             const VisibilityRange *range, Vec3 eye) {
-    return cluster_visible(cluster_bounds(cluster, world), frustum, range, eye);
+    return cluster_visible(transformed(cluster.bounds, world), frustum, range, eye);
 }
 // Pixels of the view's height per unit of error at distance 1, or at any distance in an orthographic view: the length
 // of the view-projection's second row, which is the projection's vertical scale, times half the scene targets' height,
@@ -552,7 +533,7 @@ void find_placement_runs(const ResourceInstance &render_instance, const RenderFr
     const auto clusters = render_instance.placements->source->clusters();
     for (std::size_t i = 0; i < clusters.size(); ++i) {
         const auto &cluster = clusters[i];
-        const auto bounds = cluster_bounds(cluster, world);
+        const auto bounds = transformed(cluster.bounds, world);
         if (cluster_visible(bounds, frustum, range, eye()))
             placement_runs.push_back({cluster.first, cluster.count,
                                       nearest_distance(eye(), bounds.minimum, bounds.maximum),

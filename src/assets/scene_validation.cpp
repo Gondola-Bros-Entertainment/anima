@@ -59,7 +59,7 @@ void validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget) {
     require(scene.materials.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
                 scene.textures.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()),
             "MeshSnapshot descriptor index overflow");
-    require(finite(scene.minimum) && finite(scene.maximum), "Non-finite scene bounds");
+    require(finite(scene.bounds.minimum) && finite(scene.bounds.maximum), "Non-finite scene bounds");
     for (const auto &vertex : scene.vertices)
         require(
             finite(vertex.position) && finite(vertex.normal) && finite(vertex.color) && std::isfinite(vertex.uv[0]) &&

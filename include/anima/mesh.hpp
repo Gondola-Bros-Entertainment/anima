@@ -1,5 +1,6 @@
 #pragma once
 #include <anima/assets/asset.hpp>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 
@@ -8,13 +9,67 @@
 /// anima::VulkanRenderer. Part of the `anima::assets` target.
 
 namespace anima {
-/// Axis-aligned bounding box; Scene reports instance and part bounds in world space.
+/// Axis-aligned bounding box; Scene reports instance and part bounds in world space. center(), extents(), encapsulate()
+/// and transformed() operate on it.
 struct RenderBounds {
+    /// Corner with the smallest coordinates.
     Vec3 minimum{};
+    /// Corner with the largest coordinates.
     Vec3 maximum{};
     /// False when the box is empty or unknown. Culling never rejects an invalid box.
     bool valid{};
 };
+/// Midpoint of the corners of @p bounds, or the origin when @p bounds is invalid. It halves each corner before adding
+/// them, so it is finite whenever they are.
+[[nodiscard]] inline Vec3 center(const RenderBounds &bounds) noexcept {
+    return bounds.valid ? bounds.minimum * .5F + bounds.maximum * .5F : Vec3{};
+}
+/// Half the size of @p bounds along each axis, so that the box spans center() plus and minus it; zero when @p bounds is
+/// invalid. It halves each corner before subtracting them, so it is finite whenever they are.
+[[nodiscard]] inline Vec3 extents(const RenderBounds &bounds) noexcept {
+    return bounds.valid ? bounds.maximum * .5F - bounds.minimum * .5F : Vec3{};
+}
+/// Grows @p bounds to the smallest box that holds it and @p position; an invalid @p bounds becomes the valid box of
+/// @p position alone.
+///
+/// Checks no finiteness, so that each caller can reject the finished box with its own message: once @p position has a
+/// coordinate that is not finite, the box keeps a corner coordinate on that axis that is not finite through every later
+/// call. An infinite coordinate extends the corner on its side to infinity, and a NaN one makes the coordinate of both
+/// corners NaN.
+inline void encapsulate(RenderBounds &bounds, Vec3 position) noexcept {
+    if (!bounds.valid) {
+        bounds = {position, position, true};
+        return;
+    }
+    // Each takes a NaN value, and keeps a NaN current coordinate, which no comparison replaces.
+    const auto low = [](float current, float value) { return value < current || std::isnan(value) ? value : current; };
+    const auto high = [](float current, float value) { return value > current || std::isnan(value) ? value : current; };
+    bounds.minimum = {low(bounds.minimum.x, position.x), low(bounds.minimum.y, position.y),
+                      low(bounds.minimum.z, position.z)};
+    bounds.maximum = {high(bounds.maximum.x, position.x), high(bounds.maximum.y, position.y),
+                      high(bounds.maximum.z, position.z)};
+}
+/// Grows @p bounds to hold @p other as well, encapsulating each of its two corners as encapsulate() does a point; does
+/// nothing when @p other is invalid.
+inline void encapsulate(RenderBounds &bounds, const RenderBounds &other) noexcept {
+    if (!other.valid)
+        return;
+    encapsulate(bounds, other.minimum);
+    encapsulate(bounds, other.maximum);
+}
+/// The smallest box that holds the eight corners of @p bounds, each transformed by @p matrix as an affine matrix, as
+/// point() transforms it; invalid when @p bounds is. Checks no finiteness: a transformed corner with a coordinate that
+/// is not finite leaves one in the result, as encapsulate() states.
+[[nodiscard]] inline RenderBounds transformed(const RenderBounds &bounds, const Mat4 &matrix) noexcept {
+    RenderBounds result;
+    if (!bounds.valid)
+        return result;
+    for (unsigned corner = 0; corner < 8; ++corner)
+        encapsulate(result, point(matrix, {corner & 1 ? bounds.maximum.x : bounds.minimum.x,
+                                           corner & 2 ? bounds.maximum.y : bounds.minimum.y,
+                                           corner & 4 ? bounds.maximum.z : bounds.minimum.z}));
+    return result;
+}
 /// A simplified version of a MeshPrimitive's triangles: a subset of its vertices, joined into fewer triangles, which
 /// VulkanRenderer draws in its place where the error it adds would cover at most its LOD threshold in pixels of the
 /// scene targets (VulkanRenderer::set_lod_threshold).

@@ -38,14 +38,13 @@ void affine(const Mat4 &m) {
 }
 void expand(RenderBounds &bounds, Vec3 v) {
     require(finite(v), "Non-finite render bounds");
-    if (!bounds.valid) {
-        bounds = {v, v, true};
-        return;
-    }
-    bounds.minimum = {std::min(bounds.minimum.x, v.x), std::min(bounds.minimum.y, v.y),
-                      std::min(bounds.minimum.z, v.z)};
-    bounds.maximum = {std::max(bounds.maximum.x, v.x), std::max(bounds.maximum.y, v.y),
-                      std::max(bounds.maximum.z, v.z)};
+    encapsulate(bounds, v);
+}
+// Grows @p bounds by @p other, which transformed() leaves with a corner that is not finite when any of its transformed
+// corners is not.
+void expand(RenderBounds &bounds, const RenderBounds &other) {
+    require(!other.valid || (finite(other.minimum) && finite(other.maximum)), "Non-finite render bounds");
+    encapsulate(bounds, other);
 }
 using Key = std::array<std::uint32_t, 24>;
 Key key(const SourceVertex &v) {
@@ -171,12 +170,12 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
                             "Invalid render skin influence");
                     sum += v.weights[j];
                     if (v.weights[j] > 0)
-                        expand(bounds[v.joints[j]], v.position);
+                        encapsulate(bounds[v.joints[j]], v.position);
                 }
                 require(std::abs(sum - 1) < mesh_limits::skin_weight_tolerance,
                         "Render skin weights must be normalized");
             } else
-                expand(bounds[0], v.position);
+                encapsulate(bounds[0], v.position);
             if (triangles) {
                 result->vertices_.push_back(v);
                 continue;
@@ -285,13 +284,7 @@ Mesh::compile_indexed(const Asset &source, std::span<const std::vector<std::uint
             rest_palette.push_back(result->rest_.world[skin.joints[j]] * skin.inverse_bind[j]);
     for (const auto &parts : result->bounds_)
         for (const auto &part : parts)
-            for (unsigned corner = 0; corner < 8; ++corner) {
-                const auto &b = part.bound;
-                expand(result->rest_bounds_,
-                       point(rest_palette[part.palette],
-                             {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
-                              corner & 4 ? b.maximum.z : b.minimum.z}));
-            }
+            expand(result->rest_bounds_, transformed(part.bound, rest_palette[part.palette]));
     return result;
 }
 std::vector<std::shared_ptr<const Image>> Mesh::texel_images() const {
@@ -406,16 +399,8 @@ RenderBounds Scene::place(const MeshPlacements &placements, const Mat4 &world, s
     RenderBounds combined;
     const auto relative = placements.primitive_bounds();
     for (std::size_t i = 0; i < bounds.size(); ++i) {
-        bounds[i] = {};
-        const auto &b = relative[i];
-        if (!b.valid)
-            continue;
-        for (unsigned corner = 0; corner < 8; ++corner)
-            expand(bounds[i],
-                   point(world, {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
-                                 corner & 4 ? b.maximum.z : b.minimum.z}));
-        expand(combined, bounds[i].minimum);
-        expand(combined, bounds[i].maximum);
+        bounds[i] = transformed(relative[i], world);
+        expand(combined, bounds[i]);
     }
     return combined;
 }
@@ -438,12 +423,7 @@ RenderBounds Scene::append_pose(const Mesh &mesh, const Pose &pose, const Mat4 &
     const auto posed = std::span(bounds).subspan(first_bound);
     for (std::size_t i = 0; i < posed.size(); ++i)
         for (const auto &part : mesh.bounds_[i])
-            for (unsigned corner = 0; corner < 8; ++corner) {
-                const auto &b = part.bound;
-                expand(posed[i], point(palette[first_matrix + part.palette],
-                                       {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
-                                        corner & 4 ? b.maximum.z : b.minimum.z}));
-            }
+            expand(posed[i], transformed(part.bound, palette[first_matrix + part.palette]));
     for (auto &bound : posed)
         if (bound.valid) {
             // Pad for the accepted weight error and an equal rounding margin in
@@ -459,10 +439,7 @@ RenderBounds Scene::append_pose(const Mesh &mesh, const Pose &pose, const Mat4 &
         }
     RenderBounds combined;
     for (const auto &bound : posed)
-        if (bound.valid) {
-            expand(combined, bound.minimum);
-            expand(combined, bound.maximum);
-        }
+        encapsulate(combined, bound);
     return combined;
 }
 GameObject Scene::create(std::string name, std::shared_ptr<const Mesh> mesh) {
@@ -1000,10 +977,8 @@ RenderBounds Scene::bounds() const {
         if (!value.visible || !value.active)
             continue;
         for (std::size_t i = 0; i < value.primitive_bounds.size(); ++i)
-            if (value.primitive_visible[i] && value.primitive_bounds[i].valid) {
-                expand(result, value.primitive_bounds[i].minimum);
-                expand(result, value.primitive_bounds[i].maximum);
-            }
+            if (value.primitive_visible[i])
+                encapsulate(result, value.primitive_bounds[i]);
     }
     return result;
 }
@@ -1023,7 +998,6 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
     (void)validate_scene_geometry(corners, budget);
     MeshSnapshot result;
     result.vertices.reserve(corners);
-    RenderBounds bounds;
     for (auto id : objects) {
         const auto &value = instance(id);
         const auto &mesh = *value.mesh;
@@ -1098,17 +1072,13 @@ MeshSnapshot Scene::snapshot(SceneGeometryBudget budget) const {
                          tangent(transform, source.tangent),
                          source.alpha});
                     if (visible)
-                        expand(bounds, position);
+                        expand(result.bounds, position);
                     // A reversed triangle swaps its last two corners, keeping its source winding against its normals.
                     if (reversed && corner % 3 == 2)
                         std::swap(result.vertices[result.vertices.size() - 2], result.vertices.back());
                 }
             }
         }
-    }
-    if (bounds.valid) {
-        result.minimum = bounds.minimum;
-        result.maximum = bounds.maximum;
     }
     return result;
 }
