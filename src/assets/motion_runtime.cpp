@@ -49,7 +49,7 @@ struct MotionRuntime::Impl {
             chains_.emplace(name, c);
         }
     }
-    const std::shared_ptr<const anima::Asset> &model() const { return asset_; }
+    const std::shared_ptr<const anima::Asset> &model() const noexcept { return asset_; }
     const anima::EvaluationRig &rig() const { return rig_; }
     bool has_mask(std::string_view name) const { return masks_.contains(name); }
     const std::vector<float> &mask_named(std::string_view name) const {

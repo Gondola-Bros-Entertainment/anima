@@ -579,8 +579,8 @@ TEST_CASE("Attachment and interaction sockets outside the evaluation rig pass un
     const auto parent_motion = std::make_shared<const MotionRuntime>(fixture.runtime());
     const auto interaction = [&](const std::string &document, std::size_t anchor) {
         const InteractionRuntime::Actors actors{
-            {"child", {body, motion, {{"anchor", {anchor, identity()}}}}},
-            {"parent", {fixture.body, parent_motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
+            {"child", {motion, {{"anchor", {anchor, identity()}}}}},
+            {"parent", {parent_motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
         (void)InteractionRuntime(actors, document);
     };
     CHECK_THROWS_WITH_AS(interaction(meeting, helper_socket),
@@ -707,14 +707,37 @@ TEST_CASE("Presentation frames and poles hold exactly their count of numbers, ea
     const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
     // The limb's chain starts below the root, so solving it leaves the child's anchor in place.
     const InteractionRuntime::Actors actors{
-        {"child", {fixture.body, motion, {{"anchor", {0, identity()}}}}},
-        {"parent", {fixture.body, motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
+        {"child", {motion, {{"anchor", {0, identity()}}}}},
+        {"parent", {motion, {{"anchor", {0, identity()}}, {"target", {end, identity()}}}}}};
     const auto interaction = [&](const std::string &document) { (void)InteractionRuntime(actors, document); };
     CHECK_NOTHROW(interaction(meeting));
     CHECK_THROWS_WITH_AS(interaction(replaced(meeting, R"("pole":[0,0,2])", R"("pole":[0,0,true])")),
                          "JSON value must be a number", std::invalid_argument);
     CHECK_THROWS_WITH_AS(interaction(replaced(meeting, R"("pole":[0,0,2])", R"("pole":[0,0,2,0])")),
                          "Interaction pole requires three coordinates", std::invalid_argument);
+}
+
+TEST_CASE("Interaction roles take their model from their motion, and every socket named is checked at construction") {
+    constexpr std::size_t end = 3;
+    const MotionFixture fixture;
+    const auto motion = std::make_shared<const MotionRuntime>(fixture.runtime());
+    CHECK(motion->model() == fixture.body);
+    const auto actors = [&](std::shared_ptr<const MotionRuntime> child, InteractionSocket target) {
+        return InteractionRuntime::Actors{{"child", {std::move(child), {{"anchor", {0, identity()}}}}},
+                                          {"parent", {motion, {{"anchor", {0, identity()}}, {"target", target}}}}};
+    };
+    const InteractionRuntime interaction(actors(motion, {end, identity()}), meeting);
+    for (const auto &role : interaction.bindings().roles())
+        CHECK(role.asset == fixture.body);
+    CHECK_THROWS_WITH_AS(InteractionRuntime(actors(nullptr, {end, identity()}), meeting),
+                         "Interaction role has no motion", std::invalid_argument);
+    // The target socket is only a contact target, never an attachment socket, so the bindings do not check it.
+    CHECK_THROWS_WITH_AS(InteractionRuntime(actors(motion, {fixture.body->nodes.size(), identity()}), meeting),
+                         "Unknown interaction socket node", std::invalid_argument);
+    auto collapsed = identity();
+    collapsed[0] = 0;
+    CHECK_THROWS_WITH_AS(InteractionRuntime(actors(motion, {end, collapsed}), meeting), "Affine transform is collapsed",
+                         std::invalid_argument);
 }
 
 TEST_CASE("An attachment socket document maps names to rest frames and to sockets") {
@@ -787,7 +810,7 @@ TEST_CASE("Motion, action, actor and interaction documents report another versio
 }
 
 TEST_CASE("Coordinated interaction phases and cues must be arrays") {
-    // Phases are read before the roles' actors are checked, so an actor without a model reaches them.
+    // Phases are read before the roles' actors are checked, so an actor without a motion reaches them.
     const InteractionRuntime::Actors actors{{"lead", {}}};
     const auto document = [](const std::string &phases) {
         return R"({"version":1,"id":"meet","phases":)" + phases +

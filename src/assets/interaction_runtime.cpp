@@ -37,8 +37,8 @@ struct InteractionRuntime::Impl {
         timeline_ = std::make_unique<anima::ActionTimeline>(std::move(phases));
         std::vector<anima::InteractionRole> roles;
         for (const auto &[id, actor] : actors_) {
-            if (!actor.asset)
-                throw std::invalid_argument("Interaction role has no asset");
+            if (!actor.motion)
+                throw std::invalid_argument("Interaction role has no motion");
             const auto &definition = document.at("roles").at(id);
             if (!definition.is_object() || definition.size() != timeline_->phases().size())
                 throw std::invalid_argument("Every interaction role needs every phase");
@@ -55,7 +55,7 @@ struct InteractionRuntime::Impl {
             runtimes_.emplace(id,
                               std::make_shared<ActionRuntime>(
                                   actor.motion, nlohmann::json{{"schema_version", 1}, {"actions", {action}}}.dump()));
-            roles.push_back({id, actor.asset});
+            roles.push_back({id, actor.motion->model()});
         }
         std::vector<anima::InteractionAttachment> attachments;
         if (!document.at("attachments").is_array())
@@ -81,8 +81,11 @@ struct InteractionRuntime::Impl {
                             vec3(entry.at("pole"), "Interaction pole requires three coordinates"),
                             weights(entry.at("weights")),
                             entry.value("orientation", false)};
+            // Attachment sockets are checked by the bindings; the target socket is
+            // only read at sample time, so check it before publishing.
+            anima::validate_interaction_socket(*actors_.at(contact.parent).motion->model(), contact.target);
             const auto &child = actors_.at(contact.child);
-            if (!child.motion || !owned_chains.emplace(contact.child, contact.chain).second)
+            if (!owned_chains.emplace(contact.child, contact.chain).second)
                 throw std::invalid_argument("Contact needs one owner and a compatible evaluation rig");
             (void)child.motion->contact_end_node(contact.chain);
             const auto attachment =
@@ -113,7 +116,7 @@ struct InteractionRuntime::Impl {
             const auto &actor = actors_.at(role.id);
             layers.push_back(detail::phase_layers(*actor.motion,
                                                   runtimes_.at(role.id)->definition(id_).phases.at(result.clock.phase),
-                                                  result.clock.progress, anima::sample_pose(*actor.asset)));
+                                                  result.clock.progress, anima::sample_pose(*actor.motion->model())));
             frames.push_back(
                 {actor.motion->evaluate(layers.back().source, layers.back().controls).pose, free_worlds.at(role.id)});
         }
