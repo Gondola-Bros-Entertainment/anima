@@ -14,8 +14,9 @@ Entry points:
 - anima::physics::World and anima::physics2d::World simulate rigid bodies.
 - anima::VulkanRenderer draws the selected scenes on the desktop, and
   anima::CustomMaterial gives their surfaces an application's own shaders.
-- anima::Camera and anima::CameraView select views, and anima::view_matrix resolves
-  them for the renderer.
+- anima::Camera and anima::CameraView select views; anima::resolve_camera resolves
+  them into view and projection matrices, and anima::view_projection into the
+  renderer's view.
 
 Build instructions, module targets, architecture and conventions are in the
 repository's [README](https://github.com/Gondola-Bros-Entertainment/anima#readme).

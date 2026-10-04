@@ -26,25 +26,19 @@ bool contains(const SceneSet &scenes, GameObject object) {
             return true;
     return false;
 }
-Mat4 camera_matrix(GameObject object, const CameraSettings &s, float aspect) {
-    if (!std::isfinite(aspect) || aspect <= 0)
-        throw std::invalid_argument("Camera aspect must be finite and positive");
+CameraMatrices camera_matrices(GameObject object, const Mat4 &projection) {
     const auto world = object.world_matrix();
     const auto axes = detail::scene_orientation(world, "Camera");
     const Vec3 eye = translation_of(world);
     const auto &x = axes[0], &y = axes[1], &z = axes[2];
     const Mat4 view{x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1};
-    const auto projection = s.projection == CameraProjection::perspective
-                                ? perspective(float(double(s.vertical_fov_degrees) * std::numbers::pi / 180), aspect,
-                                              s.near_plane, s.far_plane)
-                                : orthographic(aspect, s.orthographic_height, s.near_plane, s.far_plane);
-    const auto result = projection * view;
+    const auto combined = projection * view;
     // Match the renderer's finite/invertible matrix and view-origin contract.
-    (void)inverse(result);
-    (void)view_origin(result);
-    return result;
+    (void)inverse(combined);
+    (void)view_origin(combined);
+    return {view, projection, combined, eye};
 }
-template <class Scenes> Mat4 resolve(Scenes &scenes, float aspect) {
+template <class Scenes> CameraMatrices resolve(Scenes &scenes, float aspect) {
     detail::SceneDriver::check(scenes);
     ComponentRef<CameraView> selected;
     for (auto view : scenes.template components<CameraView>()) {
@@ -62,7 +56,7 @@ template <class Scenes> Mat4 resolve(Scenes &scenes, float aspect) {
     auto camera = object.template get_component<Camera>();
     if (!camera || !camera.active())
         throw std::invalid_argument("Selected camera must have an active Camera component");
-    return camera_matrix(object, camera->settings(), aspect);
+    return camera_matrices(object, camera->projection(aspect));
 }
 } // namespace
 Camera::Camera(CameraSettings settings) { configure(settings); }
@@ -70,8 +64,19 @@ void Camera::configure(CameraSettings settings) {
     validate(settings);
     settings_ = settings;
 }
-Mat4 view_matrix(Scene &scene, float aspect) { return resolve(scene, aspect); }
-Mat4 view_matrix(SceneSet &scenes, float aspect) { return resolve(scenes, aspect); }
+Mat4 Camera::projection(float aspect) const {
+    if (!std::isfinite(aspect) || aspect <= 0)
+        throw std::invalid_argument("Camera aspect must be finite and positive");
+    const auto &s = settings_;
+    return s.projection == CameraProjection::perspective
+               ? perspective(float(double(s.vertical_fov_degrees) * std::numbers::pi / 180), aspect, s.near_plane,
+                             s.far_plane)
+               : orthographic(aspect, s.orthographic_height, s.near_plane, s.far_plane);
+}
+CameraMatrices resolve_camera(Scene &scene, float aspect) { return resolve(scene, aspect); }
+CameraMatrices resolve_camera(SceneSet &scenes, float aspect) { return resolve(scenes, aspect); }
+Mat4 view_projection(Scene &scene, float aspect) { return resolve(scene, aspect).view_projection; }
+Mat4 view_projection(SceneSet &scenes, float aspect) { return resolve(scenes, aspect).view_projection; }
 void add_camera_component_codecs(ComponentCodecs &codecs) {
     auto pending = codecs;
     using Json = nlohmann::json;

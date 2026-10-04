@@ -133,7 +133,7 @@ class SceneRef {
 /// it is application data, not a path. Members stay in insertion order, and objects in different
 /// members cannot be parented to each other. There is no global scene, file access, worker thread
 /// or graphics dependency. The set must outlive calls into its scenes. active() is only a caller
-/// default: no scene driver or view_matrix consults it.
+/// default: no scene driver or resolve_camera consults it.
 ///
 /// The set is busy while it updates its members, changes membership (in create, load, replace,
 /// restore, unload, clear or its destructor), serializes, or is held by a scene driver that runs
