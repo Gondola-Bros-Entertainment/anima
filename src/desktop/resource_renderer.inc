@@ -272,8 +272,12 @@ static void sort_front_to_back(std::vector<ViewObject> &objects) {
     });
 }
 
+// Creates a buffer of @p bytes for @p usage in memory with the @p required properties, preferring @p preferred ones as
+// create_buffer does. Buffers that the host writes and shaders read prefer device-local memory, which on a discrete GPU
+// is the host-visible window into its own memory where it has one; VMA falls back to system memory when no such type
+// exists or its heap cannot hold the buffer. Staging buffers, which only a copy reads, leave @p preferred empty.
 std::unique_ptr<ResourceBuffer> resource_buffer(VkDeviceSize bytes, VkBufferUsageFlags usage,
-                                                VkMemoryPropertyFlags properties) {
+                                                VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred = 0) {
     auto value = std::make_unique<ResourceBuffer>();
     value->allocator = allocator;
     value->bytes = bytes;
@@ -281,7 +285,8 @@ std::unique_ptr<ResourceBuffer> resource_buffer(VkDeviceSize bytes, VkBufferUsag
     info.size = bytes;
     info.usage = usage;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    const auto allocated = create_buffer(info, properties, value->buffer, value->allocation, "Create resource buffer");
+    const auto allocated =
+        create_buffer(info, required, value->buffer, value->allocation, "Create resource buffer", preferred);
     value->allocation_bytes = allocated.size;
     value->mapping = allocated.pMappedData;
     return value;
@@ -898,8 +903,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
         VkDeviceSize capacity = pose_buffer ? pose_buffer->bytes : sizeof(Mat4);
         while (capacity < bytes)
             capacity = std::min<VkDeviceSize>(capacity * 2, properties.limits.maxStorageBufferRange);
-        auto candidate =
-            resource_buffer(capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        auto candidate = resource_buffer(capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         inject_scene(failure, RendererFailureStage::palette, false);
         const VkDescriptorBufferInfo buffer{candidate->buffer, 0, capacity};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};

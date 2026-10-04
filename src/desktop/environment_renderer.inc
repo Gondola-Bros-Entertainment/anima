@@ -102,8 +102,9 @@ void create_environment_layout() {
     pool.pPoolSizes = sizes;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &environment_pool), "Create environment pool");
     for (auto &slot : frames) {
-        slot.environment_buffer = resource_buffer(sizeof(EnvironmentUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        slot.environment_buffer =
+            resource_buffer(sizeof(EnvironmentUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocate.descriptorPool = environment_pool;
         allocate.descriptorSetCount = 1;
