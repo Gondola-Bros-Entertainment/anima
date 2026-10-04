@@ -315,12 +315,12 @@ struct AnimationCrossfade {
 /// of the scene's handles.
 class StateMachineAnimator {
   public:
-    /// Binds @p machine to @p object's mesh, with its parameters at their initial values, enters its
-    /// first state at normalized time 0 and publishes that pose. Throws `std::invalid_argument` for a
-    /// null machine or one whose source asset does not match the mesh, as Animator requires; fails as
-    /// GameObject::renderer does when @p object has no mesh. A machine over a motion runtime matches
-    /// the meshes that its model matches.
-    StateMachineAnimator(GameObject object, std::shared_ptr<const AnimationStateMachine> machine);
+    /// Binds @p machine to the mesh of @p owner's object, with its parameters at their initial values,
+    /// enters its first state at normalized time 0 and publishes that pose. Throws
+    /// `std::invalid_argument` for a null machine or one whose source asset does not match the mesh, as
+    /// Animator requires; fails as GameObject::renderer does when the object has no mesh. A machine
+    /// over a motion runtime matches the meshes that its model matches.
+    StateMachineAnimator(ComponentOwner owner, std::shared_ptr<const AnimationStateMachine> machine);
     /// Sets float parameter @p name. Throws `std::out_of_range` for an unknown parameter and
     /// `std::invalid_argument` for a parameter of another type or a nonfinite value.
     void set_float(std::string_view name, float value);

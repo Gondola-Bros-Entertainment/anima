@@ -320,11 +320,11 @@ inline void run() {
             // An application-defined frame driver and native late follower compose
             // without depending on the order of component types inside a phase.
             struct PoseDriver {
-                GameObject owner;
+                ComponentOwner owner;
                 Pose pose;
                 void on_update(double) {
-                    owner.set_position({4, 0, 0});
-                    owner.renderer().set_pose(pose);
+                    owner.object.set_position({4, 0, 0});
+                    owner.object.renderer().set_pose(pose);
                 }
             };
             Scene scene;
@@ -351,7 +351,7 @@ inline void run() {
             auto world = identity();
             world[12] = 4;
             scene.set_pose(body.id(), baseline, world);
-            auto set = std::make_unique<FittedSet>(body, fitted);
+            auto set = std::make_unique<FittedSet>(ComponentOwner{body}, fitted);
             set->replace({"shell"});
             const auto object = set->instances().front().object;
             Scene reference;
@@ -369,7 +369,7 @@ inline void run() {
                   "Failed replacement changed the accepted fitted set");
 
             auto second = scene.create("Independent owner", actor.render);
-            FittedSet independent(second, fitted);
+            FittedSet independent(ComponentOwner{second}, fitted);
             independent.replace({"shell"});
             const auto second_object = independent.instances().front().object;
             const auto second_palette = scene.instance(second_object.id()).palette;
@@ -414,15 +414,17 @@ inline void run() {
             auto wrong_body = std::make_shared<Asset>(*actor.actor.motion->model());
             wrong_body->nodes.front().name += ".other";
             auto foreign = scene.create("Incompatible owner", Mesh::compile(*wrong_body));
-            rejects<std::invalid_argument>([&] { FittedSet invalid(foreign, fitted); },
+            rejects<std::invalid_argument>([&] { FittedSet invalid(ComponentOwner{foreign}, fitted); },
                                            "Fitted library does not match the body mesh");
             second.renderer().set_mesh(Mesh::compile(*actor.actor.motion->model()));
             rejects<std::invalid_argument>([&] { independent.sync(); }, "Fitted set requires its original body mesh");
-            rejects<std::out_of_range>([&] { FittedSet invalid(GameObject{}, fitted); }, "Expired GameObject handle");
+            rejects<std::out_of_range>([&] { FittedSet invalid(ComponentOwner{GameObject{}}, fitted); },
+                                       "Expired GameObject handle");
         }
         {
             auto scene = std::make_unique<Scene>();
-            auto set = std::make_unique<FittedSet>(scene->create("Expiring owner", actor.render), fitted);
+            auto set =
+                std::make_unique<FittedSet>(ComponentOwner{scene->create("Expiring owner", actor.render)}, fitted);
             set->replace({"shell"});
             const auto object = set->instances().front().object;
             scene.reset();

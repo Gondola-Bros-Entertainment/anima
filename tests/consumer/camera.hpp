@@ -38,7 +38,7 @@ inline void run() {
     auto lens = cameras->create("lens");
     lens.add_component<anima::Camera>();
     lens.set_position({0, 1, 4});
-    views->create("remote view").add_component<anima::CameraView>()->camera = lens;
+    (void)views->create("remote view").add_component<anima::CameraView>(lens);
     const auto remote = anima::view_matrix(linked, 1);
     cameras = linked.replace(cameras, anima::serialize_scene(cameras.get(), {}, codecs), {}, codecs);
     if (lens.valid() || remote != anima::view_matrix(linked, 1))

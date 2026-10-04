@@ -16,8 +16,8 @@ bool Mesh::accepts_animation_source(const Asset &source) const {
                 return false;
     return true;
 }
-Animator::Animator(GameObject object, std::shared_ptr<const Asset> source)
-    : object_(std::move(object)), mesh_(object_.renderer().mesh()), source_(std::move(source)) {
+Animator::Animator(ComponentOwner owner, std::shared_ptr<const Asset> source)
+    : object_(std::move(owner.object)), mesh_(object_.renderer().mesh()), source_(std::move(source)) {
     if (!source_ || !mesh_->accepts_animation_source(*source_))
         throw std::invalid_argument("Animator source does not match the object's mesh hierarchy and bind");
     publish(playback_, true);

@@ -505,7 +505,7 @@ TEST_CASE("An Animator plays a clip of zero duration as its pose") {
     const auto source = std::make_shared<const Asset>(std::move(asset));
     Scene scene;
     const auto object = scene.create("body", Mesh::compile(*source));
-    Animator animator(object, source);
+    Animator animator(ComponentOwner{object}, source);
     // Root translation along X of the published pose, checked against what the renderer holds.
     const auto root_x = [&] {
         const auto published = animator.pose().world.at(0)[12];

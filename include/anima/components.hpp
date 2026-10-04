@@ -11,6 +11,19 @@
 /// scene.hpp includes this header.
 
 namespace anima {
+/// The object a component is attached to. GameObject::add_component passes it first to a component
+/// type that accepts one, as its first constructor parameter or the first member of an aggregate.
+///
+/// Only its explicit constructor creates one, and it converts to nothing, so the owner never
+/// initializes a GameObject parameter or member, and a GameObject argument never initializes a
+/// ComponentOwner. A component constructed directly rather than attached, such as a standalone
+/// Animator, takes its object as `ComponentOwner{object}`.
+struct ComponentOwner {
+    /// Wraps @p owner, which may be any handle, including an invalid one.
+    explicit ComponentOwner(GameObject owner) noexcept : object(std::move(owner)) {}
+    /// The owning object.
+    GameObject object;
+};
 namespace detail {
 enum class ComponentPhase { frame, fixed, late };
 // Whether Scene calls any hook of T, as ComponentBox checks each one; only these are scheduled.
@@ -37,14 +50,14 @@ template <class T> struct ComponentBox final : ComponentValue {
     template <class... Args> static T construct(GameObject object, Args &&...args) {
         // Use list initialization for aggregates: older supported Apple Clang
         // versions do not implement C++20 parenthesized aggregate construction.
-        // Test the same syntax we use, including optional owner injection.
+        // Test the same syntax we use, including the optional owner.
         if constexpr (std::is_aggregate_v<T>) {
-            if constexpr (requires { T{object, std::forward<Args>(args)...}; })
-                return T{std::move(object), std::forward<Args>(args)...};
+            if constexpr (requires { T{ComponentOwner{object}, std::forward<Args>(args)...}; })
+                return T{ComponentOwner{std::move(object)}, std::forward<Args>(args)...};
             else
                 return T{std::forward<Args>(args)...};
-        } else if constexpr (std::constructible_from<T, GameObject, Args...>)
-            return T(std::move(object), std::forward<Args>(args)...);
+        } else if constexpr (std::constructible_from<T, ComponentOwner, Args...>)
+            return T(ComponentOwner{std::move(object)}, std::forward<Args>(args)...);
         else
             return T(std::forward<Args>(args)...);
     }
@@ -197,6 +210,8 @@ template <class T> class ComponentRef {
 
 template <class T, class... Args> ComponentRef<T> GameObject::add_component(Args &&...args) {
     static_assert(std::same_as<T, std::remove_cvref_t<T>>, "Component type must be an unqualified value type");
+    static_assert((!std::same_as<std::remove_cvref_t<Args>, ComponentOwner> && ...),
+                  "add_component passes the ComponentOwner itself");
     if constexpr (std::same_as<T, ObjectTransform>) {
         throw std::logic_error("Every GameObject already has a transform");
     } else if constexpr (std::same_as<T, MeshRenderer>) {

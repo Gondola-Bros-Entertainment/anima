@@ -39,11 +39,7 @@ GameObject camera(Scene &scene) {
     object.add_component<Camera>();
     return object;
 }
-auto view(Scene &scene, GameObject selected) {
-    auto result = scene.create("view").add_component<CameraView>();
-    result->camera = selected;
-    return result;
-}
+auto view(Scene &scene, GameObject selected) { return scene.create("view").add_component<CameraView>(selected); }
 // A lens that sees from 1 to 11 units ahead, with a 90 degree field or an orthographic height of 4.
 CameraSettings lens_settings(CameraProjection projection) {
     CameraSettings settings;
