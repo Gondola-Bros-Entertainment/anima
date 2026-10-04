@@ -316,6 +316,7 @@ class Scene {
     friend class Prefab;
     friend struct AttachmentInstance;
     friend struct AttachmentSet;
+    friend class AttachmentFollower;
     friend struct detail::ScenePersistence;
     friend class SceneSet;
     friend struct detail::SceneDriver;
@@ -532,6 +533,7 @@ class GameObject {
     friend class Prefab;
     friend class PrefabComposition;
     friend struct AttachmentSet;
+    friend class AttachmentFollower;
     friend struct detail::ScenePersistence;
     GameObject(std::weak_ptr<detail::SceneLifetime> lifetime, Scene::Id id) : lifetime_(std::move(lifetime)), id_(id) {}
     Scene &scene() const;
