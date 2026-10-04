@@ -5,6 +5,8 @@
 #include <anima/assets/render_visibility.hpp>
 #include <anima/scene.hpp>
 #include <map>
+
+#include "../assets/bc7.hpp"
 #endif
 #ifdef ANIMA_UI
 #include "ui_draw.hpp"
@@ -49,6 +51,12 @@ constexpr std::uint64_t no_timeout = UINT64_MAX;
 constexpr std::uint64_t vulkan_timeout(std::chrono::nanoseconds timeout) noexcept {
     return static_cast<std::uint64_t>(timeout.count());
 }
+// The maxLod of a sampler over an image without mipmaps. Vulkan has no sampler mode without mipmapping; the Vulkan
+// specification's VkSamplerCreateInfo note emulates OpenGL's GL_NEAREST and GL_LINEAR minification this way: with
+// VK_SAMPLER_MIPMAP_MODE_NEAREST, minLod 0 and maxLod 0.25, the level of detail can still be positive, so minFilter
+// applies, while mip selection always rounds down to the base level. A maximum of zero would always magnify, applying
+// magFilter instead.
+[[maybe_unused]] constexpr float unmipmapped_max_lod = .25F;
 // Display times that one call reads from VK_GOOGLE_display_timing before asking for more.
 constexpr std::uint32_t display_time_batch = 16;
 // Most frames that RendererOptions::frames_in_flight allows.
@@ -1540,12 +1548,7 @@ struct VulkanRenderer::Impl {
         info.addressModeU = wrap(source.u);
         info.addressModeV = wrap(source.v);
         info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        // Without mipmaps, keep glTF's minification filter while sampling level 0 only. The Vulkan specification's
-        // VkSamplerCreateInfo note emulates OpenGL's GL_NEAREST and GL_LINEAR minification this way: with
-        // VK_SAMPLER_MIPMAP_MODE_NEAREST, minLod 0 and maxLod 0.25, the level of detail can still be positive, so
-        // minFilter applies, while mip selection always rounds down to the base level. A maximum of zero would
-        // always magnify, applying magFilter instead.
-        constexpr float unmipmapped_max_lod = .25F;
+        // Without mipmaps, keep glTF's minification filter while sampling level 0 only.
         info.maxLod = source.mipmapped ? static_cast<float>(levels - 1) : unmipmapped_max_lod;
         // Anisotropic filtering samples a finer mip level several times along the footprint's long axis. Vulkan
         // leaves the scheme to the implementation, including how it combines with nearest filters, so only linear,
@@ -1695,8 +1698,7 @@ struct VulkanRenderer::Impl {
                 for (std::uint32_t level = 0; level < count; ++level) {
                     const auto width = std::max(pixels.width >> level, 1U),
                                height = std::max(pixels.height >> level, 1U);
-                    // Image::blocks: ceil(w / 4) * ceil(h / 4) blocks of 16 bytes per level.
-                    const auto bytes = (std::size_t{width} + 3) / 4 * ((std::size_t{height} + 3) / 4) * 16;
+                    const auto bytes = detail::bc7_level_bytes(width, height);
                     levels.push_back({width, height, std::span(pixels.blocks).subspan(offset, bytes)});
                     offset += bytes;
                 }
