@@ -137,7 +137,6 @@ class Rig {
 
 inline anima::Vec3 vec(const Direction &d) { return {float(d.x), float(d.y), float(d.z)}; }
 inline anima::Mat4 camera(float aspect, anima::Vec3 eye, double pitch, double azimuth) {
-    using anima::operator*;
     return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 1000) *
            anima::look_at(eye, eye + vec(atmosphere_reference::direction(pitch, azimuth)));
 }

@@ -218,8 +218,7 @@ inline int run(int argc, char **argv) {
         return renderer.resource_stats();
     };
     const auto view = [&](anima::Vec3 eye, anima::Vec3 target, float far = 300) {
-        renderer.set_view(anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, far),
-                                           anima::look_at(eye, target)));
+        renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, far) * anima::look_at(eye, target));
     };
     // Parity from the horizon round to above, at the distance where the tree is about 100 pixels tall, as tall as
     // the atlas's frames, in perspective and orthographic views and under a placement that turns the tree and scales
@@ -254,8 +253,7 @@ inline int run(int argc, char **argv) {
         compare_views("view-" + std::to_string(int(azimuth)) + "-" + std::to_string(int(elevation)), alone(tree),
                       alone(impostor));
     }
-    renderer.set_view(anima::operator*(anima::orthographic(1, 48, .1F, 300),
-                                       anima::look_at(center + anima::Vec3{-50, 12, 30}, center)));
+    renderer.set_view(anima::orthographic(1, 48, .1F, 300) * anima::look_at(center + anima::Vec3{-50, 12, 30}, center));
     compare_views("orthographic", alone(tree), alone(impostor));
     anima::Transform turned;
     turned.rotation = {0, std::sin(.32F), 0, std::cos(.32F)};
@@ -294,7 +292,7 @@ inline int run(int argc, char **argv) {
                                                               eye = along * 15 + anima::Vec3{0, 30, 0};
         const anima::Mat4 camera{right.x, right.y, right.z, 0, along.x, along.y, along.z, 0,
                                  back.x,  back.y,  back.z,  0, eye.x,   eye.y,   eye.z,   1};
-        renderer.set_view(anima::operator*(anima::orthographic(1, 20, 1, 60), anima::inverse(camera)));
+        renderer.set_view(anima::orthographic(1, 20, 1, 60) * anima::inverse(camera));
     }
     const auto with_ground = [&](std::shared_ptr<const anima::Mesh> mesh) {
         auto scene = alone(std::move(mesh));

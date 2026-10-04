@@ -10,7 +10,6 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
                                      std::optional<std::filesystem::path> manifest_override,
                                      TexelRetention texel_retention, const StagingOptions &options) {
     using namespace presentation_data;
-    using anima::operator*;
     // The JSON library's own failures, such as a value of the wrong type, become std::invalid_argument; the readers
     // this calls convert theirs.
     anima::detail::json_step([&] {

@@ -11,17 +11,15 @@ constexpr float linear_blend_cosine = 0.9995F;
 } // namespace
 Quat unit_quaternion(Quat q) {
     double sum = 0;
-    for (const auto v : q) {
-        if (!std::isfinite(v))
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!std::isfinite(q[i]))
             throw MathError(MathErrorCode::nonfinite_quaternion);
-        sum += double(v) * v;
+        sum += double(q[i]) * q[i];
     }
     if (sum < minimum_squared_norm)
         throw MathError(MathErrorCode::zero_quaternion);
     const auto scale = static_cast<float>(1 / std::sqrt(sum));
-    for (auto &v : q)
-        v *= scale;
-    return q;
+    return {q.x * scale, q.y * scale, q.z * scale, q.w * scale};
 }
 Quat slerp(Quat a, Quat b, float t) {
     a = unit_quaternion(a);
@@ -30,8 +28,7 @@ Quat slerp(Quat a, Quat b, float t) {
     for (unsigned i = 0; i < 4; ++i)
         cosine += a[i] * b[i];
     if (cosine < 0) {
-        for (auto &v : b)
-            v = -v;
+        b = {-b.x, -b.y, -b.z, -b.w};
         cosine = -cosine;
     }
     cosine = std::clamp(cosine, 0.F, 1.F);
@@ -48,7 +45,7 @@ Quat slerp(Quat a, Quat b, float t) {
 }
 Mat4 matrix(const Transform &t) {
     const auto q = unit_quaternion(t.rotation);
-    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const auto [x, y, z, w] = q;
     return {(1 - 2 * (y * y + z * z)) * t.scale.x,
             2 * (x * y + z * w) * t.scale.x,
             2 * (x * z - y * w) * t.scale.x,

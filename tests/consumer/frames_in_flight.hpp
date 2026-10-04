@@ -103,7 +103,6 @@ class Sequence {
         const anima::Vec3 target{0, .5F, -3};
         const float orbit = orbit_rate * moved;
         const anima::Vec3 eye{target.x + 4 * std::sin(orbit), 1.5F, target.z + 4 * std::cos(orbit)};
-        using anima::operator*;
         renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 100) *
                           anima::look_at(eye, target));
         anima::Environment environment;

@@ -30,7 +30,6 @@ using Point = std::array<double, 3>;
 
 constexpr anima::Vec3 eye{0, 2, 0};
 inline anima::Mat4 view(float aspect) {
-    using anima::operator*;
     return anima::perspective(std::numbers::pi_v<float> / 4, aspect, .1F, 1000) *
            anima::look_at(eye, eye + anima::Vec3{0, 0, -1});
 }

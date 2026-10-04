@@ -108,7 +108,7 @@ inline int run(int argc, char **argv) {
     std::vector<anima::Scene::Id> copies;
     const auto place_separately = [&](const anima::Mat4 &world, const std::vector<anima::Mat4> &copy_placements) {
         for (std::size_t i = 0; i < copy_placements.size(); ++i)
-            separate->set_transform(copies[i], anima::operator*(world, copy_placements[i]));
+            separate->set_transform(copies[i], world * copy_placements[i]);
     };
     for (std::size_t i = 0; i < placed_copies.size(); ++i)
         copies.push_back(separate->add(shape));
@@ -140,8 +140,7 @@ inline int run(int argc, char **argv) {
         return renderer.resource_stats();
     };
     const auto view = [&](anima::Vec3 eye, anima::Vec3 target) {
-        renderer.set_view(anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, 300),
-                                           anima::look_at(eye, target)));
+        renderer.set_view(anima::perspective(std::numbers::pi_v<float> / 4, 1, .1F, 300) * anima::look_at(eye, target));
     };
     // Draws the separate and the placed copies under the current view and requires the same frame.
     const auto compare = [&](const std::string &name) {

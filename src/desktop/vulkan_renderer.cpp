@@ -465,7 +465,7 @@ struct VulkanRenderer::Impl {
 // Custom materials draw the resource renderer's instances, so their declarations follow it.
 #include "custom_renderer.inc"
 #endif
-    std::array<float, 16> view_projection{};
+    Mat4 view_projection{};
     std::array<float, 4> view_origin{0, 0, -1, 0};
 
     VkSwapchainKHR swapchain{};
@@ -2739,7 +2739,7 @@ void VulkanRenderer::request_capture() {
 std::optional<CapturedImage> VulkanRenderer::take_capture() { return std::exchange(impl_->captured_image, {}); }
 bool VulkanRenderer::samples_bc7() const noexcept { return impl_->bc7_sampled; }
 float VulkanRenderer::max_anisotropy() const noexcept { return impl_->anisotropy; }
-void VulkanRenderer::set_view(const std::array<float, 16> &view_projection) {
+void VulkanRenderer::set_view(const Mat4 &view_projection) {
     impl_->running();
     for (float value : view_projection)
         if (!std::isfinite(value))

@@ -30,18 +30,21 @@ Pose sample_pose(const Asset &asset, const Animation *animation, double time) {
                 b == a || time <= channel.times[a]
                     ? 0.F
                     : static_cast<float>((time - channel.times[a]) / (channel.times[b] - channel.times[a]));
-            auto value = channel.values[a];
-            if (channel.interpolation == Interpolation::linear && b != a) {
-                if (channel.path == ChannelPath::rotation)
-                    value = slerp(value, channel.values[b], fraction);
-                else
-                    for (unsigned i = 0; i < 4; ++i)
-                        value[i] += (channel.values[b][i] - value[i]) * fraction;
-            }
+            const bool blended = channel.interpolation == Interpolation::linear && b != a;
             auto &local = pose.local[channel.node];
-            if (channel.path == ChannelPath::rotation)
-                local.rotation = unit_quaternion(value);
-            else if (channel.path == ChannelPath::translation)
+            if (channel.path == ChannelPath::rotation) {
+                const auto key = [&](std::size_t k) {
+                    const auto &v = channel.values[k];
+                    return Quat{v[0], v[1], v[2], v[3]};
+                };
+                local.rotation = unit_quaternion(blended ? slerp(key(a), key(b), fraction) : key(a));
+                continue;
+            }
+            auto value = channel.values[a];
+            if (blended)
+                for (unsigned i = 0; i < 4; ++i)
+                    value[i] += (channel.values[b][i] - value[i]) * fraction;
+            if (channel.path == ChannelPath::translation)
                 local.translation = {value[0], value[1], value[2]};
             else
                 local.scale = {value[0], value[1], value[2]};
