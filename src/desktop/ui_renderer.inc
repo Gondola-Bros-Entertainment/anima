@@ -23,6 +23,9 @@ struct UiBuffer {
         if (buffer)
             vmaDestroyBuffer(allocator, buffer, allocation);
     }
+    UiBuffer() = default;
+    UiBuffer(const UiBuffer &) = delete;
+    UiBuffer &operator=(const UiBuffer &) = delete;
 };
 struct UiImage {
     VkDevice device{};
@@ -40,6 +43,9 @@ struct UiImage {
         if (texture.image)
             vmaDestroyImage(allocator, texture.image, texture.allocation);
     }
+    UiImage() = default;
+    UiImage(const UiImage &) = delete;
+    UiImage &operator=(const UiImage &) = delete;
 };
 using UiTexturePtr = std::shared_ptr<const detail::UiTexture>;
 std::map<UiTexturePtr, std::unique_ptr<UiImage>, std::owner_less<UiTexturePtr>> ui_images;

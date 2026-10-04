@@ -78,6 +78,9 @@ struct OpaqueInputs {
                 vmaDestroyImage(allocator, texture->image, texture->allocation);
         }
     }
+    OpaqueInputs() = default;
+    OpaqueInputs(const OpaqueInputs &) = delete;
+    OpaqueInputs &operator=(const OpaqueInputs &) = delete;
 };
 VkDescriptorSetLayout custom_frame_layout{}, custom_material_layout{};
 VkPipelineLayout custom_pipeline_layout{};

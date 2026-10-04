@@ -21,6 +21,9 @@ struct WorldTarget {
         if (color.image)
             vmaDestroyImage(allocator, color.image, color.allocation);
     }
+    WorldTarget() = default;
+    WorldTarget(const WorldTarget &) = delete;
+    WorldTarget &operator=(const WorldTarget &) = delete;
 };
 std::unique_ptr<WorldTarget> world_target;
 // A world framebuffer that a replacement of the depth target retired, destroyed once no frame in flight uses it.
@@ -31,6 +34,9 @@ struct RetiredFramebuffer {
         if (framebuffer)
             vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
+    RetiredFramebuffer() = default;
+    RetiredFramebuffer(const RetiredFramebuffer &) = delete;
+    RetiredFramebuffer &operator=(const RetiredFramebuffer &) = delete;
 };
 VkDescriptorSetLayout scene_input_layout{};
 VkPipelineLayout post_pipeline_layout{};

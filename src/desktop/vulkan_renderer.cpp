@@ -296,6 +296,9 @@ struct VulkanRenderer::Impl {
             if (handle)
                 vkDestroySampler(device, handle, nullptr);
         }
+        GpuSampler() = default;
+        GpuSampler(const GpuSampler &) = delete;
+        GpuSampler &operator=(const GpuSampler &) = delete;
     };
     struct GpuTexture {
         VkImage image{};
@@ -317,6 +320,9 @@ struct VulkanRenderer::Impl {
             if (buffer)
                 vmaDestroyBuffer(allocator, buffer, allocation);
         }
+        ResourceBuffer() = default;
+        ResourceBuffer(const ResourceBuffer &) = delete;
+        ResourceBuffer &operator=(const ResourceBuffer &) = delete;
     };
     using SamplerKey = std::tuple<Filter, Filter, Filter, Wrap, Wrap, bool, std::uint32_t>;
     // Weak entries never extend GPU lifetime beyond the scenes using a sampler.
