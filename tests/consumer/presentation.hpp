@@ -513,10 +513,10 @@ inline void run() {
         runtime.validate_roles("signal", {{"probe", "port"}, {"beacon", "starboard"}});
         validate_attachment_action(runtime, library, attachments, "signal");
         const std::string handling = "port"; // This consumer's choice among the action's profiles.
-        const auto holding = runtime.sample(carried, {"signal", 1, .7, {}, {}}, handling);
+        const auto holding = runtime.sample(carried, {"signal", .7, {}, {}}, handling);
         check(holding.clock.phase == 1 && holding.pose.world[0] == carried.world[0],
               "Held action changed base motion or failed to sustain");
-        const auto released = runtime.sample(carried, {"signal", 1, .9, .8, {}}, handling);
+        const auto released = runtime.sample(carried, {"signal", .9, .8, {}}, handling);
         check(released.clock.phase == 2, "Action failed to release");
         ActionCueCursor cues;
         const auto &timeline = runtime.definition("signal").timeline;
