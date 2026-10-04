@@ -2,10 +2,13 @@
 #include "../detail/json.hpp"
 #include "../detail/scene_driver.hpp"
 #include <anima/input_scene.hpp>
+#include <array>
+#include <string_view>
+#include <utility>
 namespace anima::input {
 namespace {
 using Json = nlohmann::json;
-constexpr unsigned document_version = 3;
+constexpr unsigned document_version = 4;
 constexpr std::string_view hex_digits = "0123456789abcdef";
 unsigned integer(const Json &v, std::uint64_t maximum) {
     if (!v.is_number_integer() || v.get<std::int64_t>() < 0 || v.get<std::uint64_t>() > maximum)
@@ -46,15 +49,54 @@ DeviceIdentity decode_identity(const Json &value) {
         throw std::invalid_argument("Invalid input device identity");
     return identity;
 }
+// Document spellings of the enumerators, used both to write and to read them.
+constexpr std::array<std::pair<std::string_view, ControlKind>, 6> kind_names{{
+    {"key", ControlKind::key},
+    {"mouse_button", ControlKind::mouse_button},
+    {"gamepad_button", ControlKind::gamepad_button},
+    {"gamepad_axis", ControlKind::gamepad_axis},
+    {"mouse_motion", ControlKind::mouse_motion},
+    {"mouse_wheel", ControlKind::mouse_wheel},
+}};
+constexpr std::array<std::pair<std::string_view, ActionType>, 3> type_names{{
+    {"button", ActionType::button},
+    {"axis", ActionType::axis},
+    {"vector2", ActionType::vector2},
+}};
+constexpr std::array<std::pair<std::string_view, Channel>, 2> channel_names{{
+    {"x", Channel::x},
+    {"y", Channel::y},
+}};
+constexpr auto invalid_kind = "Invalid input control kind", invalid_type = "Invalid input action type",
+               invalid_channel = "Invalid input binding channel";
+// The spelling of @p value. validate(const Map &) admits only named enumerators, so the throw is a backstop.
+template <class Enum, std::size_t Count>
+std::string_view spelling(const std::array<std::pair<std::string_view, Enum>, Count> &names, Enum value,
+                          const char *reason) {
+    for (const auto &[name, named] : names)
+        if (named == value)
+            return name;
+    throw std::invalid_argument(reason);
+}
+// The enumerator spelled by @p text, which must be a string naming one.
+template <class Enum, std::size_t Count>
+Enum enumerator(const std::array<std::pair<std::string_view, Enum>, Count> &names, const Json &text,
+                const char *reason) {
+    if (const auto *spelled = text.get_ptr<const std::string *>())
+        for (const auto &[name, named] : names)
+            if (name == *spelled)
+                return named;
+    throw std::invalid_argument(reason);
+}
 Json encode_control(const Control &control) {
     if (control.device != any_device)
         throw std::invalid_argument("Input configuration cannot persist a device ID");
-    return {{"kind", static_cast<int>(control.kind)},
+    return {{"kind", spelling(kind_names, control.kind, invalid_kind)},
             {"code", control.code},
             {"identity", encode_identity(control.identity)}};
 }
 Control decode_control(const Json &value) {
-    return {static_cast<ControlKind>(integer(value.at("kind"), static_cast<unsigned>(limits::last_kind))),
+    return {enumerator(kind_names, value.at("kind"), invalid_kind),
             static_cast<std::uint16_t>(integer(value.at("code"), limits::key_code)), any_device,
             decode_identity(value.at("identity"))};
 }
@@ -69,14 +111,16 @@ std::string serialize_map(const Map &map) {
             for (const auto &modifier : b.modifiers)
                 modifiers.push_back(encode_control(modifier));
             auto binding = encode_control(b.control);
-            binding["channel"] = static_cast<int>(b.channel);
+            binding["channel"] = spelling(channel_names, b.channel, invalid_channel);
             binding["scale"] = b.scale;
             binding["deadzone"] = b.deadzone;
             binding["modifiers"] = modifiers;
             bindings.push_back(binding);
         }
-        actions.push_back(
-            {{"name", a.name}, {"type", static_cast<int>(a.type)}, {"threshold", a.threshold}, {"bindings", bindings}});
+        actions.push_back({{"name", a.name},
+                           {"type", spelling(type_names, a.type, invalid_type)},
+                           {"threshold", a.threshold},
+                           {"bindings", bindings}});
     }
     auto document = detail::json_step([&] { return Json{{"version", document_version}, {"actions", actions}}.dump(); });
     if (document.size() > limits::document_bytes)
@@ -97,7 +141,7 @@ Map decode_map(std::string_view data) {
             a.at("bindings").size() > limits::bindings_per_action)
             throw std::invalid_argument("Invalid input action fields");
         Action action{a.at("name").get<std::string>(),
-                      static_cast<ActionType>(integer(a.at("type"), static_cast<unsigned>(ActionType::vector2))),
+                      enumerator(type_names, a.at("type"), invalid_type),
                       {},
                       number(a.at("threshold"))};
         for (const auto &b : a.at("bindings")) {
@@ -106,7 +150,7 @@ Map decode_map(std::string_view data) {
             if (!modifiers.is_array() || modifiers.size() > limits::modifiers_per_binding)
                 throw std::invalid_argument("Invalid input modifier count");
             Binding binding{decode_control(b),
-                            static_cast<Channel>(integer(b.at("channel"), static_cast<unsigned>(Channel::y))),
+                            enumerator(channel_names, b.at("channel"), invalid_channel),
                             number(b.at("scale")),
                             number(b.at("deadzone")),
                             {}};
@@ -127,7 +171,7 @@ Map deserialize_map(std::string_view data) {
 }
 void add_component_codec(ComponentCodecs &codecs) {
     codecs.add<ActionInput>(
-        "anima.action-input.v3",
+        "anima.action-input.v4",
         [](const ActionInput &input, const ObjectReferences &) {
             return serialize_map(Map(input.context().actions().begin(), input.context().actions().end()));
         },
