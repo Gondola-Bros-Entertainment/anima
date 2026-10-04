@@ -23,17 +23,12 @@
 namespace anima {
 namespace detail {
 namespace {
-constexpr unsigned minimum_sample_rate = 8000, maximum_sample_rate = 192000;
 constexpr unsigned maximum_voice_count = 4096, maximum_bus_depth = 16;
 constexpr double maximum_fade_seconds = 24 * 60 * 60;
 // Engine output is interleaved stereo.
 constexpr ma_uint32 output_channels = 2;
 constexpr std::size_t not_playing = std::numeric_limits<std::size_t>::max();
 
-void validate_sample_rate(unsigned value) {
-    if (value < minimum_sample_rate || value > maximum_sample_rate)
-        throw std::invalid_argument("Audio sample rate must be between 8000 and 192000 Hz");
-}
 void validate_voice_limit(unsigned value) {
     if (!value || value > maximum_voice_count)
         throw std::invalid_argument("Audio voice limit must be in [1, 4096]");
@@ -541,7 +536,7 @@ detail::VoiceState &Sound::state() const {
     return *state_;
 }
 Audio::Audio(unsigned rate, unsigned maximum_voices) {
-    detail::validate_sample_rate(rate);
+    detail::audio_sample_rate(rate);
     detail::validate_voice_limit(maximum_voices);
     auto engine = std::make_shared<detail::AudioState>();
     engine->open(rate, maximum_voices);

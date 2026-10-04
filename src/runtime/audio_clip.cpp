@@ -1,3 +1,4 @@
+#include "../detail/audio.hpp"
 #include "../detail/audio_backend.hpp"
 #include <algorithm>
 #include <anima/audio.hpp>
@@ -9,15 +10,10 @@ namespace anima {
 namespace {
 constexpr std::size_t maximum_samples = 32 * 1024 * 1024;
 constexpr std::size_t maximum_encoded_bytes = 128 * 1024 * 1024;
-constexpr unsigned minimum_sample_rate = 8000, maximum_sample_rate = 192000;
 // Frames per decoder read while a clip is decoded or counted.
 constexpr ma_uint64 decode_chunk_frames = 4096;
 constexpr auto unsupported = "Unsupported or malformed audio data";
 
-void validate_sample_rate(unsigned value) {
-    if (value < minimum_sample_rate || value > maximum_sample_rate)
-        throw std::invalid_argument("Audio sample rate must be between 8000 and 192000 Hz");
-}
 // The decoder for @p bytes, chosen by the container's leading bytes rather than by trial decoding: `RIFF`, `RIFX`,
 // `RF64` and Wave64's `riff` are WAV, `fLaC` is FLAC and `OggS` is Ogg Vorbis. MP3 has no fixed signature (an ID3
 // tag or a frame header comes first), so it takes everything else.
@@ -49,7 +45,7 @@ struct Decoder {
 // Reads @p decoder to its end, passing each chunk of interleaved samples to @p consume. Throws "Malformed audio
 // data" when the decoder fails before the end.
 template <class Consume> void read_all(ma_decoder &decoder, unsigned channels, Consume consume) {
-    std::array<float, decode_chunk_frames * 2> chunk{};
+    std::array<float, decode_chunk_frames * detail::maximum_clip_channels> chunk{};
     for (;;) {
         ma_uint64 read = 0;
         const auto result = ma_decoder_read_pcm_frames(&decoder, chunk.data(), decode_chunk_frames, &read);
@@ -63,8 +59,8 @@ template <class Consume> void read_all(ma_decoder &decoder, unsigned channels, C
 } // namespace
 
 std::shared_ptr<const AudioClip> AudioClip::pcm(std::vector<float> samples, unsigned channels, unsigned rate) {
-    validate_sample_rate(rate);
-    if ((channels != 1 && channels != 2) || samples.empty() || samples.size() > maximum_samples ||
+    detail::audio_sample_rate(rate);
+    if (!channels || channels > detail::maximum_clip_channels || samples.empty() || samples.size() > maximum_samples ||
         samples.size() % channels)
         throw std::invalid_argument("Invalid PCM channels or sample count");
     for (auto value : samples)
@@ -88,9 +84,9 @@ std::shared_ptr<const AudioClip> AudioClip::decode(std::span<const std::byte> en
     ma_uint32 channels{}, rate{};
     if (ma_decoder_get_data_format(&input.decoder, &format, &channels, &rate, nullptr, 0) != MA_SUCCESS)
         throw std::invalid_argument(unsupported);
-    if (channels != 1 && channels != 2)
+    if (!channels || channels > detail::maximum_clip_channels)
         throw std::invalid_argument("Audio clips must have 1 or 2 channels");
-    validate_sample_rate(rate);
+    detail::audio_sample_rate(rate);
     ma_uint64 stated = 0;
     if (ma_decoder_get_length_in_pcm_frames(&input.decoder, &stated) != MA_SUCCESS)
         stated = 0;
