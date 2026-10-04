@@ -2366,7 +2366,6 @@ struct VulkanRenderer::Impl {
         vkCmdEndRenderPass(command);
         timestamp(command, TimingQuery::after_scene);
 #ifdef ANIMA_HAS_ASSETS
-        finish_world_writes();
         check(vkEndCommandBuffer(command), "End command buffer");
         // The rest of the frame draws to the swapchain image, in the batch that waits for it. A new command buffer
         // inherits no state, so record_display() sets its own viewport and scissor, which UI then draws with.
