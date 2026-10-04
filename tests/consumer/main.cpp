@@ -47,6 +47,7 @@
 #include "compressed_textures.hpp"
 #include "culling.hpp"
 #include "custom_materials.hpp"
+#include "draw_order.hpp"
 #include "environment.hpp"
 #include "fog.hpp"
 #include "foliage.hpp"
@@ -355,6 +356,8 @@ int main(int argc, char **argv) {
             return material_test::run_surface_maps(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--sidedness")
             return material_test::run_sidedness(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--draw-order")
+            return draw_order_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--blending")
             return blending_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--custom-materials")
