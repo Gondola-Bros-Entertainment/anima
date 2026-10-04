@@ -1,4 +1,4 @@
-#include "rotation_matrix.hpp"
+#include "../detail/rotation_matrix.hpp"
 #include <anima/assets/evaluation.hpp>
 #include <numbers>
 #include <numeric>

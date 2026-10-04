@@ -15,7 +15,9 @@ Pose planar_pose(GameObject object, Motion motion) {
     for (float value : {position.x, position.y})
         if (!std::isfinite(value) || std::abs(value) > detail::maximum_position)
             throw std::invalid_argument("2D physics position outside supported range");
-    const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < detail::planar_tolerance; };
+    const auto near = [](float a, float b) {
+        return std::isfinite(a) && std::abs(a - b) < detail::rigid_transform_tolerance;
+    };
     const auto x = axis_x(m), y = axis_y(m), z = axis_z(m);
     if (!near(x.x * x.x + x.y * x.y, 1) || !near(y.x * y.x + y.y * y.y, 1) || !near(x.x * y.x + x.y * y.y, 0) ||
         !near(x.x * y.y - x.y * y.x, 1) || !near(x.z, 0) || !near(y.z, 0) || !near(z.x, 0) || !near(z.y, 0) ||
@@ -150,7 +152,7 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
         [&world, lifetime](GameObject object, std::string_view data, const ObjectReferences &) {
             if (lifetime.expired())
                 throw std::out_of_range("2D rigid body codec world expired");
-            const auto j = anima::detail::parse_json(data, 8192);
+            const auto j = anima::detail::parse_json(data, detail::maximum_component_bytes);
             anima::detail::json_fields(j, {"shape", "half_extent", "radius", "half_height", "motion", "velocity",
                                            "angular_velocity", "mass", "linear_damping", "angular_damping", "friction",
                                            "restitution", "layer", "sensor", "continuous", "fixed_rotation"});

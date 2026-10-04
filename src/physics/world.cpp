@@ -37,6 +37,18 @@ constexpr float maximum_collider_dimension = 1'000'000.F;
 constexpr double minimum_hull_span = .001;
 constexpr float hull_construction_tolerance = .0001F;
 constexpr std::uint32_t maximum_world_bodies = 65'536;
+// Jolt processes at most this many broad-phase body pairs and contact constraints per body of capacity in a step,
+// and drops the rest, so bodies past them fall through each other. Pairs include nearby bodies that do not touch.
+constexpr std::uint32_t body_pairs_per_body = 4;
+constexpr std::uint32_t contact_constraints_per_body = 4;
+static_assert(maximum_world_bodies * body_pairs_per_body <= JPH::PhysicsSystem::cMaxBodyPairsLimit);
+static_assert(maximum_world_bodies * contact_constraints_per_body <= JPH::PhysicsSystem::cMaxContactConstraintsLimit);
+// Object layers below collision_layer_count hold stationary bodies and the next collision_layer_count hold moving
+// ones, so the broad phase keeps one tree for each and never tests stationary bodies against each other.
+constexpr JPH::uint broad_phase_layer_count = 2;
+// Boxes and hulls keep the sharp edges and corners of their declared geometry, which Jolt's default convex radius
+// (0.05 m) would round off.
+constexpr float convex_radius = 0;
 // A dynamic body's velocity caps, equal to Jolt's defaults. Jolt's clamping setters, impulses and steps shorten a
 // longer velocity to its cap, keeping its direction.
 constexpr float maximum_dynamic_speed = 500;
@@ -167,7 +179,7 @@ JPH::RefConst<JPH::Shape> shape(const Collider &c, bool query = false, bool chil
         require(c.vertices.empty() && c.indices.empty(), "Primitive collider contains mesh data");
     switch (c.shape) {
     case Shape::box:
-        result = JPH::BoxShapeSettings(j(c.half_extent), 0).Create();
+        result = JPH::BoxShapeSettings(j(c.half_extent), convex_radius).Create();
         break;
     case Shape::sphere:
     case Shape::capsule:
@@ -203,7 +215,7 @@ JPH::RefConst<JPH::Shape> shape(const Collider &c, bool query = false, bool chil
         JPH::Array<JPH::Vec3> points;
         for (const auto point : c.vertices)
             points.push_back(j(point));
-        JPH::ConvexHullShapeSettings settings(points, 0);
+        JPH::ConvexHullShapeSettings settings(points, convex_radius);
         settings.mHullTolerance = hull_construction_tolerance;
         result = settings.Create();
         break;
@@ -239,7 +251,7 @@ JPH::RefConst<JPH::Shape> shape(const Collider &c, bool query = false, bool chil
 struct Layers final : JPH::BroadPhaseLayerInterface, JPH::ObjectVsBroadPhaseLayerFilter, JPH::ObjectLayerPairFilter {
     std::array<std::uint16_t, detail::collision_layer_count> masks;
     Layers() { masks.fill(detail::all_collision_layers); }
-    JPH::uint GetNumBroadPhaseLayers() const override { return 2; }
+    JPH::uint GetNumBroadPhaseLayers() const override { return broad_phase_layer_count; }
     JPH::BroadPhaseLayer GetBroadPhaseLayer(JPH::ObjectLayer layer) const override {
         return JPH::BroadPhaseLayer(static_cast<JPH::BroadPhaseLayer::Type>(layer / detail::collision_layer_count));
     }
@@ -303,7 +315,8 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
         vector(settings.gravity);
         require(settings.max_bodies > 0 && settings.max_bodies <= maximum_world_bodies,
                 "Invalid physics body capacity");
-        system.Init(settings.max_bodies, 0, settings.max_bodies * 4, settings.max_bodies * 4, layers, layers, layers);
+        system.Init(settings.max_bodies, 0, settings.max_bodies * body_pairs_per_body,
+                    settings.max_bodies * contact_constraints_per_body, layers, layers, layers);
         system.SetGravity(j(settings.gravity));
         system.SetContactListener(this);
     }
@@ -479,7 +492,7 @@ void Body::set_angular_velocity(Vec3 velocity) {
     vector(velocity);
     auto w = lock();
     const auto &e = w->entries.at(id_);
-    require(e.motion != Motion::stationary, "Static bodies cannot have angular velocity");
+    require(e.motion != Motion::stationary, "Stationary bodies cannot have angular velocity");
     w->system.GetBodyInterface().SetAngularVelocity(e.id, j(velocity));
 }
 void Body::teleport(Pose pose) {
@@ -493,7 +506,7 @@ void Body::set_velocity(Vec3 velocity) {
     vector(velocity);
     auto w = lock();
     const auto &e = w->entries.at(id_);
-    require(e.motion != Motion::stationary, "Static bodies cannot have velocity");
+    require(e.motion != Motion::stationary, "Stationary bodies cannot have velocity");
     w->system.GetBodyInterface().SetLinearVelocity(e.id, j(velocity));
 }
 void Body::add_impulse(Vec3 impulse) {
@@ -601,7 +614,7 @@ Body World::create(const BodySettings &s) {
             "Invalid body damping");
     require(s.motion != Motion::stationary ||
                 (dot(s.velocity, s.velocity) == 0 && dot(s.angular_velocity, s.angular_velocity) == 0),
-            "Static body has velocity");
+            "Stationary body has velocity");
     if (s.center_of_mass) {
         vector(*s.center_of_mass);
         require(s.collider.shape != Shape::mesh, "Triangle meshes have no authored center of mass override");

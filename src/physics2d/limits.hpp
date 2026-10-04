@@ -1,5 +1,7 @@
 #pragma once
 #include "../detail/physics_limits.hpp"
+#include <cstddef>
+#include <cstdint>
 
 namespace anima::physics2d::detail {
 using anima::detail::all_collision_layers;
@@ -11,12 +13,13 @@ using anima::detail::maximum_vector_component;
 using anima::detail::minimum_body_mass;
 using anima::detail::minimum_squared_displacement;
 using anima::detail::minimum_step_seconds;
-// A planar transform's axes are unit length and orthogonal, and its Z axis unchanged, within this.
-inline constexpr float planar_tolerance = 1e-4F;
+using anima::detail::rigid_transform_tolerance;
 // A fixed-rotation kinematic body may change its angle by at most this, in radians.
 inline constexpr float fixed_rotation_tolerance = 1e-6F;
 inline constexpr std::uint32_t maximum_world_bodies = 1'000'000;
 inline constexpr unsigned maximum_substeps = 16;
+// The largest serialized RigidBody component a scene document may hold.
+inline constexpr std::size_t maximum_component_bytes = 8 * 1024;
 
 // Box2D asserts that every bounding box stays strictly within B2_HUGE (100,000 m of the origin) and pads
 // its tree boxes by B2_AABB_MARGIN (0.1 m). A collider reaches at most twice the largest dimension from its

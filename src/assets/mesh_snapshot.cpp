@@ -1,6 +1,6 @@
+#include "../detail/rotation_matrix.hpp"
 #include "../detail/staging.hpp"
 #include "mesh_limits.hpp"
-#include "rotation_matrix.hpp"
 #include "winding.hpp"
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/scene_validation.hpp>

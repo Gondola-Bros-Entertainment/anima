@@ -286,7 +286,7 @@ TEST_CASE("Sensors honor layers, report each transition once and kinematic bodie
 
 TEST_CASE("A continuous capsule stops at a thin wall and invalid settings are rejected") {
     World world({{0, 0}, 16});
-    [[maybe_unused]] const auto wall = world.create(box({}, {.05F, 5}));
+    auto wall = world.create(box({}, {.05F, 5}));
     auto s = box({-5, 0}, {.2F, .2F}, Motion::dynamic);
     s.collider.shape = Shape::capsule;
     s.collider.radius = .2F;
@@ -304,6 +304,7 @@ TEST_CASE("A continuous capsule stops at a thin wall and invalid settings are re
     world.step(1. / 60);
     CHECK_MESSAGE(fast.pose().angle > 0, "Angular state lost after disable");
     CHECK(fast.angular_velocity() > 0);
+    CHECK_THROWS_WITH_AS(wall.set_velocity({1, 0}), "Stationary 2D bodies cannot have velocity", std::invalid_argument);
     for (float bad : {-1.F, 0.F, .001F, std::numeric_limits<float>::infinity()}) {
         CAPTURE(bad);
         s.collider.radius = bad;
@@ -317,7 +318,7 @@ TEST_CASE("A continuous capsule stops at a thin wall and invalid settings are re
     CHECK_THROWS_WITH_AS(world.create(s), motion_layer, std::invalid_argument);
     s = {};
     s.velocity.x = 1;
-    CHECK_THROWS_WITH_AS(world.create(s), "Static 2D body has velocity", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(world.create(s), "Stationary 2D body has velocity", std::invalid_argument);
     s = {};
     s.fixed_rotation = true;
     s.motion = Motion::dynamic;
