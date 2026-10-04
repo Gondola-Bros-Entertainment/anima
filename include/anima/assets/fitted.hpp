@@ -99,15 +99,23 @@ class FittedLibrary {
     const auto &definitions() const { return definitions_; }
     /// Item @p id. Throws `std::out_of_range` unless it fits this body.
     const FittedDefinition &definition(std::string_view id) const;
-    /// Loads item @p id.
+    /// Loads item @p id, importing its model with load_asset and @p options.
     ///
     /// Loads of one model file share a FittedAsset while it is alive, and its Mesh while that is
     /// alive: with only the Mesh alive, a load imports the file again and keeps the Mesh when the
     /// Mesh accepts the new model as an animation source (see Mesh::accepts_animation_source) and
     /// has as many textures, and otherwise compiles a new one. Concurrent loads of one file share
-    /// one import, and its failure, which caches nothing, so a later load imports again. Throws
-    /// `std::out_of_range` unless the item fits this body, and as load_asset and FittedAsset do.
-    std::shared_ptr<const FittedAsset> load(std::string_view id) const;
+    /// one import, and its failure, which caches nothing, so a later load imports again.
+    ///
+    /// @p options cancel and count the import only, not the binding and compile after it. A load
+    /// that returns a live FittedAsset, or waits for another load's import, adds no steps to its
+    /// StagingProgress, and its StopToken does not end the wait. When the import it waits for
+    /// throws StagingCancelled, the load throws it too if its own token reports a stop, and
+    /// otherwise looks again, so that it imports the file itself unless another load has begun.
+    ///
+    /// Throws `std::out_of_range` unless the item fits this body, StagingCancelled when its import
+    /// is cancelled, and as load_asset and FittedAsset do.
+    std::shared_ptr<const FittedAsset> load(std::string_view id, const StagingOptions &options = {}) const;
     /// Every Mesh that loads compiled and that is still alive, once each, in no particular order;
     /// none for a library without a body.
     std::vector<std::shared_ptr<const Mesh>> resident_meshes() const;

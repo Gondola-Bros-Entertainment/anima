@@ -29,11 +29,18 @@ struct ActorPresentation {
     /// replaces it; and `sockets`, mapping each nonempty name to `node`, which must name exactly one
     /// model node, and `frame`. A frame is a rigid, right-handed model-space bind frame of 16
     /// column-major numbers, or null for the node's bind position with the model's axes. The manifest's model is
-    /// validated with validate_manifest and its motion loaded with MotionRuntime::load.
+    /// imported with load_asset and @p options, validated with validate_manifest and compiled into #render with
+    /// @p texel_retention; its motion is loaded with MotionRuntime::load and @p options. With
+    /// TexelRetention::until_upload, InteractionActor::asset is a copy of the model whose textures are #render's,
+    /// which have no texels. @p options cancel and count the two imports, which add to one StagingProgress, and not
+    /// the work between and after them.
     ///
     /// Throws `std::invalid_argument` also for a missing profile or one larger than 4 MiB, and as
-    /// read_manifest, load_asset, validate_manifest, MotionRuntime::load and Mesh::compile do.
+    /// read_manifest, load_asset, validate_manifest, Mesh::compile and MotionRuntime::load do, including
+    /// StagingCancelled.
     explicit ActorPresentation(const std::filesystem::path &profile,
-                               std::optional<std::filesystem::path> manifest_override = {});
+                               std::optional<std::filesystem::path> manifest_override = {},
+                               TexelRetention texel_retention = TexelRetention::keep,
+                               const StagingOptions &options = {});
 };
 } // namespace anima

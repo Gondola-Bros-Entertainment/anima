@@ -136,12 +136,12 @@ FittedLibrary::FittedLibrary(std::shared_ptr<const anima::Asset> body, const ani
 const FittedDefinition &FittedLibrary::definition(std::string_view id) const {
     return presentation_data::lookup(definitions_, id);
 }
-std::shared_ptr<const FittedAsset> FittedLibrary::load(std::string_view id) const {
+std::shared_ptr<const FittedAsset> FittedLibrary::load(std::string_view id, const StagingOptions &options) const {
     const auto &definition = presentation_data::lookup(definitions_, id);
     const auto path = std::filesystem::weakly_canonical(state_->directory / definition.model);
-    return state_->models.load(path, [&](std::shared_ptr<const anima::Mesh> resident) {
+    return state_->models.load(path, options.stop, [&](std::shared_ptr<const anima::Mesh> resident) {
         return std::make_shared<const FittedAsset>(
-            FittedAsset(*state_->body, anima::load_asset(path), state_->texel_retention, std::move(resident)));
+            FittedAsset(*state_->body, anima::load_asset(path, options), state_->texel_retention, std::move(resident)));
     });
 }
 std::vector<std::shared_ptr<const anima::Mesh>> FittedLibrary::resident_meshes() const {

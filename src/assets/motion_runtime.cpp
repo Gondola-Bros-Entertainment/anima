@@ -8,10 +8,11 @@ constexpr int no_joint = anima::no_index;
 } // namespace
 struct MotionRuntime::Impl {
   public:
-    Impl(std::shared_ptr<const anima::Asset> asset, const anima::Manifest &manifest, const nlohmann::json &contract)
+    Impl(std::shared_ptr<const anima::Asset> asset, const anima::Manifest &manifest, const nlohmann::json &contract,
+         const StagingOptions &options)
         : asset_(std::move(asset)), rig_(*asset_, bind(*asset_, manifest, contract)),
           nearest_joint_(nearest_joints(*asset_, rig_)) {
-        load_resource(manifest, contract);
+        load_resource(manifest, contract, options);
         const auto &definition = contract.at("evaluation");
         for (const auto &[name, roots] : detail::json_object(definition, "masks").items()) {
             if (name.empty() || !roots.is_array() || roots.empty())
@@ -240,11 +241,12 @@ struct MotionRuntime::Impl {
         }
         return result;
     }
-    void load_resource(const anima::Manifest &manifest, const nlohmann::json &document) {
+    void load_resource(const anima::Manifest &manifest, const nlohmann::json &document, const StagingOptions &options) {
         const auto path = presentation_data::relative_document_path(
             document.at("resource").get<std::string>(), ".glb",
             "Motion resource must be a relative GLB inside its contract directory");
-        resource_ = anima::load_motion_asset((manifest.directory / manifest.motion_contract).parent_path() / path);
+        resource_ =
+            anima::load_motion_asset((manifest.directory / manifest.motion_contract).parent_path() / path, options);
         rest_ = anima::sample_pose(*asset_);
         const auto source_rest = anima::sample_pose(*resource_);
         for (std::size_t i = 0; i < resource_->nodes.size(); ++i) {
@@ -332,17 +334,21 @@ struct MotionRuntime::Impl {
     std::map<std::string, std::vector<float>, std::less<>> masks_;
     std::map<std::string, anima::TwoBoneContact, std::less<>> chains_;
 };
-MotionRuntime::MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract) {
+MotionRuntime::MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract,
+                             const StagingOptions &options) {
     if (!asset)
         throw std::invalid_argument("Motion runtime requires an asset");
-    impl_ = presentation_data::decode_step(
-        [&] { return std::make_shared<Impl>(std::move(asset), manifest, presentation_data::parse(contract)); });
+    impl_ = presentation_data::decode_step([&] {
+        return std::make_shared<Impl>(std::move(asset), manifest, presentation_data::parse(contract), options);
+    });
 }
-std::shared_ptr<const MotionRuntime> MotionRuntime::load(std::shared_ptr<const Asset> asset, const Manifest &manifest) {
+std::shared_ptr<const MotionRuntime> MotionRuntime::load(std::shared_ptr<const Asset> asset, const Manifest &manifest,
+                                                         const StagingOptions &options) {
     if (manifest.motion_contract.empty())
         throw std::invalid_argument("Actor requires an independent motion contract");
     return std::make_shared<MotionRuntime>(
-        std::move(asset), manifest, presentation_data::read(manifest.directory / manifest.motion_contract).dump());
+        std::move(asset), manifest, presentation_data::read(manifest.directory / manifest.motion_contract).dump(),
+        options);
 }
 const EvaluationRig &MotionRuntime::rig() const { return impl_->rig(); }
 bool MotionRuntime::has_mask(std::string_view name) const { return impl_->has_mask(name); }

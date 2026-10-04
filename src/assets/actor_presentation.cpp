@@ -1,8 +1,10 @@
 #include "presentation_data.hpp"
+#include "texel_hold.hpp"
 #include <anima/assets/actor_presentation.hpp>
 namespace anima {
 ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
-                                     std::optional<std::filesystem::path> manifest_override) {
+                                     std::optional<std::filesystem::path> manifest_override,
+                                     TexelRetention texel_retention, const StagingOptions &options) {
     using namespace presentation_data;
     using anima::operator*;
     const auto document = read(profile);
@@ -14,10 +16,13 @@ ActorPresentation::ActorPresentation(const std::filesystem::path &profile,
     const auto relative = relative_document_path(text(document.at("manifest")), {},
                                                  "Actor manifest must be inside its profile directory");
     manifest = anima::read_manifest(manifest_override.value_or(profile.parent_path() / relative));
-    actor.asset = anima::load_asset(manifest.directory / manifest.model);
+    actor.asset = anima::load_asset(manifest.directory / manifest.model, options);
     anima::validate_manifest(manifest, *actor.asset);
-    actor.motion = MotionRuntime::load(actor.asset, manifest);
-    render = anima::Mesh::compile(*actor.asset);
+    render = anima::Mesh::compile(*actor.asset, texel_retention);
+    // The motion runtime and the interaction actor hold the model, so they get the copy that keeps none of the texels
+    // that the Mesh lets go.
+    actor.asset = anima::detail::without_texels(std::move(actor.asset), *render);
+    actor.motion = MotionRuntime::load(actor.asset, manifest, options);
     const auto rest = anima::sample_pose(*actor.asset);
     for (const auto &[name, socket] : document.at("sockets").items()) {
         anima::detail::json_fields(socket, {"node", "frame"});

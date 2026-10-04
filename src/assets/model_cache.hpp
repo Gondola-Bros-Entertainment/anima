@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <anima/assets/asset.hpp>
+#include <anima/assets/staging.hpp>
 #include <anima/mesh.hpp>
 #include <filesystem>
 #include <future>
@@ -18,18 +19,29 @@ template <class T> class ModelCache {
     // The record of @p path: the one alive, else the one another call is loading, else @p load(resident), which runs
     // on this thread without the lock and returns a record that is not null. resident is the newest Mesh of an
     // earlier record of @p path that something else keeps alive, or null. Calls for one path that find a load in
-    // progress wait for it and rethrow its failure; a failed load caches nothing, so the next call loads again. A load
-    // holds up no call for another path.
-    template <class Load> std::shared_ptr<const T> load(const std::filesystem::path &path, Load &&load) {
+    // progress wait for it and rethrow its failure, except a StagingCancelled while @p stop, the waiting call's own
+    // token, reports no stop: another caller cancelled that load, so the waiting call looks again and loads the file
+    // itself when no other call has started. A failed load caches nothing, so the next call loads again. A load holds
+    // up no call for another path.
+    template <class Load>
+    std::shared_ptr<const T> load(const std::filesystem::path &path, const StopToken &stop, Load &&load) {
         std::unique_lock lock(mutex_);
         // Entries are never erased, so the reference outlives the unlocked load.
         auto &entry = entries_[path];
-        if (auto value = entry.value.lock())
-            return value;
-        if (entry.loading.valid()) {
+        for (;;) {
+            if (auto value = entry.value.lock())
+                return value;
+            if (!entry.loading.valid())
+                break;
             const auto loading = entry.loading;
             lock.unlock();
-            return loading.get();
+            try {
+                return loading.get();
+            } catch (const StagingCancelled &) {
+                if (stop.stop_requested())
+                    throw;
+            }
+            lock.lock();
         }
         std::shared_ptr<const Mesh> resident;
         for (auto mesh = entry.meshes.rbegin(); mesh != entry.meshes.rend() && !resident; ++mesh)

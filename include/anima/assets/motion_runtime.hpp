@@ -116,11 +116,16 @@ class MotionRuntime {
     /// must list exactly its mask's joints and `context_joints` their parents outside the mask,
     /// and the clip may animate only those joints. Every motion clip must be exactly one base clip
     /// or layer clip, with at least one base clip.
-    MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract);
+    ///
+    /// The motion GLB is imported with load_motion_asset and @p options, which cancel and count that
+    /// import only; a cancelled import throws StagingCancelled.
+    MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract,
+                  const StagingOptions &options = {});
     /// Reads the file that Manifest::motion_contract names beside the manifest and constructs a
-    /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
-    /// file is missing or larger than 4 MiB.
-    static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset, const Manifest &manifest);
+    /// runtime from it with @p options. Throws `std::invalid_argument` when the manifest names no
+    /// contract or the file is missing or larger than 4 MiB, and as the constructor does.
+    static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset, const Manifest &manifest,
+                                                     const StagingOptions &options = {});
     /// Evaluation rig built from the contract's `parents`; joint names are model node names.
     const EvaluationRig &rig() const;
     /// Whether the contract declares mask @p name.
