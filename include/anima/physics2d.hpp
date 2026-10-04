@@ -57,8 +57,20 @@ enum class Shape {
 };
 /// Collider geometry, centered on the body or query origin.
 ///
-/// The dimension fields must each be in [0.01, 10,000] even when #shape does not use them.
+/// The dimension fields must each be in [0.01, 10,000] even when #shape does not use them. The
+/// static factories set #shape and its fields and leave every other field at its default, which
+/// meets this rule.
 struct Collider {
+    /// Box with @p half_extent, its half size on each axis.
+    ///
+    /// Like the other factories, it validates nothing; World::create, World::sweep and
+    /// World::overlap reject invalid dimensions as they would any other Collider.
+    [[nodiscard]] static Collider box(Vec2 half_extent);
+    /// Circle of @p radius.
+    [[nodiscard]] static Collider circle(float radius);
+    /// Capsule along local Y of @p radius, whose straight part is 2 @p half_height long; see
+    /// #half_height.
+    [[nodiscard]] static Collider capsule(float radius, float half_height);
     Shape shape = Shape::box;
     /// Box half size on each axis.
     Vec2 half_extent{.5F, .5F};

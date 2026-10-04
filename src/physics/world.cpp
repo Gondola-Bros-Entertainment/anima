@@ -388,6 +388,43 @@ struct WorldState final : std::enable_shared_from_this<WorldState>, JPH::Contact
     }
 };
 } // namespace detail
+Collider Collider::box(Vec3 half_extent) {
+    Collider collider;
+    collider.half_extent = half_extent;
+    return collider;
+}
+Collider Collider::sphere(float radius) {
+    Collider collider;
+    collider.shape = Shape::sphere;
+    collider.radius = radius;
+    return collider;
+}
+Collider Collider::capsule(float radius, float half_height) {
+    Collider collider;
+    collider.shape = Shape::capsule;
+    collider.radius = radius;
+    collider.half_height = half_height;
+    return collider;
+}
+Collider Collider::convex_hull(std::vector<Vec3> points) {
+    Collider collider;
+    collider.shape = Shape::convex_hull;
+    collider.vertices = std::move(points);
+    return collider;
+}
+Collider Collider::mesh(std::vector<Vec3> vertices, std::vector<std::uint32_t> indices) {
+    Collider collider;
+    collider.shape = Shape::mesh;
+    collider.vertices = std::move(vertices);
+    collider.indices = std::move(indices);
+    return collider;
+}
+Collider Collider::compound(std::vector<ColliderChild> children) {
+    Collider collider;
+    collider.shape = Shape::compound;
+    collider.children = std::move(children);
+    return collider;
+}
 std::shared_ptr<detail::WorldState> Body::lock() const {
     auto world = world_.lock();
     if (!world || !world->entries.contains(id_))
