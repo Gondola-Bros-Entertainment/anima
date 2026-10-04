@@ -136,7 +136,7 @@ Asset coverage_source() {
 // A snapshot of one object that draws @p mesh, as tools inspect it.
 MeshSnapshot snapshot_of(std::shared_ptr<const Mesh> mesh) {
     Scene scene;
-    (void)scene.add(std::move(mesh));
+    (void)scene.create({}, std::move(mesh));
     return scene.snapshot();
 }
 // Both split paths of Mesh::compile_static must reject @p source exactly as Mesh::compile() does.
@@ -402,7 +402,7 @@ TEST_CASE("A mesh describes its source's materials, textures and metadata, which
     CHECK(plain->description()->default_is_bind_pose);
     Scene scene;
     for (const auto &object : {mesh, mesh, plain})
-        (void)scene.add(object);
+        (void)scene.create({}, object);
     const auto snapshot = scene.snapshot();
     CHECK(snapshot.materials.size() == description.materials.size() * 2 + plain->description()->materials.size());
     CHECK(snapshot.textures.size() == description.textures.size() * 2 + plain->description()->textures.size());

@@ -57,11 +57,11 @@ class RenderFrustum {
 /// @p range and culls a placement cluster that this rejects for the cluster's world bounds, and an object without
 /// placements that it rejects for bounds holding only the point its range measures to (VisibilityRange).
 [[nodiscard]] bool within_visibility_range(const VisibilityRange &range, Vec3 eye, const RenderBounds &bounds) noexcept;
-/// The level of detail to draw from @p levels, a draw's IndexedDraw::levels, as its index; empty for the full draw.
+/// The level of detail to draw from @p levels, MeshPrimitive::levels, as its index; empty for the full draw.
 ///
-/// A level fits when its DrawLevel::error, times @p scale and @p pixels_per_unit_error and, in a @p perspective view,
-/// divided by @p distance, is at most @p threshold_pixels; a NaN product never fits. The result is the last of the
-/// leading levels that fit, which for errors that never decrease, as Mesh::compile generates them, is the coarsest
+/// A level fits when its PrimitiveLevel::error, times @p scale and @p pixels_per_unit_error and, in a @p perspective
+/// view, divided by @p distance, is at most @p threshold_pixels; a NaN product never fits. The result is the last of
+/// the leading levels that fit, which for errors that never decrease, as Mesh::compile generates them, is the coarsest
 /// level that fits. It is empty when @p levels is empty or its first level does not fit, when @p threshold_pixels is
 /// not greater than 0, so that 0 always draws the full draw, and in a perspective view when @p distance is not greater
 /// than 0, as from inside the bounds it was measured to. An orthographic view ignores @p distance.
@@ -70,7 +70,7 @@ class RenderFrustum {
 /// the largest axis scale among the matrices that place the draw, as VulkanRenderer::set_lod_threshold() describes, the
 /// length of the first three elements of its view-projection matrix's second row times half the scene targets' height,
 /// and its LOD threshold.
-[[nodiscard]] std::optional<std::size_t> lod_level(std::span<const DrawLevel> levels, double distance, double scale,
-                                                   double pixels_per_unit_error, bool perspective,
+[[nodiscard]] std::optional<std::size_t> lod_level(std::span<const PrimitiveLevel> levels, double distance,
+                                                   double scale, double pixels_per_unit_error, bool perspective,
                                                    float threshold_pixels) noexcept;
 } // namespace anima

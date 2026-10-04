@@ -41,8 +41,9 @@ struct ResourceInstance {
     // runs of placement clusters that may lie in a margin of the visibility range, or whose orientation varies under a
     // single-sided draw. Preparation clears it, and record_resources() sets it as it records the opaque group.
     bool deferred_runs{};
-    // Without placements, whether resource_draw_levels holds, from first_level, the level of each of its Mesh::draws()
-    // that the view chose; it does when the frame records a draw with levels while the LOD threshold is above 0.
+    // Without placements, whether resource_draw_levels holds, from first_level, the level of each of its
+    // Mesh::primitives() that the view chose; it does when the frame records a draw with levels while the LOD threshold
+    // is above 0.
     bool chosen_levels{};
     std::size_t first_level{};
     // With placements, where the world bounds of its MeshPlacements::clusters() start in resource_cluster_bounds.
@@ -472,7 +473,7 @@ static double bounds_radius(const RenderBounds &bounds) {
 // 1: half the diagonal of its mesh's rest bounds times the largest axis scale of its world matrix. Each cluster's
 // copies reach at most that times MeshPlacements::Cluster::scale, for matrices of translation, rotation and scale.
 static double copy_radius(const Scene::Instance &render_instance) {
-    return bounds_radius(render_instance.asset->rest_bounds()) * axis_scale(render_instance.world);
+    return bounds_radius(render_instance.mesh->rest_bounds()) * axis_scale(render_instance.world);
 }
 // Whether @p bounds may hold a point at a distance from @p eye strictly inside one of @p range's margins, where
 // visibilityAt() gives a copy measured to that point a share of its pixels between 0 and 1. At a margin's edges a copy
@@ -526,8 +527,8 @@ const PrimitiveLevel *level_for(const MeshPrimitive &draw, double distance, doub
 // The level of draw @p draw_index of @p render_instance, an object without placements, that the view chooses: by the
 // distance to the draw's world bounds and the largest scale among the matrices that place it, its node's matrix or its
 // skin's joint matrices, which may number hundreds.
-const DrawLevel *object_level(const Scene::Instance &render_instance, std::size_t draw_index) const {
-    const auto &draw = render_instance.asset->draws()[draw_index];
+const PrimitiveLevel *object_level(const Scene::Instance &render_instance, std::size_t draw_index) const {
+    const auto &draw = render_instance.mesh->primitives()[draw_index];
     const auto &bounds = render_instance.primitive_bounds[draw_index];
     double scale = 0;
     for (std::uint32_t j = 0; j < draw.palette_count; ++j)
@@ -662,7 +663,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
     std::vector<std::size_t> masked_shadows;
     std::vector<BlendedDraw> blended;
     std::vector<CustomDraw> custom_draws, custom_shadows;
-    std::vector<const DrawLevel *> draw_levels;
+    std::vector<const PrimitiveLevel *> draw_levels;
     std::vector<RenderBounds> placed_cluster_bounds;
     std::uint64_t candidate_instances = 0, culled_instances = 0, candidate_draws = 0, culled_draws = 0,
                   culled_clusters = 0, range_culled = 0;
@@ -820,7 +821,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                                       {},
                                       first_matrix,
                                       ranged,
-                                      render_instance.asset->impostor() != nullptr,
+                                      render_instance.mesh->impostor() != nullptr,
                                       false,
                                       draw_levels.size() != first_level,
                                       first_level,

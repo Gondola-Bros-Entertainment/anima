@@ -471,9 +471,9 @@ TEST_CASE("Static compilation without limits compiles with the options' retentio
     const auto expected =
         Mesh::compile(sphere_asset(), {.texel_retention = TexelRetention::until_upload, .lods = {.levels = 2}});
     CHECK(pieces[0]->texel_retention() == TexelRetention::until_upload);
-    REQUIRE(pieces[0]->draws().size() == 1);
-    CHECK_FALSE(pieces[0]->draws()[0].levels.empty());
-    CHECK(pieces[0]->draws()[0].levels.size() == expected->draws()[0].levels.size());
+    REQUIRE(pieces[0]->primitives().size() == 1);
+    CHECK_FALSE(pieces[0]->primitives()[0].levels.empty());
+    CHECK(pieces[0]->primitives()[0].levels.size() == expected->primitives()[0].levels.size());
     CHECK(std::ranges::equal(pieces[0]->indices(), expected->indices()));
 }
 

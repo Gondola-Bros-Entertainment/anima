@@ -82,7 +82,7 @@ bool within_visibility_range(const VisibilityRange &range, Vec3 eye, const Rende
     return !bounds.valid ||
            (!(nearest_distance(eye, bounds) >= range.end) && !(farthest_distance(eye, bounds) < range.begin));
 }
-std::optional<std::size_t> lod_level(std::span<const DrawLevel> levels, double distance, double scale,
+std::optional<std::size_t> lod_level(std::span<const PrimitiveLevel> levels, double distance, double scale,
                                      double pixels_per_unit_error, bool perspective, float threshold_pixels) noexcept {
     if (levels.empty() || !(threshold_pixels > 0) || (perspective && !(distance > 0)))
         return std::nullopt;

@@ -308,8 +308,8 @@ inline int run(int argc, char **argv) {
         constexpr std::string_view invalid = "Shadow caster threshold must be finite, at least 0 and below 1";
         constexpr anima::Vec3 spot{0, .1F, -6};
         const auto pebble = anima::Mesh::compile(*environment_test::box_fixture({.1F, .1F, .1F}));
-        require(pebble->draws().size() == 1, "The pebble compiled to more than one draw");
-        const std::uint64_t pebble_indices = pebble->draws()[0].index_count;
+        require(pebble->primitives().size() == 1, "The pebble compiled to more than one primitive");
+        const std::uint64_t pebble_indices = pebble->primitives()[0].index_count;
         // Half the diagonal of @p bounds, as the threshold measures a caster.
         const auto radius_of = [](const anima::RenderBounds &bounds) {
             return double(anima::length(bounds.maximum - bounds.minimum)) / 2;
