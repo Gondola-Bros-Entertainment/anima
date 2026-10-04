@@ -24,7 +24,8 @@ namespace anima {
 /// Immutable after creation and safe to read from several threads; scenes and renderers share it. VulkanRenderer
 /// uploads its transforms once, 48 bytes per placement, and keeps them on the GPU until only the renderer holds
 /// the set, as it keeps meshes. Creation takes time proportional to the placements times the bounds parts of the
-/// mesh, plus sorting them.
+/// mesh, plus sorting them. Adding, moving or removing one copy therefore means creating a new set, which sorts and
+/// clusters every placement again, and VulkanRenderer uploads all of its transforms again.
 class MeshPlacements {
   public:
     /// Most placements in one set.

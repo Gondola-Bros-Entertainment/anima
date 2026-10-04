@@ -957,6 +957,9 @@ std::shared_ptr<const MeshPlacements> MeshRenderer::placements() const {
 void MeshRenderer::set_placements(std::shared_ptr<const MeshPlacements> placements) {
     object_.scene().set_placements(object_.id_, std::move(placements));
 }
+void MeshRenderer::set_placement_transforms(std::span<const Mat4> transforms) {
+    set_placements(MeshPlacements::create(mesh(), transforms));
+}
 RenderBounds MeshRenderer::bounds() const { return object_.scene().instance(object_.id_).bounds; }
 void Scene::set_material_factor(Id id, std::size_t material, Vec3 factor) {
     auto &value = get(id);
