@@ -54,6 +54,7 @@
 #include "lod.hpp"
 #include "materials.hpp"
 #include "placements.hpp"
+#include "profile.hpp"
 #include "rejection.hpp"
 #include "replacement.hpp"
 #include "resources.hpp"
@@ -110,6 +111,8 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     options.scenes = scenes.render_scenes();
     options.validation = true;
     anima::VulkanRenderer renderer(window.get(), options);
+    // Without RendererOptions::profile the renderer enables no calibrated timestamps, so it measures no GPU idle time.
+    require(!renderer.measures_gpu_idle(), "A renderer without profiling measures GPU idle time");
     // Each capture is taken once a draw() has presented its frame.
     gpu_check::Captures captures(output);
     std::optional<std::string> pending = "consumer-start";
@@ -328,6 +331,8 @@ int main(int argc, char **argv) {
             return impostor_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--cascades")
             return cascades_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--profile")
+            return profile_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--resources")
             return resource_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--replace")

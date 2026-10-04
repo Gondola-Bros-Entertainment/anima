@@ -60,7 +60,8 @@ struct RendererOptions {
     /// with no instances shows only the background.
     bool diagnostic_triangle = false;
     /// Enables FrameProfile timings, with six GPU timestamp queries when the graphics queue supports
-    /// them. When false there is no query pool and no clock is read.
+    /// them, and calibrated timestamps where the device also offers them (see VulkanRenderer::measures_gpu_idle).
+    /// When false there is no query pool and no clock is read.
     bool profile = false;
     /// Initial main-view culling state; see VulkanRenderer::set_frustum_culling.
     bool frustum_culling = true;
@@ -155,12 +156,24 @@ struct RenderStats {
 /// Timings of the latest draw(), in milliseconds.
 ///
 /// The timing fields need RendererOptions::profile and are best read after a draw() that returned true,
-/// since each draw() resets them. CPU fields are elapsed intervals, not CPU utilization. CPU and GPU
-/// intervals overlap, so their sum is not frame latency.
+/// since each draw() resets them. CPU fields are elapsed intervals, not CPU utilization. They follow one another
+/// from draw() entry through the presentation call, so their sum is the call's duration, except that a draw() that
+/// captures then waits for its frame and reads the image back, which no field times; a draw() that returns early
+/// sets only the fields it reached. One frame is in flight: the previous frame's GPU work has finished when
+/// fence_wait_ms ends, so no later CPU field overlaps it, and the frame submitted at the end of record_submit_ms can
+/// run on the GPU during present_ms and after draw() returns.
 struct FrameProfile {
     /// From draw() entry through the wait for the previous frame's fence, including swapchain recreation.
     double fence_wait_ms{};
-    /// Resource preparation: culling, new mesh uploads and palette writes.
+    /// Frame preparation after that wait: releasing unowned cache entries, sizing the shadow maps and fitting their
+    /// cascades to the view, writing the custom materials' frame block, reading the previous frame's GPU timestamps,
+    /// and for a UiContext frame, copying its vertices, creating the UI pipeline when first needed and uploading each
+    /// new UI texture, which waits for the GPU.
+    double prepare_ms{};
+    /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
+    /// and placements, palette writes, sorting blended draws back to front, creating the opaque depth and color copies
+    /// that custom materials read (on the first frame that needs them after each swapchain creation), and writing the
+    /// frame's shadow cascades and environment.
     double upload_ms{};
     /// Swapchain image acquisition.
     double acquire_ms{};
@@ -186,6 +199,15 @@ struct FrameProfile {
     double gpu_resolve_ms{};
     /// Capture copy and the transition for presentation.
     double gpu_transfer_ms{};
+    /// From the last timestamp of the frame submitted before the one the GPU fields time to that frame's first
+    /// timestamp: how long the graphics queue went without frame work between them. With one frame in flight it spans
+    /// at least the prepare_ms, upload_ms and acquire_ms of the draw() that submitted the timed frame, and uploads that
+    /// run in that gap count toward it. Set with the GPU fields where VulkanRenderer::measures_gpu_idle() is true and
+    /// the frame submitted before the timed one was timed too, unless the device's timestamp counter may have wrapped
+    /// in between: the field stays empty when, on the host's steady clock, the timed frame's fence wait in this draw()
+    /// ended at least half the counter's wrap period (2^timestampValidBits ticks of timestampPeriod nanoseconds) after
+    /// the earlier frame's submission. Empty otherwise too, as on the first timed frame.
+    std::optional<double> gpu_idle_ms;
 };
 
 /// Resource residency and draw counters.
@@ -579,6 +601,11 @@ class VulkanRenderer {
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;
+    /// Whether FrameProfile::gpu_idle_ms can be set, which the constructor decides once: RendererOptions::profile is
+    /// on, the graphics queue writes timestamps, and the device offers `VK_KHR_calibrated_timestamps` or
+    /// `VK_EXT_calibrated_timestamps`, which the renderer then enables. Vulkan orders timestamps written by different
+    /// submissions only with one of them enabled, and the idle time compares two frames' timestamps.
+    [[nodiscard]] bool measures_gpu_idle() const noexcept;
     /// Waits for the device and presentation to finish, destroys every Vulkan object and returns the final
     /// counters, including failures during this cleanup. Idempotent. The waits have no timeout, so a hung
     /// driver blocks here and in the destructor.
