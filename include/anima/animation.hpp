@@ -28,19 +28,24 @@ struct ClipMetadata {
     /// Animator::set_speed or, in a state machine, AnimationStateMachine::State::speed_parameter.
     std::optional<double> reference_speed = {};
 };
+/// Whether a newly selected clip plays or waits at its start.
+enum class PlaybackStart {
+    playing, ///< Advances from the next step.
+    paused   ///< Holds time 0 until resumed or restarted.
+};
 /// Playback clock for one clip: time, looping, pausing and event crossing, without posing.
 ///
 /// Borrows the selected Animation, which must outlive its use here. Not synchronized: use each
 /// Playback from one thread at a time.
 class Playback {
   public:
-    /// Selects @p animation with @p metadata and rewinds to 0, playing when @p play is true.
+    /// Selects @p animation with @p metadata and rewinds to 0, playing or paused as @p start says.
     ///
     /// A clip of zero duration, as load_asset imports one whose keys all sit at time 0, plays as a
     /// pose: its time stays 0, and advance() describes its events. Throws `std::invalid_argument`
     /// when @p metadata names another clip, the duration is negative or not finite, or an event
     /// lies outside [0, duration].
-    void select(const Animation &animation, const ClipMetadata &metadata, bool play = true);
+    void select(const Animation &animation, const ClipMetadata &metadata, PlaybackStart start = PlaybackStart::playing);
     /// Rewinds to 0 and plays; events at 0 are reported again. Does nothing before select().
     void restart();
     /// Pauses when playing, otherwise resumes.
@@ -95,11 +100,11 @@ class Animator {
     Animator(GameObject object, std::shared_ptr<const Asset> source);
     /// Selects @p clip with no events and plays it; see select().
     void play(std::string_view clip, bool loop = true);
-    /// Selects the source clip that @p clip names, publishes its first pose and plays when @p play
-    /// is true, leaving the bind pose. Throws `std::out_of_range` when no source clip has that name,
-    /// `std::invalid_argument` when several do, and as Playback::select does; the state is
-    /// unchanged on failure.
-    void select(const ClipMetadata &clip, bool play = true);
+    /// Selects the source clip that @p clip names, publishes its first pose and plays or pauses as
+    /// @p start says, leaving the bind pose. Throws `std::out_of_range` when no source clip has
+    /// that name, `std::invalid_argument` when several do, and as Playback::select does; the state
+    /// is unchanged on failure.
+    void select(const ClipMetadata &clip, PlaybackStart start = PlaybackStart::playing);
     /// Publishes the rest pose and pauses; update() then does nothing until a clip is selected,
     /// resumed, restarted or sought.
     void bind_pose();

@@ -65,10 +65,10 @@ class AssetPreview {
     AssetPreview &operator=(const AssetPreview &) = delete;
     AssetPreview(AssetPreview &&) noexcept = default;
     AssetPreview &operator=(AssetPreview &&) noexcept = default;
-    /// Selects the manifest clip named @p clip with its manifest metadata, playing it from the
-    /// start when @p play is true. Throws `std::out_of_range` for a clip the manifest does not
+    /// Selects the manifest clip named @p clip with its manifest metadata at its start, playing or
+    /// paused as @p start says. Throws `std::out_of_range` for a clip the manifest does not
     /// declare.
-    void select(std::string_view clip, bool play = true);
+    void select(std::string_view clip, PlaybackStart start = PlaybackStart::playing);
     /// Shows the rest pose and pauses.
     void bind_pose();
     /// Resumes the clip when paused or showing the bind pose, otherwise pauses it. Does nothing

@@ -30,9 +30,9 @@ void Animator::publish(const Playback &playback, bool bind) {
     pose_ = std::move(pose);
 }
 void Animator::play(std::string_view clip, bool loop) { select({std::string(clip), loop, {}, {}}); }
-void Animator::select(const ClipMetadata &clip, bool play) {
+void Animator::select(const ClipMetadata &clip, PlaybackStart start) {
     auto next = playback_;
-    next.select(find_animation(*source_, clip.name), clip, play);
+    next.select(find_animation(*source_, clip.name), clip, start);
     publish(next);
     playback_ = std::move(next);
     bind_ = false;
