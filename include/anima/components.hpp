@@ -321,8 +321,11 @@ class ObjectLinks {
 /// services. Scene operations borrow a registry for one call; a Prefab keeps its own copy.
 class ComponentCodecs {
   public:
+    /// Largest codec key, in bytes.
+    static constexpr std::size_t max_key_bytes = 4096;
+
     /// Registers a codec for component type `T` under @p key, a stable name such as
-    /// `anima.camera.v1` of 1 to 4,096 bytes that documents store as ComponentData::type.
+    /// `anima.camera.v1` of 1 to #max_key_bytes bytes that documents store as ComponentData::type.
     ///
     /// @p encode is called as `encode(const T &, const ObjectReferences &)` and returns the payload.
     /// @p decode is called as `decode(GameObject, std::string_view payload, const ObjectReferences &)`
@@ -340,8 +343,7 @@ class ComponentCodecs {
     void add(std::string key, Encode encode, Decode decode, [[maybe_unused]] Links links = nullptr) {
         static_assert(!std::same_as<T, ObjectTransform> && !std::same_as<T, MeshRenderer>,
                       "Native transform/renderer data has a dedicated scene representation");
-        constexpr std::size_t maximum_key_bytes = 4096;
-        if (key.empty() || key.size() > maximum_key_bytes)
+        if (key.empty() || key.size() > max_key_bytes)
             throw std::invalid_argument("Invalid component codec key");
         for (const auto &[type, codec] : codecs_)
             if (type == typeid(T) || codec.key == key)

@@ -121,11 +121,11 @@ class SceneRef {
 
 /// Owner of several independently loaded scenes, each under a unique namespace.
 ///
-/// A namespace is a nonempty string of at most 4,096 bytes without NUL; it is application data, not
-/// a path. Members stay in insertion order, and objects in different members cannot be parented to
-/// each other. There is no global scene, file access, worker thread or graphics dependency. The
-/// set must outlive calls into its scenes. active() is only a caller default: no scene driver or
-/// view_matrix consults it.
+/// A namespace is a nonempty string of at most SceneSet::max_namespace_bytes bytes without NUL;
+/// it is application data, not a path. Members stay in insertion order, and objects in different
+/// members cannot be parented to each other. There is no global scene, file access, worker thread
+/// or graphics dependency. The set must outlive calls into its scenes. active() is only a caller
+/// default: no scene driver or view_matrix consults it.
 ///
 /// The set is busy while it updates its members, changes membership (in create, load, replace,
 /// restore, unload, clear or its destructor), serializes, or is held by a scene driver that runs
@@ -137,6 +137,9 @@ class SceneRef {
 /// running callbacks.
 class SceneSet {
   public:
+    /// Largest namespace, in bytes, that create(), load() and the `anima.scene-set` reader accept.
+    static constexpr std::size_t max_namespace_bytes = 4096;
+
     SceneSet() = default;
     /// Invalidates every handle to every member before any component cleanup, then releases the
     /// members.
