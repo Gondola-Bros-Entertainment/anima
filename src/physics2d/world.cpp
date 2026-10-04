@@ -314,7 +314,7 @@ void Body::set_velocity(Vec2 v) {
     vector(v);
     auto world = lock();
     auto &e = world->entries.at(id_);
-    require(e.motion != Motion::stationary, "Static 2D bodies cannot have velocity");
+    require(e.motion != Motion::stationary, "Stationary 2D bodies cannot have velocity");
     if (e.enabled)
         b2Body_SetLinearVelocity(e.body, b(v));
     else
@@ -439,7 +439,7 @@ Body World::create(const BodySettings &s) {
                 s.angular_damping <= detail::maximum_damping,
             "Invalid 2D body damping");
     require(s.motion != Motion::stationary || (s.velocity.x == 0 && s.velocity.y == 0 && s.angular_velocity == 0),
-            "Static 2D body has velocity");
+            "Stationary 2D body has velocity");
     require(!s.fixed_rotation || s.angular_velocity == 0, "Fixed-rotation 2D body has angular velocity");
     if (size() >= state_->settings.max_bodies || state_->next == UINT64_MAX)
         throw std::length_error("2D physics body capacity exhausted");

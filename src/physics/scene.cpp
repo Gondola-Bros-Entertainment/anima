@@ -1,12 +1,11 @@
 #include "../detail/json.hpp"
+#include "../detail/rotation_matrix.hpp"
 #include "../detail/scene_driver.hpp"
 #include "validation.hpp"
 #include <anima/physics_scene.hpp>
 
 namespace anima::physics {
 namespace {
-constexpr float rigid_pose_tolerance = .0001F;
-
 Pose rigid_pose(GameObject object, Motion motion) {
     if (motion == Motion::dynamic && object.parent())
         throw std::invalid_argument("Dynamic rigid bodies must be scene roots");
@@ -16,27 +15,23 @@ Pose rigid_pose(GameObject object, Motion motion) {
         if (!std::isfinite(value) || std::abs(value) > detail::maximum_vector_component)
             throw std::invalid_argument("Physics position outside supported range");
     const Vec3 x = axis_x(m), y = axis_y(m), z = axis_z(m);
-    if (std::abs(dot(x, x) - 1) > rigid_pose_tolerance || std::abs(dot(y, y) - 1) > rigid_pose_tolerance ||
-        std::abs(dot(z, z) - 1) > rigid_pose_tolerance || std::abs(dot(x, y)) > rigid_pose_tolerance ||
-        std::abs(dot(x, z)) > rigid_pose_tolerance || std::abs(dot(y, z)) > rigid_pose_tolerance ||
-        dot(cross(x, y), z) < 1 - rigid_pose_tolerance || m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1)
-        throw std::invalid_argument("Physics transforms require unit scale and no shear/reflection");
-    // Matrix-to-quaternion using the largest diagonal component for stable 180-degree rotations.
-    Quat q;
-    const float trace = m[0] + m[5] + m[10];
-    if (trace > 0) {
-        const float s = std::sqrt(trace + 1) * 2;
-        q = {(m[6] - m[9]) / s, (m[8] - m[2]) / s, (m[1] - m[4]) / s, s / 4};
-    } else {
-        const unsigned i = m[0] > m[5] ? (m[0] > m[10] ? 0 : 2) : (m[5] > m[10] ? 1 : 2);
-        const unsigned j = (i + 1) % 3, k = (i + 2) % 3;
-        const float s = std::sqrt(1 + m[i * 4 + i] - m[j * 4 + j] - m[k * 4 + k]) * 2;
-        q[i] = s / 4;
-        q[j] = (m[j * 4 + i] + m[i * 4 + j]) / s;
-        q[k] = (m[k * 4 + i] + m[i * 4 + k]) / s;
-        q[3] = (m[j * 4 + k] - m[k * 4 + j]) / s;
-    }
-    return {position, unit_quaternion(q)};
+    constexpr float tolerance = detail::rigid_transform_tolerance;
+    constexpr auto not_rigid = "Physics transforms require unit scale and no shear/reflection";
+    if (std::abs(dot(x, x) - 1) > tolerance || std::abs(dot(y, y) - 1) > tolerance ||
+        std::abs(dot(z, z) - 1) > tolerance || std::abs(dot(x, y)) > tolerance || std::abs(dot(x, z)) > tolerance ||
+        std::abs(dot(y, z)) > tolerance || dot(cross(x, y), z) < 1 - tolerance || m[3] != 0 || m[7] != 0 ||
+        m[11] != 0 || m[15] != 1)
+        throw std::invalid_argument(not_rigid);
+    // The column-major world matrix holds row r, column c at m[c * 4 + r].
+    anima::detail::Matrix3 rotation{};
+    for (unsigned r = 0; r < 3; ++r)
+        for (unsigned c = 0; c < 3; ++c)
+            rotation[r][c] = m[c * 4 + r];
+    // The checks above keep the matrix a rotation, so the pivot is never small.
+    const auto q = anima::detail::rotation_quaternion(rotation);
+    if (!q)
+        throw std::invalid_argument(not_rigid);
+    return {position, *q};
 }
 using Json = nlohmann::json;
 constexpr auto unknown_shape = "Unknown rigid body shape";

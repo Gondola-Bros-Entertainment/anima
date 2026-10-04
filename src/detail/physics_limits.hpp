@@ -13,6 +13,9 @@ inline constexpr float maximum_body_mass = 1'000'000.F;
 // dt seconds, at most 1/60: at a 1/60 s step every coefficient from 60 up stops the body in one step, so a larger one
 // would damp no more. Box2D's 1 / (1 + c h) has no such limit, but one bound keeps settings valid in both modules.
 inline constexpr float maximum_damping = 60;
+// A body's transform is rigid when its axes are unit length and mutually orthogonal, and it keeps handedness,
+// within this.
+inline constexpr float rigid_transform_tolerance = 1e-4F;
 // Ray and sweep displacements whose squared length is at or below this are rejected as zero.
 inline constexpr float minimum_squared_displacement = 1e-12F;
 // Bodies take a layer in [0, collision_layer_count), and each layer's collision mask holds one bit per layer.
