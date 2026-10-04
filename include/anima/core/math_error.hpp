@@ -11,7 +11,8 @@ enum class MathErrorCode {
     nonfinite_matrix,     ///< A matrix to invert has a nonfinite element.
     singular_matrix,      ///< Inverting a matrix met a zero pivot.
     inverse_overflow,     ///< An inverse has an element that is not a finite `float`.
-    invalid_frustum,      ///< Perspective arguments break `aspect > 0` and `0 < near_plane < far_plane`.
+    invalid_frustum,      ///< Perspective arguments are not finite or break `0 < vertical_fov_radians < pi`,
+                          ///< `aspect > 0` and `0 < near_plane < far_plane`.
     nonfinite_projection, ///< A view-projection matrix has a nonfinite element.
     singular_projection,  ///< Solving a view-projection matrix met a zero pivot.
     nonfinite_quaternion, ///< A quaternion to normalize has a nonfinite component.

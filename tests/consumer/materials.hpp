@@ -93,8 +93,9 @@ class Harness {
         const auto aspect = float(width) / float(height);
         if (eye) {
             constexpr float near_plane = .05F, far_plane = 200;
-            renderer_.set_view(anima::operator*(anima::perspective(aspect, near_plane, far_plane),
-                                                anima::look_at(eye->position, eye->target)));
+            renderer_.set_view(
+                anima::operator*(anima::perspective(std::numbers::pi_v<float> / 4, aspect, near_plane, far_plane),
+                                 anima::look_at(eye->position, eye->target)));
         } else {
             anima::OrbitCamera camera;
             camera.frame(scene->bounds().minimum, scene->bounds().maximum);
@@ -261,7 +262,7 @@ inline std::vector<std::byte> striped_floor(int mag, int min) {
                        std::to_string(first + 2) + R"(},"material":0}]}])");
 }
 // The row of @p image that shows the floor @p distance ahead of an eye @p height above it that looks at the floor
-// @p aim ahead, through perspective()'s 45-degree vertical field of view.
+// @p aim ahead, through a 45-degree vertical field of view.
 inline std::size_t floor_row(const gpu_check::Image &image, double height, double aim, double distance) {
     const double cotangent = 1 + std::numbers::sqrt2; // 1 / tan(22.5 degrees)
     const auto below = std::atan(height / distance) - std::atan(height / aim);

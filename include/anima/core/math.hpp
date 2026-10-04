@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 #include <stdexcept>
 
 /// @file
@@ -154,31 +155,26 @@ inline Mat4 look_at(Vec3 eye, Vec3 target) {
     return {right.x, up.x, -forward.x, 0, right.y,          up.y,          -forward.y,        0,
             right.z, up.z, -forward.z, 0, -dot(right, eye), -dot(up, eye), dot(forward, eye), 1};
 }
-/// Perspective projection with a fixed 45-degree vertical field of view, for view space looking
-/// down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0 at @p far_plane.
-/// Throws MathError with MathErrorCode::invalid_frustum unless `aspect > 0` and
-/// `0 < near_plane < far_plane`.
-inline Mat4 perspective(float aspect, float near_plane, float far_plane) {
-    if (!(aspect > 0 && near_plane > 0 && far_plane > near_plane))
+/// Perspective projection with a full vertical field of view of @p vertical_fov_radians and a width of @p aspect
+/// times its height, for view space looking down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0
+/// at @p far_plane. view_matrix() projects a perspective Camera with it, passing CameraSettings::vertical_fov_degrees
+/// converted to radians and rounded to `float`. Each element is computed in double and rounded once to `float`, so one
+/// too large for `float`, as from a tiny @p aspect or field of view, is infinite. Throws MathError with
+/// MathErrorCode::invalid_frustum unless every argument is finite, `0 < vertical_fov_radians < pi`, `aspect > 0` and
+/// `0 < near_plane < far_plane`; `std::numbers::pi_v<float>` exceeds pi.
+[[nodiscard]] inline Mat4 perspective(float vertical_fov_radians, float aspect, float near_plane, float far_plane) {
+    if (!(std::isfinite(vertical_fov_radians) && std::isfinite(aspect) && std::isfinite(near_plane) &&
+          std::isfinite(far_plane) && vertical_fov_radians > 0 && vertical_fov_radians < std::numbers::pi &&
+          aspect > 0 && near_plane > 0 && near_plane < far_plane))
         throw MathError(MathErrorCode::invalid_frustum);
-    constexpr float f = 2.41421356237F; // 45 degrees vertical field of view.
-    // Reversed Vulkan depth, right-handed view, framebuffer Y points down.
-    return {f / aspect,
-            0,
-            0,
-            0,
-            0,
-            -f,
-            0,
-            0,
-            0,
-            0,
-            near_plane / (far_plane - near_plane),
-            -1,
-            0,
-            0,
-            (near_plane * far_plane) / (far_plane - near_plane),
-            0};
+    const double f = 1 / std::tan(double(vertical_fov_radians) / 2), depth = double(far_plane) - near_plane;
+    Mat4 result{};
+    result[0] = float(f / aspect);
+    result[5] = float(-f); // Framebuffer Y points down.
+    result[10] = float(near_plane / depth);
+    result[11] = -1;
+    result[14] = float(double(near_plane) * far_plane / depth);
+    return result;
 }
 /// Orthographic projection of a box @p height units high and `aspect * height` wide, centered on the view axis, for
 /// view space looking down -Z, in Vulkan clip space with reversed depth: 1 at @p near_plane and 0 at @p far_plane,
@@ -291,11 +287,13 @@ struct OrbitCamera {
     [[nodiscard]] Vec3 horizontal_forward() const { return {-std::sin(yaw), 0, -std::cos(yaw)}; }
     /// Horizontal unit direction to the camera's right; it depends only on #yaw.
     [[nodiscard]] Vec3 horizontal_right() const { return {std::cos(yaw), 0, -std::sin(yaw)}; }
-    /// View-projection matrix: perspective() with near and far planes at 0.01 and 50 times #radius,
-    /// applied to look_at() from position() toward #target. Throws MathError when @p aspect is not
-    /// positive or #radius is not positive.
+    /// View-projection matrix: perspective() with a vertical field of view of `std::numbers::pi_v<float> / 4` radians
+    /// (45 degrees) and near and far planes at 0.01 and 50 times #radius, applied to look_at() from position() toward
+    /// #target. Throws MathError with MathErrorCode::invalid_frustum when perspective() rejects those arguments, as for
+    /// an @p aspect or #radius that is not finite and positive.
     [[nodiscard]] Mat4 matrix(float aspect) const {
-        return perspective(aspect, radius * 0.01F, radius * 50) * look_at(position(), target);
+        return perspective(std::numbers::pi_v<float> / 4, aspect, radius * 0.01F, radius * 50) *
+               look_at(position(), target);
     }
 };
 } // namespace anima
