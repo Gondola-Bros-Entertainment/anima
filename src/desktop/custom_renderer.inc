@@ -235,12 +235,7 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     if (!definition.textures.empty()) {
         require_texture_formats();
         // UploadBatch retires submitted work before the material can unwind.
-        UploadBatch upload;
-        upload.device = device;
-        upload.allocator = allocator;
-        upload.fatal = &fatal;
-        upload.errors = &errors;
-        upload.create(graphics_family);
+        UploadBatch upload{device, allocator, &fatal, &errors, graphics_family};
         value->textures.resize(definition.textures.size());
         for (std::size_t i = 0; i < definition.textures.size(); ++i) {
             auto texture = definition.textures[i];
