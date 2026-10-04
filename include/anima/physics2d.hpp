@@ -1,4 +1,6 @@
 #pragma once
+#include <anima/core/math.hpp>
+
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -29,11 +31,8 @@ namespace anima::physics2d {
 namespace detail {
 struct WorldState;
 }
-/// Two-component vector in the XY plane.
-struct Vec2 {
-    float x{};
-    float y{};
-};
+/// Two-component vector in the XY plane: core's anima::Vec2, with its arithmetic, length and normalized().
+using Vec2 = anima::Vec2;
 /// Rigid placement in the XY plane. Poses carry no scale.
 struct Pose {
     /// Position in meters; each coordinate within 79,999 of zero.
