@@ -42,7 +42,8 @@ struct InteractionSample {
     std::vector<float> attachment_weights;
 };
 
-/// A decoded interaction bound to its actors. Immutable after construction; copies share it.
+/// A decoded interaction bound to its actors. Immutable after construction; copies share it. Const
+/// member functions may run concurrently on any thread.
 class InteractionRuntime {
   public:
     using Actors = std::map<std::string, InteractionActor, std::less<>>;
@@ -64,6 +65,9 @@ class InteractionRuntime {
     /// names, as an attachment socket or a contact target, passes validate_interaction_socket
     /// against its actor's model. A contact needs an attachment from its child to its parent, a
     /// chain used once per child, and a chain that does not move the child's attachment socket.
+    ///
+    /// May run concurrently on any thread. Reads @p document and the C locale, which must not change
+    /// during the call, as prefab.hpp describes for documents.
     InteractionRuntime(Actors actors, std::string_view document);
     const ActionTimeline &timeline() const;
     /// Role graph built from the attachments.

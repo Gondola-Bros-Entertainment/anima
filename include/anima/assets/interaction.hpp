@@ -22,7 +22,7 @@ struct PhaseKey {
 /// Piecewise-linear map from a shared interaction phase to one participant's clip time.
 ///
 /// Interior keys align meaningful markers, for example a gait contact, when participants place
-/// them at different clip times.
+/// them at different clip times. Const member functions may run concurrently on any thread.
 class PhaseTrack {
   public:
     /// Throws unless there are at least 2 finite keys whose phases and times strictly increase,

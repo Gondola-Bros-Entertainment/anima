@@ -33,6 +33,9 @@ struct ActorPresentation {
     ///
     /// Throws `std::invalid_argument` also for a missing profile or one larger than 4 MiB, and as
     /// read_manifest, load_asset, validate_manifest and MotionRuntime::load do.
+    ///
+    /// May run concurrently on any thread. Reads the files it loads and the C locale, which must not
+    /// change during the call, as prefab.hpp describes for documents.
     explicit ActorPresentation(const std::filesystem::path &profile,
                                std::optional<std::filesystem::path> manifest_override = {});
 };
