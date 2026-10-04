@@ -62,7 +62,7 @@ inline int run(int argc, char **argv) {
     options.validation = true;
     anima::VulkanRenderer renderer(window.get(), options);
     anima::Environment environment;
-    environment.sun.radiance = environment.fill.radiance = environment.ambient_sky = environment.ambient_ground =
+    environment.sun.irradiance = environment.fill.irradiance = environment.ambient_sky = environment.ambient_ground =
         environment.ambient_specular = {};
     renderer.set_environment(environment);
     const auto asset = fixture();

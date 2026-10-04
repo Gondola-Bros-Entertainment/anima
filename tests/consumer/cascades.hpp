@@ -30,8 +30,8 @@ inline anima::Mat4 view(anima::Vec3 offset = {}) {
 inline anima::Environment lighting(std::uint32_t count = 4, std::uint32_t resolution = 512) {
     anima::Environment environment;
     environment.sun.direction = sun;
-    environment.sun.radiance = {3, 3, 3};
-    environment.fill.radiance = {};
+    environment.sun.irradiance = {3, 3, 3};
+    environment.fill.irradiance = {};
     environment.ambient_sky = environment.ambient_ground = {.1F, .1F, .1F};
     environment.shadow_cascades.enabled = true;
     environment.shadow_cascades.count = count;

@@ -4,7 +4,7 @@
 // The frame block of custom shaders, at set 0, binding 0.
 struct CustomFrameUniform {
     Mat4 view_projection, inverse_view_projection;
-    std::array<float, 4> view_origin, sun_direction, sun_radiance, fill_direction, fill_radiance, ambient_sky,
+    std::array<float, 4> view_origin, sun_direction, sun_irradiance, fill_direction, fill_irradiance, ambient_sky,
         ambient_ground, ambient_specular, fog, viewport;
     float time;
     std::array<float, 3> padding;
@@ -174,7 +174,7 @@ void update_custom_frame() {
                                   vec(normalized(e.sun.direction)),
                                   vec(sunlight),
                                   vec(normalized(e.fill.direction)),
-                                  vec(e.fill.radiance),
+                                  vec(e.fill.irradiance),
                                   vec(e.ambient_sky),
                                   vec(e.ambient_ground),
                                   vec(e.ambient_specular),

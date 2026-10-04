@@ -16,14 +16,14 @@
 
 using namespace anima;
 namespace {
-constexpr float tolerance = 2e-5F; // Light directions and radiance, settings and shadow depths.
+constexpr float tolerance = 2e-5F; // Light directions and irradiance, settings and shadow depths.
 constexpr auto busy_scene = "Scene drivers require an idle live scene";
 constexpr auto no_environment = "Lighting selection requires one active environment";
 constexpr auto dead_light = "Selected light must be a live object in the scene selection";
 constexpr auto inactive_light = "Selected light must have an active DirectionalLightComponent";
 constexpr auto collapsed_axes = "Directional light world axes must be nonzero";
 constexpr auto skewed_axes = "Directional light world axes must be orthogonal and right-handed";
-constexpr auto invalid_radiance = "Directional light radiance must be finite nonnegative linear RGB";
+constexpr auto invalid_irradiance = "Directional light irradiance must be finite nonnegative linear RGB";
 constexpr auto invalid_exposure = "Invalid environment exposure or fog density";
 constexpr auto invalid_atmosphere = "Invalid atmosphere";
 constexpr auto duplicate_codec = "Duplicate component codec";
@@ -57,7 +57,7 @@ bool same(const Atmosphere &a, const Atmosphere &b) {
 }
 bool same(const Environment &a, const Environment &b) {
     return near(a.sun.direction, b.sun.direction) && near(a.fill.direction, b.fill.direction) &&
-           near(a.sun.radiance, b.sun.radiance) && near(a.fill.radiance, b.fill.radiance) &&
+           near(a.sun.irradiance, b.sun.irradiance) && near(a.fill.irradiance, b.fill.irradiance) &&
            near(a.ambient_sky, b.ambient_sky) && near(a.ambient_ground, b.ambient_ground) &&
            near(a.ambient_specular, b.ambient_specular) && same(a.atmosphere, b.atmosphere) &&
            near(a.fog_color, b.fog_color) && near(a.fog_density, b.fog_density) && near(a.fog_height, b.fog_height) &&
@@ -66,9 +66,9 @@ bool same(const Environment &a, const Environment &b) {
            near(a.exposure, b.exposure) && a.tone_mapping == b.tone_mapping &&
            same(a.shadow_cascades, b.shadow_cascades) && same(a.detail_shadow, b.detail_shadow);
 }
-GameObject light(Scene &scene, Vec3 radiance = {1, 2, 3}) {
+GameObject light(Scene &scene, Vec3 irradiance = {1, 2, 3}) {
     auto object = scene.create("light");
-    object.add_component<DirectionalLightComponent>(radiance);
+    object.add_component<DirectionalLightComponent>(irradiance);
     return object;
 }
 auto environment(Scene &scene, GameObject sun, GameObject fill) {
@@ -177,8 +177,8 @@ TEST_CASE("A light shines along its world -Z axis, whatever its translation and 
     (void)environment(scene, sun, fill);
     const auto result = lighting_environment(scene);
     CHECK(near(result.sun.direction, {0, 0, 1}));
-    CHECK(near(result.sun.radiance, {1, 2, 3}));
-    CHECK(near(result.fill.radiance, {}));
+    CHECK(near(result.sun.irradiance, {1, 2, 3}));
+    CHECK(near(result.fill.irradiance, {}));
     auto parent = scene.create();
     parent.set_transform({.translation = {8, 5, 3}, .rotation = {0, 1, 0, 0}, .scale = {2, 3, 4}});
     sun.set_parent(parent, ReparentMode::keep_local);
@@ -207,14 +207,14 @@ TEST_CASE("Collapsed, mirrored and sheared light axes are rejected") {
     CHECK_THROWS_WITH_AS(lighting_environment(scene), skewed_axes, std::invalid_argument);
 }
 
-TEST_CASE("Invalid radiance is rejected and keeps the previous value") {
+TEST_CASE("Invalid irradiance is rejected and keeps the previous value") {
     Scene scene;
     auto component = light(scene).get_component<DirectionalLightComponent>();
     for (float invalid : {-1.F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
         for (auto value : {Vec3{invalid, 1, 1}, Vec3{1, invalid, 1}, Vec3{1, 1, invalid}}) {
-            INFO("radiance (", value.x, ", ", value.y, ", ", value.z, ")");
-            CHECK_THROWS_WITH_AS(component->set_radiance(value), invalid_radiance, std::invalid_argument);
-            CHECK(near(component->radiance(), {1, 2, 3}));
+            INFO("irradiance (", value.x, ", ", value.y, ", ", value.z, ")");
+            CHECK_THROWS_WITH_AS(component->set_irradiance(value), invalid_irradiance, std::invalid_argument);
+            CHECK(near(component->irradiance(), {1, 2, 3}));
         }
 }
 
@@ -479,12 +479,16 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
             payloads.push_back(
                 {replace(valid, "\"shadow_cascades\":", "\"shadow\":"), "Missing JSON field: shadow_cascades"});
         } else {
-            payloads = invalid_payloads(valid, "radiance", "radiance");
+            CHECK(valid == R"({"irradiance":[1.0,2.0,3.0]})");
+            payloads = invalid_payloads(valid, "irradiance", "irradiance");
             for (const auto &[bad, error] :
                  {std::pair{"null", needs_vector}, std::pair{"1", needs_vector}, std::pair{"[1,2]", needs_vector},
-                  std::pair{"[1,2,3,4]", needs_vector}, std::pair{"[-1,2,3]", invalid_radiance},
+                  std::pair{"[1,2,3,4]", needs_vector}, std::pair{"[-1,2,3]", invalid_irradiance},
                   std::pair{"[true,2,3]", needs_number}, std::pair{"[1e100,2,3]", float_range}})
-                payloads.push_back({"{\"radiance\":" + std::string(bad) + "}", error});
+                payloads.push_back({"{\"irradiance\":" + std::string(bad) + "}", error});
+            // The field's name before version 2 is not read, alone or beside the current one.
+            payloads.push_back({R"({"radiance":[1,2,3]})", "Missing JSON field: irradiance"});
+            payloads.push_back({R"({"irradiance":[1,2,3],"radiance":[1,2,3]})", "Unknown JSON field: radiance"});
         }
         for (std::size_t index = 0; index < payloads.size(); ++index) {
             CAPTURE(index);
@@ -499,13 +503,18 @@ TEST_CASE_FIXTURE(Rig, "Invalid lighting payloads are rejected without leaking s
     }
 }
 
-TEST_CASE_FIXTURE(Rig, "A scene environment of an earlier version is not read") {
-    auto document = serialize_scene(scene, {}, codecs);
-    const std::string current = "anima.scene-environment.v3";
-    const auto at = document.find(current);
-    REQUIRE(at != std::string::npos);
-    document.replace(at, current.size(), "anima.scene-environment.v2");
-    CHECK_THROWS_WITH_AS(load_scene(document, {}, codecs), "Unknown serialized component type", std::invalid_argument);
+TEST_CASE_FIXTURE(Rig, "Lighting components of an earlier version are not read") {
+    using Versions = std::pair<std::string, std::string>;
+    for (const auto &[current, earlier] : {Versions{"anima.scene-environment.v3", "anima.scene-environment.v2"},
+                                           Versions{"anima.directional-light.v2", "anima.directional-light.v1"}}) {
+        CAPTURE(earlier);
+        auto document = serialize_scene(scene, {}, codecs);
+        const auto at = document.find(current);
+        REQUIRE(at != std::string::npos);
+        document.replace(at, current.size(), earlier);
+        CHECK_THROWS_WITH_AS(load_scene(document, {}, codecs), "Unknown serialized component type",
+                             std::invalid_argument);
+    }
 }
 
 TEST_CASE_FIXTURE(Rig, "Links into other roots persist whichever root decodes first, and a stale link fails to save") {

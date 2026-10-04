@@ -33,7 +33,7 @@ inline void run() {
     if (light.id() != active.children()[0].id() || light.id() == sun.id())
         throw std::runtime_error("Independent lighting prefab did not remap its source");
     const auto result = anima::lighting_environment(scenes);
-    if (result.sun.direction.z != -1 || result.sun.radiance.x != 2 || result.fill.radiance.x != 0 ||
+    if (result.sun.direction.z != -1 || result.sun.irradiance.x != 2 || result.fill.irradiance.x != 0 ||
         !result.atmosphere.enabled || result.atmosphere.ground_height != -3 || result.fog_density != .025F ||
         result.exposure != 1.25F)
         throw std::runtime_error("Independent scene lighting changed authored settings");

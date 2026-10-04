@@ -297,8 +297,8 @@ inline void check_inputs(Harness &harness) {
     };
     const auto aspect = double(harness.aspect());
     const std::vector<std::pair<std::string, Color>> inputs{
-        {"sun radiance", color(environment.sun.radiance)},
-        {"fill radiance", color(environment.fill.radiance)},
+        {"sun irradiance", color(environment.sun.irradiance)},
+        {"fill irradiance", color(environment.fill.irradiance)},
         {"ambient sky", color(environment.ambient_sky)},
         {"ambient ground", color(environment.ambient_ground)},
         {"ambient specular", color(environment.ambient_specular)},
@@ -311,9 +311,9 @@ inline void check_inputs(Harness &harness) {
         {"fog height, falloff and sky distance",
          {environment.fog_height, environment.fog_falloff, environment.fog_sky_distance}},
         {"fog sunlight",
-         {double(environment.fog_sun_scattering.x) * environment.sun.radiance.x,
-          double(environment.fog_sun_scattering.y) * environment.sun.radiance.y,
-          double(environment.fog_sun_scattering.z) * environment.sun.radiance.z}},
+         {double(environment.fog_sun_scattering.x) * environment.sun.irradiance.x,
+          double(environment.fog_sun_scattering.y) * environment.sun.irradiance.y,
+          double(environment.fog_sun_scattering.z) * environment.sun.irradiance.z}},
         {"fog phase asymmetry, and sunlight w", {environment.fog_sun_anisotropy, .25, .5}}};
     auto scene = std::make_shared<anima::Scene>();
     std::vector<anima::Vec3> centers;
@@ -543,8 +543,8 @@ inline void check_shadows(Harness &harness) {
     }();
     anima::Environment lighting;
     lighting.sun.direction = {-.5F, 1, 0};
-    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
     // One cascade over the 15 m in view, with texels of about 1 cm.
     lighting.shadow_cascades.enabled = true;
@@ -597,8 +597,8 @@ inline void check_placements(Harness &harness) {
     }();
     anima::Environment lighting;
     lighting.sun.direction = {-.5F, 1, 0};
-    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
     // One cascade over the 15 m in view, with texels of about 1 cm.
     lighting.shadow_cascades.enabled = true;
@@ -667,8 +667,8 @@ inline void check_fading(Harness &harness) {
     // which the camera sees beneath the quad.
     anima::Environment lighting;
     lighting.sun.direction = {-1, 1, 1};
-    lighting.sun.radiance = {2.5F, 2.5F, 2.5F};
-    lighting.fill.radiance = {};
+    lighting.sun.irradiance = {2.5F, 2.5F, 2.5F};
+    lighting.fill.irradiance = {};
     lighting.ambient_sky = lighting.ambient_ground = {.25F, .25F, .25F};
     // One cascade over the 60 m of ground in view.
     lighting.shadow_cascades.enabled = true;
