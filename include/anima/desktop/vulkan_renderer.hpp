@@ -324,7 +324,8 @@ struct ResourceStats {
     std::uint64_t resident_material_samplers{};
     /// Meshes uploaded since construction; cache hits are not counted.
     std::uint64_t mesh_uploads{};
-    /// Vertex and index bytes uploaded since construction.
+    /// Vertex and index bytes uploaded since construction. A mesh with at most 65,536 vertices uploads 2 bytes per
+    /// index of Mesh::indices(), and any other mesh 4.
     std::uint64_t geometry_uploaded_bytes{};
     /// Device allocation bytes of cached vertex and index buffers.
     std::uint64_t resident_geometry_bytes{};

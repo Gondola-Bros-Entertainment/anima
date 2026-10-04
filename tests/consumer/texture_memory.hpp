@@ -1,6 +1,8 @@
 #pragma once
 // Texture memory through the public API: how long compiled meshes and custom materials hold the texels of their
 // textures on the CPU (TexelRetention), and what their device images take (ResourceStats::resident_texture_bytes).
+// Geometry memory: the bytes each mesh's indices upload at, 2 for a mesh with at most 65,536 vertices and otherwise
+// 4 (ResourceStats::geometry_uploaded_bytes), and that both widths draw the same.
 // CPU memory is measured as the bytes of texel storage still alive, through weak references to each source Image: an
 // image counts until its last holder lets it go, whoever that is.
 #include "blending.hpp"
@@ -73,6 +75,41 @@ inline std::shared_ptr<const anima::Asset> textured_quad(std::shared_ptr<const a
     asset->primitives.push_back(std::move(primitive));
     return asset;
 }
+// The most vertices a mesh can have and still upload 16-bit indices.
+constexpr std::size_t narrow_vertices = 65536;
+// A white unlit quad facing +Z at z = -3, 2 units square, after @p fillers vertices of zero-area triangles at its
+// center, which draw nothing, so that the quad's own 4 vertices come last in Mesh::vertices(), at the top of the
+// index range.
+inline std::shared_ptr<const anima::Mesh> quad_after(std::size_t fillers) {
+    anima::Asset asset;
+    asset.nodes.resize(1);
+    asset.materials.push_back(blending_test::opaque({1, 1, 1}));
+    anima::SourcePrimitive primitive;
+    primitive.material = 0;
+    constexpr float depth = -3;
+    // Mesh::compile welds only vertices whose attributes all match, so distinct texture coordinates keep each filler.
+    const auto filler = [](std::size_t i) {
+        anima::SourceVertex vertex;
+        vertex.position = {0, 0, depth};
+        vertex.normal = {0, 0, 1};
+        vertex.uv = {static_cast<float>(i), 0};
+        return vertex;
+    };
+    for (std::size_t i = 0; i < fillers; ++i)
+        primitive.vertices.push_back(filler(i));
+    // Repeating the first fillers completes the last triangle without adding vertices.
+    for (std::size_t i = 0; primitive.vertices.size() % 3; ++i)
+        primitive.vertices.push_back(filler(i));
+    const std::array<std::array<float, 2>, 4> corners{{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}};
+    for (const auto corner : {0U, 1U, 2U, 0U, 2U, 3U}) {
+        anima::SourceVertex vertex;
+        vertex.position = {corners[corner][0], corners[corner][1], depth};
+        vertex.normal = {0, 0, 1};
+        primitive.vertices.push_back(vertex);
+    }
+    asset.primitives.push_back(std::move(primitive));
+    return anima::Mesh::compile(asset);
+}
 // Bytes of texel storage still alive among @p images.
 inline std::size_t held_bytes(std::initializer_list<const std::weak_ptr<const anima::Image> *> images) {
     std::size_t total = 0;
@@ -143,6 +180,32 @@ class Harness {
     gpu_check::Captures images;
 };
 
+// A mesh with 65,536 vertices uploads 2 bytes per index and one with 65,537 uploads 4, and each draws its last
+// vertices, which an index of the wrong width would lose, exactly as a quad of 4 vertices does.
+inline void check_index_widths(Harness &harness) {
+    harness.select({scene_of(blending_test::facing(blending_test::opaque({1, 1, 1}), {0, 0, -3}, 1, 1))});
+    harness.render("plain quad");
+    harness.images.require_foreground("plain quad", "The plain quad is not visible");
+    struct Width {
+        std::string name;
+        std::size_t vertices, index_bytes;
+    };
+    for (const auto &width :
+         {Width{"16-bit indices", narrow_vertices, 2}, Width{"32-bit indices", narrow_vertices + 1, 4}}) {
+        const auto mesh = quad_after(width.vertices - 4);
+        require(mesh->vertices().size() == width.vertices, "The " + width.name + " quad has the wrong vertex count");
+        const auto before = harness.renderer().resource_stats().geometry_uploaded_bytes;
+        harness.select({scene_of(mesh)});
+        const auto uploaded = harness.renderer().resource_stats().geometry_uploaded_bytes - before;
+        std::cout << "INDEX MEMORY " << width.vertices << " vertices, " << mesh->indices().size()
+                  << " indices: " << uploaded << " geometry bytes uploaded\n";
+        require(uploaded == mesh->vertices().size_bytes() + mesh->indices().size() * width.index_bytes,
+                "The " + width.name + " quad must upload " + std::to_string(width.index_bytes) + " bytes per index");
+        harness.render(width.name);
+        harness.images.require_same("plain quad", width.name, "The " + width.name + " quad drew differently");
+    }
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3, "Usage: consumer --texture-memory OUTPUT");
     const std::filesystem::path output = argv[2];
@@ -203,6 +266,7 @@ inline int run(int argc, char **argv) {
         harness.renderer().prepare_meshes(std::span(&retried, 1));
         require(retried_image.expired(), "The retried upload must let the texels go");
         kept_frame = harness.images["kept"];
+        check_index_widths(harness);
         harness.finish();
     }
 
@@ -240,7 +304,8 @@ inline int run(int argc, char **argv) {
     second.images.require_foreground("effect", "The custom material is not visible");
     second.finish();
     std::cout << "PASS texture memory: meshes and custom materials compiled until upload let their texels go once "
-                 "uploaded, keep drawing, and report their release when uploaded again\n";
+                 "uploaded, keep drawing, and report their release when uploaded again; meshes of up to 65,536 "
+                 "vertices upload 16-bit indices and larger ones 32-bit, and both draw the same\n";
     return 0;
 }
 } // namespace texture_memory_test

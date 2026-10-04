@@ -2,6 +2,8 @@
 struct GpuAsset {
     std::shared_ptr<const Mesh> asset;
     std::unique_ptr<ResourceBuffer> vertices, indices;
+    // The width of each index in the index buffer: 16 bits for a mesh with at most 65,536 vertices, otherwise 32.
+    VkIndexType index_type = VK_INDEX_TYPE_UINT32;
     std::unique_ptr<GpuMaterials> materials;
 };
 // How the matrices that place a draw orient its triangles, by the sign of the determinant of their first three
@@ -586,7 +588,14 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         return found->second;
     auto value = std::make_shared<GpuAsset>();
     value->asset = asset;
-    const auto vertices = asset->vertices().size_bytes(), indices = asset->indices().size_bytes();
+    // Every index, those of the levels of detail included, is below the vertex count, so a mesh with at most 65,536
+    // vertices uploads its indices at 16 bits, which halves their memory and fetch. Draws offset and count indices,
+    // not bytes, and primitive restart is off, so 0xFFFF is an ordinary index and the draws are unchanged.
+    const auto narrow = asset->vertices().size() <= std::size_t{std::numeric_limits<std::uint16_t>::max()} + 1;
+    if (narrow)
+        value->index_type = VK_INDEX_TYPE_UINT16;
+    const auto vertices = asset->vertices().size_bytes(),
+               indices = asset->indices().size() * (narrow ? sizeof(std::uint16_t) : sizeof(std::uint32_t));
     value->materials = std::make_unique<GpuMaterials>();
     value->materials->device = device;
     value->materials->allocator = allocator;
@@ -612,7 +621,13 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
         inject_scene(failure, RendererFailureStage::vertex, false);
         value->indices = resource_buffer(indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        upload_resource_buffer(*value->indices, asset->indices().data(), VK_ACCESS_INDEX_READ_BIT);
+        if (narrow) {
+            std::vector<std::uint16_t> narrowed(asset->indices().size());
+            std::ranges::transform(asset->indices(), narrowed.begin(),
+                                   [](std::uint32_t index) { return static_cast<std::uint16_t>(index); });
+            upload_resource_buffer(*value->indices, narrowed.data(), VK_ACCESS_INDEX_READ_BIT);
+        } else
+            upload_resource_buffer(*value->indices, asset->indices().data(), VK_ACCESS_INDEX_READ_BIT);
         inject_scene(failure, RendererFailureStage::index, false);
         UploadBatch upload{device, allocator, &fatal, &errors, graphics_family};
         upload_textures(*value->materials, upload, failure, false, texels, prepared);
@@ -933,7 +948,7 @@ void bind_geometry(const ResourceInstance &render_instance) {
                                                                     : identity_placement->buffer};
     const std::array<VkDeviceSize, 2> offsets{};
     vkCmdBindVertexBuffers(command, 0, static_cast<std::uint32_t>(buffers.size()), buffers.data(), offsets.data());
-    vkCmdBindIndexBuffer(command, gpu.indices->buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindIndexBuffer(command, gpu.indices->buffer, 0, gpu.index_type);
 }
 // Records draw @p draw_index of @p render_instance with the bound geometry, through @p view, and counts it in the
 // shadow or main-view statistics: with @p routing, in the main view, the runs of its group through the pipeline that
