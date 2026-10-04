@@ -464,8 +464,8 @@ TEST_CASE("An orbit camera's view origin and horizontal axes follow its orientat
     }
     camera.orbit(999, 999);
     camera.zoom(999);
-    CHECK(camera.pitch <= 1.4F);
-    CHECK(camera.distance >= camera.radius * 1.2F);
+    CHECK(camera.pitch == OrbitCamera::max_pitch);
+    CHECK(camera.distance == camera.radius * OrbitCamera::min_distance_radii);
     for (const auto value : camera.matrix(1.5F))
         CHECK(std::isfinite(value));
 }
