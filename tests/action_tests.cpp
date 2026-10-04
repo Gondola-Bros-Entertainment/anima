@@ -68,6 +68,52 @@ TEST_CASE("A cue cursor reports each cue of an instance once") {
     CHECK(cursor.advance("gesture", 5, timeline, 4.1, 4.05).size() == 1);
 }
 
+TEST_CASE("A cue cursor reports the cues that a late release places behind it") {
+    // The hit and end are due 0.1 s and 0.45 s after the hold, so a release at 1.6 places them at 1.7 and 2.05.
+    const ActionTimeline timeline(
+        {{"windup", 1, false, {}}, {"hold", 1, true, {}}, {"strike", 1, false, {{"hit", .1}, {"end", .45}}}});
+    constexpr double late_release = 1.6, hit_time = 1.7, end_time = 2.05;
+    ActionCueCursor cursor;
+    CHECK(cursor.advance("attack", 1, timeline, 1.9).empty());
+    // The release reaches the cursor after its frame at 1.9 has passed the hit.
+    const auto late = cursor.advance("attack", 1, timeline, 2, late_release);
+    REQUIRE(late.size() == 1);
+    CHECK(late[0].phase == 2);
+    CHECK(late[0].id == "hit");
+    CHECK(late[0].time == Near{hit_time, time_tolerance});
+    CHECK(cursor.advance("attack", 1, timeline, 2, late_release).empty());
+    // A release corrected to an earlier time places the hit behind the cursor too. It is reported in timeline order,
+    // before the end that the same frame reaches on time.
+    constexpr double estimated_release = 1.95; // Places the hit at 2.05, after the frame at 2.
+    CHECK(cursor.advance("attack", 2, timeline, 2, estimated_release).empty());
+    const auto corrected = cursor.advance("attack", 2, timeline, 2.1, late_release);
+    REQUIRE(corrected.size() == 2);
+    CHECK(corrected[0].id == "hit");
+    CHECK(corrected[0].time == Near{hit_time, time_tolerance});
+    CHECK(corrected[1].id == "end");
+    CHECK(corrected[1].time == Near{end_time, time_tolerance});
+    // An observer that joins at 1.9, before the release is known, seeks past the hit and so never reports it.
+    cursor.seek("attack", 3, timeline, 1.9);
+    CHECK(cursor.advance("attack", 3, timeline, 2, late_release).empty());
+    // One that joined at 1.5 reports it, though its frame at 1.9 has passed it since.
+    cursor.seek("attack", 4, timeline, 1.5);
+    CHECK(cursor.advance("attack", 4, timeline, 1.9).empty());
+    CHECK(cursor.advance("attack", 4, timeline, 2, late_release).size() == 1);
+    // A rewind seeks silently, so a late release reports only the cues after the time it moved to.
+    CHECK(cursor.advance("attack", 5, timeline, 2.5).empty());
+    CHECK(cursor.advance("attack", 5, timeline, 1.8).empty());
+    CHECK(cursor.advance("attack", 5, timeline, 1.9, late_release).empty());
+    const auto after_rewind = cursor.advance("attack", 5, timeline, 2.1, late_release);
+    REQUIRE(after_rewind.size() == 1);
+    CHECK(after_rewind[0].id == "end");
+    // A seek silences only its own instance: one that advance() starts next reports every cue from 0, even those at
+    // or before that seek.
+    cursor.seek("attack", 6, timeline, 2.5, late_release);
+    const auto restarted = cursor.advance("attack", 7, timeline, 2, late_release);
+    REQUIRE(restarted.size() == 1);
+    CHECK(restarted[0].id == "hit");
+}
+
 TEST_CASE("Invalid timelines and times are rejected") {
     const auto timeline = gesture();
     CHECK_THROWS_WITH_AS(timeline.sample(-1), invalid_time, std::invalid_argument);
