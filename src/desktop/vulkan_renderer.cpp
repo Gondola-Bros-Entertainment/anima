@@ -25,6 +25,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <compare>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
@@ -63,6 +64,11 @@ constexpr std::uint64_t vulkan_timeout(std::chrono::nanoseconds timeout) noexcep
 constexpr std::uint32_t display_time_batch = 16;
 // Most frames that RendererOptions::frames_in_flight allows.
 constexpr std::uint32_t max_frames_in_flight = 2;
+// Throws `std::invalid_argument` unless @p samples is finite and at least 1.
+void validate_max_anisotropy(float samples) {
+    if (!std::isfinite(samples) || samples < 1)
+        throw std::invalid_argument("Maximum anisotropy must be finite and at least 1");
+}
 // Throws `std::invalid_argument` unless @p scale is finite and from VulkanRenderer::min_render_scale to
 // VulkanRenderer::max_render_scale.
 void validate_render_scale(float scale) {
@@ -327,8 +333,10 @@ struct VulkanRenderer::Impl {
     // Whether BC7 images upload as BC7: the device samples BC7 with linear filtering and RendererOptions::decode_bc7
     // is off. Otherwise they upload decoded to RGBA8.
     bool bc7_sampled{};
-    // Anisotropy of linear, mipmapped material samplers: RendererOptions::max_anisotropy within the device's limit, or
-    // 1 without the samplerAnisotropy feature.
+    // The device's maxSamplerAnisotropy where it has the samplerAnisotropy feature, which is then enabled, or 1.
+    float anisotropy_limit = 1;
+    // Anisotropy of linear, mipmapped material samplers: RendererOptions::max_anisotropy within anisotropy_limit, as
+    // the constructor or the latest draw() that prepared a frame applied it (ensure_anisotropy()).
     float anisotropy = 1;
     VkShaderModule vertex_shader{}, fragment_shader{}, mesh_fragment_shader{};
     VkPipelineLayout pipeline_layout{}, environment_pipeline_layout{};
@@ -371,7 +379,21 @@ struct VulkanRenderer::Impl {
         ResourceBuffer(const ResourceBuffer &) = delete;
         ResourceBuffer &operator=(const ResourceBuffer &) = delete;
     };
-    using SamplerKey = std::tuple<Filter, Filter, Filter, Wrap, Wrap, bool, std::uint32_t>;
+    // The settings that a material sampler is created from, for an image of `levels` mip levels.
+    struct SamplerKey {
+        Filter mag{}, min{}, mip{};
+        Wrap u{}, v{};
+        bool mipmapped{};
+        std::uint32_t levels{};
+        // Whether the sampler filters anisotropically while the anisotropy exceeds 1. Anisotropic filtering samples a
+        // finer mip level several times along the footprint's long axis. Vulkan leaves the scheme to the
+        // implementation, including how it combines with nearest filters, so only linear, mipmapped samplers use it
+        // and nearest and unmipmapped ones keep glTF's exact filters.
+        [[nodiscard]] bool anisotropic() const noexcept {
+            return mag == Filter::linear && min == Filter::linear && mipmapped;
+        }
+        friend auto operator<=>(const SamplerKey &, const SamplerKey &) = default;
+    };
     // Weak entries never extend GPU lifetime beyond the scenes using a sampler.
     std::map<SamplerKey, std::weak_ptr<GpuSampler>> material_samplers;
     // Every candidate owns its allocations immediately. Destruction is legal only
@@ -388,6 +410,9 @@ struct VulkanRenderer::Impl {
         VmaAllocation material_allocation{};
         std::vector<VkDescriptorSet> material_sets;
         std::vector<GpuTexture> textures;
+        // The textures that each material set's texture bindings show, as indices into textures in
+        // material_texture_count order (MaterialTexturePlan::bindings).
+        std::vector<std::array<std::size_t, material_texture_count>> bindings;
         ~GpuMaterials() {
             if (texture_pool)
                 vkDestroyDescriptorPool(device, texture_pool, nullptr);
@@ -595,8 +620,7 @@ struct VulkanRenderer::Impl {
         default:
             throw std::invalid_argument(unknown_stage);
         }
-        if (!std::isfinite(options.max_anisotropy) || options.max_anisotropy < 1)
-            throw std::invalid_argument("Maximum anisotropy must be finite and at least 1");
+        validate_max_anisotropy(options.max_anisotropy);
         if (!std::isfinite(options.lod_threshold) || options.lod_threshold < 0)
             throw std::invalid_argument("LOD threshold must be finite and nonnegative");
         validate_shadow_caster_threshold(options.shadow_caster_threshold);
@@ -853,13 +877,15 @@ struct VulkanRenderer::Impl {
             vkGetPhysicalDeviceFormatProperties(physical, bc7_format, &properties);
             bc7_sampled = bc7_sampled && (properties.optimalTilingFeatures & bc7_features) == bc7_features;
         }
-        // Anisotropic filtering is an optional feature, and its degree is limited by the device.
-        if (available.samplerAnisotropy && options.max_anisotropy > 1) {
+        // Anisotropic filtering is an optional feature, and its degree is limited by the device. The feature is
+        // enabled wherever the device has it, whatever the option, so that set_max_anisotropy() can raise the degree.
+        if (available.samplerAnisotropy) {
             enabled.samplerAnisotropy = VK_TRUE;
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physical, &properties);
-            anisotropy = std::min(options.max_anisotropy, properties.limits.maxSamplerAnisotropy);
+            anisotropy_limit = properties.limits.maxSamplerAnisotropy;
         }
+        anisotropy = std::min(options.max_anisotropy, anisotropy_limit);
         info.pEnabledFeatures = &enabled;
         // Each enabled extension's feature structure, as the queries above filled it, joins the chain.
         void *feature_chain = nullptr;
@@ -1702,6 +1728,8 @@ struct VulkanRenderer::Impl {
         return target;
     }
 #ifdef ANIMA_HAS_ASSETS
+    // The material sampler for @p source's settings and an image of @p levels mip levels: the live one that textures
+    // with those settings share, or else a new one with the current anisotropy.
     std::shared_ptr<GpuSampler> material_sampler(const Sampler &source, std::uint32_t levels) {
         const SamplerKey key{source.mag, source.min, source.mip, source.u, source.v, source.mipmapped, levels};
         for (auto it = material_samplers.begin(); it != material_samplers.end();) {
@@ -1713,6 +1741,13 @@ struct VulkanRenderer::Impl {
         if (const auto found = material_samplers.find(key); found != material_samplers.end())
             if (auto sampler = found->second.lock())
                 return sampler;
+        auto sampler = create_material_sampler(key, anisotropy);
+        material_samplers[key] = sampler;
+        return sampler;
+    }
+    // Creates a sampler with @p key's settings that filters anisotropically, up to @p degree samples, where the key
+    // allows it (SamplerKey::anisotropic()). Throws `std::runtime_error` when creation fails.
+    std::shared_ptr<GpuSampler> create_material_sampler(const SamplerKey &key, float degree) const {
         const auto wrap = [](Wrap mode) {
             if (mode == Wrap::clamp)
                 return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -1721,27 +1756,79 @@ struct VulkanRenderer::Impl {
             return VK_SAMPLER_ADDRESS_MODE_REPEAT;
         };
         VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        info.magFilter = source.mag == Filter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-        info.minFilter = source.min == Filter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-        info.mipmapMode = !source.mipmapped || source.mip == Filter::nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST
-                                                                             : VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        info.addressModeU = wrap(source.u);
-        info.addressModeV = wrap(source.v);
+        info.magFilter = key.mag == Filter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        info.minFilter = key.min == Filter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        info.mipmapMode = !key.mipmapped || key.mip == Filter::nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST
+                                                                       : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = wrap(key.u);
+        info.addressModeV = wrap(key.v);
         info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         // Without mipmaps, keep glTF's minification filter while sampling level 0 only.
-        info.maxLod = source.mipmapped ? static_cast<float>(levels - 1) : unmipmapped_max_lod;
-        // Anisotropic filtering samples a finer mip level several times along the footprint's long axis. Vulkan
-        // leaves the scheme to the implementation, including how it combines with nearest filters, so only linear,
-        // mipmapped samplers use it and nearest and unmipmapped ones keep glTF's exact filters.
-        const bool anisotropic =
-            anisotropy > 1 && source.mag == Filter::linear && source.min == Filter::linear && source.mipmapped;
+        info.maxLod = key.mipmapped ? static_cast<float>(key.levels - 1) : unmipmapped_max_lod;
+        const bool anisotropic = degree > 1 && key.anisotropic();
         info.anisotropyEnable = anisotropic ? VK_TRUE : VK_FALSE;
-        info.maxAnisotropy = anisotropic ? anisotropy : 1;
+        info.maxAnisotropy = anisotropic ? degree : 1;
         auto sampler = std::make_shared<GpuSampler>();
         sampler->device = device;
         check(vkCreateSampler(device, &info, nullptr, &sampler->handle), "Create material sampler");
-        material_samplers[key] = sampler;
         return sampler;
+    }
+    // Brings the material samplers to RendererOptions::max_anisotropy within anisotropy_limit, as
+    // VulkanRenderer::set_max_anisotropy() describes. Only the samplers whose settings filter anisotropically
+    // (SamplerKey::anisotropic()) depend on it. Every frame reads the same material descriptor sets, and Vulkan forbids
+    // updating a set that a submitted frame may still read, so while such samplers live it first waits for every frame
+    // in flight, which also destroys the meshes released before. It then creates a replacement for each such sampler
+    // before replacing any, so that a failure keeps the current samplers and anisotropy and the next call tries again,
+    // and points the textures of the cached meshes and custom materials, and their descriptors, at the replacements.
+    // The replaced samplers are destroyed on return, since nothing else holds them.
+    void ensure_anisotropy() {
+        const auto requested = std::min(options.max_anisotropy, anisotropy_limit);
+        if (requested == anisotropy)
+            return;
+        if (std::any_of(material_samplers.begin(), material_samplers.end(),
+                        [](const auto &entry) { return entry.first.anisotropic() && !entry.second.expired(); })) {
+            wait_for_frames("Wait before anisotropy change");
+            // Each sampler to replace, held until the textures no longer use it, with its replacement, by handle.
+            struct Replacement {
+                std::shared_ptr<GpuSampler> current, next;
+            };
+            std::map<VkSampler, Replacement> replacements;
+            for (const auto &[key, sampler] : material_samplers)
+                if (auto current = sampler.lock(); current && key.anisotropic())
+                    replacements.emplace(current->handle,
+                                         Replacement{current, create_material_sampler(key, requested)});
+            const auto replace = [&](GpuTexture &texture) {
+                const auto found = replacements.find(texture.sampler);
+                if (found == replacements.end())
+                    return false;
+                texture.shared_sampler = found->second.next;
+                texture.sampler = texture.shared_sampler->handle;
+                return true;
+            };
+            for (const auto &[key, gpu] : resource_cache) {
+                (void)key;
+                bool replaced = false;
+                for (auto &texture : gpu->materials->textures)
+                    replaced = replace(texture) || replaced;
+                if (replaced)
+                    write_material_textures(*gpu->materials);
+            }
+            for (const auto &[key, gpu] : custom_cache) {
+                (void)key;
+                bool replaced = false;
+                for (auto &texture : gpu->textures)
+                    replaced = replace(texture) || replaced;
+                if (replaced)
+                    write_custom_textures(*gpu);
+            }
+            for (auto &[key, sampler] : material_samplers) {
+                (void)key;
+                if (const auto current = sampler.lock())
+                    if (const auto found = replacements.find(current->handle); found != replacements.end())
+                        sampler = found->second.next;
+            }
+        }
+        anisotropy = requested;
     }
     // Throws `std::runtime_error` unless the device samples 8-bit RGBA color and data images with linear filtering.
     void require_texture_formats() const {
@@ -1927,6 +2014,27 @@ struct VulkanRenderer::Impl {
         upload_texture(texture, sampling, image_format, levels, upload, failure, initial, first);
         return static_cast<std::uint32_t>(levels.size());
     }
+    // Points the texture bindings of each of @p target's material sets at the view and sampler of the texture that
+    // GpuMaterials::bindings names. No frame in flight may use the sets.
+    void write_material_textures(const GpuMaterials &target) const {
+        std::vector<VkDescriptorImageInfo> image_infos;
+        std::vector<VkWriteDescriptorSet> writes;
+        // Reserved, so that each write's pointer into image_infos stays valid.
+        image_infos.reserve(target.material_sets.size() * material_texture_count);
+        for (std::size_t i = 0; i < target.material_sets.size(); ++i)
+            for (unsigned j = 0; j < material_texture_count; ++j) {
+                const auto &texture = target.textures.at(target.bindings.at(i)[j]);
+                image_infos.push_back({texture.sampler, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+                VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                write.dstSet = target.material_sets[i];
+                write.dstBinding = j;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &image_infos.back();
+                writes.push_back(write);
+            }
+        vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    }
     // Uploads the images of @p target's material plan, or of @p prepared's, each mipmapped one without @p mip_skip
     // levels from its top (upload_image()), and writes its material descriptors. Without @p prepared, @p texels holds
     // the image of each source texture with its texels (Mesh::texel_images).
@@ -1959,6 +2067,7 @@ struct VulkanRenderer::Impl {
                                        initial, i == 0);
         }
         target.material_sets.resize(target.source->materials.size() + 1);
+        target.bindings = plan.bindings;
         const auto count = static_cast<std::uint32_t>(target.material_sets.size());
         const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * material_texture_count},
                                            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count}};
@@ -1995,27 +2104,16 @@ struct VulkanRenderer::Impl {
                                            m.occlusion_strength, m.unlit ? 1.F : 0.F},
                                           {m.normal_texture >= 0 ? 1.F : 0.F, m.double_sided ? 1.F : 0.F, 0, 0}};
             std::memcpy(uniforms.data() + stride * i, &uniform, sizeof(uniform));
-            std::array<VkDescriptorImageInfo, material_texture_count> image_infos{};
-            std::array<VkWriteDescriptorSet, material_texture_count + 1> writes{};
-            for (unsigned j = 0; j < material_texture_count; ++j) {
-                const auto &texture = target.textures.at(plan.bindings[i][j]);
-                image_infos[j] = {texture.sampler, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-                writes[j] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                writes[j].dstSet = target.material_sets[i];
-                writes[j].dstBinding = j;
-                writes[j].descriptorCount = 1;
-                writes[j].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[j].pImageInfo = &image_infos[j];
-            }
             const VkDescriptorBufferInfo buffer_info{target.material_buffer, stride * i, sizeof(MaterialUniform)};
-            writes[material_texture_count] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            writes[material_texture_count].dstSet = target.material_sets[i];
-            writes[material_texture_count].dstBinding = material_texture_count;
-            writes[material_texture_count].descriptorCount = 1;
-            writes[material_texture_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            writes[material_texture_count].pBufferInfo = &buffer_info;
-            vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = target.material_sets[i];
+            write.dstBinding = material_texture_count;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write.pBufferInfo = &buffer_info;
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
         }
+        write_material_textures(target);
         std::memcpy(material_mapping, uniforms.data(), uniforms.size());
         check(vmaFlushAllocation(allocator, target.material_allocation, 0, VK_WHOLE_SIZE), "Flush material memory");
         inject_scene(failure, RendererFailureStage::descriptors, initial);
@@ -2295,6 +2393,7 @@ struct VulkanRenderer::Impl {
             // Before the custom materials' frame block, which holds the scene targets' size.
             ensure_scene_targets();
             ensure_view_pipelines();
+            ensure_anisotropy();
             ensure_shadow_targets();
             fit_shadow_cascades();
             update_custom_frame();
@@ -2866,7 +2965,15 @@ void VulkanRenderer::request_capture() {
 }
 std::optional<CapturedImage> VulkanRenderer::take_capture() { return std::exchange(impl_->captured_image, {}); }
 bool VulkanRenderer::samples_bc7() const noexcept { return impl_->bc7_sampled; }
-float VulkanRenderer::max_anisotropy() const noexcept { return impl_->anisotropy; }
+float VulkanRenderer::max_anisotropy() const noexcept {
+    return std::min(impl_->options.max_anisotropy, impl_->anisotropy_limit);
+}
+void VulkanRenderer::set_max_anisotropy(float samples) {
+    impl_->running();
+    validate_max_anisotropy(samples);
+    // The next draw() that prepares a frame replaces the material samplers that the change affects.
+    impl_->options.max_anisotropy = samples;
+}
 void VulkanRenderer::set_view(const Mat4 &view_projection) {
     impl_->running();
     for (float value : view_projection)

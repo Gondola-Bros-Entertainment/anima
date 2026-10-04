@@ -133,7 +133,7 @@ struct RendererOptions {
     /// texture is longest, as Vulkan's `maxAnisotropy`; 1 filters isotropically, choosing a mip level by the longest
     /// axis alone, which blurs surfaces seen at a glancing angle. Must be finite and at least 1, or construction
     /// throws `std::invalid_argument`. The renderer uses at most the device's limit; see
-    /// VulkanRenderer::max_anisotropy.
+    /// VulkanRenderer::max_anisotropy, and VulkanRenderer::set_max_anisotropy to change it.
     float max_anisotropy = 16;
     /// Initial level of detail threshold, in pixels; see VulkanRenderer::set_lod_threshold. Must be finite and
     /// nonnegative, or construction throws `std::invalid_argument`.
@@ -215,12 +215,13 @@ class RendererFatalError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 /// draw() could not prepare the selected scenes, the environment's shadow maps, the scene targets
-/// (VulkanRenderer::set_render_scale) or the view's pipelines for a new shadow filter
-/// (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames).
+/// (VulkanRenderer::set_render_scale), the view's pipelines for a new shadow filter
+/// (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames), or the material
+/// samplers for a new anisotropy (VulkanRenderer::set_max_anisotropy).
 ///
 /// Thrown before an image is acquired, so no frame was submitted. The renderer stays usable and the next
 /// draw() prepares again: repair the selected scenes or environment, change the selection, lower the render scale, or
-/// request the previous shadow filter or impostor frame count.
+/// request the previous shadow filter, impostor frame count or anisotropy.
 class SceneResourceError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -286,10 +287,12 @@ struct FrameProfile {
     /// and otherwise in a later call, once that frame has finished, creating the scene targets after a swapchain
     /// creation or a render scale change (VulkanRenderer::set_render_scale), compiling the view's pipelines after a
     /// shadow filter change (VulkanRenderer::set_shadow_filter) or an impostor frame count change
-    /// (VulkanRenderer::set_impostor_frames), sizing the shadow maps and fitting their cascades to the view, writing
-    /// the custom materials' frame block, reading the GPU timestamps of the frame that fence_wait_ms waited for,
-    /// reading the display times that set present_interval_ms, and for a UiContext frame, copying its vertices,
-    /// creating the UI pipeline when first needed and uploading each new UI texture, which waits for the GPU.
+    /// (VulkanRenderer::set_impostor_frames), replacing the material samplers after an anisotropy change, which waits
+    /// for every frame in flight (VulkanRenderer::set_max_anisotropy), sizing the shadow maps and fitting their
+    /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
+    /// fence_wait_ms waited for, reading the display times that set present_interval_ms, and for a UiContext frame,
+    /// copying its vertices, creating the UI pipeline when first needed and uploading each new UI texture, which waits
+    /// for the GPU.
     double prepare_ms{};
     /// Scene preparation: culling, uploads of meshes that became visible or cast shadows and of their custom materials
     /// and placements, palette writes, sorting the objects with opaque and masked draws front to back and the blended
@@ -968,12 +971,33 @@ class VulkanRenderer {
     /// them to RGBA8 on the CPU. Desktop GPUs sample BC7; an application that would rather load other images than
     /// pay for decoding can ask here first.
     [[nodiscard]] bool samples_bc7() const noexcept;
-    /// The anisotropy that textures filter with, which the constructor decides once: the smaller of
-    /// RendererOptions::max_anisotropy and the device's `maxSamplerAnisotropy`, or 1 on a device without the
-    /// `samplerAnisotropy` feature. Only textures whose magnification and minification filters are linear and that
-    /// sample a mip chain use it, custom material textures included; changing it requires a new renderer, since
-    /// every material's descriptors hold its samplers.
+    /// The anisotropy that material textures filter with, from the next draw() that prepares a frame after
+    /// set_max_anisotropy() changes it: the smaller of RendererOptions::max_anisotropy, or the latest accepted
+    /// set_max_anisotropy(), and the device's `maxSamplerAnisotropy`, or 1 on a device without the `samplerAnisotropy`
+    /// feature, which the renderer enables wherever the device has it. Only textures whose magnification and
+    /// minification filters are linear and that sample a mip chain use it, custom material textures included.
     [[nodiscard]] float max_anisotropy() const noexcept;
+    /// Requests that material textures filter with up to @p samples samples, as RendererOptions::max_anisotropy
+    /// describes; it starts as that option, and max_anisotropy() reports the degree that the device allows.
+    ///
+    /// Textures with equal sampling settings and mip level counts share a sampler, and the descriptors of each cached
+    /// mesh and custom material hold their textures' samplers, which Vulkan does not let change while a submitted frame
+    /// may read them. The first draw() that prepares a frame while max_anisotropy() differs from the degree that the
+    /// renderer last applied applies it, once it has waited for its frame. When a texture whose magnification and
+    /// minification filters are linear and that samples a mip chain belongs to a cached mesh or custom material, or to
+    /// one released while frames that may use it were in flight, that draw() waits for every frame in flight, which
+    /// destroys the released ones, creates a replacement for each shared sampler of such textures, and points their
+    /// descriptors at the replacements, destroying the samplers they replace; otherwise it only records the degree. The
+    /// wait holds that draw() (FrameProfile::prepare_ms). Nothing is uploaded again, so meshes whose texels
+    /// TexelRetention::until_upload let go keep their textures, and each replacement takes its sampler's place in
+    /// ResourceStats::resident_material_samplers. If creating the samplers fails, that draw() throws SceneResourceError
+    /// and keeps the previous samplers, and the next draw() tries again. Meshes and custom materials uploaded before
+    /// that draw() filter with the previous degree until it applies the new one.
+    ///
+    /// Without asset support the renderer has no material textures, so the request changes only max_anisotropy().
+    /// Throws `std::invalid_argument` unless @p samples is finite and at least 1 ("Maximum anisotropy must be finite
+    /// and at least 1"), keeping the previous request.
+    void set_max_anisotropy(float samples);
     /// Waits for the frame that the next draw() or UiContext::render() waits for before preparing its own: the one
     /// submitted RendererOptions::frames_in_flight submissions before the frame that the call will submit.
     ///
@@ -1010,13 +1034,14 @@ class VulkanRenderer {
     /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, creates
     /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), compiles the view's
     /// pipelines after a shadow filter change (set_shadow_filter()) or an impostor frame count change
-    /// (set_impostor_frames()), culls, uploads meshes that became visible or cast shadows (prepare_meshes() can upload
-    /// them earlier) and writes every prepared instance's palette. The palettes of one frame must fit the device's
-    /// storage-buffer range. Throws SceneResourceError when that preparation fails recoverably; RendererFatalError for
-    /// device or surface loss, a fence timeout, any other Vulkan failure, or any failure to build a new swapchain once
-    /// the previous one is released; and `std::runtime_error` for other failures, such as a surface that offers no
-    /// usable format, which leaves the current swapchain in place, or a capture request that fails, which only that
-    /// call reports (see request_capture()).
+    /// (set_impostor_frames()), replaces the material samplers after an anisotropy change, which waits for every
+    /// frame in flight (set_max_anisotropy()), culls, uploads meshes that became visible or cast shadows
+    /// (prepare_meshes() can upload them earlier) and writes every prepared instance's palette. The palettes of one
+    /// frame must fit the device's storage-buffer range. Throws SceneResourceError when that preparation fails
+    /// recoverably; RendererFatalError for device or surface loss, a fence timeout, any other Vulkan failure, or any
+    /// failure to build a new swapchain once the previous one is released; and `std::runtime_error` for other failures,
+    /// such as a surface that offers no usable format, which leaves the current swapchain in place, or a capture
+    /// request that fails, which only that call reports (see request_capture()).
     [[nodiscard]] bool draw();
     /// Timings of the latest draw(); see FrameProfile.
     [[nodiscard]] FrameProfile frame_profile() const noexcept;
