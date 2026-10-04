@@ -22,7 +22,7 @@
 using namespace anima;
 namespace {
 constexpr float pose_tolerance = 1e-5F; // Absolute error allowed in sampled matrix elements.
-constexpr std::size_t rig_joints = 5;
+constexpr std::size_t rig_joints = 9;
 // A bind signature is opaque to MotionRuntime; the contract only has to repeat the manifest's.
 const std::string rig_signature(64, 'a');
 constexpr auto identity_frame = "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]";
@@ -65,14 +65,16 @@ void write_glb(const std::filesystem::path &file, std::string json, const std::v
     REQUIRE(bool(output));
 }
 
-// A root with a three-joint limb and a separate side joint. The skin uses every node, and each inverse bind
-// cancels the rest pose.
+// A root with a three-joint limb, a separate side joint that carries a tip, and another three-joint limb. The skin
+// uses every node, and each inverse bind cancels the rest pose.
 Asset limb_model() {
     Asset result;
-    const std::array<const char *, rig_joints> names{"root", "upper", "middle", "end", "side"};
-    const std::array<int, rig_joints> parents{-1, 0, 1, 2, 0};
-    const std::array<Vec3, rig_joints> offsets{Vec3{0, 0, 0}, Vec3{0, 1, 0}, Vec3{0, -.4F, .1F}, Vec3{0, -.4F, -.1F},
-                                               Vec3{.5F, 1, 0}};
+    const std::array<const char *, rig_joints> names{"root", "upper",       "middle",       "end",      "side",
+                                                     "tip",  "other.upper", "other.middle", "other.end"};
+    const std::array<int, rig_joints> parents{-1, 0, 1, 2, 0, 4, 0, 6, 7};
+    const std::array<Vec3, rig_joints> offsets{Vec3{0, 0, 0},       Vec3{0, 1, 0},      Vec3{0, -.4F, .1F},
+                                               Vec3{0, -.4F, -.1F}, Vec3{.5F, 1, 0},    Vec3{.2F, 0, 0},
+                                               Vec3{-.5F, 1, 0},    Vec3{0, -.4F, .1F}, Vec3{0, -.4F, -.1F}};
     AssetSkin skin;
     for (std::size_t i = 0; i < rig_joints; ++i) {
         AssetNode node;
@@ -97,9 +99,12 @@ void write_motion(const std::filesystem::path &file) {
          {0.F, 1.F, 0.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, .70710678F, .70710678F})
         append_f32(binary, number);
     write_glb(file, R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
-        "nodes":[{"name":"root","children":[1,4]},{"name":"upper","translation":[0,1,0],"children":[2]},
+        "nodes":[{"name":"root","children":[1,4,6]},{"name":"upper","translation":[0,1,0],"children":[2]},
                  {"name":"middle","translation":[0,-0.4,0.1],"children":[3]},{"name":"end","translation":[0,-0.4,-0.1]},
-                 {"name":"side","translation":[0.5,1,0]}],
+                 {"name":"side","translation":[0.5,1,0],"children":[5]},{"name":"tip","translation":[0.2,0,0]},
+                 {"name":"other.upper","translation":[-0.5,1,0],"children":[7]},
+                 {"name":"other.middle","translation":[0,-0.4,0.1],"children":[8]},
+                 {"name":"other.end","translation":[0,-0.4,-0.1]}],
         "buffers":[{"byteLength":64}],
         "bufferViews":[{"buffer":0,"byteLength":8},{"buffer":0,"byteOffset":8,"byteLength":24},
                        {"buffer":0,"byteOffset":32,"byteLength":32}],
@@ -170,14 +175,16 @@ struct MotionFixture {
     std::shared_ptr<const Asset> body = std::make_shared<const Asset>(limb_model());
     Manifest manifest;
     std::string contract = R"({"version":3,"skeleton":{"id":"test.rig","bind_signature":")" + rig_signature +
-                           R"(","joint_count":5},"resource":"motion.glb",
+                           R"(","joint_count":)" + std::to_string(rig_joints) + R"(},"resource":"motion.glb",
         "evaluation":{"version":1,"id":"test.evaluation",
-          "parents":{"root":null,"upper":"root","middle":"upper","end":"middle","side":"root"},
+          "parents":{"root":null,"upper":"root","middle":"upper","end":"middle","side":"root","tip":"side",
+                     "other.upper":"root","other.middle":"other.upper","other.end":"other.middle"},
           "masks":{"limb":["upper"],"side":["side"]},
-          "chains":{"limb":{"joints":["upper","middle","end"],"minimum_angle":0,"maximum_angle":3.1}}},
+          "chains":{"limb":{"joints":["upper","middle","end"],"minimum_angle":0,"maximum_angle":3.1},
+                    "other":{"joints":["other.upper","other.middle","other.end"],"minimum_angle":0,"maximum_angle":3.1}}},
         "clips":[{"name":"base","loop":true,"events":[]}],
         "layers":{"layer.limb":{"mask":"limb","owned_joints":["end","middle","upper"],"context_joints":["root"]},
-                  "layer.side":{"mask":"side","owned_joints":["side"],"context_joints":["root"]}}})";
+                  "layer.side":{"mask":"side","owned_joints":["side","tip"],"context_joints":["root"]}}})";
     std::map<std::string, AttachmentSocket, std::less<>> sockets{{"grip", {3, identity()}}};
     MotionFixture() {
         write_motion(directory.path / "motion.glb");
@@ -301,7 +308,7 @@ TEST_CASE("A layer lists exactly its mask's joints and their parents outside it,
     // A clip cannot be both a base clip and a layer clip.
     CHECK_THROWS_WITH_AS(contract(R"("layer.side":{)", R"("base":{)"), declared, std::invalid_argument);
     // The side layer's clip turns the side joint, which the limb mask does not own.
-    CHECK_THROWS_WITH_AS(contract(R"("layer.side":{"mask":"side","owned_joints":["side"])",
+    CHECK_THROWS_WITH_AS(contract(R"("layer.side":{"mask":"side","owned_joints":["side","tip"])",
                                   R"("layer.side":{"mask":"limb","owned_joints":["end","middle","upper"])"),
                          "Motion layer animates joints it does not own", std::invalid_argument);
 }
@@ -479,4 +486,53 @@ TEST_CASE("Attachment tracks and markers report invalid requests") {
         decode_attachment_catalog(replaced(attachment_catalog(), R"("handling":"grip")", R"("handling":"free")"),
                                   fixture.directory.path),
         "Attachment items require a handling profile with a socket", std::invalid_argument);
+}
+
+TEST_CASE("Support contacts solve together on a pose that hides a joint by scaling it to zero") {
+    // Distance a solved contact may leave between its chain's end and its marker.
+    constexpr float reach_tolerance = 2e-5F;
+    constexpr std::size_t root = 0, end = 3, side = 4, tip = 5, other_end = 8;
+    const MotionFixture fixture;
+    const auto runtime = fixture.runtime();
+    // Hiding the side joint collapses the tip below it, whose local transform only the source pose holds.
+    auto local = runtime.sample("base", 0).local;
+    local[side].scale = {0, 0, 0};
+    const auto source = pose_from_local(*fixture.body, local);
+    // An item held at the root braces both limbs, each at a marker of its own.
+    const Vec3 limb_target{.3F, .5F, .2F}, other_target{-.7F, .5F, .2F};
+    const auto marker = [](Vec3 position) {
+        Transform frame;
+        frame.translation = position;
+        return matrix(frame);
+    };
+    AttachmentVisual visual;
+    visual.markers = {{"limb.hold", marker(limb_target)}, {"other.hold", marker(other_target)}};
+    AttachmentHandling handling{.id = "brace", .socket = "hold"};
+    handling.support_contacts = {{"limb", "grip", "limb.hold", {0, 0, 2}, {"base"}, {}},
+                                 {"other", "other.grip", "other.hold", {0, 0, 2}, {"base"}, {}}};
+    const std::map<std::string, AttachmentSocket, std::less<>> sockets{
+        {"hold", {root, identity()}}, {"grip", {end, identity()}}, {"other.grip", {other_end, identity()}}};
+    const auto primary = bind_attachment(sockets.at("hold"), visual);
+    const auto solved = apply_attachment_contacts(runtime, source, "base", handling, visual, primary, sockets);
+    REQUIRE(solved.contacts.size() == 2);
+    CHECK(solved.contacts[0].chain == "limb");
+    CHECK(solved.contacts[1].chain == "other");
+    for (const auto &contact : solved.contacts) {
+        CAPTURE(contact.chain);
+        CHECK(contact.reachable);
+        CHECK(contact.error < reach_tolerance);
+    }
+    CHECK(length(point(solved.pose.world[end], {}) - limb_target) < reach_tolerance);
+    CHECK(length(point(solved.pose.world[other_end], {}) - other_target) < reach_tolerance);
+    // The hidden joints stay where the source put them.
+    for (const auto node : {side, tip})
+        for (std::size_t i = 0; i < source.world[node].size(); ++i) {
+            CAPTURE(node);
+            CAPTURE(i);
+            CHECK(solved.pose.world[node][i] == Near{source.world[node][i], pose_tolerance});
+        }
+    // Held at the hidden side joint, the item collapses with it, so a contact frame has no rotation to reach for.
+    const auto hidden = bind_attachment({side, identity()}, visual);
+    CHECK_THROWS_WITH_AS(apply_attachment_contacts(runtime, source, "base", handling, visual, hidden, sockets),
+                         "Affine transform is collapsed", std::invalid_argument);
 }

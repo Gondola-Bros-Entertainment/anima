@@ -179,7 +179,11 @@ Mat4 blend_affine(const Mat4 &from, const Mat4 &to, float weight) {
     (void)linear(result);
     return result;
 }
-Quat affine_rotation(const Mat4 &transform) { return polar(transform).rotation; }
+Quat affine_rotation(const Mat4 &transform) {
+    // polar() fails only once its inverse is singular, far below the collapse threshold.
+    require(!collapsed(linear(transform)), "Affine transform is collapsed");
+    return polar(transform).rotation;
+}
 EvaluationRig::EvaluationRig(const Asset &asset, std::vector<EvaluationJoint> joints) : joints_(std::move(joints)) {
     require(!joints_.empty(), "Evaluation rig has no joints");
     mapping_.assign(asset.nodes.size(), -1);
@@ -205,6 +209,11 @@ std::size_t EvaluationRig::joint(std::string_view name) const {
         if (joints_[i].name == name)
             return i;
     throw std::out_of_range("Unknown evaluation joint: " + std::string(name));
+}
+int EvaluationRig::parent(std::size_t joint) const {
+    if (joint >= size())
+        throw std::out_of_range("Evaluation joint index out of range");
+    return joints_[joint].parent;
 }
 bool EvaluationRig::descendant(std::size_t child, std::size_t ancestor) const {
     require(child < size() && ancestor < size(), "Invalid evaluation joint index");
@@ -359,6 +368,7 @@ ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose
             if (rig.descendant(i, joint))
                 w[i] = transform * w[i];
     };
+    auto result = pose;
     if (c.weight > 0) {
         rotate(c.start, start, rotation_between(middle - start, new_middle - start));
         rotate(c.middle, translation_of(w[c.middle]),
@@ -366,14 +376,25 @@ ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose
                                 new_end - translation_of(w[c.middle])));
         if (c.end_rotation) {
             const auto desired = rotation_matrix(unit_quaternion(*c.end_rotation));
-            const auto current = rotation_matrix(polar(w[c.end]).rotation);
+            const auto current = rotation_matrix(affine_rotation(w[c.end]));
             const auto delta = desired * inverse(current);
             rotate(c.end, translation_of(w[c.end]), quaternion(linear(delta)));
         }
+        // Each rotation moved a whole subtree rigidly, so only the local matrix of the joint at its root changed. The
+        // others keep theirs exactly, which a joint below a collapsed one needs: its local matrix cannot be recovered
+        // from world matrices.
+        const std::array chain{c.start, c.middle, c.end};
+        const auto rotated = std::span(chain).first(c.end_rotation ? chain.size() : chain.size() - 1);
+        for (const auto joint : rotated) {
+            auto local = w[joint];
+            if (const auto parent = rig.parent(joint); parent >= 0) {
+                const auto &parent_world = w[static_cast<std::size_t>(parent)];
+                require(!collapsed(upper(parent_world)), "Contact chain joint has a collapsed parent");
+                local = inverse(parent_world) * w[joint];
+            }
+            result.local[joint] = blend_affine(pose.local[joint], local, c.weight);
+        }
     }
-    auto result = rig.from_world(w);
-    if (c.weight < 1)
-        result = rig.layer(pose, result, rig.subtree_mask(c.start, c.weight));
     const auto final = rig.world(result);
     return {std::move(result), length(translation_of(final[c.end]) - c.target), a, b,
             requested >= minimum - reach_tolerance && requested <= maximum + reach_tolerance};

@@ -59,6 +59,9 @@ class EvaluationRig {
     [[nodiscard]] std::size_t joint(std::string_view name) const;
     /// Asset node of joint @p joint. Throws `std::out_of_range` for an invalid index.
     [[nodiscard]] std::size_t asset_node(std::size_t joint) const { return joints_.at(joint).asset_node; }
+    /// Index of the parent joint of joint @p joint, or -1 for a root. Throws `std::out_of_range` for
+    /// an invalid index.
+    [[nodiscard]] int parent(std::size_t joint) const;
     /// Number of joints.
     [[nodiscard]] std::size_t size() const { return joints_.size(); }
     /// Whether joint @p child is joint @p ancestor or below it. Throws for an invalid index.
@@ -148,12 +151,16 @@ struct ContactResult {
 ///
 /// The start and middle joints rotate rigidly with their whole subtrees, so limb lengths and
 /// affine stretch are preserved; an unreachable target is approached as far as the limits allow.
-/// TwoBoneContact::end_rotation then orients the end joint, and the chain's subtree blends from
-/// @p pose by the weight. Callers order competing contacts.
+/// TwoBoneContact::end_rotation then orients the end joint. Only the local matrices of the start
+/// and middle joints, and of the end joint with an end rotation, change: each is solved relative
+/// to its rig parent and blended from @p pose by the weight (see blend_affine). Every other joint,
+/// including one between the chain's joints or a collapsed one, keeps its local matrix from
+/// @p pose exactly, and a weight of 0 returns @p pose. Callers order competing contacts.
 ///
 /// Throws for a weight outside [0, 1], a chain that is not ordered and distinct, angle limits
 /// that break `0 <= minimum_angle < maximum_angle <= pi`, a nonfinite target or pole, or a limb
-/// shorter than `1e-6`.
+/// shorter than `1e-6`. With a weight above 0, also throws when a joint whose local matrix changes
+/// has a collapsed rig parent, and for an end rotation of a collapsed end joint.
 [[nodiscard]] ContactResult solve_contact(const EvaluationRig &rig, const EvaluationPose &pose,
                                           const TwoBoneContact &contact);
 } // namespace anima

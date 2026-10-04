@@ -373,10 +373,12 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const a
                                            std::string_view action,
                                            const std::map<std::string, float, std::less<>> *weights) {
     using namespace anima;
-    MotionEvaluation result{source, {}};
     // Resolve against the primary item frame once. A support chain must not
     // contain the primary node; asset loading verifies that ownership rule.
     const auto item = attachment_placement(source, primary);
+    // One evaluation solves every contact on the result of the previous one. Evaluating each on its own would encode
+    // the world-only pose the previous one returned, which cannot recover a joint below a collapsed one.
+    MotionControls controls;
     for (const auto &rule : handling.support_contacts) {
         if (!rule.clips.contains(clip) && !rule.actions.contains(action))
             continue;
@@ -389,13 +391,9 @@ MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const a
             continue;
         const auto &socket = presentation_data::lookup(sockets, rule.socket);
         const auto frame = item * attachment_marker(visual, prop_asset, prop_pose, rule.marker) * inverse(socket.local);
-        MotionControls controls;
         controls.contacts.push_back({rule.chain, point(frame, {}), rule.pole, weight, affine_rotation(frame)});
-        auto solved = runtime.evaluate(result.pose, controls);
-        result.pose = std::move(solved.pose);
-        result.contacts.insert(result.contacts.end(), solved.contacts.begin(), solved.contacts.end());
     }
-    return result;
+    return runtime.evaluate(source, controls);
 }
 void validate_attachment_ownership(const MotionRuntime &runtime, const AttachmentLibrary &library,
                                    const AttachmentSet &attachments,
