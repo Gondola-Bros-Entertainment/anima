@@ -41,7 +41,7 @@ struct GpuCustomMaterial {
     std::vector<GpuTexture> textures;
     VkDescriptorPool pool{};
     VkDescriptorSet set{};
-    // The main-view pipeline, created once a world render pass exists, and the depth-only variant's.
+    // The main-view pipeline and the depth-only variant's.
     VkPipeline pipeline{}, shadow_pipeline{};
     ~GpuCustomMaterial() {
         for (const auto handle : {pipeline, shadow_pipeline})
@@ -196,15 +196,12 @@ VkShaderModule custom_module(std::span<const std::uint32_t> words) const {
     check(vkCreateShaderModule(device, &info, nullptr, &shader), "Create custom shader module");
     return shader;
 }
-// The GPU state of @p material, created and uploaded on first use; its main-view pipeline is created once a world
-// render pass exists. Throws `std::invalid_argument` for a texture beyond the device's image limits and
-// `std::runtime_error` for failed Vulkan calls; a failure leaves nothing cached for @p material.
+// The GPU state of @p material with its pipelines, created and uploaded on first use. Throws `std::invalid_argument`
+// for a texture beyond the device's image limits and `std::runtime_error` for failed Vulkan calls; a failure leaves
+// nothing cached for @p material.
 GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &material) {
-    if (const auto found = custom_cache.find(material.get()); found != custom_cache.end()) {
-        if (!found->second->pipeline && render_pass)
-            create_custom_pipeline(*found->second, false);
+    if (const auto found = custom_cache.find(material.get()); found != custom_cache.end())
         return *found->second;
-    }
     const auto &definition = material->definition();
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
@@ -290,8 +287,7 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     if (value->shadow_vertex)
         create_custom_pipeline(*value, true);
-    if (render_pass)
-        create_custom_pipeline(*value, false);
+    create_custom_pipeline(*value, false);
     auto &cached = *custom_cache.emplace(material.get(), std::move(value)).first->second;
     // Every copy has completed, so a material with TexelRetention::until_upload no longer needs its texels.
     material->release_texels();
@@ -451,8 +447,7 @@ void create_opaque_input_passes(VkRenderPassCreateInfo world) {
     depth.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     check(vkCreateRenderPass(device, &world, nullptr, &composite_pass), "Create composite world pass");
 }
-void destroy_opaque_inputs() noexcept {
-    opaque_inputs.reset();
+void destroy_opaque_input_passes() noexcept {
     for (auto *pass : {&opaque_pass, &composite_pass}) {
         if (*pass)
             vkDestroyRenderPass(device, *pass, nullptr);

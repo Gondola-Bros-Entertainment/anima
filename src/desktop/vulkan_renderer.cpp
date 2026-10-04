@@ -830,6 +830,8 @@ struct VulkanRenderer::Impl {
         layout.pushConstantRangeCount = 1;
         layout.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(device, &layout, nullptr, &pipeline_layout), "Create triangle pipeline layout");
+        // The depth format depends on the device alone, so every swapchain's depth targets share it.
+        choose_depth_format();
 #ifdef ANIMA_UI
         make_shaders(ui_vertex_code, ui_fragment_code, ui_vertex_shader, ui_fragment_shader);
         create_ui_layout();
@@ -874,6 +876,7 @@ struct VulkanRenderer::Impl {
         create_pipeline(PipelineKind::shadow_opaque, shadow_opaque_pipeline);
         create_pipeline(PipelineKind::shadow_masked, shadow_masked_pipeline);
         create_pipeline(PipelineKind::shadow_impostor, shadow_impostor_pipeline);
+        create_view_pipelines();
 #endif
     }
     void running() const {
@@ -1043,29 +1046,15 @@ struct VulkanRenderer::Impl {
         const auto handles = enumerate<VkImage>(
             [&](auto *n, auto *p) { return vkGetSwapchainImagesKHR(device, swapchain, n, p); }, "Get swapchain images");
         images.resize(handles.size());
-        choose_depth_format();
-#ifndef ANIMA_HAS_ASSETS
+#ifdef ANIMA_HAS_ASSETS
+        // The scene targets are left to draw()'s ensure_scene_targets(), where a failure to create them is recoverable.
+        // The view's passes and pipelines render them and outlive the swapchain; only the display's depend on it.
+        ensure_display();
+#else
         // The view renders into the swapchain images, with a depth buffer of their size.
         scene_extent = extent;
         depth_target = create_depth(scene_extent);
-#endif
-        create_render_pass();
-#ifdef ANIMA_HAS_ASSETS
-        // The scene targets are left to draw()'s ensure_scene_targets(), where a failure to create them is recoverable.
-        present_pass = create_display_pass();
-        create_display_pipeline();
-#endif
-        create_pipeline(PipelineKind::diagnostic, pipeline);
-#ifdef ANIMA_HAS_ASSETS
-        for (const bool height_fog : {false, true}) {
-            for (std::size_t mesh = 0; mesh < mesh_pipeline_count; ++mesh)
-                create_pipeline(MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
-                                                                               : PipelineKind::opaque_resource,
-                                resource_pipelines[mesh][height_fog], height_fog, mesh_pipeline_culling[mesh]);
-            create_pipeline(PipelineKind::blended_resource, blended_resource_pipelines[height_fog], height_fog);
-            create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
-        }
-        create_pipeline(PipelineKind::sky, sky_pipeline);
+        create_view_pipelines();
 #endif
         for (std::size_t i = 0; i < images.size(); ++i) {
             auto &image = images[i];
@@ -1104,6 +1093,52 @@ struct VulkanRenderer::Impl {
         }
         if (capture)
             create_capture();
+    }
+    // Creates the view's render pass and the pipelines that draw into it: the diagnostic triangle's and, with asset
+    // support, the meshes', impostors' and sky's, with the passes that split the view around the opaque input copy.
+    // With asset support the view renders the world targets, whose formats depend on the device alone, so
+    // initialization creates these once and cleanup() destroys them. Without it the view renders the swapchain images,
+    // so each swapchain creation creates them for its format and destroy_swapchain() destroys them.
+    void create_view_pipelines() {
+        create_render_pass();
+        create_pipeline(PipelineKind::diagnostic, pipeline);
+#ifdef ANIMA_HAS_ASSETS
+        for (const bool height_fog : {false, true}) {
+            for (std::size_t mesh = 0; mesh < mesh_pipeline_count; ++mesh)
+                create_pipeline(MeshPipeline(mesh) == MeshPipeline::discarding ? PipelineKind::resource
+                                                                               : PipelineKind::opaque_resource,
+                                resource_pipelines[mesh][height_fog], height_fog, mesh_pipeline_culling[mesh]);
+            create_pipeline(PipelineKind::blended_resource, blended_resource_pipelines[height_fog], height_fog);
+            create_pipeline(PipelineKind::impostor, impostor_pipelines[height_fog], height_fog);
+        }
+        create_pipeline(PipelineKind::sky, sky_pipeline);
+#endif
+    }
+    void destroy_view_pipelines() noexcept {
+#ifdef ANIMA_HAS_ASSETS
+        // Each pair holds a pipeline without and with the height fog's code.
+        const auto destroy_pair = [&](std::array<VkPipeline, 2> &pipelines) noexcept {
+            for (auto &value : pipelines) {
+                if (value)
+                    vkDestroyPipeline(device, value, nullptr);
+                value = VK_NULL_HANDLE;
+            }
+        };
+        for (auto &pipelines : resource_pipelines)
+            destroy_pair(pipelines);
+        destroy_pair(blended_resource_pipelines);
+        destroy_pair(impostor_pipelines);
+        if (sky_pipeline)
+            vkDestroyPipeline(device, sky_pipeline, nullptr);
+        sky_pipeline = VK_NULL_HANDLE;
+        destroy_opaque_input_passes();
+#endif
+        if (pipeline)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        pipeline = VK_NULL_HANDLE;
+        if (render_pass)
+            vkDestroyRenderPass(device, render_pass, nullptr);
+        render_pass = VK_NULL_HANDLE;
     }
     void create_render_pass() {
         VkAttachmentDescription attachment{};
@@ -2319,9 +2354,12 @@ struct VulkanRenderer::Impl {
         return presented;
     }
     void destroy_swapchain() noexcept {
+#ifndef ANIMA_HAS_ASSETS
+        // Without asset support the UI pipeline draws into the view's pass, which the swapchain's format shaped.
         if (ui_pipeline)
             vkDestroyPipeline(device, ui_pipeline, nullptr);
         ui_pipeline = VK_NULL_HANDLE;
+#endif
         if (capture_buffer)
             vmaDestroyBuffer(allocator, capture_buffer, capture_allocation);
         capture_buffer = VK_NULL_HANDLE;
@@ -2343,29 +2381,9 @@ struct VulkanRenderer::Impl {
 #endif
         depth_target.reset();
         scene_extent = {};
-#ifdef ANIMA_HAS_ASSETS
-        // Each pair holds a pipeline without and with the height fog's code.
-        const auto destroy_pair = [&](std::array<VkPipeline, 2> &pipelines) noexcept {
-            for (auto &value : pipelines) {
-                if (value)
-                    vkDestroyPipeline(device, value, nullptr);
-                value = VK_NULL_HANDLE;
-            }
-        };
-        for (auto &pipelines : resource_pipelines)
-            destroy_pair(pipelines);
-        destroy_pair(blended_resource_pipelines);
-        destroy_pair(impostor_pipelines);
-        if (sky_pipeline)
-            vkDestroyPipeline(device, sky_pipeline, nullptr);
-        sky_pipeline = VK_NULL_HANDLE;
+#ifndef ANIMA_HAS_ASSETS
+        destroy_view_pipelines();
 #endif
-        if (pipeline)
-            vkDestroyPipeline(device, pipeline, nullptr);
-        pipeline = VK_NULL_HANDLE;
-        if (render_pass)
-            vkDestroyRenderPass(device, render_pass, nullptr);
-        render_pass = VK_NULL_HANDLE;
         if (swapchain)
             vkDestroySwapchainKHR(device, swapchain, nullptr);
         swapchain = VK_NULL_HANDLE;
@@ -2392,6 +2410,10 @@ struct VulkanRenderer::Impl {
                 std::fprintf(stderr, "%s\n", error.what());
             }
             destroy_swapchain();
+#ifdef ANIMA_HAS_ASSETS
+            destroy_display();
+            destroy_view_pipelines();
+#endif
             // Retired objects first, since some, such as shadow maps, were made for objects destroyed below.
             for (auto &slot : frames)
                 slot.released.clear();

@@ -152,6 +152,8 @@ struct Summary {
     double steady_untimed{}, release_untimed{}, release_prepare{}, steady_prepare{};
     // Median fence_wait_ms of the steady calls, and of the calls that followed wait_for_frame().
     double steady_fence{}, waited_fence{};
+    // The fence_wait_ms of the call that recreated the swapchain, which includes the recreation.
+    double recreation_fence{};
     std::vector<double> idle, release_idle, interval;
     // Median contrast of the rebuilt frame's atmosphere time over the longest other one, where measured.
     std::optional<double> lag_contrast;
@@ -239,6 +241,21 @@ inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     summary.steady_fence = median(fence);
     require(summary.steady_untimed <= untimed_limit_ms,
             "The CPU fields leave " + std::to_string(summary.steady_untimed) + " ms of a typical draw() untimed");
+
+    // The draw() after request_resize() recreates the swapchain once, within its fence_wait_ms.
+    const auto swapchains = renderer.stats().swapchain_generations;
+    renderer.request_resize();
+    for (;;) {
+        const auto &call = check.draw();
+        if (renderer.stats().swapchain_generations == swapchains) {
+            SDL_Delay(5);
+            continue;
+        }
+        require(renderer.stats().swapchain_generations == swapchains + 1,
+                "A requested resize recreated the swapchain more than once");
+        summary.recreation_fence = call.profile.fence_wait_ms;
+        break;
+    }
 
     // Waiting for the frame slot first, as an application does before reading input, leaves draw() no frame to wait
     // for, so its fence wait returns at once.
@@ -329,7 +346,7 @@ inline int run(int argc, char **) {
                << released_meshes << " meshes, whose prepare_ms of " << summary.release_prepare
                << " ms or more exceeds the median " << summary.steady_prepare << " ms, a median fence_wait_ms of "
                << summary.waited_fence << " ms after wait_for_frame() and " << summary.steady_fence
-               << " ms without it, ";
+               << " ms without it, " << summary.recreation_fence << " ms on the draw() that recreated the swapchain, ";
         if (summary.lag_contrast)
             report << "the call " << frames << " after an atmosphere rebuild reports it, at a median "
                    << *summary.lag_contrast << " times any other call's atmosphere time, ";
