@@ -12,8 +12,6 @@
 #include <string>
 
 namespace {
-// anima::Mat4 is a std::array, so argument-dependent lookup does not find its product.
-using anima::operator*;
 constexpr float tolerance = 1e-4F; // Snapshot vertices and material factors against their independent sources.
 // Runs only when the first argument names an exported model, as CTest's exported_instances passes it.
 constexpr auto exported_case = "Snapshots of an exported model match its independent deformation";

@@ -20,7 +20,6 @@ constexpr float surface_tolerance = .001F;                   // Ray and sweep co
 constexpr float axis_alignment = .99F;                       // A unit normal this aligned faces along an axis.
 constexpr float resting_height = .5F;                        // A unit box's origin height on a floor at y = 0.
 constexpr float settle_tolerance = .03F;                     // Solver slop after settling.
-constexpr Quat identity_rotation{0, 0, 0, 1};                // Quat{} is all zeros, not the identity.
 constexpr Quat quarter_turn_z{0, 0, .70710678F, .70710678F}; // 90 degrees about +Z.
 constexpr std::size_t hull_point_limit = 256;                // Documented in include/anima/physics.hpp.
 constexpr std::size_t compound_child_limit = 64;

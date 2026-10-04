@@ -248,10 +248,10 @@ void AttachmentLibrary::validate(const anima::Asset &source, const AttachmentVis
     }
 }
 AttachmentBinding bind_attachment(const AttachmentSocket &socket, const AttachmentVisual &visual) {
-    return {socket.node, anima::operator*(socket.local, anima::inverse(visual.primary_grip))};
+    return {socket.node, socket.local * anima::inverse(visual.primary_grip)};
 }
 anima::Mat4 attachment_placement(const anima::Pose &pose, const AttachmentBinding &binding, const anima::Mat4 &actor) {
-    return anima::operator*(anima::operator*(actor, pose.world.at(binding.node)), binding.local);
+    return actor * pose.world.at(binding.node) * binding.local;
 }
 anima::Pose sample_attachment_pose(const AttachmentAsset &asset, const AttachmentVisual &visual, std::string_view track,
                                    double progress, TrackRequirement requirement) {
@@ -272,7 +272,6 @@ AttachmentBinding animated_attachment_binding(const AttachmentBinding &binding, 
                                               const anima::Asset &asset, const anima::Pose &pose) {
     if (visual.primary_node.empty())
         return binding;
-    using anima::operator*;
     // The grip is in prop model space, so the node carries it by the node's motion from its rest placement, and at
     // the rest pose the grip stays where bind_attachment put it.
     const auto node = anima::find_node(asset, visual.primary_node);
@@ -286,7 +285,7 @@ anima::Mat4 attachment_marker(const AttachmentVisual &visual, std::string_view n
         return local;
     if (!prop)
         throw std::invalid_argument("Animated attachment marker requires the sampled prop pose");
-    return anima::operator*(prop->pose.world.at(anima::find_node(prop->asset, found->second)), local);
+    return prop->pose.world.at(anima::find_node(prop->asset, found->second)) * local;
 }
 bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &library,
                                  const AttachmentSockets &sockets, std::string_view id) {

@@ -60,8 +60,8 @@ inline Json read(const std::filesystem::path &path) {
 }
 // Reads a column-major frame; json_floats leaves every element finite.
 inline anima::Mat4 matrix(const Json &value, bool rigid) {
-    const auto result = detail::json_floats<std::tuple_size_v<anima::Mat4>>(
-        value, "Presentation transform requires 16 column-major values");
+    const anima::Mat4 result{
+        detail::json_floats<anima::Mat4::size()>(value, "Presentation transform requires 16 column-major values")};
     if (std::abs(result[3]) > affine_tolerance || std::abs(result[7]) > affine_tolerance ||
         std::abs(result[11]) > affine_tolerance || std::abs(result[15] - 1) > affine_tolerance)
         throw std::invalid_argument("Presentation transform must be affine");

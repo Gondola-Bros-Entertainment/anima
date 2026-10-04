@@ -64,6 +64,13 @@ TEST_CASE("A canonical composition document decodes its parts and a maximum-widt
     REQUIRE(decoded.parts().size() == 2);
     REQUIRE(decoded.parts()[1].parent);
     CHECK(decoded.parts()[1].parent->object.value == 41);
+    // A placement encodes as its 16 column-major elements and decodes to an equal matrix.
+    const auto encoded = decoded.serialize();
+    auto compact = encoded;
+    std::erase_if(compact, [](char c) { return c == ' ' || c == '\n'; });
+    CHECK(compact.find(R"("placement":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0])") !=
+          std::string::npos);
+    CHECK(decode(encoded).parts()[1].placement == decoded.parts()[1].placement);
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
     const auto widest =
         decode(substitute(valid, "\"object\":\"41\"", "\"object\":\"" + std::to_string(maximum) + "\""));

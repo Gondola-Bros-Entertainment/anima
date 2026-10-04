@@ -1,12 +1,16 @@
 #include <anima/core/fixed_step.hpp>
 #include <anima/core/math.hpp>
+#include <anima/core/transform.hpp>
 #include <doctest/doctest.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <type_traits>
 
 using namespace std::chrono_literals;
 namespace {
@@ -99,4 +103,48 @@ TEST_CASE("Normals keep their direction through mirroring and stay defined when 
     CHECK(collapsed.x == 0);
     CHECK(collapsed.y == 1);
     CHECK(collapsed.z == 0);
+}
+
+// This file is outside namespace anima and declares no using-declaration for its operators, so only
+// argument-dependent lookup can find the matrix product.
+TEST_CASE("Matrices and quaternions are distinct types whose operators argument-dependent lookup finds") {
+    const anima::Mat4 scale{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1};
+    const anima::Mat4 shift{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1};
+    // Applied to a column vector, the right operand acts first.
+    CHECK(shift * scale == anima::Mat4{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 1, 2, 3, 1});
+    CHECK(scale * shift == anima::Mat4{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 2, 4, 6, 1});
+    CHECK(anima::Mat4{} == anima::Mat4{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+    // Equality is the elements' float equality.
+    auto signed_zero = anima::Mat4{};
+    signed_zero[0] = -0.F;
+    CHECK(signed_zero == anima::Mat4{});
+    auto not_a_number = anima::identity();
+    not_a_number[15] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(not_a_number != not_a_number);
+
+    // A GPU buffer receives the column-major elements byte for byte.
+    static_assert(sizeof(anima::Mat4) == 16 * sizeof(float) && anima::Mat4::size() == 16);
+    static_assert(std::is_standard_layout_v<anima::Mat4> && std::is_trivially_copyable_v<anima::Mat4>);
+    std::array<float, 16> bytes{};
+    std::memcpy(bytes.data(), &shift, sizeof shift);
+    CHECK(bytes == shift.elements);
+    CHECK(bytes[13] == 2);
+
+    // Neither converts from a std::array, so a tangent() or view_origin() result is not a rotation.
+    static_assert(!std::is_convertible_v<std::array<float, 16>, anima::Mat4>);
+    static_assert(!std::is_convertible_v<std::array<float, 4>, anima::Quat>);
+    static_assert(!std::is_convertible_v<decltype(anima::view_origin(shift)), anima::Quat>);
+
+    // Quat{} is all zeros, which is not a rotation; a transform starts at the identity rotation.
+    constexpr anima::Quat zero{};
+    static_assert(zero.x == 0 && zero.y == 0 && zero.z == 0 && zero.w == 0);
+    CHECK(anima::Transform{}.rotation == anima::identity_rotation);
+    CHECK(anima::identity_rotation == anima::Quat{0, 0, 0, 1});
+    CHECK_THROWS_WITH_AS((void)anima::unit_quaternion(zero), "Cannot normalize zero quaternion", anima::MathError);
+    // Indices follow XYZW.
+    constexpr anima::Quat q{1, 2, 3, 4};
+    static_assert(q[0] == q.x && q[1] == q.y && q[2] == q.z && q[3] == q.w);
+    auto written = zero;
+    written[3] = 1;
+    CHECK(written == anima::identity_rotation);
 }

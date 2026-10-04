@@ -264,8 +264,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         value.name = name(node.name);
         value.parent = node.parent ? static_cast<int>(node.parent - data->nodes) : no_index;
         value.rest.translation = {node.translation[0], node.translation[1], node.translation[2]};
-        std::copy_n(node.rotation, 4, value.rest.rotation.begin());
-        value.rest.rotation = unit_quaternion(value.rest.rotation);
+        value.rest.rotation = unit_quaternion({node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]});
         value.rest.scale = {node.scale[0], node.scale[1], node.scale[2]};
         value.has_matrix = node.has_matrix;
         cgltf_node_transform_local(&node, value.rest_matrix.data());
@@ -281,7 +280,7 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
         for (std::size_t j = 0; j < skin.joints_count; ++j) {
             value.joints.push_back(static_cast<std::size_t>(skin.joints[j] - data->nodes));
             value.inverse_bind.push_back(
-                skin.inverse_bind_matrices ? read(skin.inverse_bind_matrices, j, cgltf_type_mat4) : identity());
+                skin.inverse_bind_matrices ? Mat4{read(skin.inverse_bind_matrices, j, cgltf_type_mat4)} : identity());
         }
         asset->skins.push_back(std::move(value));
     }
@@ -582,8 +581,10 @@ static std::shared_ptr<const Asset> read_asset(std::span<const std::byte> bytes,
                 const auto sample =
                     read(s->output, k, value.path == ChannelPath::rotation ? cgltf_type_vec4 : cgltf_type_vec3);
                 std::array<float, 4> output{sample[0], sample[1], sample[2], sample[3]};
-                if (value.path == ChannelPath::rotation)
-                    output = unit_quaternion(output);
+                if (value.path == ChannelPath::rotation) {
+                    const auto q = unit_quaternion({sample[0], sample[1], sample[2], sample[3]});
+                    output = {q.x, q.y, q.z, q.w};
+                }
                 value.values.push_back(output);
             }
             clip.duration = std::max(clip.duration, value.times.back());
