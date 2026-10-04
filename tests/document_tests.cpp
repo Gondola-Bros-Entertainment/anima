@@ -3,6 +3,7 @@
 #include <anima/camera.hpp>
 #include <anima/components.hpp>
 #include <anima/prefab.hpp>
+#include <anima/prefab_composition.hpp>
 #include <anima/scene.hpp>
 #include <doctest/doctest.h>
 
@@ -10,11 +11,13 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 using namespace anima;
 namespace {
@@ -148,6 +151,43 @@ TEST_CASE("Scene and prefab objects require every field, and written documents r
     }
     CHECK(serialize_scene(*load_scene(written, {}), {}) == written);
     CHECK(Prefab::deserialize(prefab, {}).serialize({}) == prefab);
+}
+
+TEST_CASE("A placement under a parent is relative to it, and the new root is the parent's last child") {
+    // Translations and a uniform scale of 2 keep every product exact.
+    const auto parent_world = matrix({.translation = {10, 0, 0}, .scale = {2, 2, 2}});
+    const auto placement = matrix({.translation = {0, 3, 0}});
+    const auto authored = matrix({.translation = {0, 0, 5}});
+    Prefab::Node root;
+    root.name = "root";
+    root.local = authored;
+    const auto prefab = std::make_shared<const Prefab>(std::vector<Prefab::Node>{root});
+
+    Scene scene;
+    // As a new root, the local matrix is the world matrix.
+    const auto free = prefab->instantiate(scene, placement);
+    CHECK(free.local_matrix() == placement * authored);
+    CHECK(free.world_matrix() == placement * authored);
+
+    auto parent = scene.create("parent");
+    parent.set_local_matrix(parent_world);
+    scene.create("earlier").set_parent(parent);
+    const auto child = prefab->instantiate(parent, placement);
+    REQUIRE(child.parent());
+    CHECK(child.parent()->id() == parent.id());
+    CHECK(parent.children().back().id() == child.id());
+    CHECK(child.local_matrix() == placement * authored);
+    CHECK(child.world_matrix() == parent_world * placement * authored);
+    CHECK(prefab->instantiate(parent, placement, ComponentCodecs{}).world_matrix() ==
+          parent_world * placement * authored);
+
+    // A composition places its first part's root the same way, after the part's own placement.
+    const auto part_placement = matrix({.translation = {0, 0, 1}});
+    const PrefabComposition composition({{"root", "shared", std::nullopt, part_placement}});
+    const auto composed = composition.instantiate(parent, [&](std::string_view) { return prefab; }, {}, placement);
+    CHECK(parent.children().back().id() == composed.id());
+    CHECK(composed.local_matrix() == placement * part_placement * authored);
+    CHECK(composed.world_matrix() == parent_world * placement * part_placement * authored);
 }
 
 TEST_CASE("Component state that is not UTF-8 is rejected on output as std::invalid_argument") {
