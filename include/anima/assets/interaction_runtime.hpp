@@ -74,7 +74,7 @@ class InteractionRuntime {
     const InteractionBindings &bindings() const;
     /// Document id.
     const std::string &id() const;
-    /// Evaluates every role at @p elapsed seconds, with the held phase released at @p released.
+    /// Evaluates every role at @p elapsed seconds, with the held phase released at @p released_at.
     ///
     /// Each role's layers are evaluated over its rest pose. Roles are then placed from their
     /// @p free_worlds entries, rigid model-to-world matrices keyed by role id, through the
@@ -82,7 +82,7 @@ class InteractionRuntime {
     /// and then solves its contacts toward its parent's target sockets. Throws unless
     /// @p free_worlds has one entry per role, `std::out_of_range` when its keys differ from the
     /// role ids, and as ActionTimeline::sample and InteractionBindings::sample do.
-    InteractionSample sample(double elapsed, std::optional<double> released,
+    InteractionSample sample(double elapsed, std::optional<double> released_at,
                              const std::map<std::string, Mat4, std::less<>> &free_worlds) const;
 
   private:

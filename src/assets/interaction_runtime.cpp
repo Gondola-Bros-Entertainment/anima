@@ -108,17 +108,17 @@ struct InteractionRuntime::Impl {
     const anima::InteractionBindings &bindings() const { return *bindings_; }
     const std::string &id() const { return id_; }
 
-    InteractionSample sample(double elapsed, std::optional<double> released,
+    InteractionSample sample(double elapsed, std::optional<double> released_at,
                              const std::map<std::string, anima::Mat4, std::less<>> &free_worlds) const {
         using anima::operator*;
         if (free_worlds.size() != actors_.size())
             throw std::invalid_argument("Every interaction role needs a free placement");
-        InteractionSample result{timeline_->sample(elapsed, released), {}, {}, {}};
+        InteractionSample result{timeline_->sample(elapsed, released_at), {}, {}, {}};
         std::vector<anima::InteractionFrame> frames;
         for (const auto &role : bindings_->roles()) {
             const auto &actor = actors_.at(role.id);
             auto sampled = runtimes_.at(role.id)->sample(anima::sample_pose(*actor.motion->model()),
-                                                         ActionRequest{id_, elapsed, released, {}}, role.id);
+                                                         ActionRequest{id_, elapsed, released_at, {}}, role.id);
             frames.push_back({std::move(sampled.pose), free_worlds.at(role.id)});
         }
         std::vector<anima::InteractionPlacement> placements;
@@ -193,8 +193,8 @@ InteractionRuntime::InteractionRuntime(Actors actors, std::string_view document)
 const ActionTimeline &InteractionRuntime::timeline() const { return impl_->timeline(); }
 const InteractionBindings &InteractionRuntime::bindings() const { return impl_->bindings(); }
 const std::string &InteractionRuntime::id() const { return impl_->id(); }
-InteractionSample InteractionRuntime::sample(double elapsed, std::optional<double> released,
+InteractionSample InteractionRuntime::sample(double elapsed, std::optional<double> released_at,
                                              const std::map<std::string, Mat4, std::less<>> &free_worlds) const {
-    return impl_->sample(elapsed, released, free_worlds);
+    return impl_->sample(elapsed, released_at, free_worlds);
 }
 } // namespace anima
