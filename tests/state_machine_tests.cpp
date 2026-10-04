@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace anima;
@@ -86,7 +87,7 @@ Machine::Parameter parameter(std::string name, ParameterType type, double initia
 Machine::State clip_state(std::string name, std::string clip) {
     Machine::State result;
     result.name = std::move(name);
-    result.clip = std::move(clip);
+    result.motion = std::move(clip);
     return result;
 }
 Machine::Condition condition(std::string name, ConditionMode mode, double threshold = 0) {
@@ -674,7 +675,7 @@ TEST_CASE("A blend state weights its two nearest clips by its parameter and keep
     blend.parameter = "speed";
     blend.clips = {{"walk", 1}, {"run", 3}};
     definition.states[0] = clip_state("move", "");
-    definition.states[0].blend = blend;
+    definition.states[0].motion = blend;
     Actor actor(std::move(definition));
     auto &animator = actor.animator;
     CHECK(animator->state() == "move");
@@ -783,7 +784,7 @@ TEST_CASE("A blend of clips with zero duration blends their poses and advances a
     blend.parameter = "speed";
     blend.clips = {{"aim_low", -1}, {"aim_high", 1}};
     definition.states[0] = clip_state("aim", "");
-    definition.states[0].blend = blend;
+    definition.states[0].motion = blend;
     definition.transitions = {transition("aim", "walk", {})};
     definition.transitions[0].exit_time = 1;
     Actor actor(std::move(definition));
@@ -1148,15 +1149,18 @@ TEST_CASE("A document decodes every field of a definition") {
     CHECK(definition.parameters[3].initial == 0);
     REQUIRE(definition.states.size() == 2);
     const auto &move = definition.states[0];
-    CHECK(move.clip.empty());
-    REQUIRE(move.blend);
-    CHECK(move.blend->parameter == "speed");
-    REQUIRE(move.blend->clips.size() == 2);
-    CHECK(move.blend->clips[1].clip == "run");
-    CHECK(move.blend->clips[1].threshold == 3);
+    const auto *const blend = std::get_if<Machine::Blend>(&move.motion);
+    REQUIRE(blend);
+    CHECK(blend->parameter == "speed");
+    REQUIRE(blend->clips.size() == 2);
+    CHECK(blend->clips[0].clip == "walk");
+    CHECK(blend->clips[0].threshold == 1);
+    CHECK(blend->clips[1].clip == "run");
+    CHECK(blend->clips[1].threshold == 3);
     CHECK(move.speed == 1.5);
     CHECK(move.speed_parameter == "speed");
-    CHECK(definition.states[1].clip == "jump");
+    REQUIRE(std::holds_alternative<std::string>(definition.states[1].motion));
+    CHECK(std::get<std::string>(definition.states[1].motion) == "jump");
     CHECK(definition.states[1].speed == 1);
     REQUIRE(definition.transitions.size() == 3);
     const auto &any = definition.transitions[0];
@@ -1266,7 +1270,7 @@ TEST_CASE("Invalid definitions are rejected with their reason") {
         blend.parameter = "speed";
         blend.clips = {{"walk", 1}, {"run", 3}};
         definition.states.push_back(clip_state("move", ""));
-        definition.states.back().blend = blend;
+        definition.states.back().motion = blend;
         definition.transitions = {transition("idle", "walk", {condition("speed", ConditionMode::greater, 1)}, .5)};
         return definition;
     }();
@@ -1299,31 +1303,35 @@ TEST_CASE("Invalid definitions are rejected with their reason") {
         {[](Machine::Definition &d) { d.states.clear(); }, "Animation state machine needs a state"},
         {[](Machine::Definition &d) { d.states[1].name.clear(); }, "Empty animation state name"},
         {[](Machine::Definition &d) { d.states[1].name = "idle"; }, "Duplicate animation state: idle"},
-        {[](Machine::Definition &d) { d.states[1].clip.clear(); },
-         "Animation state needs exactly one of a clip and a blend: walk"},
-        {[](Machine::Definition &d) { d.states.back().clip = "walk"; },
-         "Animation state needs exactly one of a clip and a blend: move"},
+        {[](Machine::Definition &d) { d.states[1].motion = std::string{}; }, "Animation state needs a clip name: walk"},
+        {[](Machine::Definition &d) {
+             Machine::State rest;
+             rest.name = "rest";
+             d.states.push_back(rest);
+         },
+         "Animation state needs a clip name: rest"},
         {[](Machine::Definition &d) { d.states[1].speed = -1; }, "Invalid animation state speed: walk"},
         {[](Machine::Definition &d) { d.states[1].speed = std::numeric_limits<double>::quiet_NaN(); },
          "Invalid animation state speed: walk"},
         {[](Machine::Definition &d) { d.states[1].speed_parameter = "pace"; }, "Unknown animation parameter: pace"},
         {[](Machine::Definition &d) { d.states[1].speed_parameter = "stance"; },
          "Animation parameter must be a float: stance"},
-        {[](Machine::Definition &d) { d.states.back().blend->parameter = "grounded"; },
+        {[](Machine::Definition &d) { std::get<Machine::Blend>(d.states.back().motion).parameter = "grounded"; },
          "Animation parameter must be a float: grounded"},
-        {[](Machine::Definition &d) { d.states.back().blend->clips.pop_back(); },
+        {[](Machine::Definition &d) { std::get<Machine::Blend>(d.states.back().motion).clips.pop_back(); },
          "Animation blend needs two or more clips: move"},
-        {[](Machine::Definition &d) { d.states.back().blend->clips[1].threshold = 1; },
+        {[](Machine::Definition &d) { std::get<Machine::Blend>(d.states.back().motion).clips[1].threshold = 1; },
          "Animation blend thresholds must be finite and increasing: move"},
         {[](Machine::Definition &d) {
-             d.states.back().blend->clips[0].threshold = -std::numeric_limits<float>::infinity();
+             std::get<Machine::Blend>(d.states.back().motion).clips[0].threshold =
+                 -std::numeric_limits<float>::infinity();
          },
          "Animation blend thresholds must be finite and increasing: move"},
-        {[](Machine::Definition &d) { d.states.back().blend->clips[1].clip = "jump"; },
+        {[](Machine::Definition &d) { std::get<Machine::Blend>(d.states.back().motion).clips[1].clip = "jump"; },
          "Animation blend clips must all loop or all hold: move"},
-        {[](Machine::Definition &d) { d.states.back().blend->clips[1].clip = "guard"; },
+        {[](Machine::Definition &d) { std::get<Machine::Blend>(d.states.back().motion).clips[1].clip = "guard"; },
          "Animation blend mixes clips of zero and positive duration: move"},
-        {[](Machine::Definition &d) { d.states[1].clip = "swim"; }, "Animation clip has no metadata: swim"},
+        {[](Machine::Definition &d) { d.states[1].motion = "swim"; }, "Animation clip has no metadata: swim"},
         {[](Machine::Definition &d) { d.transitions[0].from = "sky"; }, "Unknown animation state: sky"},
         {[](Machine::Definition &d) { d.transitions[0].to = "sea"; }, "Unknown animation state: sea"},
         {[](Machine::Definition &d) { d.transitions[0].conditions.clear(); },
@@ -1502,11 +1510,11 @@ TEST_CASE("A machine over a motion runtime plays the motion's base clips on the 
 
     // Only base clips play: neither a layer clip nor a clip of the model alone has the motion's metadata.
     auto layer = motion_states();
-    layer.states[1].clip = "layer.tip";
+    layer.states[1].motion = "layer.tip";
     CHECK_THROWS_WITH_AS(Machine(actor.motion, layer), "Animation clip has no metadata: layer.tip",
                          std::invalid_argument);
     auto own = motion_states();
-    own.states[1].clip = "sway";
+    own.states[1].motion = "sway";
     CHECK_THROWS_WITH_AS(Machine(actor.motion, own), "Animation clip has no metadata: sway", std::invalid_argument);
     CHECK_THROWS_WITH_AS(Machine(std::shared_ptr<const MotionRuntime>{}, motion_states()),
                          "Animation state machine requires a motion runtime", std::invalid_argument);

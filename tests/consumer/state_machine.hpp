@@ -119,7 +119,7 @@ inline void run_motion() {
             "Crossfade between motion clips did not publish through the pose filter");
 
     auto layered = machine->definition();
-    layered.states[1].clip = "layer.port";
+    layered.states[1].motion = "layer.port";
     rejects<std::invalid_argument>([&] { (void)AnimationStateMachine(motion, layered); },
                                    "Animation clip has no metadata: layer.port");
 }
@@ -205,7 +205,7 @@ inline void run() {
         },
         "Unsupported animation state machine document version");
     AnimationStateMachine::Definition unknown_clip = machine->definition();
-    unknown_clip.states[1].clip = "glide";
+    unknown_clip.states[1].motion = "glide";
     rejects<std::invalid_argument>([&] { (void)AnimationStateMachine(asset, clips, unknown_clip); },
                                    "Animation clip has no metadata: glide");
     rejects<std::out_of_range>([&] { animator->set_float("speed", 1); }, "Unknown animation parameter: speed");

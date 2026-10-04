@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 /// @file
@@ -101,10 +102,9 @@ class AnimationStateMachine {
     struct State {
         /// Nonempty name, unique among the states.
         std::string name;
-        /// Name of the clip the state plays; empty when #blend is set.
-        std::string clip;
-        /// Blend the state plays instead of #clip.
-        std::optional<Blend> blend;
+        /// The clip the state plays, by its nonempty name, or the blend it plays instead. A
+        /// default-constructed state holds an empty clip name, which the machine rejects.
+        std::variant<std::string, Blend> motion;
         /// Rate multiplier, finite and at least 0.
         double speed = 1;
         /// Name of a float parameter that also multiplies the rate, or empty for none. Its value must be at

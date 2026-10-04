@@ -8,6 +8,7 @@
 #include <map>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 
 namespace anima {
 namespace detail {
@@ -176,7 +177,7 @@ Machine::Definition decode_definition(std::string_view document) {
         require(entry.contains("clip") != entry.contains("blend"),
                 "Animation state needs exactly one of a clip and a blend: " + state.name);
         if (entry.contains("clip"))
-            state.clip = entry.at("clip").get<std::string>();
+            state.motion = entry.at("clip").get<std::string>();
         else {
             const auto &blend = entry.at("blend");
             detail::json_fields(blend, {"parameter", "clips"});
@@ -187,7 +188,7 @@ Machine::Definition decode_definition(std::string_view document) {
                 decoded.clips.push_back(
                     {point.at("clip").get<std::string>(), detail::json_float(point.at("threshold"))});
             }
-            state.blend = std::move(decoded);
+            state.motion = std::move(decoded);
         }
         if (entry.contains("speed"))
             state.speed = json_number(entry.at("speed"));
@@ -586,19 +587,18 @@ void AnimationStateMachine::compile(std::span<const ClipMetadata> clips) {
         require(data->state_names.emplace(states[i].name, i).second, "Duplicate animation state: " + states[i].name);
     }
     for (const auto &state : states) {
-        const bool plays_clip = !state.clip.empty();
-        require(plays_clip != state.blend.has_value(),
-                "Animation state needs exactly one of a clip and a blend: " + state.name);
+        const auto *const clip = std::get_if<std::string>(&state.motion);
+        require(!clip || !clip->empty(), "Animation state needs a clip name: " + state.name);
         require(std::isfinite(state.speed) && state.speed >= 0, "Invalid animation state speed: " + state.name);
         Data::State compiled;
         compiled.name = state.name;
         compiled.speed = state.speed;
         if (!state.speed_parameter.empty())
             compiled.speed_parameter = float_parameter(state.speed_parameter);
-        if (state.blend) {
-            compiled.blend_parameter = float_parameter(state.blend->parameter);
-            require(state.blend->clips.size() >= 2, "Animation blend needs two or more clips: " + state.name);
-            for (const auto &point : state.blend->clips) {
+        if (const auto *const blend = std::get_if<Blend>(&state.motion)) {
+            compiled.blend_parameter = float_parameter(blend->parameter);
+            require(blend->clips.size() >= 2, "Animation blend needs two or more clips: " + state.name);
+            for (const auto &point : blend->clips) {
                 require(std::isfinite(point.threshold) &&
                             (compiled.thresholds.empty() || point.threshold > compiled.thresholds.back()),
                         "Animation blend thresholds must be finite and increasing: " + state.name);
@@ -606,7 +606,7 @@ void AnimationStateMachine::compile(std::span<const ClipMetadata> clips) {
                 compiled.thresholds.push_back(point.threshold);
             }
         } else
-            compiled.clips.push_back(clip_index(state.clip));
+            compiled.clips.push_back(clip_index(*clip));
         // A clip of zero duration is a pose.
         const auto pose = [&](std::size_t clip) { return data->clips[clip].animation->duration == 0; };
         compiled.loop = data->clips[compiled.clips.front()].loop;
