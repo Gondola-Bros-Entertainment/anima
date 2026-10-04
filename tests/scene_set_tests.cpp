@@ -260,6 +260,18 @@ TEST_CASE("A set at the scene limit round-trips, and one more scene fails to ser
     CHECK_THROWS_WITH_AS(many.serialize({}), "Scene set exceeds the scene limit", std::invalid_argument);
 }
 
+TEST_CASE("A namespace of max_namespace_bytes round-trips, and creating a longer one fails") {
+    static_assert(SceneSet::max_namespace_bytes == maximum_namespace_bytes);
+    const std::string longest(SceneSet::max_namespace_bytes, 'n');
+    SceneSet scenes;
+    (void)scenes.create(longest);
+    SceneSet restored;
+    restored.restore(scenes.serialize({}), {});
+    CHECK(restored.active().key() == longest);
+    CHECK_THROWS_WITH_AS((void)scenes.create(longest + "n"), invalid_namespace, std::invalid_argument);
+    CHECK(scenes.size() == 1);
+}
+
 TEST_CASE("Persistence cannot run from component hooks or constructors, and scheduling continues") {
     int called = 0;
     const auto empty = envelope("", "", "null");

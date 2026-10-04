@@ -1,7 +1,8 @@
+#include "../detail/document_json.hpp"
+#include "../detail/document_limits.hpp"
 #include "../detail/json.hpp"
 #include "../detail/prefab_instantiation.hpp"
 #include <anima/prefab_composition.hpp>
-#include <cmath>
 #include <map>
 #include <utility>
 
@@ -10,25 +11,16 @@ namespace {
 using Json = nlohmann::json;
 constexpr unsigned document_version = 1;
 constexpr std::string_view document_kind = "anima.prefab-composition";
-constexpr std::size_t maximum_parts = 1024, maximum_objects = 65'536;
-constexpr std::size_t maximum_key_bytes = 4096, maximum_document_bytes = 16 * 1024 * 1024;
+using detail::maximum_document_bytes, detail::maximum_document_objects, detail::maximum_composition_parts;
+using detail::require;
+constexpr detail::NumberFormat number_format{
+    .scalar = "Prefab composition scalar must be a number",
+    .finite = "Prefab composition scalar must be finite",
+    .matrix = "Prefab composition matrix requires 16 scalars",
+};
 
-void require(bool accepted, const char *reason) {
-    if (!accepted)
-        throw std::invalid_argument(reason);
-}
 void validate_key(std::string_view key) {
-    require(!key.empty() && key.size() <= maximum_key_bytes, "Invalid prefab composition part or resource key");
-}
-Mat4 matrix_value(const Json &value) {
-    require(value.is_array() && value.size() == 16, "Prefab composition matrix requires 16 scalars");
-    Mat4 result;
-    for (std::size_t i = 0; i < result.size(); ++i) {
-        require(value[i].is_number(), "Prefab composition scalar must be a number");
-        result[i] = detail::json_float(value[i]);
-        require(std::isfinite(result[i]), "Prefab composition scalar must be finite");
-    }
-    return result;
+    require(!key.empty() && key.size() <= detail::maximum_key_bytes, "Invalid prefab composition part or resource key");
 }
 struct Resource {
     std::shared_ptr<const Prefab> prefab;
@@ -41,7 +33,7 @@ struct ResolvedPart {
 } // namespace
 
 PrefabComposition::PrefabComposition(std::vector<Part> parts) : parts_(std::move(parts)) {
-    require(!parts_.empty() && parts_.size() <= maximum_parts, "Invalid prefab composition part count");
+    require(!parts_.empty() && parts_.size() <= maximum_composition_parts, "Invalid prefab composition part count");
     std::map<std::string_view, std::size_t> indices;
     Scene validation;
     auto object = validation.create();
@@ -88,7 +80,7 @@ GameObject PrefabComposition::create(Scene &scene, const GameObject *parent, con
             found = resources.emplace(part.prefab, std::move(resource)).first;
         }
         const auto &resource = found->second;
-        require(resource.prefab->nodes().size() <= maximum_objects - count,
+        require(resource.prefab->nodes().size() <= maximum_document_objects - count,
                 "Prefab composition exceeds the object limit");
         count += resource.prefab->nodes().size();
         ResolvedPart result{&resource, {}};
@@ -166,7 +158,7 @@ PrefabComposition decode_composition(std::string_view document) {
             "Invalid prefab composition document kind");
     detail::json_fields(parsed, {"version", "kind", "parts"});
     const auto &values = parsed.at("parts");
-    require(values.is_array() && !values.empty() && values.size() <= maximum_parts,
+    require(values.is_array() && !values.empty() && values.size() <= maximum_composition_parts,
             "Invalid prefab composition part count");
     std::vector<Part> parts;
     parts.reserve(values.size());
@@ -181,7 +173,7 @@ PrefabComposition decode_composition(std::string_view document) {
             part.parent =
                 Mount{parent.at("part").get<std::string>(), ObjectKey::parse(parent.at("object").get<std::string>())};
         }
-        part.placement = matrix_value(value.at("placement"));
+        part.placement = detail::document_matrix(value.at("placement"), number_format);
         parts.push_back(std::move(part));
     }
     return PrefabComposition(std::move(parts));
