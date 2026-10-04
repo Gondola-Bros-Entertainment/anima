@@ -63,7 +63,7 @@ struct TimedActionCue {
 ///
 /// A timed phase lasts its duration. The held phase loops until the release time, or indefinitely
 /// while unreleased; a release before it starts skips it. Sampling depends only on its arguments,
-/// so seeking needs no history.
+/// so seeking needs no history. Const member functions may run concurrently on any thread.
 class ActionTimeline {
   public:
     /// Throws unless there are 1 to 64 phases with valid, unique ids and durations, at most one
@@ -179,7 +179,7 @@ class ActionTimeline {
 /// again, but none at or before it. Repeated frames never report a cue twice. A release that
 /// arrives late still reports the cues it places behind the previous frame, unless they lie at or
 /// before the latest seek() or rewind, however small that rewind's step back. Call reset() on
-/// cancellation.
+/// cancellation. Not synchronized: use each cursor from one thread at a time.
 class ActionCueCursor {
   public:
     /// Returns, in timeline order, the cues of @p timeline at or before @p elapsed that the cursor

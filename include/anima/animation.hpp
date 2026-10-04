@@ -30,7 +30,8 @@ struct ClipMetadata {
 };
 /// Playback clock for one clip: time, looping, pausing and event crossing, without posing.
 ///
-/// Borrows the selected Animation, which must outlive its use here.
+/// Borrows the selected Animation, which must outlive its use here. Not synchronized: use each
+/// Playback from one thread at a time.
 class Playback {
   public:
     /// Selects @p animation with @p metadata and rewinds to 0, playing when @p play is true.
@@ -82,7 +83,8 @@ class Playback {
 /// MeshRenderer::set_pose. Attached as a component, on_update advances it during Scene::update; a
 /// standalone Animator advances through update(). Use one driver per Animator. Replacing the
 /// object's mesh requires a new Animator: every call that publishes a pose then throws
-/// `std::logic_error`.
+/// `std::logic_error`. Not synchronized: use it only on the thread that uses its object's scene,
+/// as scene.hpp requires of the scene's handles.
 class Animator {
   public:
     /// Binds @p source to @p object's mesh and publishes the rest pose. Throws
@@ -127,6 +129,8 @@ class Animator {
     /// Component hook: runs update() and keeps its events for events().
     void on_update(double seconds) { events_ = update(seconds); }
     /// Events from the most recent on_update; each call replaces them, so nothing accumulates.
+    /// Read them in on_late_update or after Scene::update returns: during on_update this animator
+    /// may not have run yet, since Scene::update leaves the order within a phase unspecified.
     [[nodiscard]] std::span<const ClipEvent> events() const noexcept { return events_; }
     [[nodiscard]] const Playback &playback() const noexcept { return playback_; }
     /// The last successfully published pose.

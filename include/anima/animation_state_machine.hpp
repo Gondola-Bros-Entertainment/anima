@@ -58,7 +58,9 @@ struct AnimationStateRuntime {
 } // namespace detail
 /// A state machine over the clips of one asset, or the base clips of one MotionRuntime: parameters,
 /// states and transitions. Immutable after construction; StateMachineAnimator runs it, and animators
-/// share one machine through `std::shared_ptr<const AnimationStateMachine>`.
+/// share one machine through `std::shared_ptr<const AnimationStateMachine>`. Construction and const
+/// member functions may run concurrently on any thread, so animators on different threads may share
+/// one machine.
 class AnimationStateMachine {
   public:
     /// Type of a Parameter.
@@ -214,8 +216,9 @@ class AnimationStateMachine {
     /// enumerators are, and `threshold`), `exit_time` (a number, or null for none), `duration`,
     /// `offset`, `interruption` (named as the Interruption enumerators are) and `to_self`.
     ///
-    /// Throws `std::invalid_argument` for invalid content, including malformed JSON and values of the
-    /// wrong JSON type.
+    /// May run concurrently on any thread. Reads @p document and the C locale, which must not change
+    /// during the call, as prefab.hpp describes for documents. Throws `std::invalid_argument` for
+    /// invalid content, including malformed JSON and values of the wrong JSON type.
     [[nodiscard]] static AnimationStateMachine
     deserialize(std::shared_ptr<const Asset> source, std::span<const ClipMetadata> clips, std::string_view document);
     /// Decodes @p document as the other overload does and constructs the machine over the base clips
@@ -308,6 +311,8 @@ struct AnimationCrossfade {
 /// Poses are sampled with sample_pose, or MotionRuntime::sample for a machine over a motion runtime,
 /// and blended with blend_pose, so pose() has local transforms. A pose filter (set_pose_filter) can
 /// then change the pose that is published, for example with MotionRuntime::evaluate to place contacts.
+/// Not synchronized: use it only on the thread that uses its object's scene, as scene.hpp requires
+/// of the scene's handles.
 class StateMachineAnimator {
   public:
     /// Binds @p machine to @p object's mesh, with its parameters at their initial values, enters its
@@ -428,6 +433,8 @@ class StateMachineAnimator {
     /// Component hook: runs update() and keeps its events for events().
     void on_update(double seconds) { events_ = update(seconds); }
     /// Events from the most recent on_update; each call replaces them, so nothing accumulates.
+    /// Read them in on_late_update or after Scene::update returns: during on_update this animator
+    /// may not have run yet, since Scene::update leaves the order within a phase unspecified.
     [[nodiscard]] std::span<const AnimationStateEvent> events() const noexcept { return events_; }
     /// Name of the state that the machine plays, or enters during a crossfade.
     [[nodiscard]] const std::string &state() const;
