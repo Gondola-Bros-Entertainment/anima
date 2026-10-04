@@ -39,6 +39,18 @@ Pose rigid_pose(GameObject object, Motion motion) {
     return {position, unit_quaternion(q)};
 }
 using Json = nlohmann::json;
+constexpr auto unknown_shape = "Unknown rigid body shape";
+constexpr auto unknown_motion = "Unknown rigid body motion";
+constexpr anima::detail::JsonNames<Shape, 6> shape_names{{{Shape::box, "box"},
+                                                          {Shape::sphere, "sphere"},
+                                                          {Shape::capsule, "capsule"},
+                                                          {Shape::mesh, "mesh"},
+                                                          {Shape::convex_hull, "convex_hull"},
+                                                          {Shape::compound, "compound"}}};
+static_assert(shape_names.size() == static_cast<std::size_t>(Shape::compound) + 1, "Name every shape");
+constexpr anima::detail::JsonNames<Motion, 3> motion_names{
+    {{Motion::stationary, "stationary"}, {Motion::kinematic, "kinematic"}, {Motion::dynamic, "dynamic"}}};
+static_assert(motion_names.size() == static_cast<std::size_t>(Motion::dynamic) + 1, "Name every motion");
 Json vec(Vec3 v) { return Json::array({v.x, v.y, v.z}); }
 Vec3 vec(const Json &j) {
     if (!j.is_array() || j.size() != 3)
@@ -52,10 +64,12 @@ Vec3 vec(const Json &j) {
     }
     return v;
 }
-int integer(const Json &j, const char *key, unsigned maximum) {
-    if (!j.at(key).is_number_integer() || j.at(key).get<std::int64_t>() < 0 || j.at(key).get<std::uint64_t>() > maximum)
-        throw std::invalid_argument("Invalid rigid body enum/layer");
-    return j.at(key).get<int>();
+std::uint8_t layer(const Json &j) {
+    const auto &value = j.at("layer");
+    if (!value.is_number_integer() || value.get<std::int64_t>() < 0 ||
+        value.get<std::uint64_t>() >= detail::collision_layer_count)
+        throw std::invalid_argument("Invalid rigid body layer");
+    return value.get<std::uint8_t>();
 }
 float number(const Json &j, const char *key) {
     if (!j.at(key).is_number())
@@ -66,18 +80,18 @@ Json collider_data(const Collider &c) {
     Json vertices = Json::array();
     for (auto v : c.vertices)
         vertices.push_back(vec(v));
-    return {{"shape", static_cast<int>(c.shape)},
-            {"extent", vec(c.half_extent)},
+    return {{"shape", anima::detail::json_name(shape_names, c.shape, unknown_shape)},
+            {"half_extent", vec(c.half_extent)},
             {"radius", c.radius},
             {"half_height", c.half_height},
             {"vertices", vertices}};
 }
 Collider collider(const Json &j, bool child) {
     Collider c;
-    c.shape = static_cast<Shape>(integer(j, "shape", static_cast<unsigned>(Shape::compound)));
+    c.shape = anima::detail::json_enumerator(shape_names, j.at("shape"), unknown_shape);
     if (child && (c.shape == Shape::mesh || c.shape == Shape::compound))
         throw std::invalid_argument("Compound child must be a primitive or hull");
-    c.half_extent = vec(j.at("extent"));
+    c.half_extent = vec(j.at("half_extent"));
     c.radius = number(j, "radius");
     c.half_height = number(j, "half_height");
     const auto &vertices = j.at("vertices");
@@ -133,7 +147,7 @@ void step(SceneSet &scenes, World &world, double seconds) { step_scenes(scenes, 
 void add_component_codec(ComponentCodecs &codecs, World &world) {
     const std::weak_ptr<int> lifetime = world.lifetime_;
     codecs.add<RigidBody>(
-        "anima.rigid-body.v2",
+        "anima.rigid-body.v3",
         [](const RigidBody &component, const ObjectReferences &) {
             const auto &s = component.settings();
             const auto &c = s.collider;
@@ -148,32 +162,42 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
             data.update(Json{{"indices", c.indices},
                              {"children", children},
                              {"center_of_mass", s.center_of_mass ? vec(*s.center_of_mass) : Json(nullptr)},
-                             {"motion", static_cast<int>(s.motion)},
+                             {"motion", anima::detail::json_name(motion_names, s.motion, unknown_motion)},
                              {"velocity", vec(component.body().velocity())},
                              {"angular_velocity", vec(component.body().angular_velocity())},
                              {"mass", s.mass},
+                             {"linear_damping", s.linear_damping},
+                             {"angular_damping", s.angular_damping},
                              {"friction", s.friction},
                              {"restitution", s.restitution},
                              {"layer", s.layer},
                              {"sensor", s.sensor},
                              {"continuous", s.continuous}});
-            return data.dump();
+            auto payload = data.dump();
+            // The decoder rejects larger payloads, so a mesh collider that fits the body could otherwise be captured
+            // but never restored.
+            if (payload.size() > detail::maximum_component_bytes)
+                throw std::invalid_argument("Rigid body payload exceeds 16 MiB");
+            return payload;
         },
         [&world, lifetime](GameObject object, std::string_view data, const ObjectReferences &) {
             if (lifetime.expired())
                 throw std::out_of_range("Rigid body codec world expired");
             const auto j = anima::detail::parse_json(data, detail::maximum_component_bytes);
-            anima::detail::json_fields(j, {"shape", "extent", "radius", "half_height", "vertices", "indices", "motion",
-                                           "velocity", "angular_velocity", "mass", "friction", "restitution", "layer",
-                                           "sensor", "continuous", "children", "center_of_mass"});
+            anima::detail::json_fields(j, {"shape", "half_extent", "radius", "half_height", "vertices", "indices",
+                                           "motion", "velocity", "angular_velocity", "mass", "linear_damping",
+                                           "angular_damping", "friction", "restitution", "layer", "sensor",
+                                           "continuous", "children", "center_of_mass"});
             BodySettings s;
             s.collider = collider(j, false);
             auto &c = s.collider;
-            s.motion = static_cast<Motion>(integer(j, "motion", static_cast<unsigned>(Motion::dynamic)));
-            s.layer = static_cast<std::uint8_t>(integer(j, "layer", detail::collision_layer_count - 1));
+            s.motion = anima::detail::json_enumerator(motion_names, j.at("motion"), unknown_motion);
+            s.layer = layer(j);
             s.velocity = vec(j.at("velocity"));
             s.angular_velocity = vec(j.at("angular_velocity"));
             s.mass = number(j, "mass");
+            s.linear_damping = number(j, "linear_damping");
+            s.angular_damping = number(j, "angular_damping");
             s.friction = number(j, "friction");
             s.restitution = number(j, "restitution");
             if (!j.at("center_of_mass").is_null())
@@ -192,7 +216,7 @@ void add_component_codec(ComponentCodecs &codecs, World &world) {
             }
             for (const auto &child : j.at("children")) {
                 anima::detail::json_fields(
-                    child, {"position", "rotation", "shape", "extent", "radius", "half_height", "vertices"});
+                    child, {"position", "rotation", "shape", "half_extent", "radius", "half_height", "vertices"});
                 ColliderChild part;
                 part.pose.position = vec(child.at("position"));
                 const auto &rotation = child.at("rotation");

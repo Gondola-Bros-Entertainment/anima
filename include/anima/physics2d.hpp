@@ -75,8 +75,17 @@ struct BodySettings {
     /// Initial counterclockwise angular velocity in radians per second; must be zero for
     /// stationary and fixed-rotation bodies.
     float angular_velocity{};
-    /// Mass per unit area, in [0.001, 10,000]; a dynamic body's mass is density times area.
-    float density = 1;
+    /// Total dynamic mass, in [0.001, 1,000,000], spread uniformly over the collider's area, which
+    /// sets the rotational inertia.
+    float mass = 1;
+    /// Linear damping c per second, in [0, 60]: a dynamic body's linear velocity decays about as
+    /// exp(-c t). Each solver substep of h seconds, World::step's duration divided by
+    /// WorldSettings::substeps, scales it by 1 / (1 + c h). Stationary and kinematic bodies are not
+    /// damped.
+    float linear_damping{};
+    /// Angular damping per second, in [0, 60], applied to a dynamic body's angular velocity as
+    /// #linear_damping is to its linear velocity.
+    float angular_damping{};
     /// Friction coefficient in [0, 1].
     float friction = .5F;
     /// Restitution in [0, 1].
@@ -121,6 +130,9 @@ class Body {
     [[nodiscard]] Vec2 velocity() const;
     /// Angular velocity in radians per second, or the saved value while disabled.
     [[nodiscard]] float angular_velocity() const;
+    /// Mass of a dynamic body, enabled or disabled: BodySettings::mass, up to float rounding.
+    /// Throws `std::invalid_argument` for stationary and kinematic bodies.
+    [[nodiscard]] float mass() const;
     /// Moves the body to @p pose immediately and wakes it.
     void teleport(Pose pose);
     /// Sets linear velocity, or the saved value while disabled. Throws for stationary bodies.
