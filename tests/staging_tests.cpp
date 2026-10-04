@@ -352,14 +352,14 @@ TEST_CASE("Presentation loaders pass their staging options to the imports they r
     CHECK(progress.total() == body.total() + motion.total());
     CHECK(progress.completed() == progress.total());
     CHECK(actor.render->texel_retention() == TexelRetention::until_upload);
-    CHECK_THROWS_WITH_AS((void)MotionRuntime::load(actor.actor.asset, actor.manifest, stopped), cancelled,
+    CHECK_THROWS_WITH_AS((void)MotionRuntime::load(actor.actor.motion->model(), actor.manifest, stopped), cancelled,
                          StagingCancelled);
-    CHECK_THROWS_WITH_AS(MotionRuntime(actor.actor.asset, actor.manifest, fixture.contract, stopped), cancelled,
-                         StagingCancelled);
+    CHECK_THROWS_WITH_AS(MotionRuntime(actor.actor.motion->model(), actor.manifest, fixture.contract, stopped),
+                         cancelled, StagingCancelled);
 
     // A cancelled library load caches nothing, so the next load imports the file.
     const AttachmentLibrary attachments(decode_attachment_catalog(fixture.catalog, fixture.directory));
-    const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.asset);
+    const auto sockets = decode_attachment_sockets(fixture.sockets, actor.manifest, *actor.actor.motion->model());
     CHECK_THROWS_WITH_AS((void)attachments.load("instrument", stopped), cancelled, StagingCancelled);
     CHECK_THROWS_WITH_AS((void)AttachmentSet::prepare(attachments, sockets, {{"tool", "probe"}}, stopped), cancelled,
                          StagingCancelled);
@@ -376,7 +376,7 @@ TEST_CASE("Presentation loaders pass their staging options to the imports they r
     const auto fits = R"({"version":2,"items":[{"id":"shell","fits":{"consumer.profile":{"model":"actor.glb",)"
                       R"("skeleton":"consumer.rig","bind_signature":")" +
                       actor.manifest.bind_signature + R"("}}}]})";
-    const FittedLibrary fitted(actor.actor.asset, actor.manifest, "consumer.profile", fits);
+    const FittedLibrary fitted(actor.actor.motion->model(), actor.manifest, "consumer.profile", fits);
     CHECK_THROWS_WITH_AS((void)fitted.load("shell", stopped), cancelled, StagingCancelled);
     CHECK(fitted.resident_meshes().empty());
     StagingProgress shell;
