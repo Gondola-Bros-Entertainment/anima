@@ -234,13 +234,13 @@ inline int run(int argc, char **argv) {
     renderer.set_view(camera.matrix(1));
     for (const auto &[scene, name] : {std::pair{separate_many, "separate"}, std::pair{placed_many, "placed"}}) {
         renderer.set_scenes({scene});
-        std::vector<double> prepare, record, gpu;
+        std::vector<double> upload, record, gpu;
         for (int frame = 0; frame < 70; ++frame) {
             present();
             const auto profile = renderer.frame_profile();
             if (frame < 10)
                 continue;
-            prepare.push_back(profile.upload_ms);
+            upload.push_back(profile.upload_ms);
             record.push_back(profile.record_submit_ms);
             if (profile.gpu_available)
                 gpu.push_back(profile.gpu_ms);
@@ -255,7 +255,7 @@ inline int run(int argc, char **argv) {
         require(stats.drawn_copies == many.size(), "The measured view did not draw every copy");
         std::cout << "BENCH {\"copies\":" << many.size() << ",\"drawn_as\":\"" << name
                   << "\",\"draw_calls\":" << stats.draw_calls << ",\"shadow_draw_calls\":" << stats.shadow_draw_calls
-                  << ",\"prepare_ms\":" << median(prepare) << ",\"record_submit_ms\":" << median(record)
+                  << ",\"upload_ms\":" << median(upload) << ",\"record_submit_ms\":" << median(record)
                   << ",\"gpu_ms\":" << median(gpu) << "}\n";
     }
 

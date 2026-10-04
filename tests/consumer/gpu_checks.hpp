@@ -82,6 +82,30 @@ inline Image take(anima::VulkanRenderer &renderer) {
         throw std::runtime_error("The frame requested for capture was not read back");
     return std::move(*image);
 }
+
+/// One draw() call timed on the caller's clock, with the FrameProfile it left.
+struct TimedDraw {
+    bool presented{};
+    std::chrono::steady_clock::time_point began, ended;
+    anima::FrameProfile profile;
+    /// The call's duration, in milliseconds.
+    [[nodiscard]] double wall_ms() const { return std::chrono::duration<double, std::milli>(ended - began).count(); }
+    /// The sum of the profile's CPU fields, which follow one another through the call.
+    [[nodiscard]] double cpu_ms() const {
+        return profile.fence_wait_ms + profile.prepare_ms + profile.upload_ms + profile.acquire_ms +
+               profile.record_submit_ms + profile.present_ms;
+    }
+};
+/// Calls @p renderer's draw() once and times the call.
+inline TimedDraw timed_draw(anima::VulkanRenderer &renderer) {
+    TimedDraw timed;
+    timed.began = std::chrono::steady_clock::now();
+    timed.presented = renderer.draw();
+    timed.ended = std::chrono::steady_clock::now();
+    timed.profile = renderer.frame_profile();
+    return timed;
+}
+
 inline Rgb pixel(const Image &image, std::size_t x, std::size_t y) {
     if (x >= image.width || y >= image.height)
         throw std::out_of_range("Pixel " + std::to_string(x) + ", " + std::to_string(y) + " is outside a " +

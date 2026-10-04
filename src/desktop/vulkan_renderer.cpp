@@ -139,6 +139,18 @@ struct VulkanRenderer::Impl {
     std::uint32_t timestamp_bits{};
     double timestamp_period{};
     bool timing_pending{};
+    // Whether a calibrated timestamps extension is enabled, so that timestamps from different submissions compare.
+    bool calibrated_timestamps{};
+    // With calibrated timestamps, when the latest frame was submitted, on the host's clock; its timestamps follow it.
+    std::chrono::steady_clock::time_point timing_submitted;
+    // A frame whose timestamps were read: its end timestamp, and when it was submitted on the host's clock.
+    struct TimedFrame {
+        std::uint64_t end{};
+        std::chrono::steady_clock::time_point submitted;
+    };
+    // The latest frame whose timestamps were read; empty when the latest submitted frame's could not be read, since
+    // each draw() reads the previous frame's before submitting its own.
+    std::optional<TimedFrame> previous_frame;
     std::atomic<std::uint32_t> warnings{}, errors{};
     VkInstance instance{};
     VkDebugUtilsMessengerEXT messenger{};
@@ -532,6 +544,16 @@ struct VulkanRenderer::Impl {
         // Required when advertised by portability implementations, including MoltenVK.
         if (has_extension(selected_extensions, "VK_KHR_portability_subset"))
             extensions.push_back("VK_KHR_portability_subset");
+        // Vulkan orders the timestamps of different submissions only with calibrated timestamps enabled, which the
+        // profile's idle time between frames needs. The names are spelled out because the KHR extension is newer than
+        // the oldest headers the build accepts.
+        if (options.profile && timestamp_bits && timestamp_period > 0)
+            for (const char *calibrated : {"VK_KHR_calibrated_timestamps", "VK_EXT_calibrated_timestamps"})
+                if (has_extension(selected_extensions, calibrated)) {
+                    extensions.push_back(calibrated);
+                    calibrated_timestamps = true;
+                    break;
+                }
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
         if (maintenance_instance && !options.disable_present_fences &&
@@ -1579,20 +1601,39 @@ struct VulkanRenderer::Impl {
             if (result == VK_SUCCESS &&
                 std::all_of(results.begin(), results.end(), [](const auto &query) { return query.available != 0; })) {
                 const auto mask = timestamp_bits >= 64 ? UINT64_MAX : (std::uint64_t{1} << timestamp_bits) - 1;
-                const auto milliseconds = [&](std::uint32_t from, std::uint32_t to) {
+                const auto milliseconds = [&](std::uint64_t from, std::uint64_t to) {
                     // The device's timestamp period is in nanoseconds per tick.
-                    const std::chrono::duration<double, std::nano> elapsed(
-                        double((results[to].timestamp - results[from].timestamp) & mask) * timestamp_period);
+                    const std::chrono::duration<double, std::nano> elapsed(double((to - from) & mask) *
+                                                                           timestamp_period);
                     return std::chrono::duration<double, std::milli>(elapsed).count();
                 };
-                profile.gpu_ms = milliseconds(TimingQuery::start, TimingQuery::end);
-                profile.gpu_atmosphere_ms = milliseconds(TimingQuery::start, TimingQuery::after_atmosphere);
-                profile.gpu_shadow_ms = milliseconds(TimingQuery::after_atmosphere, TimingQuery::after_shadows);
-                profile.gpu_scene_ms = milliseconds(TimingQuery::after_shadows, TimingQuery::after_scene);
-                profile.gpu_resolve_ms = milliseconds(TimingQuery::after_scene, TimingQuery::after_resolve);
-                profile.gpu_transfer_ms = milliseconds(TimingQuery::after_resolve, TimingQuery::end);
+                const auto between = [&](std::uint32_t from, std::uint32_t to) {
+                    return milliseconds(results[from].timestamp, results[to].timestamp);
+                };
+                profile.gpu_ms = between(TimingQuery::start, TimingQuery::end);
+                profile.gpu_atmosphere_ms = between(TimingQuery::start, TimingQuery::after_atmosphere);
+                profile.gpu_shadow_ms = between(TimingQuery::after_atmosphere, TimingQuery::after_shadows);
+                profile.gpu_scene_ms = between(TimingQuery::after_shadows, TimingQuery::after_scene);
+                profile.gpu_resolve_ms = between(TimingQuery::after_scene, TimingQuery::after_resolve);
+                profile.gpu_transfer_ms = between(TimingQuery::after_resolve, TimingQuery::end);
                 profile.gpu_available = true;
-            }
+                // This frame was submitted after the previous frame's fence signaled, so its first timestamp
+                // happens-after that frame's last, which calibrated timestamps keep from being lower. A counter of
+                // fewer than 64 bits wraps to zero, after which the masked difference is the span modulo the
+                // counter's period of 2^timestamp_bits ticks. The span begins after the previous frame's submission
+                // and ends before this draw()'s fence wait ended, the time in marked, so it is kept only while those
+                // host times are less than half that period apart; the margin covers a GPU clock faster than its
+                // stated period.
+                if (calibrated_timestamps && previous_frame) {
+                    constexpr double wrap_fraction = .5;
+                    const std::chrono::duration<double, std::nano> wrap(
+                        std::ldexp(timestamp_period, static_cast<int>(timestamp_bits)));
+                    if (marked - previous_frame->submitted < wrap * wrap_fraction)
+                        profile.gpu_idle_ms = milliseconds(previous_frame->end, results[TimingQuery::start].timestamp);
+                }
+                previous_frame = TimedFrame{results[TimingQuery::end].timestamp, timing_submitted};
+            } else
+                previous_frame.reset();
             timing_pending = false;
         }
 #ifdef ANIMA_UI
@@ -1606,8 +1647,7 @@ struct VulkanRenderer::Impl {
 #else
         (void)ui_frame;
 #endif
-        if (options.profile)
-            marked = Clock::now();
+        measure(profile.prepare_ms);
 #ifdef ANIMA_HAS_ASSETS
         if (!resource_scenes.empty()) {
             try {
@@ -1802,6 +1842,9 @@ struct VulkanRenderer::Impl {
         submit.pSignalSemaphores = &image.rendered;
         // Reset only when submission will happen; an out-of-date acquire must not strand an unsignaled fence.
         check(vkResetFences(device, 1, &frame_fence), "Reset frame fence");
+        // The GPU cannot write the frame's timestamps before it is submitted.
+        if (calibrated_timestamps)
+            timing_submitted = Clock::now();
         check(vkQueueSubmit(graphics_queue, 1, &submit, frame_fence), "Submit frame");
         timing_pending = timing_queries != VK_NULL_HANDLE;
         measure(profile.record_submit_ms);
@@ -2170,6 +2213,7 @@ RenderStats VulkanRenderer::shutdown() {
     return impl_->stats;
 }
 FrameProfile VulkanRenderer::frame_profile() const noexcept { return impl_->profile; }
+bool VulkanRenderer::measures_gpu_idle() const noexcept { return impl_->calibrated_timestamps; }
 #ifdef ANIMA_UI
 std::uint64_t VulkanRenderer::presented_frames() const noexcept { return impl_->stats.presented_frames; }
 bool VulkanRenderer::srgb_presentation() {

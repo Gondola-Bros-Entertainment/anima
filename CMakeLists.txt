@@ -702,6 +702,9 @@ if(ANIMA_BUILD_TESTS)
         anima_add_gpu_check(desktop_compressed_textures "${desktop}" --compressed-textures
             "${anima_gpu_checks}/desktop_compressed_textures" "${CMAKE_CURRENT_SOURCE_DIR}/tests/textures")
         list(APPEND desktop_checks compressed_textures)
+        # Compares no images, so it needs no output directory.
+        anima_add_gpu_check(desktop_profile "${desktop}" --profile)
+        list(APPEND desktop_checks profile)
         foreach(stage IN ITEMS upload-timeout device-lost)
             string(REPLACE "-" "_" stage_id "${stage}")
             anima_add_gpu_check(desktop_resources_${stage_id}
