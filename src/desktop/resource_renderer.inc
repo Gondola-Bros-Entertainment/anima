@@ -487,10 +487,7 @@ static bool may_dissolve(const VisibilityRange &range, Vec3 eye, const RenderBou
 }
 // The center of @p mesh's rest bounds, which visibility ranges measure to once an object or copy places it, as Godot
 // measures to the center of an instance's bounds; the mesh's origin when it has no bounds.
-static Vec3 range_center(const Mesh &mesh) {
-    const auto &bounds = mesh.rest_bounds();
-    return bounds.valid ? (bounds.minimum + bounds.maximum) * .5F : Vec3{};
-}
+static Vec3 range_center(const Mesh &mesh) { return center(mesh.rest_bounds()); }
 // The pose buffer matrix after a ranged object's world matrix: the begin, begin margin, end and end margin of @p range,
 // which scaled_range() has scaled, then @p center. Shaders may assume that no value is infinite, so an endless range,
 // which validation leaves no end margin, ends at the largest float, which no distance reaches.
@@ -504,22 +501,6 @@ static Mat4 range_columns(const VisibilityRange &range, Vec3 center) {
     columns[5] = center.y;
     columns[6] = center.z;
     return columns;
-}
-// The world bounds of @p cluster's copies under @p world.
-static RenderBounds cluster_bounds(const MeshPlacements::Cluster &cluster, const Mat4 &world) {
-    RenderBounds bounds;
-    const auto &b = cluster.bounds;
-    for (unsigned corner = 0; corner < 8; ++corner) {
-        const auto v = point(world, {corner & 1 ? b.maximum.x : b.minimum.x, corner & 2 ? b.maximum.y : b.minimum.y,
-                                     corner & 4 ? b.maximum.z : b.minimum.z});
-        if (!bounds.valid)
-            bounds = {v, v, true};
-        bounds.minimum = {std::min(bounds.minimum.x, v.x), std::min(bounds.minimum.y, v.y),
-                          std::min(bounds.minimum.z, v.z)};
-        bounds.maximum = {std::max(bounds.maximum.x, v.x), std::max(bounds.maximum.y, v.y),
-                          std::max(bounds.maximum.z, v.z)};
-    }
-    return bounds;
 }
 // Whether @p frustum, when given, contains @p bounds, and @p range, when given, can draw a copy at their distance from
 // @p eye.
@@ -803,7 +784,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             const auto first_cluster = placed_cluster_bounds.size();
             if (render_instance.placements) {
                 for (const auto &cluster : render_instance.placements->clusters())
-                    placed_cluster_bounds.push_back(cluster_bounds(cluster, render_instance.world));
+                    placed_cluster_bounds.push_back(transformed(cluster.bounds, render_instance.world));
                 if (main_view && use_frustum) {
                     const auto range = culling_range(render_instance);
                     for (auto bounds = placed_cluster_bounds.begin() + std::ptrdiff_t(first_cluster);

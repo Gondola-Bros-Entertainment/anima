@@ -270,8 +270,7 @@ class Baker {
             }
         }
         require(!triangles_.empty(), "An impostor requires a mesh with triangles");
-        const auto &bounds = mesh.rest_bounds();
-        center_ = (bounds.minimum + bounds.maximum) * .5F;
+        center_ = center(mesh.rest_bounds());
         for (const auto &v : vertices_)
             radius_ = std::max(radius_, length(v.position - center_));
         require(radius_ > 0 && std::isfinite(radius_), "An impostor requires a mesh with triangles");

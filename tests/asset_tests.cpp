@@ -298,10 +298,11 @@ TEST_CASE("The default scene keeps each primitive and instance with its transfor
     REQUIRE(scene.vertices.size() == 12);
     CHECK(scene.primitives[0].material_index == 0);
     CHECK(scene.primitives[1].material_index == 1);
-    CHECK(scene.minimum.x == Near{-4, tolerance}); // The mirrored matrix instance.
-    CHECK(scene.maximum.x == Near{13, tolerance}); // The nested TRS.
-    CHECK(scene.maximum.y == Near{5, tolerance});
-    CHECK(scene.maximum.z == Near{3, tolerance}); // Only the default scene's hierarchy.
+    CHECK(scene.bounds.valid);
+    CHECK(scene.bounds.minimum.x == Near{-4, tolerance}); // The mirrored matrix instance.
+    CHECK(scene.bounds.maximum.x == Near{13, tolerance}); // The nested TRS.
+    CHECK(scene.bounds.maximum.y == Near{5, tolerance});
+    CHECK(scene.bounds.maximum.z == Near{3, tolerance}); // Only the default scene's hierarchy.
     // Normals transform by the inverse transpose, including under mirrored scale.
     CHECK(scene.vertices[0].normal.x == Near{0.8320503F, tolerance});
     CHECK(scene.vertices[0].normal.y == Near{0.5547002F, tolerance});
@@ -316,11 +317,11 @@ TEST_CASE("A skin applies its joint's transform, and inverse binds cancel it") {
     const auto skinned = load_mesh_snapshot(fixture(temp, "skin"));
     CHECK(skinned.skinned_vertices == 6);
     CHECK_FALSE(skinned.default_is_bind_pose);
-    CHECK(skinned.minimum.y == Near{5, tolerance});
-    CHECK(skinned.minimum.x == Near{0, tolerance}); // The skinned mesh node's own transform is ignored.
+    CHECK(skinned.bounds.minimum.y == Near{5, tolerance});
+    CHECK(skinned.bounds.minimum.x == Near{0, tolerance}); // The skinned mesh node's own transform is ignored.
     const auto bind = load_mesh_snapshot(fixture(temp, "bind"));
     CHECK(bind.default_is_bind_pose);
-    CHECK(bind.minimum.y == Near{0, tolerance});
+    CHECK(bind.bounds.minimum.y == Near{0, tolerance});
 }
 
 TEST_CASE("A fitted load shares the Mesh that a scene still draws after its fitted asset is gone") {
@@ -352,8 +353,7 @@ TEST_CASE("A mesh report writes a snapshot's counts, bounds, primitives, clips a
     snapshot.vertices.resize(6);
     snapshot.primitives = {{"Body", "body", "Skin", identity(), 0, 6, 0, true}};
     snapshot.materials.resize(1);
-    snapshot.minimum = {-1, 0, -2};
-    snapshot.maximum = {1, 2.5F, 2};
+    snapshot.bounds = {{-1, 0, -2}, {1, 2.5F, 2}, true};
     snapshot.mesh_nodes = 1;
     snapshot.skins = 1;
     snapshot.joints = 3;
@@ -467,7 +467,7 @@ TEST_CASE("An orbit camera's view origin and horizontal axes follow its orientat
     const Temp temp;
     const auto scene = load_mesh_snapshot(fixture(temp, "instances"));
     OrbitCamera camera;
-    camera.frame(scene.minimum, scene.maximum);
+    camera.frame(scene.bounds.minimum, scene.bounds.maximum);
     const auto origin = view_origin(camera.matrix(1.5F));
     const auto eye = camera.target + Vec3{std::sin(camera.yaw) * std::cos(camera.pitch), std::sin(camera.pitch),
                                           std::cos(camera.yaw) * std::cos(camera.pitch)} *
