@@ -255,12 +255,7 @@ void upload_resource_buffer(ResourceBuffer &destination, const void *data, VkAcc
     std::memcpy(staging->mapping, data, static_cast<std::size_t>(destination.bytes));
     flush_resource(*staging);
     // UploadBatch retires submitted work before staging or the candidate can unwind.
-    UploadBatch upload;
-    upload.device = device;
-    upload.allocator = allocator;
-    upload.fatal = &fatal;
-    upload.errors = &errors;
-    upload.create(graphics_family);
+    UploadBatch upload{device, allocator, &fatal, &errors, graphics_family};
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(upload.command, &begin), "Begin geometry upload");
@@ -594,12 +589,7 @@ std::shared_ptr<GpuAsset> gpu_asset(const std::shared_ptr<const Mesh> &asset, Re
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         upload_resource_buffer(*value->indices, asset->indices().data(), VK_ACCESS_INDEX_READ_BIT);
         inject_scene(failure, RendererFailureStage::index, false);
-        UploadBatch upload;
-        upload.device = device;
-        upload.allocator = allocator;
-        upload.fatal = &fatal;
-        upload.errors = &errors;
-        upload.create(graphics_family);
+        UploadBatch upload{device, allocator, &fatal, &errors, graphics_family};
         upload_textures(*value->materials, upload, failure, false, texels, prepared);
     }
     resource_cache.emplace(asset.get(), value);

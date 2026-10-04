@@ -91,12 +91,7 @@ void upload_ui_texture(const UiTexturePtr &source) {
     candidate->device = device;
     candidate->allocator = allocator;
     // This guard outlives every submitted upload, and unwinds before candidate.
-    UploadBatch upload;
-    upload.device = device;
-    upload.allocator = allocator;
-    upload.fatal = &fatal;
-    upload.errors = &errors;
-    upload.create(graphics_family);
+    UploadBatch upload{device, allocator, &fatal, &errors, graphics_family};
     auto &texture = candidate->texture;
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     image.imageType = VK_IMAGE_TYPE_2D;
