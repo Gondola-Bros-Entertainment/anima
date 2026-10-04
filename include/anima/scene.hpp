@@ -1,4 +1,5 @@
 #pragma once
+#include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/scene_budget.hpp>
 #include <anima/custom_material.hpp>
 #include <anima/mesh.hpp>
@@ -296,6 +297,12 @@ class Scene {
     /// and reference checks; rendering never uses it. Primitives keep their mesh materials, since a
     /// snapshot does not describe custom materials, and textures their meshes' images, which have no
     /// texels for a Mesh compiled with TexelRetention::until_upload.
+    ///
+    /// Each renderer, in instances() order, adds its mesh's textures and materials, with the renderer's material
+    /// factors, and the mesh nodes, skins, joints, clips and notices of the mesh's MeshDescription.
+    /// MeshSnapshot::bind_deviation is the largest of the descriptions' and MeshSnapshot::default_is_bind_pose holds
+    /// when each of theirs does, while MeshSnapshot::skinned_vertices counts the snapshot's own skinned vertices,
+    /// copies included.
     ///
     /// Each draw contributes its own triangles, never its levels of detail (IndexedDraw::levels), once per
     /// copy: a renderer with placements gives one primitive per placement and draw, in

@@ -124,6 +124,12 @@ Asset coverage_source() {
         source.primitives.push_back(triangle(static_cast<int>(i)));
     return source;
 }
+// A snapshot of one object that draws @p mesh, as tools inspect it.
+MeshSnapshot snapshot_of(std::shared_ptr<const Mesh> mesh) {
+    Scene scene;
+    (void)scene.add(std::move(mesh));
+    return scene.snapshot();
+}
 // Both split paths of Mesh::compile_static must reject @p source exactly as Mesh::compile() does.
 template <class Error> void rejects_like_compile(const Asset &source, const char *message) {
     CHECK_THROWS_WITH_AS(Mesh::compile(source), message, Error);
@@ -143,12 +149,12 @@ TEST_CASE("A texture limit alone leaves static geometry unsplit") {
     const auto &mesh = *meshes.front();
     REQUIRE(mesh.draws().size() == source.primitives.size());
     CHECK(mesh.indices().size() == source.primitives.size() * triangle_corners);
-    const auto &snapshot = *mesh.materials();
+    const auto &description = *mesh.description();
     for (std::size_t i = 0; i < source.primitives.size(); ++i) {
-        const auto &material = snapshot.material_data.at(mesh.draws()[i].material);
+        const auto &material = description.materials.at(mesh.draws()[i].material);
         CHECK(material.name == source.materials.at(source.primitives[i].material).name);
         if (material.texture >= 0)
-            CHECK(snapshot.textures.at(material.texture).image->width == reduced_edge);
+            CHECK(description.textures.at(material.texture).image->width == reduced_edge);
     }
 }
 
@@ -159,7 +165,7 @@ TEST_CASE("A vertex limit starts a new static mesh at each material change") {
     REQUIRE(meshes.size() == source.primitives.size());
     for (std::size_t i = 0; i < meshes.size(); ++i) {
         REQUIRE(meshes[i]->draws().size() == 1);
-        CHECK(meshes[i]->materials()->material_data.at(0).name ==
+        CHECK(meshes[i]->description()->materials.at(0).name ==
               source.materials.at(source.primitives[i].material).name);
     }
 }
@@ -208,8 +214,8 @@ TEST_CASE("Shrunk textures keep the alpha coverage that each material's upload p
         const auto meshes = Mesh::compile_static(source, options);
         std::size_t checked = 0;
         for (const auto &mesh : meshes) {
-            const auto &snapshot = *mesh->materials();
-            for (const auto &material : snapshot.material_data) {
+            const auto &description = *mesh->description();
+            for (const auto &material : description.materials) {
                 CAPTURE(material.name);
                 const auto found =
                     std::find_if(source.materials.begin(), source.materials.end(),
@@ -218,7 +224,7 @@ TEST_CASE("Shrunk textures keep the alpha coverage that each material's upload p
                 const auto index = static_cast<std::size_t>(found - source.materials.begin());
                 const auto check = [&](int texture, std::size_t binding) {
                     CAPTURE(binding);
-                    const auto &shrunk = *snapshot.textures.at(texture).image;
+                    const auto &shrunk = *description.textures.at(texture).image;
                     const auto expected = planned(index, binding);
                     CHECK(shrunk.width == expected.width);
                     CHECK(shrunk.height == expected.height);
@@ -233,7 +239,7 @@ TEST_CASE("Shrunk textures keep the alpha coverage that each material's upload p
         CHECK(checked == source.materials.size() + emissive_uses);
         if (!options.max_vertices) {
             REQUIRE(meshes.size() == 1);
-            CHECK(meshes.front()->materials()->textures.size() == coverage_variants); // One copy per variant.
+            CHECK(meshes.front()->description()->textures.size() == coverage_variants); // One copy per variant.
         } else
             CHECK(meshes.size() == source.primitives.size()); // The limit fits one triangle per piece.
     }
@@ -259,11 +265,11 @@ TEST_CASE("A shrunk blended base color weights its color by alpha, as its upload
     CHECK(planned(0) == texture_mips(source.textures[0], {.alpha_weighted_color = true}).at(cutout_level).rgba);
     const auto meshes = Mesh::compile_static(source, {.max_texture_edge = cutout_limit});
     REQUIRE(meshes.size() == 1);
-    const auto &snapshot = *meshes.front()->materials();
-    CHECK(snapshot.textures.size() == 2); // One copy per set of mip options.
-    for (const auto &material : snapshot.material_data) {
+    const auto &description = *meshes.front()->description();
+    CHECK(description.textures.size() == 2); // One copy per set of mip options.
+    for (const auto &material : description.materials) {
         CAPTURE(material.name);
-        const auto &shrunk = *snapshot.textures.at(material.texture).image;
+        const auto &shrunk = *description.textures.at(material.texture).image;
         CHECK(shrunk.width == cutout_limit);
         CHECK(shrunk.rgba == planned(material.name == "blended" ? 0 : 1));
     }
@@ -273,7 +279,7 @@ TEST_CASE("A texture within the limit keeps its texels once for every cutoff") {
     const auto source = coverage_source();
     const auto meshes = Mesh::compile_static(source, {.max_texture_edge = cutout_edge});
     REQUIRE(meshes.size() == 1);
-    const auto &textures = meshes.front()->materials()->textures;
+    const auto &textures = meshes.front()->description()->textures;
     REQUIRE(textures.size() == 1);
     CHECK(textures.front().image == source.textures.front().image);
 }
@@ -286,28 +292,28 @@ TEST_CASE("Compiled meshes and static pieces share their source's images") {
     source.materials[1].texture = 1;
     const auto &authored = source.textures[0].image;
     const auto whole = Mesh::compile(source);
-    for (const auto &texture : whole->materials()->textures)
+    for (const auto &texture : whole->description()->textures)
         CHECK(texture.image == authored);
     // One triangle per piece, so the three pieces alternate between the two textures.
     const auto pieces = Mesh::compile_static(source, {.max_vertices = triangle_corners});
     REQUIRE(pieces.size() == source.primitives.size());
     for (const auto &piece : pieces) {
-        REQUIRE(piece->materials()->textures.size() == 1);
-        CHECK(piece->materials()->textures[0].image == authored);
+        REQUIRE(piece->description()->textures.size() == 1);
+        CHECK(piece->description()->textures[0].image == authored);
     }
     // The image shrinks once, for every piece and for both textures, which share it and its encoding.
     const auto shrunk =
         Mesh::compile_static(source, {.max_vertices = triangle_corners, .max_texture_edge = reduced_edge});
     REQUIRE(shrunk.size() == source.primitives.size());
-    REQUIRE(shrunk[0]->materials()->textures.size() == 1);
-    const auto &reduced = shrunk[0]->materials()->textures[0].image;
+    REQUIRE(shrunk[0]->description()->textures.size() == 1);
+    const auto &reduced = shrunk[0]->description()->textures[0].image;
     CHECK(reduced != authored);
     CHECK(reduced->width == reduced_edge);
     for (const auto &piece : shrunk) {
-        REQUIRE(piece->materials()->textures.size() == 1);
-        CHECK(piece->materials()->textures[0].image == reduced);
+        REQUIRE(piece->description()->textures.size() == 1);
+        CHECK(piece->description()->textures[0].image == reduced);
     }
-    CHECK(shrunk[1]->materials()->textures[0].sampler.mag == Filter::nearest);
+    CHECK(shrunk[1]->description()->textures[0].sampler.mag == Filter::nearest);
 }
 
 TEST_CASE("Static splitting rejects an out-of-range material index as compile() does") {
@@ -336,13 +342,78 @@ TEST_CASE("Static splitting rejects a malformed texture as compile() does, used 
     rejects_like_compile<std::invalid_argument>(unused, no_texels);
 }
 
+TEST_CASE("A mesh describes its source's materials, textures and metadata, which snapshots add up") {
+    // A root, a joint above it whose inverse bind matrix is off by a quarter unit, and a mesh node with a skinned
+    // triangle of the textured material and a rigid one of the plain material.
+    auto source = static_source({});
+    source.nodes.resize(3);
+    source.nodes[1].parent = 0;
+    source.nodes[1].rest.translation = {0, 1, 0};
+    auto inverse_bind = identity();
+    inverse_bind[13] = -.75F;
+    source.skins.push_back({{0, 1}, {identity(), inverse_bind}});
+    auto skinned = triangle(0);
+    skinned.node = 2;
+    skinned.skin = 0;
+    for (auto &vertex : skinned.vertices) {
+        vertex.joints = {1, 0, 0, 0};
+        vertex.weights = {1, 0, 0, 0};
+    }
+    auto rigid = triangle(1);
+    rigid.node = 2;
+    source.primitives = {skinned, rigid};
+    source.mesh_nodes = 1;
+    source.notices = {"Imported for description"};
+    Animation clip;
+    clip.name = "wave";
+    source.animations.push_back(clip);
+    const auto mesh = Mesh::compile(source);
+    static_assert(noexcept(mesh->description()));
+    REQUIRE(mesh->description());
+    const auto &description = *mesh->description();
+    REQUIRE(description.materials.size() == source.materials.size());
+    for (std::size_t i = 0; i < source.materials.size(); ++i) {
+        CAPTURE(i);
+        CHECK(description.materials[i].name == source.materials[i].name);
+        CHECK(description.materials[i].texture == source.materials[i].texture);
+    }
+    REQUIRE(description.textures.size() == source.textures.size());
+    CHECK(description.textures[0].image == source.textures[0].image);
+    CHECK(description.mesh_nodes == 1);
+    CHECK(description.skins == 1);
+    CHECK(description.joints == 2);
+    CHECK(description.skinned_vertices == triangle_corners);
+    CHECK(description.clips == std::vector<std::string>{"wave"});
+    CHECK(description.notices == source.notices);
+    CHECK(description.bind_deviation == .25F);
+    CHECK_FALSE(description.default_is_bind_pose);
+    // Snapshots list each object's materials and textures and add up the statistics.
+    const auto plain = Mesh::compile(static_source({1}));
+    CHECK(plain->description()->bind_deviation == 0);
+    CHECK(plain->description()->default_is_bind_pose);
+    Scene scene;
+    for (const auto &object : {mesh, mesh, plain})
+        (void)scene.add(object);
+    const auto snapshot = scene.snapshot();
+    CHECK(snapshot.materials.size() == description.materials.size() * 2 + plain->description()->materials.size());
+    CHECK(snapshot.textures.size() == description.textures.size() * 2 + plain->description()->textures.size());
+    CHECK(snapshot.mesh_nodes == 2);
+    CHECK(snapshot.skins == 2);
+    CHECK(snapshot.joints == 4);
+    CHECK(snapshot.skinned_vertices == triangle_corners * 2);
+    CHECK(snapshot.clips == std::vector<std::string>{"wave", "wave"});
+    CHECK(snapshot.notices == std::vector<std::string>{source.notices[0], source.notices[0]});
+    CHECK(snapshot.bind_deviation == .25F);
+    CHECK_FALSE(snapshot.default_is_bind_pose);
+}
+
 TEST_CASE("Static pieces carry the source's mesh node count and import notices, as compile() does") {
     auto source = static_source({0, 1, 0});
     source.mesh_nodes = source.nodes.size();
     source.notices = {"Imported for static splitting"};
     const auto whole = Mesh::compile(source);
-    REQUIRE(whole->materials()->mesh_nodes == source.mesh_nodes);
-    REQUIRE(whole->materials()->notices == source.notices);
+    REQUIRE(whole->description()->mesh_nodes == source.mesh_nodes);
+    REQUIRE(whole->description()->notices == source.notices);
     auto empty = source;
     empty.primitives.clear();
     for (const auto *input : {&source, &empty})
@@ -353,8 +424,8 @@ TEST_CASE("Static pieces carry the source's mesh node count and import notices, 
             const auto pieces = Mesh::compile_static(*input, options);
             REQUIRE_FALSE(pieces.empty());
             for (const auto &piece : pieces) {
-                CHECK(piece->materials()->mesh_nodes == source.mesh_nodes);
-                CHECK(piece->materials()->notices == source.notices);
+                CHECK(piece->description()->mesh_nodes == source.mesh_nodes);
+                CHECK(piece->description()->notices == source.notices);
             }
         }
 }
@@ -391,7 +462,7 @@ TEST_CASE("A mesh that keeps its texels reads them through its textures") {
     const auto images = mesh->texel_images();
     REQUIRE(images.size() == source.textures.size());
     for (std::size_t i = 0; i < images.size(); ++i)
-        CHECK(images[i] == mesh->materials()->textures[i].image);
+        CHECK(images[i] == mesh->description()->textures[i].image);
     mesh->release_texels(); // Does nothing for TexelRetention::keep.
     CHECK(mesh->texel_images() == images);
 }
@@ -407,7 +478,7 @@ TEST_CASE("A mesh compiled until upload describes its textures without texels an
     CHECK(mesh->texel_retention() == TexelRetention::until_upload);
     // The source is gone, but the mesh holds its image for the upload.
     REQUIRE_FALSE(authored.expired());
-    const auto &textures = mesh->materials()->textures;
+    const auto &textures = mesh->description()->textures;
     REQUIRE(textures.size() == 2);
     const auto &description = textures[0].image;
     CHECK(description != authored.lock());
@@ -417,7 +488,7 @@ TEST_CASE("A mesh compiled until upload describes its textures without texels an
     // Textures that share an image share its description, and keep their own samplers.
     CHECK(textures[1].image == description);
     CHECK(textures[1].sampler.mag == Filter::nearest);
-    CHECK_NOTHROW(validate_scene(*mesh->materials()));
+    CHECK_NOTHROW(validate_scene(snapshot_of(mesh)));
     const auto images = mesh->texel_images();
     REQUIRE(images.size() == 2);
     CHECK(images[0] == authored.lock());
@@ -437,8 +508,8 @@ TEST_CASE("Released texels are freed with their last holder and stay readable un
     CHECK_THROWS_WITH_AS(MeshPreparation(mesh), released_texels, std::logic_error);
     mesh->release_texels(); // Idempotent.
     // The mesh itself stays usable for drawing and inspection.
-    CHECK(mesh->materials()->textures.size() == 2);
-    CHECK_NOTHROW(validate_scene(*mesh->materials()));
+    CHECK(mesh->description()->textures.size() == 2);
+    CHECK_NOTHROW(validate_scene(snapshot_of(mesh)));
 }
 
 TEST_CASE("Meshes that share images hold them until each of them is released") {
@@ -457,7 +528,7 @@ TEST_CASE("Meshes that share images hold them until each of them is released") {
     reduced = pieces[0]->texel_images().at(0);
     REQUIRE_FALSE(reduced.expired());
     CHECK(reduced.lock()->width == reduced_edge);
-    CHECK(pieces[0]->materials()->textures[0].image->rgba.empty());
+    CHECK(pieces[0]->description()->textures[0].image->rgba.empty());
     pieces[0]->release_texels();
     CHECK(pieces[0]->texel_images().at(0) == reduced.lock()); // Piece 2 still holds it.
     pieces[2]->release_texels();
@@ -507,7 +578,7 @@ TEST_CASE("Moving a mesh copies it, so the mesh moved from keeps its content") {
     // The meshes moved from are read on purpose: the moves copied them.
     for (const Mesh *mesh :
          std::initializer_list<const Mesh *>{&constructed_from, &assigned_from, &constructed, &assigned}) {
-        REQUIRE(mesh->materials() == compiled->materials());
+        REQUIRE(mesh->description() == compiled->description());
         CHECK(mesh->vertices().size() == compiled->vertices().size());
         CHECK(mesh->draws().size() == compiled->draws().size());
         CHECK_NOTHROW((void)scene.add(std::make_shared<const Mesh>(*mesh)));
@@ -528,6 +599,6 @@ TEST_CASE("Compilation rejects an unknown texel retention and images without tex
     // A mesh's descriptions cannot be compiled again: they have no texels to upload.
     auto described = source;
     described.textures =
-        Mesh::compile(source, {.texel_retention = TexelRetention::until_upload})->materials()->textures;
+        Mesh::compile(source, {.texel_retention = TexelRetention::until_upload})->description()->textures;
     rejects_like_compile<std::invalid_argument>(described, no_texels);
 }

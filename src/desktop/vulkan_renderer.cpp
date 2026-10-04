@@ -293,7 +293,7 @@ struct VulkanRenderer::Impl {
     struct GpuMaterials {
         VkDevice device{};
         VmaAllocator allocator{};
-        std::shared_ptr<const MeshSnapshot> source;
+        std::shared_ptr<const MeshDescription> source;
         VkDescriptorPool texture_pool{};
         VkBuffer material_buffer{};
         VmaAllocation material_allocation{};
@@ -1642,9 +1642,8 @@ struct VulkanRenderer::Impl {
                          std::span<const std::shared_ptr<const anima::Image>> texels,
                          const MeshPreparation *prepared = nullptr) {
         require_texture_formats();
-        const auto generated_plan = prepared
-                                        ? MaterialTexturePlan{}
-                                        : material_texture_plan(target.source->material_data, target.source->textures);
+        const auto generated_plan =
+            prepared ? MaterialTexturePlan{} : material_texture_plan(target.source->materials, target.source->textures);
         const auto &plan = prepared ? prepared->plan() : generated_plan;
         target.textures.resize(plan.images.size());
         std::uint32_t total_mips = 0;
@@ -1667,7 +1666,7 @@ struct VulkanRenderer::Impl {
             total_mips +=
                 upload_image(target.textures[i], source, mips, planned.mips, upload, failure, initial, i == 0);
         }
-        target.material_sets.resize(target.source->material_data.size() + 1);
+        target.material_sets.resize(target.source->materials.size() + 1);
         const auto count = static_cast<std::uint32_t>(target.material_sets.size());
         const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * material_texture_count},
                                            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count}};
@@ -1698,7 +1697,7 @@ struct VulkanRenderer::Impl {
         std::vector<std::byte> uniforms(static_cast<std::size_t>(stride * count));
         for (std::uint32_t i = 0; i < count; ++i) {
             const Material fallback;
-            const auto &m = i == 0 ? fallback : target.source->material_data[i - 1];
+            const auto &m = i == 0 ? fallback : target.source->materials[i - 1];
             const MaterialUniform uniform{{m.emissive.x, m.emissive.y, m.emissive.z, m.alpha},
                                           {m.normal_scale, m.alpha_mode == AlphaMode::mask ? m.alpha_cutoff : -1.F,
                                            m.occlusion_strength, m.unlit ? 1.F : 0.F},

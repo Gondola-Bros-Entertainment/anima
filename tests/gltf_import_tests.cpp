@@ -333,7 +333,7 @@ TEST_CASE("A BLEND material imports as a blended material with its alpha factor,
     CHECK(mips.alpha_weighted_color);
     CHECK_FALSE(mips.alpha_coverage_cutoff);
     const auto mesh = Mesh::compile(*asset);
-    CHECK(mesh->materials()->material_data.at(0).alpha_mode == AlphaMode::blend);
+    CHECK(mesh->description()->materials.at(0).alpha_mode == AlphaMode::blend);
 }
 
 TEST_CASE("A blended alpha factor that is NaN or outside [0, 1] is rejected by material validation") {
@@ -397,8 +397,8 @@ TEST_CASE("Textures made from one image share its decoded pixels, and meshes sha
     CHECK(asset->textures[0].encoding == TextureEncoding::linear);
     CHECK(asset->textures[3].encoding == TextureEncoding::srgb);
     const auto mesh = Mesh::compile(*asset);
-    REQUIRE(mesh->materials()->textures.size() == asset->textures.size());
-    for (const auto &texture : mesh->materials()->textures)
+    REQUIRE(mesh->description()->textures.size() == asset->textures.size());
+    for (const auto &texture : mesh->description()->textures)
         CHECK(texture.image == image);
 }
 

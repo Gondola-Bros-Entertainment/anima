@@ -55,11 +55,8 @@ std::size_t validate_scene_geometry(std::size_t vertices, SceneGeometryBudget bu
     return bytes;
 }
 void validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget) {
-    detail::validate_scene(scene, budget, detail::Texels::optional);
-}
-void detail::validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budget, Texels texels) {
     (void)validate_scene_geometry(scene.vertices.size(), budget);
-    require(scene.material_data.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
+    require(scene.materials.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
                 scene.textures.size() < static_cast<std::size_t>(std::numeric_limits<int>::max()),
             "MeshSnapshot descriptor index overflow");
     require(finite(scene.minimum) && finite(scene.maximum), "Non-finite scene bounds");
@@ -75,13 +72,13 @@ void detail::validate_scene(const MeshSnapshot &scene, SceneGeometryBudget budge
         require(draw.first_vertex <= scene.vertices.size() &&
                     draw.vertex_count <= scene.vertices.size() - draw.first_vertex,
                 "MeshSnapshot draw exceeds vertex range");
-        require(draw.material_index >= -1 && (draw.material_index < 0 || static_cast<std::size_t>(draw.material_index) <
-                                                                             scene.material_data.size()),
+        require(draw.material_index >= -1 &&
+                    (draw.material_index < 0 || static_cast<std::size_t>(draw.material_index) < scene.materials.size()),
                 "MeshSnapshot draw references an invalid material");
         for (float value : draw.node_world)
             require(std::isfinite(value), "Non-finite scene node transform");
     }
-    validate_surfaces(scene.material_data, scene.textures, texels);
+    detail::validate_surfaces(scene.materials, scene.textures, detail::Texels::optional);
 }
 std::size_t detail::validate_image(const Image *image, Texels texels) {
     // A texture without an image has no dimensions.

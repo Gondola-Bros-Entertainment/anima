@@ -105,13 +105,13 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     const auto initial = instances.snapshot();
     REQUIRE(initial.vertices.size() == count * 2);
     REQUIRE(initial.primitives.size() == source->primitives.size() * 2);
-    REQUIRE(initial.material_data.size() == source->materials.size() * 2);
+    REQUIRE(initial.materials.size() == source->materials.size() * 2);
     CHECK(initial.textures.size() == source->textures.size() * 2);
     // The second instance's materials refer to its own copy of the textures.
     for (std::size_t i = 0; i < source->materials.size(); ++i) {
         CAPTURE(i);
         const auto texture = source->materials[i].texture;
-        CHECK(initial.material_data[source->materials.size() + i].texture ==
+        CHECK(initial.materials[source->materials.size() + i].texture ==
               (texture < 0 ? -1 : texture + int(source->textures.size())));
     }
     auto world = translation(10);
@@ -147,10 +147,9 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
     if (!source->materials.empty()) {
         instances.set_material_factor(a, 0, {.2F, .4F, .8F});
         const auto colored = instances.snapshot();
-        CHECK(colored.material_data[0].factor.x == Near{.2F, tolerance});
+        CHECK(colored.materials[0].factor.x == Near{.2F, tolerance});
         // The other instance keeps the source factor.
-        CHECK(colored.material_data[source->materials.size()].factor.x ==
-              Near{source->materials[0].factor.x, tolerance});
+        CHECK(colored.materials[source->materials.size()].factor.x == Near{source->materials[0].factor.x, tolerance});
         for (std::size_t p = 0; p < source->primitives.size(); ++p)
             if (source->primitives[p].material == 0) {
                 CAPTURE(p);
@@ -160,7 +159,7 @@ void snapshots(const std::shared_ptr<const anima::Asset> &source) {
                       Near{source->primitives[p].vertices[0].color.x * .2F, tolerance});
             }
         instances.clear_material_factor(a, 0);
-        CHECK(instances.snapshot().material_data[0].factor.x == Near{source->materials[0].factor.x, tolerance});
+        CHECK(instances.snapshot().materials[0].factor.x == Near{source->materials[0].factor.x, tolerance});
     }
     instances.remove(a);
     instances.remove(b);

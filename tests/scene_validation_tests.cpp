@@ -27,7 +27,7 @@ anima::MeshSnapshot fixture() {
     scene.primitives[1].first_vertex = 3;
     scene.primitives[0].material_index = 0;
     scene.primitives[1].material_index = 1;
-    scene.material_data = {{"a", {1, 1, 1}, 0}, {"b", {1, 1, 1}, 1}};
+    scene.materials = {{"a", {1, 1, 1}, 0}, {"b", {1, 1, 1}, 1}};
     scene.textures = {{std::make_shared<anima::Image>(anima::Image{2, 1, std::vector<std::uint8_t>(8, 255)}), {}},
                       {std::make_shared<anima::Image>(anima::Image{1, 1, std::vector<std::uint8_t>(4, 255)}), {}}};
     return scene;
@@ -88,7 +88,7 @@ TEST_CASE("Material and texture references must name existing entries") {
         CAPTURE(index);
         CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.primitives[0].material_index = index; })),
                              "MeshSnapshot draw references an invalid material", std::invalid_argument);
-        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.material_data[0].texture = index; })),
+        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.materials[0].texture = index; })),
                              "Invalid material texture reference", std::invalid_argument);
     }
 }
@@ -114,11 +114,11 @@ TEST_CASE("Nonfinite vertices, node transforms and bounds are rejected") {
 TEST_CASE("Material factors outside [0, 1] are rejected") {
     for (float value : {std::numeric_limits<float>::quiet_NaN(), -0.1F, 1.1F, std::numeric_limits<float>::infinity()}) {
         CAPTURE(value);
-        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.material_data[0].factor.x = value; })),
+        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.materials[0].factor.x = value; })),
                              material_factors, std::invalid_argument);
-        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.material_data[0].metallic = value; })),
+        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.materials[0].metallic = value; })),
                              material_factors, std::invalid_argument);
-        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.material_data[0].roughness = value; })),
+        CHECK_THROWS_WITH_AS(anima::validate_scene(edited([=](auto &s) { s.materials[0].roughness = value; })),
                              material_factors, std::invalid_argument);
     }
 }
@@ -188,11 +188,11 @@ TEST_CASE("Posed, colored and hidden geometry and the default material and textu
     scene.vertices[0].uv = {.5F, .7F};
     scene.primitives[0].visible = false;
     scene.primitives[0].node_world = anima::identity();
-    scene.material_data[0].factor = {.2F, .3F, .4F};
-    scene.material_data[0].metallic = .7F;
-    scene.material_data[0].roughness = .15F;
+    scene.materials[0].factor = {.2F, .3F, .4F};
+    scene.materials[0].metallic = .7F;
+    scene.materials[0].roughness = .15F;
     CHECK_NOTHROW(anima::validate_scene(scene));
     scene.primitives[0].material_index = -1;
-    scene.material_data[0].texture = -1;
+    scene.materials[0].texture = -1;
     CHECK_NOTHROW(anima::validate_scene(scene));
 }

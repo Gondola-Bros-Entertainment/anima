@@ -340,7 +340,7 @@ TEST_CASE("An impostor mesh draws one quad around its source's center") {
                       std::array{bounds.minimum.x, bounds.minimum.y, bounds.minimum.z}[axis] ==
                   doctest::Approx(2 * atlas.frames.radius));
         }
-        const auto &material = mesh->materials()->material_data.at(0);
+        const auto &material = mesh->description()->materials.at(0);
         CHECK(material.alpha_mode == AlphaMode::mask);
         CHECK(material.alpha_cutoff == .5F);
         CHECK(material.double_sided);
@@ -356,7 +356,7 @@ TEST_CASE("An impostor mesh draws one quad around its source's center") {
     emissive.emissive = atlas.color;
     emissive.emission_scale = 3;
     const auto glowing = Mesh::compile_impostor(emissive);
-    const auto &material = glowing->materials()->material_data.at(0);
+    const auto &material = glowing->description()->materials.at(0);
     CHECK(material.emissive_texture == 3);
     CHECK(material.emissive.x == 3);
 }
@@ -389,7 +389,7 @@ TEST_CASE("An impostor's maps sample linearly and clamped, whatever their sample
     for (auto *texture : {&atlas.color, &atlas.normal_depth, &atlas.surface, &*atlas.emissive})
         texture->sampler = {Filter::nearest, Filter::nearest, Filter::nearest, Wrap::repeat, Wrap::mirror, false};
     const auto mesh = Mesh::compile_impostor(atlas);
-    const auto &textures = mesh->materials()->textures;
+    const auto &textures = mesh->description()->textures;
     REQUIRE(textures.size() == 4);
     for (const auto &texture : textures) {
         CHECK(texture.sampler.mag == Filter::linear);

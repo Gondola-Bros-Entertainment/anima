@@ -674,9 +674,8 @@ MeshSnapshot make_mesh_snapshot(const Asset &asset, const Pose &pose) {
     require_pose_for(asset, pose);
     MeshSnapshot scene;
     scene.mesh_nodes = asset.mesh_nodes;
-    scene.materials = asset.materials.size();
     scene.skins = asset.skins.size();
-    scene.material_data = asset.materials;
+    scene.materials = asset.materials;
     scene.textures = asset.textures;
     scene.notices = asset.notices;
     for (const auto &clip : asset.animations)
@@ -718,7 +717,7 @@ MeshSnapshot load_glb(const std::filesystem::path &path) {
 }
 void print_mesh_report(const MeshSnapshot &scene) {
     std::cout << "ASSET mesh_nodes=" << scene.mesh_nodes << " primitives=" << scene.primitives.size()
-              << " materials=" << scene.materials << " triangles=" << scene.vertices.size() / 3
+              << " materials=" << scene.materials.size() << " triangles=" << scene.vertices.size() / 3
               << " skins=" << scene.skins << " joints=" << scene.joints
               << " skinned_vertices=" << scene.skinned_vertices << " bind_deviation=" << scene.bind_deviation
               << " pose=" << (scene.default_is_bind_pose ? "bind" : "default") << '\n';

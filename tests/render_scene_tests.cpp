@@ -160,7 +160,7 @@ TEST_CASE("Material and visibility edits stay with their instance") {
     const auto a = scene.add(asset), b = scene.add(asset);
     scene.set_material_factor(a, 0, {1, 0, 0});
     CHECK(scene.instance(b).factors[0].y == .6F);
-    CHECK(asset->materials()->material_data[0].factor.y == .6F);
+    CHECK(asset->description()->materials[0].factor.y == .6F);
     CHECK_THROWS_WITH_AS(scene.set_material_factor(a, 0, {2, 0, 0}), "Invalid render material factor",
                          std::invalid_argument);
     scene.clear_material_factor(a, 0);
@@ -188,7 +188,7 @@ TEST_CASE("Compiled meshes do not depend on mutable source storage") {
     source.primitives[0].vertices[0].position = {99, 99, 99};
     source.materials[0].factor = {0, 0, 0};
     CHECK(asset->vertices()[0].position.x == 0);
-    CHECK(asset->materials()->material_data[0].factor.y == .6F);
+    CHECK(asset->description()->materials[0].factor.y == .6F);
 }
 
 TEST_CASE("Indexing keeps UV seams and different skin influences apart") {

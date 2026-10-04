@@ -37,7 +37,7 @@ struct Primitive {
     std::uint32_t first_vertex{};
     /// Number of vertices, a positive multiple of 3.
     std::uint32_t vertex_count{};
-    /// Index into MeshSnapshot::material_data, or -1.
+    /// Index into MeshSnapshot::materials, or -1.
     int material_index = -1;
     /// Whether the primitive was visible when Scene::snapshot captured it; make_mesh_snapshot
     /// always sets true.
@@ -53,7 +53,7 @@ struct MeshSnapshot {
     std::vector<MeshVertex> vertices;
     std::vector<Primitive> primitives;
     /// Materials that Primitive::material_index refers to.
-    std::vector<Material> material_data;
+    std::vector<Material> materials;
     /// Textures that the materials refer to. They share their images with the Asset or Mesh they
     /// came from instead of copying them, including images without texels (see TexelRetention).
     std::vector<Texture> textures;
@@ -64,8 +64,6 @@ struct MeshSnapshot {
     Vec3 maximum{};
     /// Number of mesh-bearing nodes.
     std::size_t mesh_nodes{};
-    /// Number of materials.
-    std::size_t materials{};
     /// Number of skins.
     std::size_t skins{};
     /// Total joints over all skins.
