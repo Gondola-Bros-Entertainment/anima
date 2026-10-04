@@ -19,7 +19,7 @@ struct NavigationSceneAccess {
             Vec3 velocity{};
             if (component.active()) {
                 const auto m = component.object().world_matrix();
-                velocity = follower.steer(translation_of(m), component->speed_, seconds, component->arrival_distance_);
+                velocity = follower.steer(translation_of(m), seconds, component->settings_);
             }
             updates.push_back({component, std::move(follower), velocity});
         }
@@ -33,19 +33,16 @@ struct NavigationSceneAccess {
 namespace anima::navigation {
 namespace {
 constexpr std::size_t maximum_component_bytes = 16 * 1024 * 1024;
+constexpr detail::JsonNames<SteerPlane, 2> plane_names{{{SteerPlane::xyz, "xyz"}, {SteerPlane::xz, "xz"}}};
+static_assert(plane_names.size() == static_cast<std::size_t>(SteerPlane::xz) + 1, "Name every steer plane");
+} // namespace
+Agent::Agent(std::vector<Vec3> route, SteerSettings settings, std::size_t next)
+    : follower_(std::move(route), next), settings_(settings) {
+    detail::navigation_settings(settings_);
 }
-Agent::Agent(std::vector<Vec3> route, float speed, float arrival_distance, std::size_t next)
-    : follower_(std::move(route), next), speed_(speed), arrival_distance_(arrival_distance) {
-    detail::navigation_settings(speed_, arrival_distance_);
-}
-void Agent::set_speed(float speed) {
-    detail::navigation_settings(speed, arrival_distance_);
-    speed_ = speed;
-    velocity_ = {};
-}
-void Agent::set_arrival_distance(float distance) {
-    detail::navigation_settings(speed_, distance);
-    arrival_distance_ = distance;
+void Agent::configure(SteerSettings settings) {
+    detail::navigation_settings(settings);
+    settings_ = settings;
     velocity_ = {};
 }
 void Agent::set_route(std::vector<Vec3> route, std::size_t next) {
@@ -57,15 +54,17 @@ void update_agents(SceneSet &scenes, double seconds) { detail::NavigationSceneAc
 void add_component_codec(ComponentCodecs &codecs) {
     using Json = nlohmann::json;
     codecs.add<Agent>(
-        "anima.navigation-agent.v1",
+        "anima.navigation-agent.v2",
         [](const Agent &agent, const ObjectReferences &) {
             Json points = Json::array();
             for (const auto p : agent.follower().route())
                 points.push_back(Json::array({p.x, p.y, p.z}));
+            const auto &settings = agent.settings();
             auto payload = Json{{"route", points},
                                 {"next", agent.follower().next()},
-                                {"speed", agent.speed()},
-                                {"arrival_distance", agent.arrival_distance()}}
+                                {"speed", settings.speed},
+                                {"arrival_distance", settings.arrival_distance},
+                                {"plane", detail::json_name(plane_names, settings.plane, detail::unknown_steer_plane)}}
                                .dump();
             // The decoder rejects larger payloads, so a route that fits the follower could otherwise be
             // captured but never restored.
@@ -75,7 +74,7 @@ void add_component_codec(ComponentCodecs &codecs) {
         },
         [](GameObject object, std::string_view data, const ObjectReferences &) {
             const auto j = detail::parse_json(data, maximum_component_bytes);
-            detail::json_fields(j, {"route", "next", "speed", "arrival_distance"});
+            detail::json_fields(j, {"route", "next", "speed", "arrival_distance", "plane"});
             if (!j.at("route").is_array() || !j.at("next").is_number_integer() ||
                 j.at("next").get<std::int64_t>() < 0 || j.at("next").get<std::uint64_t>() > j.at("route").size() ||
                 !j.at("speed").is_number() || !j.at("arrival_distance").is_number())
@@ -88,8 +87,11 @@ void add_component_codec(ComponentCodecs &codecs) {
                     throw std::invalid_argument("Invalid navigation waypoint");
                 route.push_back({detail::json_float(p[0]), detail::json_float(p[1]), detail::json_float(p[2])});
             }
-            object.add_component<Agent>(std::move(route), detail::json_float(j.at("speed")),
-                                        detail::json_float(j.at("arrival_distance")), j.at("next").get<std::size_t>());
+            const SteerSettings settings{
+                .speed = detail::json_float(j.at("speed")),
+                .arrival_distance = detail::json_float(j.at("arrival_distance")),
+                .plane = detail::json_enumerator(plane_names, j.at("plane"), detail::unknown_steer_plane)};
+            object.add_component<Agent>(std::move(route), settings, j.at("next").get<std::size_t>());
         });
 }
 } // namespace anima::navigation

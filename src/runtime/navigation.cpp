@@ -18,13 +18,22 @@ void point(Vec3 p) {
         if (!std::isfinite(v) || std::abs(v) > maximum_coordinate)
             throw std::invalid_argument("Navigation position outside finite supported range");
 }
-double distance(Vec3 a, Vec3 b) {
-    const double x = double(a.x) - b.x, y = double(a.y) - b.y, z = double(a.z) - b.z;
+// Distance from a to b, ignoring Y in the XZ plane.
+double distance(Vec3 a, Vec3 b, SteerPlane plane = SteerPlane::xyz) {
+    const double x = double(a.x) - b.x, y = plane == SteerPlane::xz ? 0.0 : double(a.y) - b.y, z = double(a.z) - b.z;
     return std::sqrt(x * x + y * y + z * z);
 }
 void index(const Graph &graph, NodeId node) {
     if (node >= graph.nodes().size())
         throw std::out_of_range("Navigation node outside graph");
+}
+// The checks of make_grid() that take constant time; the cost values are checked separately.
+void grid_shape(const Grid &g) {
+    point(g.origin);
+    const auto count = std::uint64_t(g.columns) * g.rows;
+    if (!g.columns || !g.rows || count > detail::maximum_navigation_nodes || g.costs.size() != count ||
+        !std::isfinite(g.cell_size) || g.cell_size < minimum_cell_size || g.cell_size > maximum_cell_size)
+        throw std::invalid_argument("Invalid navigation grid dimensions/cost count");
 }
 } // namespace
 Graph::Graph(std::vector<Node> nodes, std::vector<Edge> edges) : nodes_(std::move(nodes)) {
@@ -59,20 +68,16 @@ std::span<const Edge> Graph::outgoing(NodeId node) const {
     return std::span<const Edge>(edges_).subspan(offsets_[node], offsets_[node + 1] - offsets_[node]);
 }
 Graph make_grid(const Grid &g) {
-    point(g.origin);
-    const auto count = std::uint64_t(g.width) * g.height;
-    if (!g.width || !g.height || count > detail::maximum_navigation_nodes || g.costs.size() != count ||
-        !std::isfinite(g.cell_size) || g.cell_size < minimum_cell_size || g.cell_size > maximum_cell_size)
-        throw std::invalid_argument("Invalid navigation grid dimensions/cost count");
+    grid_shape(g);
     for (float cost : g.costs)
         if (!std::isfinite(cost) || cost < 0 || cost > maximum_cell_cost)
             throw std::invalid_argument("Invalid navigation cell cost");
     std::vector<Node> nodes;
-    nodes.reserve(static_cast<std::size_t>(count));
+    nodes.reserve(g.costs.size());
     std::vector<Edge> edges;
-    for (std::uint32_t z = 0; z < g.height; ++z) {
-        for (std::uint32_t x = 0; x < g.width; ++x) {
-            const NodeId from = z * g.width + x;
+    for (std::uint32_t z = 0; z < g.rows; ++z) {
+        for (std::uint32_t x = 0; x < g.columns; ++x) {
+            const NodeId from = z * g.columns + x;
             const Vec3 position{g.origin.x + static_cast<float>(x) * g.cell_size, g.origin.y,
                                 g.origin.z + static_cast<float>(z) * g.cell_size};
             point(position);
@@ -84,14 +89,14 @@ Graph make_grid(const Grid &g) {
                     if ((!dx && !dz) || (!g.diagonal && dx && dz))
                         continue;
                     const auto nx = std::int64_t(x) + dx, nz = std::int64_t(z) + dz;
-                    if (nx < 0 || nz < 0 || nx >= g.width || nz >= g.height)
+                    if (nx < 0 || nz < 0 || nx >= g.columns || nz >= g.rows)
                         continue;
-                    const auto to = static_cast<NodeId>(nz * g.width + nx);
+                    const auto to = static_cast<NodeId>(nz * g.columns + nx);
                     if (g.costs[to] == 0)
                         continue;
                     if (dx && dz &&
-                        (g.costs[z * g.width + static_cast<std::uint32_t>(nx)] == 0 ||
-                         g.costs[static_cast<std::uint32_t>(nz) * g.width + x] == 0))
+                        (g.costs[z * g.columns + static_cast<std::uint32_t>(nx)] == 0 ||
+                         g.costs[static_cast<std::uint32_t>(nz) * g.columns + x] == 0))
                         continue;
                     edges.push_back(
                         {from, to, double(g.cell_size) * (dx && dz ? std::numbers::sqrt2 : 1.0) * g.costs[to]});
@@ -99,6 +104,18 @@ Graph make_grid(const Grid &g) {
         }
     }
     return Graph(std::move(nodes), std::move(edges));
+}
+std::optional<NodeId> grid_node(const Grid &grid, Vec3 position) {
+    point(position);
+    grid_shape(grid);
+    // Rounding half up gives each cell the half-open span [-cell_size / 2, cell_size / 2) around its center.
+    const auto cell = [&](float coordinate, float origin) {
+        return std::floor((double(coordinate) - origin) / grid.cell_size + .5);
+    };
+    const double x = cell(position.x, grid.origin.x), z = cell(position.z, grid.origin.z);
+    if (x < 0 || z < 0 || x >= grid.columns || z >= grid.rows)
+        return std::nullopt;
+    return static_cast<NodeId>(z * grid.columns + x);
 }
 Path find_path(const Graph &graph, NodeId start, NodeId goal, SearchSettings settings) {
     index(graph, start);
@@ -183,16 +200,19 @@ void Follower::set_route(std::vector<Vec3> route, std::size_t next) {
     route_ = std::make_shared<const std::vector<Vec3>>(std::move(route));
     next_ = next;
 }
-Vec3 Follower::steer(Vec3 position, float speed, double seconds, float arrival_distance) {
+Vec3 Follower::steer(Vec3 position, double seconds, SteerSettings settings) {
     point(position);
-    detail::navigation_settings(speed, arrival_distance);
+    detail::navigation_settings(settings);
     detail::navigation_step(seconds);
-    while (!finished() && distance(position, (*route_)[next_]) <= arrival_distance)
+    while (!finished() && distance(position, (*route_)[next_], settings.plane) <= settings.arrival_distance)
         ++next_;
     if (finished())
         return {};
-    const double length = distance(position, (*route_)[next_]);
-    const float factor = static_cast<float>(std::min(double(speed), length / seconds) / length);
-    return ((*route_)[next_] - position) * factor;
+    const double length = distance(position, (*route_)[next_], settings.plane);
+    const float factor = static_cast<float>(std::min(double(settings.speed), length / seconds) / length);
+    auto offset = (*route_)[next_] - position;
+    if (settings.plane == SteerPlane::xz)
+        offset.y = 0;
+    return offset * factor;
 }
 } // namespace anima::navigation
