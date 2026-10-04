@@ -579,6 +579,38 @@ inline void run() {
         attachment_owner.destroy();
         attachments.remove(scene);
         check(scene.size() == 0, "Actor destruction retained held attachments");
+        {
+            // An application-defined frame driver poses the body, and the native late follower keeps the
+            // held item on its socket and hides it with the body.
+            struct BodyDriver {
+                GameObject owner;
+                Pose pose;
+                void on_update(double) { owner.renderer().set_pose(pose); }
+            };
+            Scene follow_scene;
+            auto body = follow_scene.create("Following owner", actor.render);
+            auto follower =
+                body.add_component<AttachmentFollower>(AttachmentSet::prepare(library, sockets, {{"probe", "probe"}}));
+            const auto probe = follower->object("probe");
+            const auto held = follower->attachments().roles.at("probe").binding;
+            check(probe.parent()->id() == body.id() &&
+                      probe.local_matrix() == attachment_placement(actor.render->rest_pose(), held),
+                  "Attachment follower did not hold its item at the socket of the current pose");
+            const auto later = motion->sample("drift", .75);
+            check(attachment_placement(later, held) != attachment_placement(actor.render->rest_pose(), held),
+                  "Follower fixture pose does not move the socket");
+            (void)body.add_component<BodyDriver>(later);
+            follow_scene.update(.5);
+            check(probe.local_matrix() == attachment_placement(later, held),
+                  "Attachment follower did not follow the final frame pose during late update");
+            body.renderer().set_visible(false);
+            follow_scene.update(.5);
+            check(!follow_scene.instance(probe.id()).visible,
+                  "Attachment follower did not hide its item with the body");
+            body.remove_component<AttachmentFollower>();
+            check(!follower && !probe.valid() && follow_scene.size() == 1,
+                  "Removing an attachment follower left its item alive");
+        }
     }
     ActorPresentation pilot(workspace.directory / "2/actor.profile.json"),
         crawler(workspace.directory / "4/actor.profile.json");

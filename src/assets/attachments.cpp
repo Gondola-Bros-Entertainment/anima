@@ -160,6 +160,24 @@ anima::Mat4 rest_world(const anima::Asset &asset, std::size_t index) {
             throw std::runtime_error("Invalid node parent");
     }
 }
+// Bottom-row tolerance that scene.hpp states for the matrices a scene accepts.
+constexpr float scene_affine_tolerance = 1e-5F;
+// Whether @p frame is finite and affine, as scene.hpp requires of the matrices a scene accepts.
+bool scene_matrix(const anima::Mat4 &frame) {
+    for (const auto value : frame)
+        if (!std::isfinite(value))
+            return false;
+    return std::abs(frame[3]) < scene_affine_tolerance && std::abs(frame[7]) < scene_affine_tolerance &&
+           std::abs(frame[11]) < scene_affine_tolerance && std::abs(frame[15] - 1) < scene_affine_tolerance;
+}
+// The entry for @p role in @p follows, an AttachmentFollower's map of roles. Throws std::out_of_range for a role it
+// lacks.
+template <class Map> auto &role_entry(Map &follows, std::string_view role) {
+    const auto found = follows.find(role);
+    if (found == follows.end())
+        throw std::out_of_range("Unknown attachment role: " + std::string(role));
+    return found->second;
+}
 } // namespace
 AttachmentCatalog decode_attachment_catalog(std::string_view document, const std::filesystem::path &directory) {
     return presentation_data::decode_step([&] { return decode_catalog(document, directory); });
@@ -380,6 +398,62 @@ void AttachmentSet::set_visible(Scene &scene, bool visible) const {
         (void)role;
         if (item.instance)
             scene.set_visible(*item.instance, visible);
+    }
+}
+AttachmentFollower::AttachmentFollower(GameObject owner, AttachmentSet attachments)
+    : owner_(std::move(owner)), attachments_(std::move(attachments)) {
+    // Allocate every entry before the items are added, so that nothing after the add can fail and leave them in the
+    // scene without a follower to destroy them.
+    for (const auto &[role, item] : attachments_.roles)
+        follows_.emplace(role, Follow{{}, item.binding});
+    attachments_.add(owner_);
+    auto &target = owner_.scene();
+    mesh_ = target.slot(owner_.id()).value.asset;
+    for (auto &[role, follow] : follows_)
+        follow.object = target.object(*attachments_.roles.at(role).instance);
+}
+AttachmentFollower::~AttachmentFollower() {
+    for (auto &[role, follow] : follows_) {
+        (void)role;
+        if (follow.object.valid())
+            follow.object.destroy();
+    }
+}
+Scene &AttachmentFollower::scene() const {
+    auto &target = owner_.scene();
+    // Bindings name nodes of the original mesh, so another mesh would place the items on unrelated nodes.
+    if (target.slot(owner_.id()).value.asset != mesh_)
+        throw std::invalid_argument("Attachment follower requires its original owner mesh");
+    return target;
+}
+GameObject AttachmentFollower::object(std::string_view role) const { return role_entry(follows_, role).object; }
+void AttachmentFollower::set_binding(std::string_view role, const AttachmentBinding &binding) {
+    auto &entry = role_entry(follows_, role);
+    if (binding.node >= mesh_->rest_pose().world.size())
+        throw std::out_of_range("Attachment binding node is outside the owner mesh");
+    if (!scene_matrix(binding.local))
+        throw std::invalid_argument("Attachment binding frame must be finite and affine");
+    entry.binding = binding;
+}
+void AttachmentFollower::sync() {
+    auto &target = scene();
+    // Check every item before changing any.
+    for (const auto &[role, follow] : follows_) {
+        (void)role;
+        if (follow.object.valid())
+            (void)target.instance(follow.object.id());
+    }
+    // Moving and showing items changes no slot storage, so the owner's slot stays in place.
+    const auto &body = target.slot(owner_.id());
+    const bool visible = body.value.visible;
+    const auto &pose = body.pose ? *body.pose : mesh_->rest_pose();
+    for (auto &[role, follow] : follows_) {
+        (void)role;
+        if (!follow.object.valid())
+            continue;
+        if (visible)
+            follow.object.set_local_matrix(attachment_placement(pose, follow.binding));
+        target.set_visible(follow.object.id(), visible);
     }
 }
 MotionEvaluation apply_attachment_contacts(const MotionRuntime &runtime, const anima::Pose &source,
