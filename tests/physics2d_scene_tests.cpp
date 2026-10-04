@@ -234,7 +234,7 @@ TEST_CASE("Only an active rigid body's object must meet the transform rules") {
     p::World world({{0, 0}, 4});
     Scene scene;
     auto hand = scene.create("hand");
-    hand.set_transform({{0, 1, 0}, {0, 0, 0, 1}, {2, 2, 2}});
+    hand.set_world_transform({{0, 1, 0}, {0, 0, 0, 1}, {2, 2, 2}});
     p::BodySettings settings;
     settings.collider.shape = p::Shape::circle;
     settings.motion = p::Motion::dynamic;
@@ -248,7 +248,7 @@ TEST_CASE("Only an active rigid body's object must meet the transform rules") {
     CHECK_THROWS_WITH_AS(p::step(scene, world, tick), "Dynamic 2D bodies must be scene roots", std::invalid_argument);
     // Released as a root, its body moves to where the object was let go.
     item.clear_parent();
-    item.set_transform({{3, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}});
+    item.set_world_transform({{3, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}});
     p::step(scene, world, tick);
     CHECK(held->body().enabled());
     CHECK(held->body().pose().position.x == 3);
@@ -266,7 +266,7 @@ TEST_CASE("Only an active rigid body's object must meet the transform rules") {
     auto lever = scene.create("lever");
     auto turning = lever.add_component<p::RigidBody>(world, settings);
     turning.set_enabled(false);
-    lever.set_transform({{}, {0, 0, std::sin(.5F), std::cos(.5F)}, {1, 1, 1}});
+    lever.set_world_transform({{}, {0, 0, std::sin(.5F), std::cos(.5F)}, {1, 1, 1}});
     CHECK_NOTHROW(p::step(scene, world, tick));
     turning.set_enabled(true);
     CHECK_THROWS_WITH_AS(p::step(scene, world, tick), "Fixed-rotation kinematic object changed angle",
