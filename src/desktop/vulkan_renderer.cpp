@@ -94,6 +94,15 @@ void validate_impostor_frames(std::uint32_t frames) {
     if (frames != 1 && frames != 3)
         throw std::invalid_argument("Impostor frames must be 1 or 3");
 }
+// Throws `std::invalid_argument` for a value that is not a SceneColorFormat enumerator.
+void validate_scene_color_format(SceneColorFormat format) {
+    switch (format) {
+    case SceneColorFormat::rgba16f:
+    case SceneColorFormat::b10g11r11:
+        return;
+    }
+    throw std::invalid_argument("Unknown scene color format");
+}
 constexpr std::uint32_t vertex_code[] =
 #include "triangle.vert.inc"
     ;
@@ -602,6 +611,7 @@ struct VulkanRenderer::Impl {
 #endif
         validate_shadow_filter(options.shadow_filter);
         validate_impostor_frames(options.impostor_frames);
+        validate_scene_color_format(options.scene_color_format);
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -610,6 +620,9 @@ struct VulkanRenderer::Impl {
             throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface: ") + SDL_GetError());
         fail_after(RendererFailureStage::surface);
         create_device();
+#ifdef ANIMA_HAS_ASSETS
+        choose_world_color_format();
+#endif
         fail_after(RendererFailureStage::device);
         create_frame_resources();
 #ifdef ANIMA_HAS_ASSETS
@@ -2895,6 +2908,13 @@ void VulkanRenderer::set_impostor_frames(std::uint32_t frames) {
     impl_->options.impostor_frames = frames;
 }
 std::uint32_t VulkanRenderer::impostor_frames() const noexcept { return impl_->options.impostor_frames; }
+SceneColorFormat VulkanRenderer::scene_color_format() const noexcept {
+#ifdef ANIMA_HAS_ASSETS
+    if (impl_->world_color_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+        return SceneColorFormat::b10g11r11;
+#endif
+    return SceneColorFormat::rgba16f;
+}
 void VulkanRenderer::set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions options) {
 #ifdef ANIMA_HAS_ASSETS
     impl_->set_scenes(std::move(sources), std::move(options));

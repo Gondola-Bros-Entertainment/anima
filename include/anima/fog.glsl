@@ -6,7 +6,7 @@
 #define ANIMA_FOG_GLSL
 
 // The largest finite half float, (2 - 2^-10) * 2^15, and so the largest finite value that a channel of the scene's
-// 16-bit float color target holds.
+// default 16-bit float color target holds (anima::SceneColorFormat::rgba16f).
 const float animaMaximumHalfFloat = 65504.0;
 
 // The share of light that reaches @p eye from @p position through fog of positive density: exp(-t), where t

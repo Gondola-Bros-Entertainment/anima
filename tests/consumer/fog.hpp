@@ -6,16 +6,20 @@
 // whose height leaves the same frame; the sky fogged at HeightFog::sky_distance, so that a quad there meets it without
 // a seam that the unfogged sky shows, and the atmosphere's sky dimmed there by the fog; the background of an
 // environment without an atmosphere, exposed and tone mapped as set, and fogged at the sky distance as the sky is;
-// animaFogged(), which fogs a custom material as the standard material is fogged; and the cap on the fog's light,
-// which a fog color above the largest half float meets on every path without sunlight.
+// animaFogged(), which fogs a custom material as the standard material is fogged; and the cap on the fog's light, which
+// a fog color above the largest half float meets on every path without sunlight. Last, a renderer that requests the
+// packed SceneColorFormat::b10g11r11 scene target draws sunlit height fog, water that reads the opaque copies, and the
+// atmosphere's sky within a few levels of the default target, which itself stays the default.
 #include "blending.hpp"
 #include "custom_materials.hpp"
+#include "rejection.hpp"
 #include <algorithm>
 #include <anima/environment.hpp>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <numbers>
@@ -27,6 +31,24 @@ namespace fog_test {
 using blending_test::Color;
 using blending_test::require;
 using Point = std::array<double, 3>;
+
+constexpr std::string_view unknown_format_message = "Unknown scene color format";
+/// Construction rejects a scene color format that is not an enumerator, after the impostor frames and before the
+/// window.
+inline void reject_unknown_scene_color_format() {
+    using rejection::rejects;
+    const auto construct = [](anima::SceneColorFormat format, std::uint32_t impostor_frames = 3) {
+        anima::RendererOptions options;
+        options.scene_color_format = format;
+        options.impostor_frames = impostor_frames;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    const auto unknown = static_cast<anima::SceneColorFormat>(-1);
+    rejects<std::invalid_argument>([&] { construct(unknown); }, unknown_format_message);
+    for (const auto format : {anima::SceneColorFormat::rgba16f, anima::SceneColorFormat::b10g11r11})
+        rejects<std::invalid_argument>([&] { construct(format); }, "Renderer requires an SDL window");
+    rejects<std::invalid_argument>([&] { construct(unknown, 2); }, "Impostor frames must be 1 or 3");
+}
 
 constexpr anima::Vec3 eye{0, 2, 0};
 inline anima::Mat4 view(float aspect) {
@@ -439,23 +461,103 @@ inline void check_capped_light(blending_test::Harness &harness) {
     }
 }
 
+// The gradients that compare scene color formats, named with @p suffix: the plates in height fog that scatters sunlight
+// forward, with water over a corner of the nearest, which copies the opaque depth and color in the target's format, and
+// the default atmosphere's sky, lit brightly, above a far orange fog, whose smooth gradients show a format's bands
+// first.
+inline std::vector<std::string> render_gradients(blending_test::Harness &harness, const std::string &suffix) {
+    const auto view_projection = view(harness.aspect());
+    auto environment = height_fog();
+    environment.sun = {{.2F, .3F, -1}, {1.2F, 1.1F, 1}};
+    environment.fog_sun_scattering = {.3F, .25F, .2F};
+    environment.fog_sun_anisotropy = .7F;
+    const auto plates_name = "gradient-fog-" + suffix, sky_name = "gradient-sky-" + suffix;
+    auto scene = plate_scene();
+    (void)custom_material_test::add(*scene, custom_material_test::surface({-1.2F, .2F, -4.5F}, .3F, .3F),
+                                    custom_material_test::water_material({{.02, .15, .2}, .35}));
+    harness.render(plates_name, {scene}, view_projection, environment);
+    require(harness.stats.opaque_inputs, "The gradient frame with water did not copy opaque depth and color");
+    environment = {};
+    environment.atmosphere.enabled = true;
+    environment.sun = {{0, .4F, 1}, {6, 6, 6}};
+    environment.fog_color = {.5F, .2F, .05F};
+    environment.fog_density = .004F;
+    environment.fog_falloff = .02F;
+    environment.fog_sky_distance = 250;
+    harness.render(sky_name, {}, view_projection, environment);
+    return {plates_name, sky_name};
+}
+// Largest channel difference over every pixel of two captures of one size.
+inline int largest_difference(const gpu_check::Image &a, const gpu_check::Image &b) {
+    int largest = 0;
+    for (std::size_t i = 0; i < a.rgb.size(); ++i)
+        largest = std::max(largest, std::abs(int(a.rgb[i]) - int(b.rgb[i])));
+    return largest;
+}
+// A renderer that requests SceneColorFormat::b10g11r11 reports the format it settled on and, with clean validation,
+// draws @p references, the frames that render_gradients() drew into the default target: within a mean channel
+// difference of 1 and at most 6 levels in any channel with the packed target, which must change the sky somewhere so
+// that the comparison is not blind, or identically where the device falls back to SceneColorFormat::rgba16f.
+inline void check_packed_color(const std::filesystem::path &output,
+                               std::vector<std::pair<std::string, gpu_check::Image>> references) {
+    blending_test::Harness harness(output, anima::SceneColorFormat::b10g11r11);
+    const auto format = harness.scene_color_format();
+    const bool packed = format == anima::SceneColorFormat::b10g11r11;
+    std::cout << "FOG scene color format for a b10g11r11 request: "
+              << (packed ? "B10G11R11_UFLOAT_PACK32" : "R16G16B16A16_SFLOAT, as the device lacks the packed format")
+              << '\n';
+    const auto names = render_gradients(harness, "packed");
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const auto &[reference, image] = references[i];
+        harness.images.add(reference, image);
+        const auto &actual = harness.images[names[i]];
+        if (!packed) {
+            harness.images.require_same(reference, names[i], "The fallback to RGBA16F changed the frame");
+            continue;
+        }
+        require(gpu_check::same_size(image, actual), "The packed scene target's capture changed size");
+        const auto agreement = gpu_check::parity(image, actual);
+        const auto largest = largest_difference(image, actual);
+        std::cout << "FOG " << names[i] << " against " << reference << ": mean channel difference " << agreement.mean
+                  << ", largest " << largest << " levels\n";
+        harness.images.require(agreement.mean < 1 && largest <= 6,
+                               "The packed scene target drew " + names[i] + " beyond the levels allowed from " +
+                                   reference,
+                               {reference, names[i]});
+    }
+    if (packed)
+        harness.images.require(!gpu_check::same(references.back().second, harness.images[names.back()]),
+                               "The packed scene target drew the sky exactly as RGBA16F does, so the check is blind",
+                               {references.back().first, names.back()});
+    harness.finish();
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3, "Usage: consumer --fog OUTPUT");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    blending_test::Harness harness(argv[2]);
-    check_height_fog(harness);
-    check_uniform(harness);
-    check_sky(harness);
-    check_background(harness);
-    check_custom(harness);
-    check_capped_light(harness);
-    harness.finish();
+    std::vector<std::pair<std::string, gpu_check::Image>> references;
+    {
+        blending_test::Harness harness(argv[2]);
+        require(harness.scene_color_format() == anima::SceneColorFormat::rgba16f,
+                "The renderer did not default to the RGBA16F scene target");
+        check_height_fog(harness);
+        check_uniform(harness);
+        check_sky(harness);
+        check_background(harness);
+        check_custom(harness);
+        check_capped_light(harness);
+        for (const auto &name : render_gradients(harness, "rgba16f"))
+            references.emplace_back(name, harness.images[name]);
+        harness.finish();
+    }
+    // One window at a time: the first renderer and its window close before the second opens.
+    check_packed_color(argv[2], std::move(references));
     std::cout << "PASS fog: height fog and sunlight scattered forward and backward match the documented density "
                  "integrated along each ray, for opaque and blended quads and through animaFogged(), uniform fog lit "
                  "by the sun ignores its height, the sky and the background fogged at the sky distance meet a quad "
                  "there without the seam that they show unfogged, the background shows its color exposed and tone "
                  "mapped, and a fog color above the largest half float lights the fog as that color capped at it "
-                 "does\n";
+                 "does, and the packed scene target draws fog and sky within a few levels of the default\n";
     return 0;
 }
 } // namespace fog_test
