@@ -163,9 +163,28 @@ template <class T, std::size_t... I> constexpr bool initializable_from_any(std::
 template <class T, std::size_t count>
 constexpr bool has_fields = initializable_from_any<T>(std::make_index_sequence<count>{}) &&
                             !initializable_from_any<T>(std::make_index_sequence<count + 1>{});
+// A swapchain format the renderer knows, with 8 bits per channel: whether its bytes are in BGRA order, and whether
+// writes to it encode linear values to sRGB, which for the others the display pass does itself.
+struct SurfaceFormatInfo {
+    VkFormat format;
+    bool bgra;
+    bool srgb;
+};
 // Swapchain formats in order of preference, each in VK_COLOR_SPACE_SRGB_NONLINEAR_KHR.
-constexpr std::array preferred_surface_formats{VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
-                                               VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+constexpr std::array<SurfaceFormatInfo, 4> preferred_surface_formats{{{VK_FORMAT_B8G8R8A8_SRGB, true, true},
+                                                                      {VK_FORMAT_R8G8B8A8_SRGB, false, true},
+                                                                      {VK_FORMAT_B8G8R8A8_UNORM, true, false},
+                                                                      {VK_FORMAT_R8G8B8A8_UNORM, false, false}}};
+// The entry of @p format in preferred_surface_formats, or null for a format outside it, which surface selection can
+// still return when the surface offers none of them. Captures, display encoding and UI need a known format.
+constexpr const SurfaceFormatInfo *surface_format_info(VkFormat format) noexcept {
+    for (const auto &info : preferred_surface_formats)
+        if (info.format == format)
+            return &info;
+    return nullptr;
+}
+// Bytes per pixel of a swapchain image in a known format, and so of the capture buffer that receives one.
+constexpr std::size_t capture_pixel_bytes = 4;
 // The Vulkan present mode of @p mode; throws std::invalid_argument for a value that is not a PresentMode enumerator.
 VkPresentModeKHR vulkan_present_mode(PresentMode mode) {
     switch (mode) {
@@ -956,9 +975,9 @@ struct VulkanRenderer::Impl {
             throw std::runtime_error("Surface has no formats");
         if (formats.size() == 1 && formats.front().format == VK_FORMAT_UNDEFINED)
             return {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
-        for (const auto desired : preferred_surface_formats) {
+        for (const auto &desired : preferred_surface_formats) {
             const auto found = std::find_if(formats.begin(), formats.end(), [&](const auto &value) {
-                return value.format == desired && value.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+                return value.format == desired.format && value.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
             });
             if (found != formats.end())
                 return *found;
@@ -1017,9 +1036,8 @@ struct VulkanRenderer::Impl {
             throw std::runtime_error("Surface cannot be a color attachment");
         // A pending request, to a file or into memory; completing or failing it clears both.
         const bool capture = capture_to_memory || !options.capture.empty();
-        if (capture && (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
-                        (selected.format != VK_FORMAT_B8G8R8A8_SRGB && selected.format != VK_FORMAT_R8G8B8A8_SRGB &&
-                         selected.format != VK_FORMAT_B8G8R8A8_UNORM && selected.format != VK_FORMAT_R8G8B8A8_UNORM))) {
+        if (capture &&
+            (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || !surface_format_info(selected.format))) {
             // The request fails, not the renderer; later draws go on without it.
             options.capture.clear();
             capture_to_memory = false;
@@ -1818,7 +1836,7 @@ struct VulkanRenderer::Impl {
 #endif
     void create_capture() {
         VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        buffer.size = static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+        buffer.size = static_cast<VkDeviceSize>(extent.width) * extent.height * capture_pixel_bytes;
         buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         // Coherent memory is preferred; save_capture invalidates any other kind before reading it.
@@ -1835,13 +1853,15 @@ struct VulkanRenderer::Impl {
               "Wait for capture");
         check(vmaInvalidateAllocation(allocator, capture_allocation, 0, VK_WHOLE_SIZE), "Invalidate readback memory");
         const auto *bytes = static_cast<const std::uint8_t *>(capture_mapping);
-        const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+        // recreate() rejected the capture request for a format outside the table.
+        const bool bgra = surface_format_info(format)->bgra;
         const auto count = static_cast<std::size_t>(extent.width) * extent.height;
         std::vector<std::uint8_t> rgb(count * 3);
         for (std::size_t i = 0; i < count; ++i) {
-            rgb[i * 3] = bytes[i * 4 + (bgra ? 2 : 0)];
-            rgb[i * 3 + 1] = bytes[i * 4 + 1];
-            rgb[i * 3 + 2] = bytes[i * 4 + (bgra ? 0 : 2)];
+            const auto *pixel = bytes + i * capture_pixel_bytes;
+            rgb[i * 3] = pixel[bgra ? 2 : 0];
+            rgb[i * 3 + 1] = pixel[1];
+            rgb[i * 3 + 2] = pixel[bgra ? 0 : 2];
         }
         if (to_memory)
             captured_image = CapturedImage{extent.width, extent.height, std::move(rgb)};
