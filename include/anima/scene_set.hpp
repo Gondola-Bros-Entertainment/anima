@@ -32,6 +32,7 @@ struct SceneAddress {
     std::string scene;
     /// Key of the object within that scene.
     ObjectKey object;
+    /// Whether both the namespaces and the keys are equal.
     bool operator==(const SceneAddress &) const = default;
 };
 
@@ -57,8 +58,10 @@ struct ClearedLink {
 /// moving it copies it, so no object is ever empty.
 class StagedSceneSet {
   public:
-    StagedSceneSet(const StagedSceneSet &) = default;
-    StagedSceneSet &operator=(const StagedSceneSet &) = default;
+    /// Shares the data of @p other, which neither object changes.
+    StagedSceneSet(const StagedSceneSet &other) = default;
+    /// Shares the data of @p other in place of this object's own.
+    StagedSceneSet &operator=(const StagedSceneSet &other) = default;
     /// Bytes of decoded data held, excluding container overhead and the shared meshes and custom materials:
     /// the bytes of each member's namespace and of its objects, counted as StagedScene::retained_bytes counts
     /// them, and `2 * sizeof(ObjectKey) + sizeof(std::size_t)` per reference row. Copies share these bytes.
@@ -88,9 +91,11 @@ class StagedSceneSet {
 /// copy; any access except valid(), `operator bool` and `operator==` then throws `std::out_of_range`.
 class SceneRef {
   public:
+    /// Handle to no membership, which is never valid.
     SceneRef() = default;
     /// Whether the scene is still a member of its set.
     [[nodiscard]] bool valid() const noexcept;
+    /// Same as valid().
     explicit operator bool() const noexcept { return valid(); }
     /// Whether @p a and @p b refer to the same membership, or both to none: default handles and those
     /// that SceneSet::find returned for a missing namespace are equal. A handle stays equal to its
@@ -107,7 +112,9 @@ class SceneRef {
     /// Keeps the scene's storage alive until the end of the full expression.
     class Access {
       public:
+        /// Holds @p record, which `SceneRef::operator->()` has checked, until this object is destroyed.
         explicit Access(std::shared_ptr<detail::SceneRecord> record) : record_(std::move(record)) {}
+        /// The member scene, valid while this object lives even if the scene leaves the set meanwhile.
         Scene *operator->() const { return record_->scene.get(); }
 
       private:
@@ -148,6 +155,7 @@ class SceneSet {
     /// Largest namespace, in bytes, that create(), load() and the `anima.scene-set` reader accept.
     static constexpr std::size_t max_namespace_bytes = 4096;
 
+    /// Empty set, whose active() is an invalid handle.
     SceneSet() = default;
     /// Invalidates every handle to every member before any component cleanup, then releases the
     /// members.

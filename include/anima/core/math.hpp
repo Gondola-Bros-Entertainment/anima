@@ -17,22 +17,35 @@
 /// space with reversed depth: framebuffer Y points down and depth runs from 1 at the near plane to 0
 /// at the far plane, so that a floating-point depth buffer keeps its precision at a distance.
 
+/// Anima's public API. The physics, physics2d, input and navigation modules have namespaces of their own.
 namespace anima {
 /// Three-component float vector for positions, directions and scales.
 struct Vec3 {
-    float x{}, y{}, z{};
+    /// Component along the X axis.
+    float x{};
+    /// Component along the Y axis.
+    float y{};
+    /// Component along the Z axis.
+    float z{};
     /// Compares the components with `float` `==`, so `-0` equals `0` and a NaN component equals nothing.
     bool operator==(const Vec3 &) const = default;
 };
+/// Returns the componentwise sum of @p a and @p b.
 inline Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+/// Returns the componentwise difference of @p a and @p b.
 inline Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+/// Returns @p v with every component negated.
 inline Vec3 operator-(Vec3 v) { return {-v.x, -v.y, -v.z}; }
+/// Returns @p a with every component multiplied by @p b.
 inline Vec3 operator*(Vec3 a, float b) { return {a.x * b, a.y * b, a.z * b}; }
 /// World up direction, +Y.
 inline constexpr Vec3 world_up{0, 1, 0};
 /// Local forward direction of cameras and audio listeners, -Z.
 inline constexpr Vec3 view_forward{0, 0, -1};
+/// Returns the dot product of @p a and @p b, computed in `float`.
 inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+/// Returns the cross product of @p a and @p b, computed in `float`. It follows the right-hand rule, so the cross
+/// product of +X and +Y is +Z.
 inline Vec3 cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 namespace detail {
 /// A vector no longer than this has no direction: normalized() falls back to world_up for it.
@@ -56,7 +69,10 @@ inline Vec3 normalized(Vec3 v) {
 /// Two-component float vector, such as a position, direction or velocity in the XY plane of 2D physics, where +Y is
 /// up. Its operators are defined in namespace anima, so argument-dependent lookup finds them from any namespace.
 struct Vec2 {
-    float x{}, y{};
+    /// Component along the X axis.
+    float x{};
+    /// Component along the Y axis.
+    float y{};
 };
 /// Returns the componentwise sum of @p a and @p b.
 inline Vec2 operator+(Vec2 a, Vec2 b) { return {a.x + b.x, a.y + b.y}; }
@@ -118,6 +134,7 @@ struct Mat4 {
 static_assert(sizeof(Mat4) == Mat4::size() * sizeof(float) && std::is_standard_layout_v<Mat4> &&
                   std::is_trivially_copyable_v<Mat4>,
               "Mat4 must be 16 contiguous floats for GPU copies");
+/// Returns the identity matrix, which transforms every point and direction to itself.
 inline Mat4 identity() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
 /// Column 0: the X axis of @p m, including its scale.
 inline Vec3 axis_x(const Mat4 &m) { return {m[0], m[1], m[2]}; }

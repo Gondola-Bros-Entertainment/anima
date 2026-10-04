@@ -74,6 +74,8 @@ class AnimationStateMachine {
     struct Parameter {
         /// Nonempty name, unique among the parameters.
         std::string name;
+        /// Kind of value, which sets the range of #initial and the conditions that may test it; a value outside
+        /// ParameterType is rejected.
         ParameterType type = ParameterType::real;
         /// Initial value: for a float, a finite number within the float range, rounded to float; for an
         /// integer, a whole number in the `std::int32_t` range; for a bool, 0 (false) or 1 (true); for a

@@ -46,6 +46,7 @@ struct ImpostorOptions {
 /// the mips that texture_mips() builds from it, do not darken silhouettes; a frame that nothing covers holds zeros,
 /// except the alpha of ImpostorAtlas::surface and ImpostorAtlas::emissive, which is 1.
 struct ImpostorAtlas {
+    /// How the images hold the frames, and the sphere they view.
     ImpostorFrames frames;
     /// TextureEncoding::srgb. RGB is the base color, the material's factor times its map times the vertex color; alpha
     /// is the share of the texel's samples that a surface covers.

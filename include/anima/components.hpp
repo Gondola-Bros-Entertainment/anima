@@ -170,12 +170,14 @@ struct ComponentRecord {
 /// `operator==` then throws `std::out_of_range`.
 template <class T> class ComponentRef {
   public:
+    /// Handle to no attachment, which is never valid.
     ComponentRef() = default;
     /// Whether the attachment still exists.
     [[nodiscard]] bool valid() const noexcept {
         const auto record = record_.lock();
         return record && record->attached && record->object.valid();
     }
+    /// Same as valid().
     explicit operator bool() const noexcept { return valid(); }
     /// Whether @p a and @p b refer to the same attachment, or both to none: default handles and those
     /// that GameObject::get_component returned for a missing component are equal. A handle stays equal
@@ -216,7 +218,9 @@ template <class T> class ComponentRef {
     /// Keeps the component value alive until the end of the full expression.
     class Access {
       public:
+        /// Holds @p record, which `ComponentRef::operator->()` has checked, until this object is destroyed.
         explicit Access(std::shared_ptr<detail::ComponentRecord> record) : record_(std::move(record)) {}
+        /// The component value, valid while this object lives even if the component is removed meanwhile.
         T *operator->() const { return static_cast<T *>(record_->value->address()); }
 
       private:
@@ -322,7 +326,9 @@ class ObjectReferences {
   public:
     /// One document key and the object it maps to.
     struct Entry {
+        /// Nonzero key that documents use for #object.
         ObjectKey key;
+        /// Live object that #key maps to.
         GameObject object;
     };
     /// Empty mapping, which rejects every link except null.

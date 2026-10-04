@@ -111,6 +111,8 @@ struct ActionLayer {
     NormalizedInterval interval;
     /// Layer weight over phase progress.
     ActionWeight weight;
+    /// How the layer combines with the pose that the layers before it leave, as MotionLayer::mode; `"override"` or
+    /// `"additive"` in documents.
     anima::LayerMode mode = anima::LayerMode::override_pose;
     /// Reference clip of an additive layer; empty for an override.
     std::string reference;
@@ -140,7 +142,9 @@ struct ActionPhaseBinding {
 };
 /// One decoded action.
 struct ActionDefinition {
+    /// Nonempty and unique within the catalog.
     std::string id;
+    /// Phases and cues, under the ActionTimeline rules.
     anima::ActionTimeline timeline;
     /// Bindings parallel to the timeline's phases.
     std::vector<ActionPhaseBinding> phases;
@@ -164,12 +168,16 @@ struct ActionSample {
     std::string clip;
     /// Progress of one prop track.
     struct Prop {
+        /// ActionPropTrack::role of the track.
         std::string role;
+        /// ActionPropTrack::track of the track.
         std::string track;
         /// Normalized track progress.
         double progress{};
+        /// ActionPropTrack::required of the track.
         bool required{};
     };
+    /// One entry per prop track of the current phase, in the phase's order.
     std::vector<Prop> props;
     /// Weight per contact chain at the current phase progress.
     std::map<std::string, float, std::less<>> contacts;
@@ -178,6 +186,7 @@ struct ActionSample {
 /// Const member functions may run concurrently on any thread.
 class ActionRuntime {
   public:
+    /// Actions by id, as definitions() returns them.
     using Definitions = std::map<std::string, ActionDefinition, std::less<>>;
     /// Largest number of actions in a catalog.
     static constexpr std::size_t maximum_actions = 4096;

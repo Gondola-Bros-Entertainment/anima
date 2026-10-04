@@ -15,6 +15,7 @@ namespace anima {
 struct Manifest {
     /// Absolute directory of the manifest file; #model and #motion_contract resolve against it.
     std::filesystem::path directory;
+    /// The manifest's `asset_id`, any text; Anima only names AssetPreview's object after it.
     std::string asset_id;
     /// Model GLB filename, decoded from the manifest's UTF-8.
     std::filesystem::path model;

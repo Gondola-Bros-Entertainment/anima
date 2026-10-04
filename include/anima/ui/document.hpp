@@ -72,10 +72,13 @@ struct UiOption {
 /// that document does.
 class UiElement {
   public:
+    /// Empty handle, which is never valid.
     UiElement() = default;
     /// Whether the element is in its open document's tree.
     [[nodiscard]] bool valid() const noexcept;
+    /// The element's `id` attribute, or empty when it has none.
     [[nodiscard]] std::string id() const;
+    /// The element's tag name, such as `div`, as RmlUi reports it.
     [[nodiscard]] std::string tag() const;
     /// Replaces the element's children with one text node holding @p text, which is never
     /// parsed as RML. Returns false, changing nothing, when the only child is already such a
@@ -88,6 +91,7 @@ class UiElement {
     void set_property(std::string_view name, std::string_view value);
     /// Adds the class @p name when @p enabled, otherwise removes it.
     void set_class(std::string_view name, bool enabled);
+    /// Sets attribute @p name to @p value, replacing any earlier value of it.
     void set_attribute(std::string_view name, std::string_view value);
     /// Attribute @p name, or @p fallback when the element does not have it.
     [[nodiscard]] std::string attribute(std::string_view name, std::string_view fallback = {}) const;
@@ -127,6 +131,7 @@ class UiEvent {
   public:
     /// Whether the callback that received the event is still running.
     [[nodiscard]] bool valid() const noexcept;
+    /// The event's type, such as `click`.
     [[nodiscard]] std::string type() const;
     /// The element the event was dispatched to, possibly a descendant of the subscribed
     /// element. Throws `std::out_of_range` once its document has closed.
@@ -158,10 +163,14 @@ class UiEvent {
 /// returns.
 class UiSubscription {
   public:
+    /// Token that holds no listener.
     UiSubscription() = default;
+    /// Disconnects the listener, as disconnect() does.
     ~UiSubscription();
-    UiSubscription(UiSubscription &&) noexcept;
-    UiSubscription &operator=(UiSubscription &&) noexcept;
+    /// Takes the listener of @p other, which then holds none.
+    UiSubscription(UiSubscription &&other) noexcept;
+    /// Disconnects this token's listener, then takes the listener of @p other, which then holds none.
+    UiSubscription &operator=(UiSubscription &&other) noexcept;
     UiSubscription(const UiSubscription &) = delete;
     UiSubscription &operator=(const UiSubscription &) = delete;
     /// Detaches the listener. Idempotent.
@@ -180,10 +189,14 @@ class UiSubscription {
 /// valid until close(), destruction, host shutdown or a close through native().
 class UiDocument {
   public:
+    /// Owner of no document, which is never valid.
     UiDocument() = default;
+    /// Closes the document, as close() does.
     ~UiDocument();
-    UiDocument(UiDocument &&) noexcept;
-    UiDocument &operator=(UiDocument &&) noexcept;
+    /// Takes the document of @p other, which then owns none.
+    UiDocument(UiDocument &&other) noexcept;
+    /// Closes this owner's document, then takes the document of @p other, which then owns none.
+    UiDocument &operator=(UiDocument &&other) noexcept;
     UiDocument(const UiDocument &) = delete;
     UiDocument &operator=(const UiDocument &) = delete;
     /// Whether this owns an open document whose host is running.

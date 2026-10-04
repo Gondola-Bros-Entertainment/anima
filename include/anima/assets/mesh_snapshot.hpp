@@ -18,6 +18,8 @@ struct MeshVertex {
     Vec3 normal;
     /// Vertex color multiplied by the material's base-color factor.
     Vec3 color;
+    /// Texture coordinates from the set that the material's maps share, which posing leaves unchanged; zero when the
+    /// material maps no texture.
     std::array<float, 2> uv{};
     /// Posed tangent direction and handedness w, negated by mirroring transforms; all zero when the
     /// source has no tangent.
@@ -53,6 +55,7 @@ struct MeshSnapshot {
     /// the swap keeps every triangle's source winding relative to its normals. A skinned triangle whose corners blend
     /// to matrices of opposite determinant signs follows its first corner, as VulkanRenderer does.
     std::vector<MeshVertex> vertices;
+    /// Draw ranges in order, each starting where the one before ends, which together cover #vertices.
     std::vector<SnapshotPrimitive> primitives;
     /// Materials that SnapshotPrimitive::material_index refers to.
     std::vector<Material> materials;

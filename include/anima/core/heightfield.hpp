@@ -41,8 +41,19 @@ struct HeightfieldView {
 };
 /// Owning grid with the same fields as HeightfieldView.
 struct Heightfield {
-    std::size_t columns{}, rows{};
-    float origin_x{}, origin_z{}, spacing_x = 1, spacing_z = 1;
+    /// Samples along +X, at least 2.
+    std::size_t columns{};
+    /// Samples along +Z, at least 2.
+    std::size_t rows{};
+    /// World X of column 0.
+    float origin_x{};
+    /// World Z of row 0.
+    float origin_z{};
+    /// Positive distance between columns.
+    float spacing_x = 1;
+    /// Positive distance between rows.
+    float spacing_z = 1;
+    /// `columns * rows` heights (world Y), row by row.
     std::vector<float> heights;
     /// View that borrows #heights until they are reallocated or this grid is destroyed.
     [[nodiscard]] HeightfieldView view() const {

@@ -30,6 +30,7 @@ struct AudioSourceSettings {
     /// How a spatial source's gain falls with distance. Its distances are in world units; object
     /// scale does not change them.
     AudioAttenuation attenuation{};
+    /// Continues from the clip's start at its end; see Sound::set_looping.
     bool looping = false;
     /// Plays at the object's world position; see Sound::set_spatial.
     bool spatial = false;

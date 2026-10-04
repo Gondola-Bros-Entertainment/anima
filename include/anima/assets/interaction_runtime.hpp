@@ -21,6 +21,7 @@ struct InteractionActor {
 };
 /// Result of InteractionRuntime::sample.
 struct InteractionSample {
+    /// Position on the document's timeline: ActionTimeline::sample at the elapsed and release times given.
     anima::ActionTime clock;
     /// One frame per role, in InteractionBindings::roles order.
     std::vector<anima::InteractionFrame> frames;
@@ -34,6 +35,7 @@ struct InteractionSample {
         float weight{};
         /// See MotionEvaluation::Contact::error.
         float error{};
+        /// See MotionEvaluation::Contact::reachable.
         bool reachable{};
     };
     /// Contact outcomes, in solve order.
@@ -46,6 +48,7 @@ struct InteractionSample {
 /// member functions may run concurrently on any thread.
 class InteractionRuntime {
   public:
+    /// Each participant's resources by role id.
     using Actors = std::map<std::string, InteractionActor, std::less<>>;
     /// Largest number of contacts per actor, counted over the whole document.
     static constexpr std::size_t maximum_contacts_per_actor = 8;

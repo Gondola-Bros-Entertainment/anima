@@ -36,6 +36,7 @@
 namespace anima {
 class ComponentCodecs;
 }
+/// 3D rigid-body simulation and queries, and their scene integration; see physics.hpp and physics_scene.hpp.
 namespace anima::physics {
 namespace detail {
 struct WorldState;
@@ -81,6 +82,7 @@ struct Collider {
     [[nodiscard]] static Collider mesh(std::vector<Vec3> vertices, std::vector<std::uint32_t> indices);
     /// Compound of @p children; see #children.
     [[nodiscard]] static Collider compound(std::vector<ColliderChild> children);
+    /// Geometry kind, which selects the fields that describe the geometry; a value outside Shape is rejected.
     Shape shape = Shape::box;
     /// Box half size on each axis.
     Vec3 half_extent{.5F, .5F, .5F};
@@ -101,7 +103,9 @@ struct Collider {
 };
 /// Rigid placement of a body's authored origin. Poses carry no scale.
 struct Pose {
+    /// Position of the authored origin in meters, in world space or, for a ColliderChild, in body-local space.
     Vec3 position{};
+    /// Orientation, normalized as unit_quaternion() does when the pose is used, so it need not have unit length.
     Quat rotation{0, 0, 0, 1};
 };
 /// One part of a Shape::compound collider.
@@ -113,7 +117,9 @@ struct ColliderChild {
 };
 /// Everything World::create needs to build one body.
 struct BodySettings {
+    /// Geometry, which the body copies at creation and never changes.
     Collider collider;
+    /// How the solver moves the body, fixed at creation; a value outside Motion is rejected.
     Motion motion = Motion::stationary;
     /// Initial authored origin in world space. anima::physics::RigidBody ignores it and uses
     /// its object's world pose.
@@ -156,6 +162,8 @@ struct BodySettings {
 };
 /// World construction options.
 struct WorldSettings {
+    /// Acceleration of every dynamic body, in meters per second squared in world space, each component finite and
+    /// within 1,000,000 of zero. It is fixed for the world's lifetime.
     Vec3 gravity{0, -9.81F, 0};
     /// Body capacity, in [1, 65,536]. World::create throws `std::length_error` beyond it.
     std::uint32_t max_bodies = 4096;
@@ -167,6 +175,7 @@ struct WorldSettings {
 /// and comparison throws `std::out_of_range`.
 class Body {
   public:
+    /// Handle to no body, which is never valid.
     Body() = default;
     /// Whether the body still exists.
     [[nodiscard]] bool valid() const noexcept;
@@ -178,6 +187,8 @@ class Body {
     [[nodiscard]] Vec3 world_center_of_mass() const;
     /// Linear velocity at the center of mass, not the authored origin.
     [[nodiscard]] Vec3 velocity() const;
+    /// Angular velocity in radians per second about world-space axes through the center of mass; its length is the
+    /// angular speed.
     [[nodiscard]] Vec3 angular_velocity() const;
     /// Mass of a dynamic body, enabled or disabled: BodySettings::mass, up to float rounding.
     /// Throws `std::invalid_argument` for stationary and kinematic bodies.
@@ -225,6 +236,7 @@ class Body {
     /// last step. Reenabling resumes from that state and reports contacts that still touch as new
     /// begin events.
     void set_enabled(bool enabled);
+    /// Whether the body takes part in collisions and queries, as set_enabled() last set it; true for a new body.
     [[nodiscard]] bool enabled() const;
     /// Destroys the body and ends its contacts. Idempotent, including after world destruction.
     void remove();
@@ -258,6 +270,7 @@ struct QueryFilter {
 };
 /// One query result.
 struct Hit {
+    /// Body that the query found.
     Body body;
     /// Position along the complete displacement, in [0, 1]; not a distance.
     float fraction{};
@@ -275,7 +288,11 @@ struct Hit {
     /// reported is unspecified.
     bool initial_overlap{};
 };
-enum class ContactPhase { begin, end };
+/// Whether a ContactEvent starts or ends a contact.
+enum class ContactPhase {
+    begin, ///< The bodies have started to touch, or a sensor to overlap.
+    end    ///< They have stopped touching or overlapping, or one of them was removed or disabled.
+};
 /// Where a solid contact began and how fast its bodies met, as the backend found the contact,
 /// before the solver resolved it.
 struct ContactPoint {
@@ -295,7 +312,9 @@ struct ContactEvent {
     /// For end events after an explicit removal these may already be invalid; compare their
     /// identity without reading body state.
     Body first;
+    /// The other body of the pair, under the same note as #first.
     Body second;
+    /// Whether the contact began or ended.
     ContactPhase phase{};
     /// Whether either body is a sensor.
     bool sensor{};
@@ -315,6 +334,7 @@ class World {
     /// Throws `std::invalid_argument` for invalid settings and `std::logic_error` when
     /// something other than Anima initialized Jolt in this process.
     explicit World(WorldSettings settings = {});
+    /// Destroys the world and its bodies, which invalidates every Body handle to them.
     ~World();
     World(const World &) = delete;
     World &operator=(const World &) = delete;
@@ -365,6 +385,7 @@ namespace std {
 /// ones included, hash alike and handles can key unordered containers. Bodies of different worlds
 /// can share a hash.
 template <> struct hash<anima::physics::Body> {
+    /// The hash of the body's number within its world, which is 0 for a default handle.
     [[nodiscard]] size_t operator()(const anima::physics::Body &body) const noexcept {
         return hash<uint64_t>{}(body.id_);
     }

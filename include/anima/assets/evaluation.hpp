@@ -28,6 +28,8 @@ struct EvaluationJoint {
 };
 /// Joint-local affine matrices, one per rig joint.
 struct EvaluationPose {
+    /// Each joint's matrix relative to its rig parent, or its model-space matrix for a root, indexed as the rig's
+    /// joints.
     std::vector<Mat4> local;
 };
 /// How a motion layer combines its contribution with its base. MotionRuntime::evaluate applies an

@@ -18,10 +18,15 @@
 /// The application supplies traversability, costs, endpoints and movement; there is no navigation-mesh baking,
 /// obstacle update, local avoidance or background search.
 
+/// Navigation graphs, route queries and route following, and their scene integration; see navigation.hpp and
+/// navigation_scene.hpp.
 namespace anima::navigation {
 /// Index of a node in Graph::nodes().
 using NodeId = std::uint32_t;
+/// One place in a Graph.
 struct Node {
+    /// World position, each component finite and within 1,000,000 of zero; the A* estimate measures straight-line
+    /// distance between positions.
     Vec3 position{};
     /// Routes never start at, end at or pass through a node that is not walkable.
     bool walkable = true;
@@ -29,7 +34,10 @@ struct Node {
 /// Directed link between two nodes; travel the other way needs its own edge. Parallel edges, self-links and
 /// zero-cost edges are allowed.
 struct Edge {
-    NodeId from{}, to{};
+    /// Node the edge leaves, an index into the graph's nodes.
+    NodeId from{};
+    /// Node the edge enters, an index into the graph's nodes.
+    NodeId to{};
     /// Traversal cost, in [0, 1e12].
     double cost = 1;
 };
@@ -38,6 +46,7 @@ class Graph {
   public:
     /// Builds a graph from 1 to 1,000,000 @p nodes and at most 8,000,000 @p edges.
     Graph(std::vector<Node> nodes, std::vector<Edge> edges);
+    /// The nodes as given to the constructor, in order, so a NodeId indexes this span.
     [[nodiscard]] std::span<const Node> nodes() const { return nodes_; }
     /// Edges leaving @p node, in input order.
     [[nodiscard]] std::span<const Edge> outgoing(NodeId node) const;
@@ -96,6 +105,7 @@ struct SearchSettings {
 };
 /// Result of find_path().
 struct Path {
+    /// Whether #nodes holds a route, and why not otherwise.
     PathStatus status = PathStatus::unreachable;
     /// Route from start to goal inclusive when PathStatus::found; otherwise empty.
     std::vector<NodeId> nodes;

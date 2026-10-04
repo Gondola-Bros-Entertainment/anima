@@ -60,6 +60,7 @@ struct AttachmentHandling {
 };
 /// A prop model with its grip and markers.
 struct AttachmentVisual {
+    /// Unique, nonempty id.
     std::string id;
     /// Relative `.glb` path, decoded from the catalog's UTF-8, without a root, colon, backslash or
     /// `..` component; resolved against AttachmentCatalog::directory.
@@ -79,6 +80,7 @@ struct AttachmentVisual {
 };
 /// A catalog item: a visual held with a handling profile.
 struct AttachmentDefinition {
+    /// Unique, nonempty id.
     std::string id;
     /// AttachmentVisual id.
     std::string visual;
@@ -156,8 +158,10 @@ class AttachmentLibrary {
     /// A library of @p definition whose loads compile their meshes with @p texel_retention. Throws
     /// `std::invalid_argument` for an unknown @p texel_retention.
     explicit AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention = TexelRetention::keep);
-    AttachmentLibrary(const AttachmentLibrary &) = default;
-    AttachmentLibrary &operator=(const AttachmentLibrary &) = default;
+    /// Shares the catalog and the loaded-model cache of @p other.
+    AttachmentLibrary(const AttachmentLibrary &other) = default;
+    /// Shares the catalog and the loaded-model cache of @p other in place of this library's own.
+    AttachmentLibrary &operator=(const AttachmentLibrary &other) = default;
     /// The catalog as given; the library does not validate it again.
     [[nodiscard]] const AttachmentCatalog &catalog() const noexcept;
     /// Item @p id. Throws `std::out_of_range` for an unknown id.
@@ -262,6 +266,7 @@ struct AttachmentInstance {
     std::optional<Scene::Id> instance;
     /// Item id; empty when nothing is attached.
     std::string item_id;
+    /// Loaded model of the item, as AttachmentLibrary::load returned it; null when nothing is attached.
     std::shared_ptr<const AttachmentAsset> asset;
     /// Binding from the item's handling socket and visual.
     AttachmentBinding binding;

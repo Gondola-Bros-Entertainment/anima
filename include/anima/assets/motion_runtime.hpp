@@ -36,6 +36,8 @@ struct MotionLayer {
     double time{};
     /// Scale of the mask weights, in [0, 1].
     float weight = 1;
+    /// How the sampled pose combines with the pose that earlier layers leave: an override blends toward it, and an
+    /// additive layer applies its change from #reference_clip.
     anima::LayerMode mode = anima::LayerMode::override_pose;
     /// Clip whose pose an additive layer is relative to; required for an additive layer and empty
     /// for an override.
@@ -70,8 +72,11 @@ struct MotionContact {
 /// The counts are the caller's: evaluation has no fixed limit, and its work grows linearly with
 /// them, each layer sampling one or two clips and each contact solving one chain over the rig.
 struct MotionControls {
+    /// Pose layers, applied in order, each over the pose that the layers before it leave.
     std::vector<MotionLayer> layers;
+    /// Joint offsets, applied in order after every layer.
     std::vector<JointOffset> offsets;
+    /// Contacts, solved in order after the offsets, each from the pose that the previous solve leaves.
     std::vector<MotionContact> contacts;
     /// Whether there are no controls, in which case evaluation returns its source unchanged.
     [[nodiscard]] bool empty() const noexcept { return layers.empty() && offsets.empty() && contacts.empty(); }
@@ -82,6 +87,7 @@ struct MotionEvaluation {
     anima::Pose pose;
     /// Outcome of one contact solve; see ContactResult.
     struct Contact {
+        /// MotionContact::chain of the request.
         std::string chain;
         /// Distance from the end joint to the target after weighting.
         float error{};

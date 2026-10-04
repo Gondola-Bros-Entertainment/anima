@@ -31,6 +31,7 @@
 namespace anima {
 class ComponentCodecs;
 }
+/// 2D rigid-body simulation and queries, and their scene integration; see physics2d.hpp and physics2d_scene.hpp.
 namespace anima::physics2d {
 namespace detail {
 struct WorldState;
@@ -72,6 +73,7 @@ struct Collider {
     /// Capsule along local Y of @p radius, whose straight part is 2 @p half_height long; see
     /// #half_height.
     [[nodiscard]] static Collider capsule(float radius, float half_height);
+    /// Geometry kind, which selects the fields that describe the geometry; a value outside Shape is rejected.
     Shape shape = Shape::box;
     /// Box half size on each axis.
     Vec2 half_extent{.5F, .5F};
@@ -82,7 +84,9 @@ struct Collider {
 };
 /// Everything World::create needs to build one body.
 struct BodySettings {
+    /// Geometry, centered on the body, which never changes after creation.
     Collider collider;
+    /// How the solver moves the body, fixed at creation; a value outside Motion is rejected.
     Motion motion = Motion::stationary;
     /// Initial world pose. anima::physics2d::RigidBody ignores it and uses its object's pose.
     Pose pose;
@@ -125,6 +129,8 @@ struct BodySettings {
 };
 /// World construction options.
 struct WorldSettings {
+    /// Acceleration of every dynamic body, in meters per second squared, each component finite and within 1,000,000
+    /// of zero. It is fixed for the world's lifetime.
     Vec2 gravity{0, -9.81F};
     /// Body capacity, in [1, 1,000,000]. World::create throws `std::length_error` beyond it.
     std::uint32_t max_bodies = 4096;
@@ -140,6 +146,7 @@ struct WorldSettings {
 /// access except valid(), remove() and comparison throws `std::out_of_range`.
 class Body {
   public:
+    /// Handle to no body, which is never valid.
     Body() = default;
     /// Whether the body still exists.
     [[nodiscard]] bool valid() const noexcept;
@@ -197,6 +204,7 @@ class Body {
     /// Disabling discards the forces and torques added since the last step. Reenabling resumes
     /// from that state.
     void set_enabled(bool enabled);
+    /// Whether the body takes part in simulation and queries, as set_enabled() last set it; true for a new body.
     [[nodiscard]] bool enabled() const;
     /// Whether the body is awake: false while it sleeps or is disabled, and for stationary bodies.
     [[nodiscard]] bool awake() const;
@@ -232,6 +240,7 @@ struct QueryFilter {
 };
 /// One query result.
 struct Hit {
+    /// Body that the query found.
     Body body;
     /// Position along the complete displacement, in [0, 1]; not a distance.
     float fraction{};
@@ -243,7 +252,11 @@ struct Hit {
     /// several bodies qualify, which one is reported is unspecified.
     bool initial_overlap{};
 };
-enum class ContactPhase { begin, end };
+/// Whether a ContactEvent starts or ends a contact.
+enum class ContactPhase {
+    begin, ///< The bodies have started to touch, or a sensor to overlap.
+    end    ///< They have stopped touching or overlapping, or one of them was removed or disabled.
+};
 /// Where a solid contact began and how fast its bodies met, as Box2D found the contact, before its
 /// solver resolved it.
 struct ContactPoint {
@@ -265,7 +278,9 @@ struct ContactEvent {
     /// For end events after an explicit removal these may already be invalid; compare their
     /// identity without reading body state.
     Body first;
+    /// The other body of the pair, under the same note as #first.
     Body second;
+    /// Whether the contact began or ended.
     ContactPhase phase{};
     /// Whether either body is a sensor.
     bool sensor{};
@@ -282,6 +297,7 @@ class World {
     /// Throws `std::invalid_argument` for invalid settings and `std::length_error` when 128
     /// worlds already exist.
     explicit World(WorldSettings settings = {});
+    /// Destroys the world and its bodies, which invalidates every Body handle to them.
     ~World();
     World(const World &) = delete;
     World &operator=(const World &) = delete;
@@ -330,6 +346,7 @@ namespace std {
 /// invalid ones included, hash alike and handles can key unordered containers. Bodies of different
 /// worlds can share a hash.
 template <> struct hash<anima::physics2d::Body> {
+    /// The hash of the body's number within its world, which is 0 for a default handle.
     [[nodiscard]] size_t operator()(const anima::physics2d::Body &body) const noexcept {
         return hash<uint64_t>{}(body.id_);
     }

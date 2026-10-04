@@ -110,7 +110,9 @@ class Terrain {
     /// Compiles the mesh for @p data with @p appearance. Throws for a null @p data or when compilation rejects
     /// @p data or @p appearance.
     explicit Terrain(std::shared_ptr<const TerrainData> data, TerrainAppearance appearance = {});
+    /// The shared data given at construction, which this terrain keeps alive, for height and collision queries.
     [[nodiscard]] const TerrainData &data() const { return *data_; }
+    /// The mesh compiled at construction, never null; it does not change for the terrain's lifetime.
     [[nodiscard]] const std::shared_ptr<const Mesh> &mesh() const { return mesh_; }
     /// Compiles samples the application already owns, as compile(TerrainGrid, TerrainAppearance) does with zero
     /// offsets. @p field is borrowed only during the call.
