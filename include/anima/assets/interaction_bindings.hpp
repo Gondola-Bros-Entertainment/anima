@@ -83,7 +83,8 @@ inline void validate_interaction_socket(const Asset &asset, const InteractionSoc
     return placement.weight == 1 ? desired : blend_affine(free_world, desired, placement.weight);
 }
 
-/// A validated role graph that places child roles on their parents.
+/// A validated role graph that places child roles on their parents. Const member functions may run
+/// concurrently on any thread.
 class InteractionBindings {
   public:
     /// Largest number of roles.

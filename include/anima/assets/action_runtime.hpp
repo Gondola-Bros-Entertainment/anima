@@ -140,6 +140,7 @@ struct ActionSample {
     std::map<std::string, float, std::less<>> contacts;
 };
 /// An action catalog bound to one MotionRuntime. Immutable after construction; copies share it.
+/// Const member functions may run concurrently on any thread.
 class ActionRuntime {
   public:
     using Definitions = std::map<std::string, ActionDefinition, std::less<>>;
@@ -160,6 +161,9 @@ class ActionRuntime {
     /// layer that samples a layer clip must use that clip's mask.
     ///
     /// Clips and contact chains must also exist in @p motion. Throws also for a null @p motion.
+    ///
+    /// May run concurrently on any thread. Reads @p document and the C locale, which must not change
+    /// during the call, as prefab.hpp describes for documents.
     ActionRuntime(std::shared_ptr<const MotionRuntime> motion, std::string_view document);
     /// Action @p id. Throws `std::out_of_range` for an unknown id.
     const ActionDefinition &definition(std::string_view id) const;
@@ -188,7 +192,8 @@ class ActionRuntime {
     /// caller's choice among ActionDefinition::handling; throws also when it is not one of them.
     ActionSample sample(const Pose &base, const ActionRequest &request, std::string_view handling) const;
     /// Decodes a JSON weight curve: 2 to 32 [phase, weight] pairs, both in [0, 1], with phases
-    /// strictly increasing from 0 to 1.
+    /// strictly increasing from 0 to 1. May run concurrently on any thread; reads the C locale as
+    /// the constructor does.
     static ActionWeight weight(std::string_view document);
 
   private:

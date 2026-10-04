@@ -92,7 +92,8 @@ struct MotionEvaluation {
     /// One entry per solved contact, in solve order.
     std::vector<Contact> contacts;
 };
-/// A motion contract bound to a model. Immutable after construction; copies share it.
+/// A motion contract bound to a model. Immutable after construction; copies share it. Const member
+/// functions may run concurrently on any thread.
 class MotionRuntime {
   public:
     /// Binds the motion contract @p contract to @p asset, the model of @p manifest. The runtime holds
@@ -116,10 +117,14 @@ class MotionRuntime {
     /// must list exactly its mask's joints and `context_joints` their parents outside the mask,
     /// and the clip may animate only those joints. Every motion clip must be exactly one base clip
     /// or layer clip, with at least one base clip.
+    ///
+    /// May run concurrently on any thread. Reads @p contract, the motion GLB file and the C locale,
+    /// which must not change during the call, as load_motion_asset and prefab.hpp describe.
     MotionRuntime(std::shared_ptr<const Asset> asset, const Manifest &manifest, std::string_view contract);
     /// Reads the file that Manifest::motion_contract names beside the manifest and constructs a
     /// runtime from it. Throws `std::invalid_argument` when the manifest names no contract or the
-    /// file is missing or larger than 4 MiB.
+    /// file is missing or larger than 4 MiB. May run concurrently on any thread, and reads the C
+    /// locale as the constructor does.
     static std::shared_ptr<const MotionRuntime> load(std::shared_ptr<const Asset> asset, const Manifest &manifest);
     /// The model bound at construction; not null, and shared with every copy of the runtime.
     /// sample() and compose() return poses of its nodes.
