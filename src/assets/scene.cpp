@@ -836,10 +836,10 @@ void GameObject::set_local_position(Vec3 position) {
 }
 void GameObject::set_local_transform(const Transform &transform) { set_local_matrix(matrix(transform)); }
 void GameObject::set_local_matrix(const Mat4 &local) { scene().set_local_transform(id_, local); }
-std::optional<GameObject> GameObject::parent() const {
+GameObject GameObject::parent() const {
     auto &owner = scene();
     const auto parent = owner.slot(id_).parent;
-    return parent ? std::optional(owner.object(*parent)) : std::nullopt;
+    return parent ? owner.object(*parent) : GameObject{};
 }
 std::vector<GameObject> GameObject::children() const {
     auto &owner = scene();

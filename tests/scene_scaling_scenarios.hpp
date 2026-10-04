@@ -64,7 +64,7 @@ template <class Measure> auto chain(std::size_t count, Measure &&measure) {
         for (std::size_t i = 1; i < count; ++i)
             objects[i].set_parent(objects[i - 1], anima::ReparentMode::keep_local);
     });
-    require(objects.back().parent()->id() == objects[count - 2].id(), "Attaching built the wrong chain");
+    require(objects.back().parent() == objects[count - 2], "Attaching built the wrong chain");
     return measured;
 }
 

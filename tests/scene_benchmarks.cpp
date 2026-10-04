@@ -119,8 +119,7 @@ double attach(std::size_t count, bool deep) {
         for (std::size_t i = 1; i < count; ++i)
             objects[i].set_parent(objects[deep ? i - 1 : 0], ReparentMode::keep_local);
     });
-    require(deep ? objects.back().parent()->id() == objects[count - 2].id()
-                 : objects.front().children().size() == count - 1,
+    require(deep ? objects.back().parent() == objects[count - 2] : objects.front().children().size() == count - 1,
             "Attaching built the wrong hierarchy");
     return elapsed;
 }
