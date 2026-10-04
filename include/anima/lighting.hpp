@@ -59,8 +59,9 @@ class SceneEnvironment {
     /// Object whose DirectionalLightComponent supplies Environment::sun. Null leaves the environment
     /// unconfigured; it can persist but not resolve.
     GameObject sun;
-    /// Object whose DirectionalLightComponent supplies Environment::fill, under the rules of #sun; it may be
-    /// the same object.
+    /// Object whose DirectionalLightComponent supplies Environment::fill under the rules of #sun, except that null
+    /// gives no fill light: an Environment::fill with zero irradiance along `{0, 1, 0}`. Linking #sun's object adds
+    /// that light again without shadows.
     GameObject fill;
 
   private:
@@ -70,13 +71,14 @@ class SceneEnvironment {
 /// Resolves the Environment for VulkanRenderer::set_environment from the one active SceneEnvironment in
 /// @p scene.
 ///
-/// Both links must name live objects of @p scene with an active DirectionalLightComponent and a valid
-/// orientation (see DirectionalLightComponent); other lights may stay active without being selected.
+/// The sun link, and the fill link unless it is null, must name live objects of @p scene with an active
+/// DirectionalLightComponent and a valid orientation (see DirectionalLightComponent); a null fill gives no fill
+/// light, as SceneEnvironment::fill states. Other lights may stay active without being selected.
 /// Disabled environments and environments under inactive parents do not count. The result is validated with
 /// validate_environment() and the detail region's projection with detail_shadow_matrix(), even while the region is
 /// disabled; VulkanRenderer::set_environment later checks enabled shadow maps against device limits. Throws
-/// `std::invalid_argument` for a missing, ambiguous, null, stale, foreign or inactive selection and for
-/// invalid values, and `std::logic_error` while @p scene is updating, under construction or no longer live.
+/// `std::invalid_argument` for a missing or ambiguous environment, a null sun, a stale, foreign or inactive link and
+/// for invalid values, and `std::logic_error` while @p scene is updating, under construction or no longer live.
 ///
 /// Read-only: runs no component hooks, advances no time, keeps no reference and changes no renderer. Resolve
 /// after scene updates; geometry and camera selection are separate.
