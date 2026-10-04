@@ -6,9 +6,6 @@
 #include <exception>
 
 namespace anima {
-namespace {
-constexpr std::size_t maximum_namespace_bytes = 4096;
-}
 bool SceneRef::valid() const noexcept {
     const auto record = record_.lock();
     return record && record->attached;
@@ -67,7 +64,7 @@ SceneSet::~SceneSet() {
     retire_all();
 }
 void SceneSet::check_key(std::string_view key) const {
-    if (key.empty() || key.size() > maximum_namespace_bytes || key.find('\0') != std::string_view::npos)
+    if (key.empty() || key.size() > max_namespace_bytes || key.find('\0') != std::string_view::npos)
         throw std::invalid_argument("Invalid scene namespace");
     if (find(key))
         throw std::invalid_argument("Duplicate scene namespace");

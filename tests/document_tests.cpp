@@ -203,6 +203,28 @@ TEST_CASE("Component state that is not UTF-8 is rejected on output as std::inval
                            std::invalid_argument);
 }
 
+TEST_CASE("A codec key of max_key_bytes is registered and persisted, and an empty or longer one is rejected") {
+    static_assert(ComponentCodecs::max_key_bytes == 4096);
+    const std::string longest(ComponentCodecs::max_key_bytes, 'k');
+    const auto write = [](const Tag &, const ObjectReferences &) { return std::string(); };
+    const auto read = [](GameObject object, std::string_view, const ObjectReferences &) {
+        object.add_component<Tag>();
+    };
+    ComponentCodecs codecs;
+    CHECK_THROWS_WITH_AS(codecs.add<Tag>("", write, read), "Invalid component codec key", std::invalid_argument);
+    CHECK_THROWS_WITH_AS(codecs.add<Tag>(longest + "k", write, read), "Invalid component codec key",
+                         std::invalid_argument);
+    codecs.add<Tag>(longest, write, read);
+    Scene scene;
+    auto root = scene.create("tagged");
+    root.add_component<Tag>();
+    const auto document = Prefab::capture(root, codecs).serialize({});
+    const auto loaded = Prefab::deserialize(document, {}, codecs);
+    REQUIRE(loaded.nodes().front().components.size() == 1);
+    CHECK(loaded.nodes().front().components.front().type == longest);
+    CHECK(loaded.instantiate(scene).get_component<Tag>());
+}
+
 TEST_CASE("A number outside the float range is rejected, not narrowed") {
     ComponentCodecs codecs;
     add_camera_component_codecs(codecs);

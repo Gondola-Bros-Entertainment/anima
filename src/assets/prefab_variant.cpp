@@ -1,3 +1,5 @@
+#include "../detail/document_json.hpp"
+#include "../detail/document_limits.hpp"
 #include "../detail/json.hpp"
 #include "../detail/renderer_state.hpp"
 #include <algorithm>
@@ -12,28 +14,17 @@ namespace {
 using Json = nlohmann::json;
 constexpr unsigned document_version = 2;
 constexpr std::string_view document_kind = "anima.prefab-variant";
-constexpr std::size_t maximum_overrides = 65'536, maximum_document_bytes = 16 * 1024 * 1024;
-constexpr std::size_t maximum_components = 1024, maximum_key_bytes = 4096;
+using detail::maximum_document_bytes, detail::maximum_document_objects, detail::maximum_object_components;
+using detail::require;
+constexpr detail::NumberFormat number_format{
+    .scalar = "Prefab variant scalar must be a number",
+    .finite = "Prefab variant scalar must be finite",
+    .matrix = "Prefab variant matrix requires 16 scalars",
+};
 
-void require(bool accepted, const char *reason) {
-    if (!accepted)
-        throw std::invalid_argument(reason);
-}
 void validate_key(std::string_view key) {
-    require(!key.empty() && key.size() <= maximum_key_bytes, "Invalid prefab variant resource or component key");
-}
-float scalar(const Json &value) {
-    require(value.is_number(), "Prefab variant scalar must be a number");
-    const auto result = detail::json_float(value);
-    require(std::isfinite(result), "Prefab variant scalar must be finite");
-    return result;
-}
-Mat4 matrix_value(const Json &value) {
-    require(value.is_array() && value.size() == 16, "Prefab variant matrix requires 16 scalars");
-    Mat4 result;
-    for (std::size_t i = 0; i < result.size(); ++i)
-        result[i] = scalar(value[i]);
-    return result;
+    require(!key.empty() && key.size() <= detail::maximum_key_bytes,
+            "Invalid prefab variant resource or component key");
 }
 constexpr detail::RendererFormat renderer_format{
     .empty_state = "Empty prefab variant renderer has state",
@@ -52,10 +43,8 @@ constexpr detail::RendererFormat renderer_format{
     .unresolved_custom_material = "Prefab variant custom material name could not be resolved",
     .renamed_custom_material = "Prefab variant custom material resolved to a material of another name",
     .visibility_range = "Invalid prefab variant visibility range",
-    .scalar = scalar,
-    .matrix = matrix_value,
+    .numbers = number_format,
 };
-static_assert(detail::maximum_mesh_key_bytes == maximum_key_bytes, "A mesh key is a resource key");
 void validate_native(Scene &validation, const PrefabVariant::Override &value) {
     const auto *renderer = value.renderer ? &*value.renderer : nullptr;
     if (renderer)
@@ -93,7 +82,7 @@ void validate_native(Scene &validation, const PrefabVariant::Override &value) {
 PrefabVariant::PrefabVariant(std::string base_key, std::vector<Override> overrides)
     : base_key_(std::move(base_key)), overrides_(std::move(overrides)) {
     validate_key(base_key_);
-    require(overrides_.size() <= maximum_overrides, "Invalid prefab variant override count");
+    require(overrides_.size() <= maximum_document_objects, "Invalid prefab variant override count");
     std::set<ObjectKey> keys;
     Scene validation;
     for (const auto &value : overrides_) {
@@ -101,8 +90,8 @@ PrefabVariant::PrefabVariant(std::string base_key, std::vector<Override> overrid
         require(value.name || value.local || value.active || value.renderer || !value.set_components.empty() ||
                     !value.remove_components.empty(),
                 "Empty prefab variant override");
-        require(value.set_components.size() <= maximum_components &&
-                    value.remove_components.size() <= maximum_components,
+        require(value.set_components.size() <= maximum_object_components &&
+                    value.remove_components.size() <= maximum_object_components,
                 "Invalid prefab variant component count");
         std::set<std::string_view> types;
         for (const auto &component : value.set_components) {
@@ -200,7 +189,7 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
     auto base = parsed.at("base").get<std::string>();
     validate_key(base);
     const auto &values = parsed.at("overrides");
-    require(values.is_array() && values.size() <= maximum_overrides, "Invalid prefab variant override count");
+    require(values.is_array() && values.size() <= maximum_document_objects, "Invalid prefab variant override count");
     std::vector<Override> overrides;
     overrides.reserve(values.size());
     detail::Resources resources;
@@ -214,7 +203,7 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
         if (given("name"))
             result.name = value.at("name").get<std::string>();
         if (given("local"))
-            result.local = matrix_value(value.at("local"));
+            result.local = detail::document_matrix(value.at("local"), number_format);
         if (given("active"))
             result.active = value.at("active").get<bool>();
         if (given("renderer")) {
@@ -225,7 +214,7 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
                 detail::decode_renderer_state(renderer, resolve, materials, resources, {}, renderer_format);
         }
         const auto &components = value.at("set_components");
-        require(components.is_array() && components.size() <= maximum_components,
+        require(components.is_array() && components.size() <= maximum_object_components,
                 "Invalid prefab variant component count");
         for (const auto &component : components) {
             detail::json_fields(component, {"type", "state", "enabled"});
@@ -234,7 +223,7 @@ PrefabVariant decode_variant(std::string_view document, const MeshResolver &reso
                                              component.at("enabled").get<bool>()});
         }
         const auto &removed = value.at("remove_components");
-        require(removed.is_array() && removed.size() <= maximum_components,
+        require(removed.is_array() && removed.size() <= maximum_object_components,
                 "Invalid prefab variant component removal count");
         result.remove_components = removed.get<std::vector<std::string>>();
         overrides.push_back(std::move(result));

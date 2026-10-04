@@ -1,4 +1,6 @@
 #include "../detail/component_data.hpp"
+#include "../detail/document_json.hpp"
+#include "../detail/document_limits.hpp"
 #include "../detail/json.hpp"
 #include "../detail/prefab_instantiation.hpp"
 #include "../detail/renderer_state.hpp"
@@ -79,28 +81,16 @@ namespace {
 using Json = nlohmann::json;
 constexpr unsigned document_version = 4;
 constexpr std::string_view scene_kind = "anima.scene", prefab_kind = "anima.prefab";
-constexpr std::size_t maximum_objects = 65'536, maximum_document_bytes = 16 * 1024 * 1024;
-constexpr std::size_t maximum_components = 1024;
 constexpr unsigned scene_set_version = 2;
 constexpr std::string_view scene_set_kind = "anima.scene-set";
-constexpr std::size_t maximum_scenes = 1024, maximum_namespace_bytes = 4096;
-void require(bool accepted, const char *reason) {
-    if (!accepted)
-        throw std::invalid_argument(reason);
-}
-float scalar(const Json &value) {
-    require(value.is_number(), "Scene scalar must be a number");
-    const auto result = detail::json_float(value);
-    require(std::isfinite(result), "Scene scalar must be finite");
-    return result;
-}
-Mat4 matrix_value(const Json &value) {
-    require(value.is_array() && value.size() == 16, "Scene matrix requires 16 scalars");
-    Mat4 result;
-    for (std::size_t i = 0; i < result.size(); ++i)
-        result[i] = scalar(value[i]);
-    return result;
-}
+using detail::maximum_document_bytes, detail::maximum_document_objects, detail::maximum_object_components,
+    detail::maximum_scene_set_members;
+using detail::require;
+constexpr detail::NumberFormat number_format{
+    .scalar = "Scene scalar must be a number",
+    .finite = "Scene scalar must be finite",
+    .matrix = "Scene matrix requires 16 scalars",
+};
 constexpr detail::RendererFormat renderer_format{
     .empty_state = "Empty scene object has renderer state",
     .placements = "Scene placements must copy the object's mesh, which has no pose",
@@ -118,16 +108,15 @@ constexpr detail::RendererFormat renderer_format{
     .unresolved_custom_material = "Scene custom material name could not be resolved",
     .renamed_custom_material = "Scene custom material resolved to a material of another name",
     .visibility_range = "Invalid scene visibility range",
-    .scalar = scalar,
-    .matrix = matrix_value,
+    .numbers = number_format,
 };
 void validate_nodes(std::span<const Prefab::Node> nodes, bool single_root) {
-    require(nodes.size() <= maximum_objects && (!single_root || !nodes.empty()), "Invalid scene object count");
+    require(nodes.size() <= maximum_document_objects && (!single_root || !nodes.empty()), "Invalid scene object count");
     std::set<ObjectKey> keys;
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         const auto &node = nodes[i];
         require(node.key.value && keys.insert(node.key).second, "Null or duplicate document object key");
-        require(node.components.size() <= maximum_components, "Invalid serialized component count");
+        require(node.components.size() <= maximum_object_components, "Invalid serialized component count");
         detail::require_distinct_component_types(node.components);
         require(!node.parent || *node.parent < i, "Scene parent must precede its child");
         require(!single_root || i == 0 || node.parent.has_value(), "Prefab must have exactly one root");
@@ -157,7 +146,7 @@ struct Captured {
     std::vector<Prefab::Node> nodes;
 };
 Captured capture_native_nodes(std::span<const GameObject> roots) {
-    require(roots.size() <= maximum_objects, "Scene exceeds the object limit");
+    require(roots.size() <= maximum_document_objects, "Scene exceeds the object limit");
     std::vector<GameObject> objects(roots.begin(), roots.end());
     std::vector<Prefab::Node> nodes(roots.size());
     for (std::size_t i = 0; i < objects.size(); ++i) {
@@ -165,7 +154,7 @@ Captured capture_native_nodes(std::span<const GameObject> roots) {
         node.parent = nodes[i].parent;
         nodes[i] = std::move(node);
         const auto children = objects[i].children();
-        require(children.size() <= maximum_objects - objects.size(), "Scene exceeds the object limit");
+        require(children.size() <= maximum_document_objects - objects.size(), "Scene exceeds the object limit");
         for (auto child : children) {
             objects.push_back(child);
             Prefab::Node next;
@@ -275,7 +264,7 @@ std::size_t retained_bytes(std::span<const Prefab::Node> nodes) {
 std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, const MeshResolver &resolve,
                                        const CustomMaterialResolver &materials, Resources &resources,
                                        const StagingSteps &steps) {
-    require(objects.is_array() && objects.size() <= maximum_objects, "Invalid scene object count");
+    require(objects.is_array() && objects.size() <= maximum_document_objects, "Invalid scene object count");
     std::vector<Prefab::Node> nodes;
     nodes.reserve(objects.size());
     // Resource resolution is explicit and cached once per key. No scene is mutated here.
@@ -296,10 +285,11 @@ std::vector<Prefab::Node> decode_nodes(const Json &objects, bool single_root, co
             require(index < nodes.size(), "Scene parent must precede its child");
             node.parent = static_cast<std::size_t>(index);
         }
-        node.local = matrix_value(value.at("local"));
+        node.local = detail::document_matrix(value.at("local"), number_format);
         node.renderer = detail::decode_renderer_state(value, resolve, materials, resources, steps, renderer_format);
         const auto &components = value.at("components");
-        require(components.is_array() && components.size() <= maximum_components, "Invalid serialized component count");
+        require(components.is_array() && components.size() <= maximum_object_components,
+                "Invalid serialized component count");
         for (const auto &component : components) {
             anima::detail::json_fields(component, {"type", "state", "enabled"});
             node.components.push_back({component.at("type").get<std::string>(),
@@ -353,8 +343,8 @@ SceneSetStage decode_scene_set(const Json &parsed, const MeshResolver &resolve, 
             "Invalid scene set document kind");
     detail::json_fields(parsed, {"version", "kind", "active", "scenes", "references"});
     const auto &documents = parsed.at("scenes"), &table = parsed.at("references");
-    require(documents.is_array() && documents.size() <= maximum_scenes, "Invalid scene set scene count");
-    require(table.is_array() && table.size() <= maximum_objects, "Invalid scene set reference count");
+    require(documents.is_array() && documents.size() <= maximum_scene_set_members, "Invalid scene set scene count");
+    require(table.is_array() && table.size() <= maximum_document_objects, "Invalid scene set reference count");
     CountedNames counted;
     for (const auto &value : documents)
         if (value.is_object())
@@ -371,11 +361,11 @@ SceneSetStage decode_scene_set(const Json &parsed, const MeshResolver &resolve, 
     for (const auto &value : documents) {
         detail::json_fields(value, {"key", "next_key", "objects"});
         auto key = value.at("key").get<std::string>();
-        require(!key.empty() && key.size() <= maximum_namespace_bytes && key.find('\0') == std::string::npos,
+        require(!key.empty() && key.size() <= SceneSet::max_namespace_bytes && key.find('\0') == std::string::npos,
                 "Invalid scene namespace");
         require(namespaces.emplace(key, result.scenes.size()).second, "Duplicate scene namespace");
         const auto &objects = value.at("objects");
-        require(objects.is_array() && objects.size() <= maximum_objects - object_count,
+        require(objects.is_array() && objects.size() <= maximum_document_objects - object_count,
                 "Scene set exceeds the object limit");
         auto nodes = decode_nodes(objects, false, resolve, materials, resources, steps);
         object_count += nodes.size();
@@ -490,7 +480,7 @@ void restore_prefab_components(std::span<const GameObject> objects, std::span<co
 } // namespace detail
 
 Prefab::Prefab(std::vector<Node> nodes, ComponentCodecs codecs) : nodes_(std::move(nodes)), codecs_(std::move(codecs)) {
-    require(nodes_.size() <= maximum_objects && !nodes_.empty(), "Invalid prefab object count");
+    require(nodes_.size() <= maximum_document_objects && !nodes_.empty(), "Invalid prefab object count");
     // Programmatic nodes may omit keys. Preserve explicit keys and assign unused
     // identities deterministically; document readers require all v3 keys explicitly.
     std::set<ObjectKey> used;
@@ -583,14 +573,14 @@ std::shared_ptr<Scene> load_scene(std::string_view document, const MeshResolver 
 namespace detail {
 std::string serialize_scene_set(SceneSet &scenes, const MeshName &name, const ComponentCodecs &codecs) {
     const auto selected = scenes.scenes();
-    require(selected.size() <= maximum_scenes, "Scene set exceeds the scene limit");
+    require(selected.size() <= maximum_scene_set_members, "Scene set exceeds the scene limit");
     std::vector<Captured> captured;
     std::vector<std::uint64_t> next_keys;
     captured.reserve(selected.size());
     next_keys.reserve(selected.size());
     std::size_t object_count = 0;
     for (auto scene : selected) {
-        require(scene->size() <= maximum_objects - object_count, "Scene set exceeds the object limit");
+        require(scene->size() <= maximum_document_objects - object_count, "Scene set exceeds the object limit");
         auto nodes = capture_native_nodes(scene->roots());
         object_count += nodes.objects.size();
         captured.push_back(std::move(nodes));
