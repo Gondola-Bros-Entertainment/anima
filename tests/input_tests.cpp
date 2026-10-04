@@ -157,7 +157,7 @@ TEST_CASE("A paired gamepad axis applies its deadzone and signed bindings until 
 TEST_CASE("Invalid events, unknown actions and invalid maps are rejected") {
     i::Context c(movement_map());
     CHECK_THROWS_WITH_AS(c.process({i::EventType::control, {i::ControlKind::key, 4, i::any_device}, 1}),
-                         "Input events require a concrete device identity", std::invalid_argument);
+                         "Input events require a concrete device ID", std::invalid_argument);
     CHECK_THROWS_WITH_AS(c.process({i::EventType::control, {i::ControlKind::key, 4, 0}, .5F}),
                          "Invalid input control value", std::invalid_argument);
     CHECK_THROWS_WITH_AS(c.process({i::EventType::focus, {}, std::numeric_limits<float>::quiet_NaN()}),

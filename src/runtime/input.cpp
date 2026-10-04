@@ -213,7 +213,7 @@ void validate(const Event &e) {
         throw std::invalid_argument("Unknown input event type");
     kind(e.source.kind);
     if (e.source.device == any_device)
-        throw std::invalid_argument("Input events require a concrete device identity");
+        throw std::invalid_argument("Input events require a concrete device ID");
     if (e.type == EventType::disconnect)
         return; // Code/value are not used; both gamepad control kinds name the same device class.
     control(e.source);
