@@ -10,7 +10,8 @@ vec3 environmentFog(vec3 color, vec3 position, vec4 viewOrigin) {
             color = animaFog(color, viewOrigin.xyz, position, environment.fog, environment.fogShape,
                              environment.fogSun, environment.sunDirection.xyz);
         else
-            color = mix(environment.fog.rgb, color, exp(-environment.fog.w * length(viewOrigin.xyz - position)));
+            color = mix(min(environment.fog.rgb, vec3(animaMaximumHalfFloat)), color,
+                        exp(-environment.fog.w * length(viewOrigin.xyz - position)));
     }
     return color;
 }
