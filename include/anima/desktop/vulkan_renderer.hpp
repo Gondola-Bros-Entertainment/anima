@@ -101,6 +101,16 @@ enum class RendererLogLevel {
 
 /// Construction options for VulkanRenderer.
 struct RendererOptions {
+    /// Reported to the Vulkan driver as the application's name (`VkApplicationInfo::pApplicationName`), which driver
+    /// and tool profiles of an application may match. The engine reports itself separately, as "Anima" with Anima's
+    /// version. Must be UTF-8 without a null character, or construction throws `std::invalid_argument` ("Application
+    /// name must be UTF-8 without a null character"); an empty name is reported as empty.
+    std::string application_name = "Anima";
+    /// Major, minor and patch version reported with #application_name (`VkApplicationInfo::applicationVersion`). They
+    /// must fit Vulkan's packed version, a major of at most 127, a minor of at most 1023 and a patch of at most 4095,
+    /// or construction throws `std::invalid_argument` ("Application version must have a major of at most 127, a minor
+    /// of at most 1023 and a patch of at most 4095").
+    std::array<std::uint32_t, 3> application_version{};
     /// Enables `VK_LAYER_KHRONOS_validation` through `VK_EXT_debug_utils`; construction throws
     /// `std::runtime_error` ("RendererOptions::validation requires VK_LAYER_KHRONOS_validation and
     /// VK_EXT_debug_utils") when either is missing. Warnings and errors are passed to #log and counted in RenderStats.

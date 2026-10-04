@@ -124,6 +124,9 @@ void render(anima::SceneSet &scenes, anima::SceneRef instances, anima::Scene::Id
     anima::RendererOptions options;
     options.scenes = scenes.render_scenes();
     options.validation = true;
+    // The driver sees the consumer, not the engine, as the application.
+    options.application_name = "Anima consumer";
+    options.application_version = {1, 2, 3};
     options.log = [&messages](anima::RendererLogLevel level, std::string_view text) {
         gpu_check::log(level, text);
         messages.push_back({level, std::string(text)});
