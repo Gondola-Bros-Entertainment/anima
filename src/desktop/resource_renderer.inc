@@ -33,6 +33,8 @@ struct ResourceInstance {
     std::shared_ptr<GpuPlacements> placements;
     std::uint32_t object_offset{};
     bool ranged{};
+    // Whether the mesh is an impostor (Mesh::impostor()), whose draws record in MeshGroup::impostors.
+    bool impostor{};
     // Whether the main view's MeshGroup::opaque left runs of the first opaque_draw_count draws to MeshGroup::masked:
     // runs of placement clusters that may lie in a margin of the visibility range, or whose orientation varies under a
     // single-sided draw. Preparation clears it, and record_resources() sets it as it records the opaque group.
@@ -103,14 +105,22 @@ struct CustomDraw {
     std::size_t draw{};
     const GpuCustomMaterial *custom{};
 };
-struct ResourcePush {
+// resource_pipeline_layout's push constants, which its vertex and fragment stages share, in the two parts that
+// record_draw() pushes: the pass's view and origin at offset 0, once per pass, then each draw's surface, indices and
+// factor at offset sizeof(ResourceViewPush).
+struct ResourceViewPush {
     Mat4 view;
-    std::array<float, 4> origin, surface;
+    std::array<float, 4> origin;
+};
+struct ResourceDrawPush {
+    std::array<float, 4> surface;
     std::array<std::uint32_t, 4> indices;
     std::array<float, 4> factor;
 };
-static_assert(sizeof(ResourcePush) == 128 && offsetof(ResourcePush, indices) == 96 &&
-              offsetof(ResourcePush, factor) == 112 && sizeof(Mat4) == 64);
+static constexpr std::uint32_t resource_push_bytes = sizeof(ResourceViewPush) + sizeof(ResourceDrawPush);
+static_assert(sizeof(ResourceViewPush) == 80 && resource_push_bytes == 128 &&
+              sizeof(ResourceViewPush) + offsetof(ResourceDrawPush, indices) == 96 &&
+              sizeof(ResourceViewPush) + offsetof(ResourceDrawPush, factor) == 112 && sizeof(Mat4) == 64);
 static_assert(sizeof(SourceVertex) == 96 && offsetof(SourceVertex, joints) == 44 &&
               offsetof(SourceVertex, weights) == 60);
 // Bytes of one placement's rows on the GPU.
@@ -146,6 +156,21 @@ std::array<VkPipeline, 2> blended_resource_pipelines{};
 // The mesh pipeline that record_indexed() bound last in the main view, which record_resources() clears before its
 // meshes, the first draws that the main view records, so that it stays bound until the impostors bind theirs.
 VkPipeline bound_mesh_pipeline{};
+// What record_draw() has bound and pushed through resource_pipeline_layout, so that within a pass it binds the frame's
+// sets and pushes the view once, and binds a material set only where it changes. Every pipeline of the mesh groups and
+// the blended draws shares that layout, so what one draw binds and pushes serves the next through any of them.
+// record_resources() and record_blended() clear it before their first draw. bind_custom() and record_sky() clear it
+// too: they bind sets through layouts that are not compatible with resource_pipeline_layout for set 0
+// (custom_pipeline_layout's set 0 differs, and environment_pipeline_layout has no push constant range), which disturbs
+// every set bound through it, and custom draws push their own constants through custom_pipeline_layout.
+struct ResourceBound {
+    // Whether the frame's sets and the pass's ResourceViewPush are bound: the pose set at set 2 and, in the main view,
+    // the environment set at set 1, which no shadow pipeline reads.
+    bool frame{};
+    // The material set bound at set 0, or null for none.
+    VkDescriptorSet material{};
+};
+ResourceBound resource_bound;
 // Impostor meshes (Mesh::impostor()) draw through their own shaders, in the view and in the shadow passes.
 VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
 std::array<VkPipeline, 2> impostor_pipelines{};
@@ -285,7 +310,7 @@ void upload_resource_buffer(ResourceBuffer &destination, const void *data, VkAcc
 void create_resource_layout() {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
-    if (properties.limits.maxPushConstantsSize < sizeof(ResourcePush) ||
+    if (properties.limits.maxPushConstantsSize < resource_push_bytes ||
         properties.limits.maxPerStageDescriptorStorageBuffers < 1 || properties.limits.maxBoundDescriptorSets < 3 ||
         properties.limits.maxVertexInputAttributes < resource_attributes.size() + placement_attributes.size() ||
         properties.limits.maxVertexInputBindings < resource_bindings.size() ||
@@ -302,7 +327,7 @@ void create_resource_layout() {
     descriptor.pBindings = &binding;
     check(vkCreateDescriptorSetLayout(device, &descriptor, nullptr, &pose_layout), "Create pose layout");
     const VkDescriptorSetLayout layouts[]{texture_layout, environment_layout, pose_layout};
-    const VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ResourcePush)};
+    const VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, resource_push_bytes};
     VkPipelineLayoutCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     info.setLayoutCount = 3;
     info.pSetLayouts = layouts;
@@ -744,6 +769,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                                       {},
                                       first_matrix,
                                       ranged,
+                                      render_instance.asset->impostor() != nullptr,
                                       false};
             if (header) {
                 prepared.palette_offset = first_matrix + 2;
@@ -921,36 +947,60 @@ void bind_geometry(const ResourceInstance &render_instance) {
 }
 // Records draw @p draw_index of @p render_instance with the bound geometry, through @p view, and counts it in the
 // shadow or main-view statistics: with @p routing, in the main view, the runs of its group through the pipeline that
-// record_indexed() binds for each, and otherwise every run through the bound pipeline. Returns whether it left runs to
-// the other group.
+// record_indexed() binds for each, and otherwise every run through the bound pipeline. It binds the draw's material set
+// where resource_bound holds another, unless @p material_set is false for a pipeline that reads none
+// (shadow_opaque_pipeline), and the frame's sets with the pass's ResourceViewPush where resource_bound lacks them,
+// then pushes the draw's ResourceDrawPush. Returns whether it left runs to the other group.
 bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view, bool shadow,
-                 std::optional<ViewRouting> routing = std::nullopt) {
+                 bool material_set, std::optional<ViewRouting> routing = std::nullopt) {
     const auto command = frame().command;
     const auto &source = *render_instance.source;
     const auto &draw = source.asset->draws()[draw_index];
+    constexpr VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    auto &bound = resource_bound;
+    if (material_set) {
+        const auto set = render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1));
+        if (set != bound.material) {
+            // Binding set 0 keeps the sets after it only where set 0 already holds a set bound through this layout.
+            if (!bound.material)
+                bound.frame = false;
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 1, &set, 0,
+                                    nullptr);
+            bound.material = set;
+        }
+    }
+    if (!bound.frame) {
+        // Binding the sets after set 0 keeps it, since it holds a set bound through this layout or none that the
+        // pipeline reads.
+        if (shadow)
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 2, 1,
+                                    &frame().pose_set, 0, nullptr);
+        else {
+            const std::array sets{frame().environment_set, frame().pose_set};
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 1,
+                                    static_cast<std::uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        }
+        const ResourceViewPush pass{view, view_origin};
+        vkCmdPushConstants(command, resource_pipeline_layout, stages, 0, sizeof(pass), &pass);
+        bound.frame = true;
+    }
     const Material fallback;
     const auto &material = draw.material < 0 ? fallback : source.asset->materials()->material_data.at(draw.material);
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
     // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
     // its frames per side and layout where they say whether they are skinned, which an impostor never is.
     const auto *impostor_frames = source.asset->impostor();
-    const ResourcePush push{view,
-                            view_origin,
-                            impostor_frames ? std::array{impostor_frames->center.x, impostor_frames->center.y,
-                                                         impostor_frames->center.z, impostor_frames->radius}
-                                            : std::array{material.metallic, material.roughness, 0.F, 0.F},
-                            {render_instance.palette_offset + draw.palette_offset,
-                             impostor_frames ? impostor_frames->count | std::uint32_t(impostor_frames->layout) << 8
-                             : draw.skinned  ? 1U
-                                             : 0U,
-                             render_instance.object_offset,
-                             (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
-                            {factor.x, factor.y, factor.z, 1}};
-    vkCmdPushConstants(command, resource_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(push), &push);
-    const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
-                                 frame().environment_set, frame().pose_set};
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
+    const ResourceDrawPush push{impostor_frames ? std::array{impostor_frames->center.x, impostor_frames->center.y,
+                                                             impostor_frames->center.z, impostor_frames->radius}
+                                                : std::array{material.metallic, material.roughness, 0.F, 0.F},
+                                {render_instance.palette_offset + draw.palette_offset,
+                                 impostor_frames ? impostor_frames->count | std::uint32_t(impostor_frames->layout) << 8
+                                 : draw.skinned  ? 1U
+                                                 : 0U,
+                                 render_instance.object_offset,
+                                 (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
+                                {factor.x, factor.y, factor.z, 1}};
+    vkCmdPushConstants(command, resource_pipeline_layout, stages, sizeof(ResourceViewPush), sizeof(push), &push);
     return record_indexed(render_instance, draw_index, shadow, routing);
 }
 // Records draw @p draw_index of @p render_instance for every run of placement_runs, with the bound geometry,
@@ -1044,6 +1094,8 @@ void record_resources(const ShadowPass *shadow = nullptr) {
         clear_main_view_counters();
         bound_mesh_pipeline = VK_NULL_HANDLE;
     }
+    // The pass's view differs from the last pass's, and other renderers may have bound sets in between.
+    resource_bound = {};
     const auto &view = shadow ? shadow->view : view_projection;
     const auto *frustum = shadow ? &shadow->frustum : options.frustum_culling ? &resource_frustum : nullptr;
     const auto objects = shadow ? resource_instances.size() : resource_view_order.size();
@@ -1056,10 +1108,12 @@ void record_resources(const ShadowPass *shadow = nullptr) {
                                     : !shadow                    ? VK_NULL_HANDLE
                                     : group == MeshGroup::opaque ? shadow_opaque_pipeline
                                                                  : shadow_masked_pipeline;
+        // shadow_opaque_pipeline has no fragment shader, so it reads no material set.
+        const bool material_set = !shadow || group != MeshGroup::opaque;
         bool bound = false;
         for (std::size_t object = 0; object < objects; ++object) {
             auto &render_instance = resource_instances[shadow ? object : resource_view_order[object].instance];
-            if ((render_instance.gpu->asset->impostor() != nullptr) != impostors)
+            if (render_instance.impostor != impostors)
                 continue;
             // The instance's draws lie in two parts, each in Mesh::draws() order: those whose view_pipeline() cannot
             // discard, or in a shadow pass the opaque casters, then the others. The opaque group records the first
@@ -1093,13 +1147,13 @@ void record_resources(const ShadowPass *shadow = nullptr) {
                 if (!shadow) {
                     const auto &[draw_index, draw_pipeline] = resource_draws[i];
                     const auto routing = impostors ? std::nullopt : std::optional(ViewRouting{draw_pipeline, group});
-                    deferred = record_draw(render_instance, draw_index, view, false, routing) || deferred;
+                    deferred = record_draw(render_instance, draw_index, view, false, true, routing) || deferred;
                     continue;
                 }
                 const auto draw_index = resource_shadow_draws[i];
                 if (!shadow->frustum.intersects(render_instance.source->primitive_bounds[draw_index]))
                     continue;
-                record_draw(render_instance, draw_index, view, true);
+                record_draw(render_instance, draw_index, view, true, material_set);
             }
             if (!shadow && group == MeshGroup::opaque)
                 render_instance.deferred_runs = deferred;
@@ -1114,9 +1168,13 @@ void record_resources(const ShadowPass *shadow = nullptr) {
         record_blended();
 }
 // Records resource_blended_draws in order, each through the blended pipeline or its custom material's. Depth then
-// holds every opaque and masked surface, which these pipelines test against without writing.
+// holds every opaque and masked surface, which these pipelines test against without writing. A blended draw after a
+// custom material's binds the resource sets and view again, since bind_custom() clears resource_bound.
 void record_blended() {
     const auto command = frame().command;
+    // A frame that copies opaque inputs records these in a pass of its own, after other commands, so they bind as
+    // record_resources() does, from nothing.
+    resource_bound = {};
     VkPipeline bound_pipeline = VK_NULL_HANDLE;
     const ResourceInstance *bound = nullptr;
     const auto *frustum = options.frustum_culling ? &resource_frustum : nullptr;
@@ -1141,7 +1199,7 @@ void record_blended() {
         if (blended.custom)
             record_custom_draw(render_instance, blended.draw, view_projection, false);
         else
-            record_draw(render_instance, blended.draw, view_projection, false);
+            record_draw(render_instance, blended.draw, view_projection, false, true);
     }
 }
 ResourceStats resource_stats() const {
