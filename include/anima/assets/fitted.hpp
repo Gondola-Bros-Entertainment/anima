@@ -32,6 +32,13 @@ struct FittedAsset {
     /// of the body model; other nodes keep their rest matrices. Throws `std::out_of_range` when
     /// @p body lacks a mapped joint.
     Pose pose(const Pose &body) const;
+
+  private:
+    friend class FittedLibrary;
+    // As the public constructor, except that #render is @p resident when that Mesh accepts @p fitted as an animation
+    // source and has as many textures.
+    FittedAsset(const Asset &body, std::shared_ptr<const Asset> fitted, TexelRetention texel_retention,
+                std::shared_ptr<const Mesh> resident);
 };
 /// One catalog item that fits the library's body.
 struct FittedDefinition {
@@ -42,8 +49,9 @@ struct FittedDefinition {
 };
 /// The items of a fitted catalog that fit one body profile, with shared loading.
 ///
-/// Copies share the body and the loaded-model cache. load() and resident_assets() lock a mutex
-/// that all copies share, so they may run on several threads.
+/// Copies share the body and the loaded-model cache. load() and resident_meshes() may run on
+/// several threads at once, on one library and its copies: loads of different files run
+/// concurrently, and concurrent loads of one file share one import.
 class FittedLibrary {
   public:
     /// An empty library without a body.
@@ -75,11 +83,18 @@ class FittedLibrary {
     const auto &definitions() const { return definitions_; }
     /// Item @p id. Throws `std::out_of_range` unless it fits this body.
     const FittedDefinition &definition(std::string_view id) const;
-    /// Loads item @p id, sharing one FittedAsset per model file while it is alive. Throws
+    /// Loads item @p id.
+    ///
+    /// Loads of one model file share a FittedAsset while it is alive, and its Mesh while that is
+    /// alive: with only the Mesh alive, a load imports the file again and keeps the Mesh when the
+    /// Mesh accepts the new model as an animation source (see Mesh::accepts_animation_source) and
+    /// has as many textures, and otherwise compiles a new one. Concurrent loads of one file share
+    /// one import, and its failure, which caches nothing, so a later load imports again. Throws
     /// `std::out_of_range` unless the item fits this body, and as load_asset and FittedAsset do.
     std::shared_ptr<const FittedAsset> load(std::string_view id) const;
-    /// Meshes of loaded items that are still alive.
-    std::vector<std::shared_ptr<const Mesh>> resident_assets() const;
+    /// Every Mesh that loads compiled and that is still alive, once each, in no particular order;
+    /// none for a library without a body.
+    std::vector<std::shared_ptr<const Mesh>> resident_meshes() const;
 
   private:
     friend class FittedSet;

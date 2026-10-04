@@ -1,5 +1,6 @@
 #include "near.hpp"
 #include <anima/assets/asset.hpp>
+#include <anima/assets/fitted.hpp>
 #include <anima/assets/imports.hpp>
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/assets/preview.hpp>
@@ -13,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -316,6 +318,30 @@ TEST_CASE("A skin applies its joint's transform, and inverse binds cancel it") {
     const auto bind = load_glb(fixture(temp, "bind"));
     CHECK(bind.default_is_bind_pose);
     CHECK(bind.minimum.y == Near{0, tolerance});
+}
+
+TEST_CASE("A fitted load shares the Mesh that a scene still draws after its fitted asset is gone") {
+    const Temp temp;
+    const auto body = load_asset(fixture(temp, "skin"));
+    Manifest manifest;
+    manifest.directory = temp.directory;
+    manifest.skeleton_id = "rig";
+    manifest.bind_signature = "signature";
+    // The skinned model fits its own rig.
+    const FittedLibrary library(
+        body, manifest, "profile",
+        R"({"version":2,"items":[{"id":"cover","fits":{"profile":{"model":"skin.glb","skeleton":"rig",)"
+        R"("bind_signature":"signature"}}}]})");
+    Scene scene;
+    auto loaded = library.load("cover");
+    (void)scene.add(loaded->render);
+    const std::weak_ptr<const FittedAsset> dropped = loaded;
+    const std::weak_ptr<const Mesh> drawn = loaded->render;
+    loaded.reset();
+    REQUIRE(dropped.expired());
+    const auto reloaded = library.load("cover");
+    CHECK(reloaded->render == drawn.lock());
+    CHECK(library.resident_meshes() == std::vector{reloaded->render});
 }
 
 TEST_CASE("A model without clips previews statically, and rejected playback leaves it unchanged") {

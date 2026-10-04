@@ -1,4 +1,5 @@
 #include "mesh_limits.hpp"
+#include "model_cache.hpp"
 #include "presentation_data.hpp"
 #include "texel_hold.hpp"
 #include <anima/assets/attachments.hpp>
@@ -21,17 +22,17 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
     result.empty_handling = text(json.at("empty_handling"));
     for (const auto &entry : json.at("handling")) {
         anima::detail::json_fields(entry, {"id", "socket", "layer"}, {"layer_overrides", "support_contacts"});
-        AttachmentHandling motion;
-        motion.id = text(entry.at("id"));
-        motion.socket = entry.at("socket").get<std::string>();
-        motion.layer = entry.at("layer").get<std::string>();
+        AttachmentHandling profile;
+        profile.id = text(entry.at("id"));
+        profile.socket = entry.at("socket").get<std::string>();
+        profile.layer = entry.at("layer").get<std::string>();
         if (entry.contains("layer_overrides")) {
             if (!entry.at("layer_overrides").is_object())
                 throw std::invalid_argument("Layer overrides must map base clips to layer clips");
             for (const auto &[name, value] : entry.at("layer_overrides").items()) {
                 if (name.empty())
                     throw std::invalid_argument("Empty layer override base clip");
-                motion.layer_overrides.emplace(name, text(value));
+                profile.layer_overrides.emplace(name, text(value));
             }
         }
         if (entry.contains("support_contacts")) {
@@ -46,7 +47,7 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
                 contact.socket = text(value.at("socket"));
                 contact.marker = text(value.at("marker"));
                 contact.pole = vec3(value.at("pole"), "Support contact pole requires three numbers");
-                if (contact.socket == motion.socket || !chains.insert(contact.chain).second)
+                if (contact.socket == profile.socket || !chains.insert(contact.chain).second)
                     throw std::invalid_argument("Support contacts need distinct chains and a secondary socket");
                 const auto &active = value.at("clips");
                 if (!active.is_array())
@@ -65,12 +66,12 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
                 }
                 if (contact.clips.empty() && contact.actions.empty())
                     throw std::invalid_argument("Support contact has no active clips/actions");
-                motion.support_contacts.push_back(std::move(contact));
+                profile.support_contacts.push_back(std::move(contact));
             }
         }
-        insert(result.motions, std::move(motion));
+        insert(result.handling, std::move(profile));
     }
-    if (!lookup(result.motions, result.empty_handling).socket.empty())
+    if (!lookup(result.handling, result.empty_handling).socket.empty())
         throw std::invalid_argument("Empty handling must not declare an attachment socket");
     for (const auto &entry : json.at("visuals")) {
         anima::detail::json_fields(entry, {"id", "model", "primary_grip", "markers"},
@@ -109,10 +110,10 @@ AttachmentCatalog decode_catalog(std::string_view document, const std::filesyste
     for (const auto &entry : json.at("items")) {
         anima::detail::json_fields(entry, {"id", "visual", "handling"});
         AttachmentDefinition item{text(entry.at("id")), text(entry.at("visual")), text(entry.at("handling"))};
-        if (lookup(result.motions, item.handling).socket.empty())
+        if (lookup(result.handling, item.handling).socket.empty())
             throw std::invalid_argument("Attachment items require a handling profile with a socket");
         (void)lookup(result.visuals, item.visual);
-        for (const auto &contact : lookup(result.motions, item.handling).support_contacts)
+        for (const auto &contact : lookup(result.handling, item.handling).support_contacts)
             (void)lookup(lookup(result.visuals, item.visual).markers, contact.marker);
         insert(result.items, std::move(item));
     }
@@ -168,47 +169,45 @@ std::map<std::string, AttachmentSocket, std::less<>>
 decode_attachment_sockets(std::string_view document, const anima::Manifest &manifest, const anima::Asset &body) {
     return presentation_data::decode_step([&] { return decode_sockets(document, manifest, body); });
 }
-AttachmentLibrary::AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention)
-    : catalog(std::move(definition)), texel_retention_(texel_retention) {
+struct AttachmentLibrary::State {
+    AttachmentCatalog catalog;
+    TexelRetention texel_retention;
+    anima::detail::ModelCache<AttachmentAsset> models;
+    State(AttachmentCatalog c, TexelRetention t) : catalog(std::move(c)), texel_retention(t) {}
+};
+AttachmentLibrary::AttachmentLibrary(AttachmentCatalog definition, TexelRetention texel_retention) {
     if (texel_retention != TexelRetention::keep && texel_retention != TexelRetention::until_upload)
         throw std::invalid_argument("Unknown texel retention");
+    state_ = std::make_shared<State>(std::move(definition), texel_retention);
 }
+const AttachmentCatalog &AttachmentLibrary::catalog() const noexcept { return state_->catalog; }
 const AttachmentDefinition &AttachmentLibrary::item(std::string_view id) const {
-    return presentation_data::lookup(catalog.items, id);
+    return presentation_data::lookup(state_->catalog.items, id);
 }
 const AttachmentVisual &AttachmentLibrary::visual(std::string_view id) const {
-    return presentation_data::lookup(catalog.visuals, id);
+    return presentation_data::lookup(state_->catalog.visuals, id);
 }
-const AttachmentHandling &AttachmentLibrary::motion(std::string_view item_id) const {
-    return presentation_data::lookup(catalog.motions,
-                                     item_id.empty() ? catalog.empty_handling : item(item_id).handling);
+const AttachmentHandling &AttachmentLibrary::handling(std::string_view item_id) const {
+    return presentation_data::lookup(state_->catalog.handling,
+                                     item_id.empty() ? state_->catalog.empty_handling : item(item_id).handling);
 }
 std::shared_ptr<const AttachmentAsset> AttachmentLibrary::load(std::string_view visual_id) const {
     const auto &definition = visual(visual_id);
-    const auto path = std::filesystem::weakly_canonical(catalog.directory / definition.model);
-    const std::scoped_lock lock(mutex_);
-    auto &cached = models_[path];
-    if (auto source = cached.source.lock())
-        if (auto render = cached.render.lock()) {
-            validate(*source, definition);
-            return std::make_shared<AttachmentAsset>(AttachmentAsset{source, render});
-        }
-    auto source = anima::load_asset(path);
-    validate(*source, definition);
-    auto render = anima::Mesh::compile(*source, texel_retention_);
-    source = anima::detail::without_texels(std::move(source), *render);
-    cached = {source, render};
-    return std::make_shared<AttachmentAsset>(AttachmentAsset{std::move(source), std::move(render)});
-}
-std::vector<std::shared_ptr<const anima::Mesh>> AttachmentLibrary::resident_assets() const {
-    const std::scoped_lock lock(mutex_);
-    std::vector<std::shared_ptr<const anima::Mesh>> result;
-    for (const auto &[path, cached] : models_) {
-        (void)path;
-        if (auto render = cached.render.lock())
-            result.push_back(std::move(render));
-    }
+    const auto path = std::filesystem::weakly_canonical(state_->catalog.directory / definition.model);
+    const auto texel_retention = state_->texel_retention;
+    auto result = state_->models.load(path, [&](std::shared_ptr<const anima::Mesh> resident) {
+        auto source = anima::load_asset(path);
+        auto render = anima::detail::resident_or_compile(*source, std::move(resident), texel_retention);
+        source = anima::detail::without_texels(std::move(source), *render);
+        return std::make_shared<const AttachmentAsset>(AttachmentAsset{std::move(source), std::move(render)});
+    });
+    // Visuals that share a file may name different nodes and clips, so each load checks its own after the shared
+    // import.
+    validate(*result->source, definition);
     return result;
+}
+std::vector<std::shared_ptr<const anima::Mesh>> AttachmentLibrary::resident_meshes() const {
+    return state_->models.resident_meshes();
 }
 void AttachmentLibrary::validate(const anima::Asset &source, const AttachmentVisual &visual) {
     if (!source.animations.empty() && visual.animation_tracks.empty())
@@ -285,8 +284,8 @@ bool AttachmentInstance::replace(anima::Scene &scene, const AttachmentLibrary &l
     next.item_id = id;
     if (!id.empty()) {
         const auto &item = library.item(id);
-        next.binding =
-            bind_attachment(presentation_data::lookup(sockets, library.motion(id).socket), library.visual(item.visual));
+        next.binding = bind_attachment(presentation_data::lookup(sockets, library.handling(id).socket),
+                                       library.visual(item.visual));
         next.asset = library.load(item.visual);
         next.instance = scene.add(next.asset->render);
     }
@@ -316,8 +315,8 @@ AttachmentSet AttachmentSet::prepare(const AttachmentLibrary &library,
         const auto &item = library.item(id);
         AttachmentInstance held;
         held.item_id = id;
-        held.binding =
-            bind_attachment(presentation_data::lookup(sockets, library.motion(id).socket), library.visual(item.visual));
+        held.binding = bind_attachment(presentation_data::lookup(sockets, library.handling(id).socket),
+                                       library.visual(item.visual));
         held.asset = library.load(item.visual);
         result.roles.emplace(role, std::move(held));
     }
@@ -423,7 +422,7 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
         std::vector<std::string_view> layers;
         for (const auto &[role, item] : attachments.roles) {
             (void)role;
-            layers.push_back(library.motion(item.item_id).layer_for(clip));
+            layers.push_back(library.handling(item.item_id).layer_for(clip));
         }
         runtime.validate_layers(layers);
     }
@@ -432,7 +431,7 @@ void validate_attachment_ownership(const MotionRuntime &runtime, const Attachmen
     for (const auto &[role, item] : attachments.roles) {
         if (exclusive_primary && !nodes.insert(item.binding.node).second)
             throw std::invalid_argument("Attachment roles share an exclusive primary socket");
-        for (const auto &contact : library.motion(item.item_id).support_contacts) {
+        for (const auto &contact : library.handling(item.item_id).support_contacts) {
             if (runtime.contact_end_node(contact.chain) != presentation_data::lookup(sockets, contact.socket).node)
                 throw std::invalid_argument("Contact does not end at the declared socket");
             for (const auto &previous : chains)
@@ -452,7 +451,7 @@ void validate_attachment_action(const ActionRuntime &runtime, const AttachmentLi
                                 const AttachmentSet &attachments, std::string_view action) {
     std::map<std::string, std::string, std::less<>> roles;
     for (const auto &[role, item] : attachments.roles)
-        roles.emplace(role, library.motion(item.item_id).id);
+        roles.emplace(role, library.handling(item.item_id).id);
     runtime.validate_roles(action, roles);
     for (const auto &phase : runtime.definition(action).phases)
         for (const auto &prop : phase.props) {

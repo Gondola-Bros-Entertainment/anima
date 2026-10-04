@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace anima;
@@ -140,20 +141,23 @@ void write_motion(const std::filesystem::path &file) {
               binary);
 }
 
-// A one-triangle model for attachment visuals; an @p animated one has a clip that moves it.
-void write_prop(const std::filesystem::path &file, bool animated) {
+// A one-triangle model for attachment visuals, on one node named @p node; an @p animated one has a clip that moves
+// it.
+void write_prop(const std::filesystem::path &file, bool animated, std::string_view node = "prop") {
     std::vector<char> binary;
     for (const float number : {0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 0.F, 0.F, 1.F})
         append_f32(binary, number);
     write_glb(file,
               std::string(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
-        "nodes":[{"name":"prop","mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+        "nodes":[{"name":")") +
+                  std::string(node) +
+                  R"(","mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
         "buffers":[{"byteLength":68}],
         "bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":8},
                        {"buffer":0,"byteOffset":44,"byteLength":24}],
         "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
                      {"bufferView":1,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
-                     {"bufferView":2,"componentType":5126,"count":2,"type":"VEC3"}])") +
+                     {"bufferView":2,"componentType":5126,"count":2,"type":"VEC3"}])" +
                   (animated ? R"(,"animations":[{"name":"turn","samplers":[{"input":1,"output":2}],
                          "channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]})"
                             : "}"),
@@ -295,7 +299,7 @@ TEST_CASE("An attachment set prepares as many roles as the caller names") {
     const auto prepared = AttachmentSet::prepare(library, fixture.sockets, desired);
     CHECK(prepared.roles.size() == 9);
     CHECK(prepared.matches(desired));
-    CHECK(library.resident_assets().size() == 1); // Every role shares the one loaded model.
+    CHECK(library.resident_meshes().size() == 1); // Every role shares the one loaded model.
 }
 
 TEST_CASE("An attachment library compiles its models with the texel retention it was given") {
@@ -310,6 +314,78 @@ TEST_CASE("An attachment library compiles its models with the texel retention it
     CHECK(loaded->render->texel_retention() == TexelRetention::until_upload);
     CHECK(loaded->source->textures.size() == loaded->render->materials()->textures.size());
     CHECK(released.load("prop")->source == loaded->source); // Loads still share the model while it lives.
+}
+
+TEST_CASE("A load shares the Mesh that a scene still draws after the attachment set that loaded it is gone") {
+    const MotionFixture fixture;
+    const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
+    Scene scene;
+    std::weak_ptr<const AttachmentAsset> dropped;
+    std::weak_ptr<const Mesh> drawn;
+    {
+        auto held = AttachmentSet::prepare(library, fixture.sockets, {{"tool", "prop"}});
+        held.add(scene);
+        dropped = held.roles.at("tool").asset;
+        drawn = held.roles.at("tool").asset->render;
+    }
+    // Only the scene keeps the Mesh. A load imports the file again and keeps the Mesh.
+    REQUIRE(dropped.expired());
+    REQUIRE_FALSE(drawn.expired());
+    auto reloaded = library.load("prop");
+    CHECK(reloaded->render == drawn.lock());
+    CHECK(library.resident_meshes() == std::vector{drawn.lock()});
+    // A file whose nodes changed while its Mesh lived compiles a new Mesh, and both stay resident.
+    reloaded.reset();
+    write_prop(fixture.directory.path / "prop.glb", false, "renamed");
+    const auto changed = library.load("prop");
+    CHECK(changed->render != drawn.lock());
+    CHECK(changed->source->nodes.front().name == "renamed");
+    CHECK(library.resident_meshes().size() == 2);
+}
+
+TEST_CASE("Loads on several threads share one import per file, and a failed load is tried again") {
+    const MotionFixture fixture;
+    auto catalog = decode_attachment_catalog(attachment_catalog(), fixture.directory.path);
+    // A visual with a file of its own, and one whose file does not exist until the test writes it.
+    for (const std::string id : {"other", "late"}) {
+        AttachmentVisual visual;
+        visual.id = id;
+        visual.model = id + ".glb";
+        catalog.visuals.emplace(id, std::move(visual));
+    }
+    write_prop(fixture.directory.path / "other.glb", false);
+    const AttachmentLibrary library(std::move(catalog));
+    const AttachmentLibrary copy = library; // Copies share the loaded models.
+    constexpr std::array<std::string_view, 6> visuals{"prop", "prop", "other", "other", "late", "late"};
+    std::array<std::shared_ptr<const AttachmentAsset>, visuals.size()> loaded;
+    std::array<std::string, visuals.size()> failures;
+    std::vector<std::thread> threads;
+    for (std::size_t i = 0; i < visuals.size(); ++i)
+        threads.emplace_back([&, i] {
+            try {
+                loaded.at(i) = (i % 2 ? copy : library).load(visuals.at(i));
+            } catch (const std::runtime_error &error) {
+                failures.at(i) = error.what();
+            } catch (const std::exception &error) {
+                failures.at(i) = std::string("Not a std::runtime_error: ") + error.what();
+            }
+        });
+    for (auto &thread : threads)
+        thread.join();
+    REQUIRE(loaded[0]);
+    REQUIRE(loaded[2]);
+    CHECK(loaded[1] == loaded[0]);
+    CHECK(loaded[3] == loaded[2]);
+    CHECK(loaded[2]->render != loaded[0]->render);
+    // Each load of the missing file fails, whether it shared another load's import or ran its own.
+    CHECK(failures[4] == "Cannot open GLB file");
+    CHECK(failures[5] == "Cannot open GLB file");
+    CHECK(library.resident_meshes().size() == 2);
+    CHECK_THROWS_WITH_AS(library.load("late"), "Cannot open GLB file", std::runtime_error);
+    write_prop(fixture.directory.path / "late.glb", false);
+    const auto late = copy.load("late");
+    CHECK(late->render != loaded[0]->render);
+    CHECK(library.resident_meshes().size() == 3);
 }
 
 TEST_CASE("An animated grip stays in prop model space, where its node carries it from the node's rest placement") {
@@ -618,10 +694,10 @@ TEST_CASE("Handling profiles choose a layer clip per base clip, and ownership ch
     const MotionFixture fixture;
     const auto runtime = fixture.runtime();
     const AttachmentLibrary library(decode_attachment_catalog(attachment_catalog(), fixture.directory.path));
-    const auto &grip = library.catalog.motions.at("grip");
+    const auto &grip = library.catalog().handling.at("grip");
     CHECK(grip.layer_for("base") == "layer.side");
     CHECK(grip.layer_for("other") == "layer.limb");
-    CHECK(library.motion("").layer_for("base").empty()); // The empty handling layers nothing.
+    CHECK(library.handling("").layer_for("base").empty()); // The empty handling layers nothing.
     // Over the base clip the prop layers the side joint and the brace the limb, so they can be held together.
     const auto disjoint = AttachmentSet::prepare(library, fixture.sockets, {{"first", "prop"}, {"second", "brace"}});
     CHECK_NOTHROW(validate_attachment_ownership(runtime, library, disjoint, fixture.sockets, false));
