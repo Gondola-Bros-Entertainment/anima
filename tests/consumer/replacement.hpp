@@ -105,13 +105,28 @@ inline void reject_invalid_lod_threshold() {
     rejects<std::invalid_argument>([&] { construct(-1, 0, no_failure); },
                                    "Maximum anisotropy must be finite and at least 1");
 }
+// Construction rejects a RendererOptions::frames_in_flight other than 1 or 2, after the LOD threshold and before it
+// needs a window or GPU.
+inline void reject_invalid_frames_in_flight() {
+    constexpr std::string_view invalid = "Frames in flight must be 1 or 2";
+    const auto construct = [](std::uint32_t frames, float threshold) {
+        anima::RendererOptions options;
+        options.frames_in_flight = frames;
+        options.lod_threshold = threshold;
+        anima::VulkanRenderer renderer(nullptr, options);
+    };
+    for (const std::uint32_t frames : {0U, 3U, std::numeric_limits<std::uint32_t>::max()})
+        rejects<std::invalid_argument>([&] { construct(frames, 1); }, invalid);
+    for (const std::uint32_t frames : {1U, 2U})
+        rejects<std::invalid_argument>([&] { construct(frames, 1); }, "Renderer requires an SDL window");
+    // The LOD threshold is checked first.
+    rejects<std::invalid_argument>([&] { construct(3, -1); }, "LOD threshold must be finite and nonnegative");
+}
 // A swapchain that fails after its predecessor was released leaves nothing to present, so the renderer
-// becomes fatal instead of rebuilding it on every draw.
-inline void reject_failed_swapchain(bool disable_present_fences) {
+// becomes fatal instead of rebuilding it on every draw. @p options supplies the presentation and frame settings.
+inline void reject_failed_swapchain(anima::RendererOptions options) {
     const auto window = gpu_check::window("Anima swapchain failure consumer", 320, 240, SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    anima::RendererOptions options;
     options.validation = true;
-    options.disable_present_fences = disable_present_fences;
     options.fail_after = anima::RendererFailureStage::swapchain;
     anima::VulkanRenderer renderer(window.get(), options);
     const auto started = std::chrono::steady_clock::now();
@@ -137,13 +152,12 @@ inline void reject_failed_swapchain(bool disable_present_fences) {
             "Failed swapchain cleanup failed");
 }
 // A capture that cannot be written consumes its request: the draw that submits the frame reports it once, the
-// frame counts if it was presented, and later draws present and count without writing again.
-inline void reject_unwritable_capture(const std::filesystem::path &output, bool disable_present_fences) {
+// frame counts if it was presented, and later draws present and count without writing again. @p options supplies the
+// presentation and frame settings.
+inline void reject_unwritable_capture(const std::filesystem::path &output, anima::RendererOptions options) {
     constexpr unsigned later_frames = 3; // Enough to show the write is not retried.
     const auto window = gpu_check::window("Anima capture failure consumer", 320, 240, SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    anima::RendererOptions options;
     options.validation = true;
-    options.disable_present_fences = disable_present_fences;
     anima::VulkanRenderer renderer(window.get(), options);
     renderer.set_view(anima::identity());
     const auto started = std::chrono::steady_clock::now();
@@ -195,7 +209,8 @@ inline void reject_unwritable_capture(const std::filesystem::path &output, bool 
     std::filesystem::remove(directory);
 }
 inline int run(int argc, char **argv) {
-    require(argc >= 3, "Usage: consumer --replace OUTPUT [--no-present-fences] [--fatal STAGE] [--asset GLB]");
+    require(argc >= 3, "Usage: consumer --replace OUTPUT [--no-present-fences] [--frames-in-flight COUNT] "
+                       "[--fatal STAGE] [--asset GLB]");
     const std::filesystem::path output = argv[2];
     std::filesystem::path asset;
     std::string fatal;
@@ -204,6 +219,8 @@ inline int run(int argc, char **argv) {
         const std::string_view argument = argv[i];
         if (argument == "--no-present-fences")
             options.disable_present_fences = true;
+        else if (argument == "--frames-in-flight" && i + 1 < argc)
+            options.frames_in_flight = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         else if (argument == "--fatal" && i + 1 < argc)
             fatal = argv[++i];
         else if (argument == "--asset" && i + 1 < argc)
@@ -214,8 +231,8 @@ inline int run(int argc, char **argv) {
     require(fatal.empty() || fatal == "upload-timeout" || fatal == "device-lost", "Unknown fatal injection");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     gpu_check::Video video;
-    reject_failed_swapchain(options.disable_present_fences);
-    reject_unwritable_capture(output, options.disable_present_fences);
+    reject_failed_swapchain(options);
+    reject_unwritable_capture(output, options);
     const auto window = gpu_check::window("Anima scene replacement consumer", 640, 480,
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     const auto window_id = SDL_GetWindowID(window.get());

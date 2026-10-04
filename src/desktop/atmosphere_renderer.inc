@@ -35,9 +35,9 @@ static bool same_medium(const Atmosphere &a, const Atmosphere &b) {
            a.ozone_altitude == b.ozone_altitude && a.ozone_width == b.ozone_width &&
            same(a.ground_albedo, b.ground_albedo);
 }
-// Creates the tables, their compute pipelines and descriptors, and points the environment set's bindings 3 and 4 at
-// the sky view and transmittance tables. Needs the environment set. Throws `std::runtime_error` when the device cannot
-// store and filter half-float images, which Vulkan requires of every device.
+// Creates the tables, their compute pipelines and descriptors, and points bindings 3 and 4 of each frame slot's
+// environment set at the sky view and transmittance tables. Needs the environment sets. Throws `std::runtime_error`
+// when the device cannot store and filter half-float images, which Vulkan requires of every device.
 void create_atmosphere(std::span<const std::uint32_t> transmittance, std::span<const std::uint32_t> scattering,
                        std::span<const std::uint32_t> sky) {
     VkFormatProperties properties{};
@@ -98,23 +98,35 @@ void create_atmosphere(std::span<const std::uint32_t> transmittance, std::span<c
         return VkDescriptorImageInfo{sampled ? atmosphere_sampler : VkSampler{}, atmosphere_tables[index].view,
                                      VK_IMAGE_LAYOUT_GENERAL};
     };
-    const std::array<VkDescriptorImageInfo, 7> infos{
+    const std::array<VkDescriptorImageInfo, 5> infos{
         image_info(transmittance_table, false), image_info(multiple_scattering_table, false),
         image_info(sky_view_table, false), image_info(transmittance_table, true),
-        image_info(multiple_scattering_table, true),
-        // The environment set's sky view and transmittance tables.
-        image_info(sky_view_table, true), image_info(transmittance_table, true)};
-    std::array<VkWriteDescriptorSet, 7> writes{};
+        image_info(multiple_scattering_table, true)};
+    std::array<VkWriteDescriptorSet, 5> writes{};
     for (std::uint32_t i = 0; i < writes.size(); ++i) {
         auto &write = writes[i];
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = i < 5 ? atmosphere_set : environment_set;
-        write.dstBinding = i < 5 ? i : i - 2;
+        write.dstSet = atmosphere_set;
+        write.dstBinding = i;
         write.descriptorCount = 1;
         write.descriptorType = i < 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.pImageInfo = &infos[i];
     }
     vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    // The environment sets' bindings 3 and 4, which the sky samples.
+    const std::array<VkDescriptorImageInfo, 2> sampled{image_info(sky_view_table, true),
+                                                       image_info(transmittance_table, true)};
+    constexpr std::uint32_t first_sampled = 3;
+    for (const auto &slot : frames)
+        for (std::uint32_t i = 0; i < sampled.size(); ++i) {
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = slot.environment_set;
+            write.dstBinding = first_sampled + i;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &sampled[i];
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
     const VkDescriptorSetLayout layouts[]{atmosphere_layout, environment_layout};
     VkPipelineLayoutCreateInfo pipeline_layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipeline_layout_info.setLayoutCount = 2;
@@ -165,6 +177,7 @@ void record_atmosphere() {
     const auto &atmosphere = environment.atmosphere;
     if (!atmosphere.enabled)
         return;
+    const auto command = frame().command;
     VkMemoryBarrier written{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     written.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     written.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -191,7 +204,7 @@ void record_atmosphere() {
         atmosphere_ready = true;
         atmosphere_built.reset();
     }
-    const VkDescriptorSet sets[]{atmosphere_set, environment_set};
+    const VkDescriptorSet sets[]{atmosphere_set, frame().environment_set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, atmosphere_pipeline_layout, 0, 2, sets, 0,
                             nullptr);
     const auto dispatch = [&](AtmosphereTableIndex index, VkExtent2D groups) {

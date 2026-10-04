@@ -196,12 +196,13 @@ void create_display_pipeline() {
           "Create world output pipeline");
 }
 void record_display(VkFramebuffer framebuffer) {
+    const auto command = frame().command;
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     pass.renderPass = present_pass;
     pass.framebuffer = framebuffer;
     pass.renderArea.extent = extent;
     vkCmdBeginRenderPass(command, &pass, VK_SUBPASS_CONTENTS_INLINE);
-    const VkDescriptorSet sets[]{world_target->descriptor, environment_set};
+    const VkDescriptorSet sets[]{world_target->descriptor, frame().environment_set};
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipeline_layout, 0, 2, sets, 0, nullptr);
     vkCmdDraw(command, 3, 1, 0, 0);
@@ -211,8 +212,8 @@ void finish_world_writes() {
     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+    vkCmdPipelineBarrier(frame().command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 void destroy_world_targets() noexcept {
     destroy_opaque_inputs();

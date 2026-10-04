@@ -30,6 +30,9 @@ struct ShadowPass {
 };
 std::unique_ptr<ShadowTarget> cascade_target;
 std::unique_ptr<ShadowTarget> detail_shadow_target;
+// Counts the shadow targets created, so that each frame slot's environment set can tell whether it points at the
+// current ones (FrameSlot::shadow_generation).
+std::uint64_t shadow_generation{};
 VkFormat shadow_format{};
 VkRenderPass shadow_pass{};
 VkShaderModule shadow_resource_vertex_shader{}, shadow_fragment_shader{};
@@ -77,10 +80,9 @@ void create_shadow_pass() {
     pass.pSubpasses = &subpass;
     check(vkCreateRenderPass(device, &pass, nullptr, &shadow_pass), "Create shadow pass");
 }
-// Gives @p target @p layers layers of @p size texels on an edge, replacing it when either changes, and points
-// @p binding of the environment set at its 2D array view.
-void ensure_shadow_target(std::unique_ptr<ShadowTarget> &target, std::uint32_t size, std::uint32_t layers,
-                          std::uint32_t binding) {
+// Gives @p target @p layers layers of @p size texels on an edge, replacing it when either changes. The replaced target
+// is destroyed once no frame in flight can use it.
+void ensure_shadow_target(std::unique_ptr<ShadowTarget> &target, std::uint32_t size, std::uint32_t layers) {
     if (target && target->size == size && target->layers == layers)
         return;
     auto next = std::make_unique<ShadowTarget>();
@@ -124,22 +126,39 @@ void ensure_shadow_target(std::unique_ptr<ShadowTarget> &target, std::uint32_t s
         check(vkCreateFramebuffer(device, &frame, nullptr, &next->framebuffers.emplace_back()),
               "Create shadow framebuffer");
     }
-    const VkDescriptorImageInfo info{texture.sampler, texture.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = environment_set;
-    write.dstBinding = binding;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &info;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    target.swap(next); // Previous readers retired at the existing frame fence.
+    target.swap(next);
+    release_after_frames(std::move(next));
+    ++shadow_generation;
 }
+// Sizes the shadow targets for the environment, then points bindings 1 and 2 of the environment set of the slot that
+// records the next frame at the cascades' and the detail region's 2D array views, unless it already does. The slot's
+// previous frame has finished, so nothing reads that set.
 void ensure_shadow_targets() {
     const auto &cascades = environment.shadow_cascades;
     ensure_shadow_target(cascade_target, cascades.enabled ? cascades.resolution : 1U,
-                         cascades.enabled ? cascades.count : 1U, 1);
+                         cascades.enabled ? cascades.count : 1U);
     const auto &detail = environment.detail_shadow;
-    ensure_shadow_target(detail_shadow_target, detail.enabled ? detail.resolution : 1U, 1, 2);
+    ensure_shadow_target(detail_shadow_target, detail.enabled ? detail.resolution : 1U, 1);
+    auto &slot = frame();
+    if (slot.shadow_generation == shadow_generation)
+        return;
+    // The cascades at binding 1, then the detail region.
+    const std::array<const ShadowTarget *, 2> targets{cascade_target.get(), detail_shadow_target.get()};
+    constexpr std::uint32_t first_binding = 1;
+    std::array<VkDescriptorImageInfo, 2> infos{};
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    for (std::uint32_t i = 0; i < writes.size(); ++i) {
+        const auto &texture = targets[i]->texture;
+        infos[i] = {texture.sampler, texture.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = slot.environment_set;
+        writes[i].dstBinding = first_binding + i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    slot.shadow_generation = shadow_generation;
 }
 // Fits the cascades to the current view, each with its depth beginning where its sphere faces the sun, which
 // prepare_resources() extends toward its casters.
@@ -194,6 +213,7 @@ void finish_shadow_cascades() {
 // Clears every layer of @p target and renders the casters of pass @p passes[layer] into each layer that has one, so
 // that the shaders read defined depth in every layer, the placeholder of a disabled map included.
 void record_shadow_target(const ShadowTarget &target, std::span<const ShadowPass> passes) {
+    const auto command = frame().command;
     // Keep the render-to-sample dependency explicit for each image. Following
     // regions exposed intermittent stale depth with implicit render-pass
     // transitions on the native backend. Both early and late depth tests write

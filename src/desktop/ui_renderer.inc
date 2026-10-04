@@ -47,7 +47,6 @@ struct UiImage {
 };
 using UiTexturePtr = std::shared_ptr<const detail::UiTexture>;
 std::map<UiTexturePtr, std::unique_ptr<UiImage>, std::owner_less<UiTexturePtr>> ui_images;
-std::unique_ptr<UiBuffer> ui_buffer;
 UiTexturePtr ui_white = std::make_shared<detail::UiTexture>(detail::UiTexture{1, 1, {255, 255, 255, 255}});
 
 void create_ui_layout() {
@@ -66,13 +65,14 @@ void create_ui_layout() {
     layout.pSetLayouts = &ui_texture_layout;
     check(vkCreatePipelineLayout(device, &layout, nullptr, &ui_pipeline_layout), "Create UI pipeline layout");
 }
+// Releases the images whose source only the cache still references, as RmlUi's recorded batches hold the sources they
+// draw, destroying them once no frame in flight can sample them.
 void retire_ui_unused() {
-    // Called only after the frame fence. RmlUi/recorded CPU batches retain sources;
-    // the cache's sole reference means release is now safe on both CPU and GPU.
     for (auto it = ui_images.begin(); it != ui_images.end();) {
-        if (it->first.use_count() == 1)
+        if (it->first.use_count() == 1) {
+            release_after_frames(std::move(it->second));
             it = ui_images.erase(it);
-        else
+        } else
             ++it;
     }
 }
@@ -180,16 +180,19 @@ static bool srgb_format(VkFormat format) {
 }
 // Whether the swapchain that recreate() would create now can present UI; UiContext asks at construction.
 bool srgb_presentation() const { return srgb_format(surface_format().format); }
-void prepare_ui(const detail::UiFrame &frame) {
+void prepare_ui(const detail::UiFrame &ui_frame) {
     // Each swapchain recreation chooses its format again, so a surface that stops offering an sRGB format
     // after UiContext construction is still rejected here rather than blended wrongly.
     if (!srgb_format(format))
         throw std::runtime_error(detail::srgb_presentation_required);
-    if (frame.vertices.empty())
+    if (ui_frame.vertices.empty())
         return;
     if (!ui_pipeline)
         create_pipeline(PipelineKind::ui, ui_pipeline);
-    const auto bytes = VkDeviceSize(frame.vertices.size()) * sizeof(detail::UiVertex);
+    const auto bytes = VkDeviceSize(ui_frame.vertices.size()) * sizeof(detail::UiVertex);
+    // The vertices go to the buffer of the slot that records the next frame, whose previous frame has finished, so a
+    // smaller buffer is destroyed at once.
+    auto &ui_buffer = frame().ui_buffer;
     if (!ui_buffer || ui_buffer->capacity < bytes) {
         auto candidate = std::make_unique<UiBuffer>();
         candidate->allocator = allocator;
@@ -202,18 +205,20 @@ void prepare_ui(const detail::UiFrame &frame) {
                                  .pMappedData;
         ui_buffer.swap(candidate);
     }
-    std::memcpy(ui_buffer->mapping, frame.vertices.data(), static_cast<std::size_t>(bytes));
+    std::memcpy(ui_buffer->mapping, ui_frame.vertices.data(), static_cast<std::size_t>(bytes));
     check(vmaFlushAllocation(allocator, ui_buffer->allocation, 0, VK_WHOLE_SIZE), "Flush UI vertices");
-    for (const auto &batch : frame.batches)
+    for (const auto &batch : ui_frame.batches)
         upload_ui_texture(batch.texture ? batch.texture : ui_white);
 }
-void record_ui(const detail::UiFrame &frame) {
-    if (frame.vertices.empty())
+void record_ui(const detail::UiFrame &ui_frame) {
+    if (ui_frame.vertices.empty())
         return;
+    const auto &slot = frame();
+    const auto command = slot.command;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_pipeline);
     const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(command, 0, 1, &ui_buffer->buffer, &offset);
-    for (const auto &batch : frame.batches) {
+    vkCmdBindVertexBuffers(command, 0, 1, &slot.ui_buffer->buffer, &offset);
+    for (const auto &batch : ui_frame.batches) {
         VkRect2D scissor{{0, 0}, extent};
         if (batch.clipped) {
             const int left = std::clamp(batch.clip[0], 0, static_cast<int>(extent.width));

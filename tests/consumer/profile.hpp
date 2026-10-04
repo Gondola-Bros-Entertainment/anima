@@ -3,11 +3,18 @@
 #include "resources.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <deque>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <vector>
 
-// FrameProfile accounts for each draw(): its CPU fields add up to the call's duration, releasing cached meshes counts
-// in prepare_ms, and where the renderer measures it, the GPU's idle time between two frames spans the CPU work that
-// separated them and is absent from the first timed frame, which follows no timed frame.
+// FrameProfile accounts for each draw() with one frame in flight and with two: its CPU fields add up to the call's
+// duration, releasing cached meshes counts in prepare_ms, the GPU fields time the frame submitted
+// RendererOptions::frames_in_flight submissions earlier, and where the renderer measures it, the GPU's idle time
+// between two frames is absent from the first timed frame, which follows no timed frame, lies within the calls around
+// the two frames and, with one frame in flight, spans the CPU work that separated them.
 namespace profile_test {
 inline void require(bool condition, const std::string &message) {
     if (!condition)
@@ -21,6 +28,10 @@ constexpr double clock_tolerance = .1;
 // Each release trial caches this many meshes, then releases them all before one draw().
 constexpr std::size_t released_meshes = 256;
 constexpr int steady_frames = 60, release_trials = 3;
+// Each lag trial rebuilds every atmosphere table in one frame, which the GPU fields must report frames_in_flight calls
+// later as the longest atmosphere time of the calls around it, at least this many times any other.
+constexpr int lag_trials = 3;
+constexpr double least_lag_contrast = 2;
 
 inline double median(std::vector<double> values) {
     require(!values.empty(), "No frame was measured");
@@ -31,7 +42,9 @@ inline double median(std::vector<double> values) {
 
 class Check {
   public:
-    explicit Check(anima::VulkanRenderer &renderer) : renderer_(renderer), started_(std::chrono::steady_clock::now()) {}
+    /// Checks the calls of @p renderer, which keeps @p frames in flight.
+    Check(anima::VulkanRenderer &renderer, std::uint32_t frames)
+        : renderer_(renderer), frames_(frames), started_(std::chrono::steady_clock::now()) {}
     /// Handles window events, then calls draw() once and checks the call; the result is valid until the next call.
     const gpu_check::TimedDraw &draw() {
         require(std::chrono::steady_clock::now() - started_ < gpu_check::watchdog, "Profile watchdog expired");
@@ -43,8 +56,8 @@ class Check {
                 renderer_.request_resize();
         }
         calls_.push_back(gpu_check::timed_draw(renderer_));
-        constexpr std::size_t remembered = 3;
-        if (calls_.size() > remembered)
+        // The call that submitted the frame before the timed one, the calls up to this one, and this one.
+        if (calls_.size() > frames_ + 2)
             calls_.pop_front();
         check();
         return calls_.back();
@@ -61,7 +74,7 @@ class Check {
     [[nodiscard]] const std::vector<double> &idle_ms() const noexcept { return idle_ms_; }
 
   private:
-    // Checks the latest call against the two before it.
+    // Checks the latest call against the frames_ + 1 before it.
     void check() {
         const auto &call = calls_.back();
         const auto &profile = call.profile;
@@ -77,10 +90,10 @@ class Check {
             timed_ = true;
             require(!profile.gpu_idle_ms, "The first timed frame reported GPU idle time");
         }
+        // Each call reads the frame that its slot submitted last, and the slots submit in turn, so two calls in a row
+        // with GPU fields read two frames submitted in a row, and the second reports its idle time.
+        const bool follows_timed = calls_.size() > 1 && calls_[calls_.size() - 2].profile.gpu_available;
         if (!profile.gpu_idle_ms) {
-            // Each timed frame after a timed frame that the call before submitted reports its idle time.
-            const bool follows_timed = calls_.size() > 1 && calls_[calls_.size() - 2].presented &&
-                                       calls_[calls_.size() - 2].profile.gpu_available;
             require(!(renderer_.measures_gpu_idle() && profile.gpu_available && follows_timed),
                     "A timed frame after a timed frame has no GPU idle time");
             return;
@@ -90,25 +103,30 @@ class Check {
                 "GPU idle time was reported without calibrated GPU timestamps");
         require(std::isfinite(idle) && idle >= 0, "GPU idle time is negative or not finite");
         idle_ms_.push_back(idle);
-        if (calls_.size() < 2 || !calls_[calls_.size() - 2].presented)
+        // With one frame in flight, the previous call submitted the timed frame after waiting for the frame before
+        // it, which had then finished, so the GPU had no frame between them while that call prepared, uploaded and
+        // acquired. With two, the timed frame may be queued before the earlier one finishes.
+        if (frames_ == 1 && calls_.size() > 1 && calls_[calls_.size() - 2].presented) {
+            const auto &submitter = calls_[calls_.size() - 2].profile;
+            const double least =
+                (submitter.prepare_ms + submitter.upload_ms + submitter.acquire_ms) * (1 - clock_tolerance);
+            require(idle >= least, "GPU idle time " + std::to_string(idle) + " ms is shorter than the " +
+                                       std::to_string(least) + " ms the submitting draw() spent before submission");
+        }
+        // When the calls before this one all submitted their frames, the frame before the timed one was submitted
+        // during the earliest remembered call, frames_ + 1 calls back, and the timed one finished before this call's
+        // fence wait ended.
+        if (calls_.size() < frames_ + 2 ||
+            !std::all_of(calls_.begin(), calls_.end() - 1, [](const auto &earlier) { return earlier.presented; }))
             return;
-        // The previous call submitted the timed frame after waiting for the frame before it, which had then
-        // finished, so the GPU had no frame between them while that call prepared, uploaded and acquired.
-        const auto &submitter = calls_[calls_.size() - 2].profile;
-        const double least =
-            (submitter.prepare_ms + submitter.upload_ms + submitter.acquire_ms) * (1 - clock_tolerance);
-        require(idle >= least, "GPU idle time " + std::to_string(idle) + " ms is shorter than the " +
-                                   std::to_string(least) + " ms the submitting draw() spent before submission");
-        if (calls_.size() < 3 || !calls_.front().presented)
-            return;
-        // The frame before the timed one was submitted during the earliest remembered call, and the timed one
-        // finished before this call's fence wait ended.
         const double most = std::chrono::duration<double, std::milli>(call.ended - calls_.front().began).count() *
                             (1 + clock_tolerance);
         require(idle <= most, "GPU idle time " + std::to_string(idle) + " ms is longer than the " +
-                                  std::to_string(most) + " ms of the three draw() calls around it");
+                                  std::to_string(most) + " ms of the " + std::to_string(calls_.size()) +
+                                  " draw() calls around it");
     }
     anima::VulkanRenderer &renderer_;
+    std::uint32_t frames_;
     std::chrono::steady_clock::time_point started_;
     std::deque<gpu_check::TimedDraw> calls_;
     // Whether a call has read a timed frame.
@@ -116,27 +134,81 @@ class Check {
     std::vector<double> idle_ms_;
 };
 
-inline int run(int argc, char **) {
-    require(argc == 2, "Usage: consumer --profile");
-    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-    gpu_check::Video video;
-    const auto window = gpu_check::window("Anima profile verification", 640, 480, SDL_WINDOW_HIGH_PIXEL_DENSITY);
+// What one renderer's checks measured.
+struct Summary {
+    double steady_untimed{}, release_untimed{}, release_prepare{}, steady_prepare{};
+    std::vector<double> idle, release_idle;
+    // Median contrast of the rebuilt frame's atmosphere time over the longest other one, where measured.
+    std::optional<double> lag_contrast;
+};
+
+// Rebuilds every atmosphere table in one frame and requires the call frames_in_flight calls later to report it, as the
+// longest atmosphere time of the calls around it by at least least_lag_contrast. Each trial draws as many calls as
+// it needs while each presents its frame, so that every call reads the frame of the call frames_in_flight before.
+inline std::optional<double> check_lag(anima::VulkanRenderer &renderer, Check &check, std::uint32_t frames) {
+    anima::Environment environment;
+    environment.atmosphere.enabled = true;
+    renderer.set_environment(environment);
+    // Calls before each rebuild, so that the earliest checked call reads a frame that only updates the sky view table,
+    // and not the first frame with the atmosphere, which builds every table.
+    const auto before = int(frames) + 1;
+    const auto after = int(frames) + 2;
+    std::vector<double> contrasts;
+    for (int trial = 0; contrasts.size() < lag_trials; ++trial) {
+        constexpr int most_trials = 3 * lag_trials;
+        require(trial < most_trials, "Too many lag trials had a draw() that presented nothing");
+        bool timed = false;
+        for (int call = 0; call < before; ++call)
+            timed = check.present().profile.gpu_available;
+        if (!timed)
+            return std::nullopt; // The device writes no timestamps.
+        environment.atmosphere.rayleigh_scale_height = trial % 2 ? 8'000.F : 8'001.F;
+        renderer.set_environment(environment);
+        std::vector<double> atmosphere_ms;
+        bool presented = true;
+        for (int call = 0; call < after && presented; ++call) {
+            const auto &next = check.draw();
+            presented = next.presented;
+            require(!presented || next.profile.gpu_available, "A call after timed calls has no GPU fields");
+            atmosphere_ms.push_back(next.profile.gpu_atmosphere_ms);
+        }
+        if (!presented)
+            continue;
+        const auto rebuilt = atmosphere_ms[frames];
+        atmosphere_ms.erase(atmosphere_ms.begin() + std::ptrdiff_t(frames));
+        const auto longest_other = *std::max_element(atmosphere_ms.begin(), atmosphere_ms.end());
+        std::string times;
+        for (const auto value : atmosphere_ms)
+            times += " " + std::to_string(value);
+        require(rebuilt >= least_lag_contrast * longest_other,
+                "With " + std::to_string(frames) + " frames in flight, the call " + std::to_string(frames) +
+                    " after the rebuild reported " + std::to_string(rebuilt) +
+                    " ms of atmosphere work, not the longest by a factor of " + std::to_string(least_lag_contrast) +
+                    " among the calls around it:" + times);
+        contrasts.push_back(rebuilt / longest_other);
+    }
+    return median(contrasts);
+}
+
+inline Summary check_renderer(SDL_Window *window, std::uint32_t frames) {
     const auto asset = resource_test::fixture();
     auto scene = std::make_shared<anima::Scene>();
     (void)scene->add(anima::Mesh::compile(*asset));
     anima::RendererOptions options;
     options.validation = true;
     options.profile = true;
+    options.frames_in_flight = frames;
     options.scenes = {scene};
-    anima::VulkanRenderer renderer(window.get(), options);
+    anima::VulkanRenderer renderer(window, options);
     anima::OrbitCamera camera;
     const auto bounds = scene->bounds();
     camera.frame(bounds.minimum, bounds.maximum);
     int width{}, height{};
-    require(SDL_GetWindowSizeInPixels(window.get(), &width, &height) && width > 0 && height > 0,
+    require(SDL_GetWindowSizeInPixels(window, &width, &height) && width > 0 && height > 0,
             "Drawable dimensions unavailable");
     renderer.set_view(camera.matrix(float(width) / float(height)));
-    Check check(renderer);
+    Check check(renderer, frames);
+    Summary summary;
 
     std::vector<double> untimed, prepare;
     for (int frame = 0; frame < steady_frames; ++frame) {
@@ -144,12 +216,15 @@ inline int run(int argc, char **) {
         untimed.push_back(call.wall_ms() - call.cpu_ms());
         prepare.push_back(call.profile.prepare_ms);
     }
-    const double steady_untimed = median(untimed), steady_prepare = median(prepare);
-    require(steady_untimed <= untimed_limit_ms,
-            "The CPU fields leave " + std::to_string(steady_untimed) + " ms of a typical draw() untimed");
+    summary.steady_untimed = median(untimed);
+    summary.steady_prepare = median(prepare);
+    require(summary.steady_untimed <= untimed_limit_ms,
+            "The CPU fields leave " + std::to_string(summary.steady_untimed) + " ms of a typical draw() untimed");
 
-    // Releasing cached meshes is frame preparation: the draw() after the release destroys them before culling.
-    std::vector<double> release_untimed, release_prepare, release_idle;
+    // Releasing cached meshes is frame preparation: the first draw() after they lose their last owner releases them
+    // before culling. It destroys them too unless a frame that may draw them is still in flight, as one can be with two
+    // frames in flight, and then the next draw() destroys them once that frame has finished.
+    std::vector<double> release_untimed, release_prepare;
     for (int trial = 0; trial < release_trials; ++trial) {
         std::vector<std::shared_ptr<const anima::Mesh>> meshes;
         for (std::size_t i = 0; i < released_meshes; ++i)
@@ -157,6 +232,7 @@ inline int run(int argc, char **) {
         renderer.prepare_meshes(meshes);
         const auto cached = renderer.resource_stats().cached_assets;
         meshes.clear();
+        std::optional<double> released_prepare;
         for (;;) {
             const auto &call = check.draw();
             if (renderer.resource_stats().cached_assets == cached) {
@@ -168,38 +244,66 @@ inline int run(int argc, char **) {
             // Only a call that went on to present its frame ran through every field.
             if (call.presented) {
                 release_untimed.push_back(call.wall_ms() - call.cpu_ms());
-                release_prepare.push_back(call.profile.prepare_ms);
+                released_prepare = call.profile.prepare_ms;
             }
             break;
         }
-        // The next frame's GPU idle time spans the release, which the checks of each call bound from below.
-        if (const auto &next = check.present(); next.profile.gpu_idle_ms)
-            release_idle.push_back(*next.profile.gpu_idle_ms);
+        const auto &next = check.draw();
+        if (next.presented) {
+            if (released_prepare)
+                release_prepare.push_back(std::max(*released_prepare, next.profile.prepare_ms));
+            // The checks of each call bound the GPU idle time around the release.
+            if (next.profile.gpu_idle_ms)
+                summary.release_idle.push_back(*next.profile.gpu_idle_ms);
+        } else
+            (void)check.present();
     }
-    require(!release_untimed.empty(), "No draw() that released the meshes presented its frame");
-    const double least_untimed = *std::min_element(release_untimed.begin(), release_untimed.end());
-    require(least_untimed <= untimed_limit_ms, "The CPU fields leave " + std::to_string(least_untimed) +
-                                                   " ms of every draw() that released meshes untimed");
-    const double least_release = *std::min_element(release_prepare.begin(), release_prepare.end());
-    require(least_release > steady_prepare, "Releasing " + std::to_string(released_meshes) +
-                                                " meshes did not lengthen prepare_ms beyond its typical " +
-                                                std::to_string(steady_prepare) + " ms");
+    require(!release_untimed.empty() && !release_prepare.empty(),
+            "No draw() that released or destroyed the meshes presented its frame");
+    summary.release_untimed = *std::min_element(release_untimed.begin(), release_untimed.end());
+    require(summary.release_untimed <= untimed_limit_ms, "The CPU fields leave " +
+                                                             std::to_string(summary.release_untimed) +
+                                                             " ms of every draw() that released meshes untimed");
+    summary.release_prepare = *std::min_element(release_prepare.begin(), release_prepare.end());
+    require(summary.release_prepare > summary.steady_prepare,
+            "Destroying " + std::to_string(released_meshes) +
+                " meshes did not lengthen prepare_ms beyond its typical " + std::to_string(summary.steady_prepare) +
+                " ms");
+    summary.lag_contrast = check_lag(renderer, check, frames);
     if (renderer.measures_gpu_idle())
         require(!check.idle_ms().empty(), "No frame reported GPU idle time");
+    summary.idle = check.idle_ms();
 
     const auto stats = renderer.shutdown();
     require(!stats.validation_errors && !stats.validation_warnings, "Profile check validation failed");
-    std::cout << "PASS profile: the CPU fields leave a median " << steady_untimed << " ms of draw() untimed, and "
-              << least_untimed << " ms of a draw() that released " << released_meshes << " meshes, whose prepare_ms of "
-              << least_release << " ms or more exceeds the median " << steady_prepare << " ms; ";
-    if (renderer.measures_gpu_idle()) {
-        std::cout << "GPU idle time in " << check.idle_ms().size() << " frames, median " << median(check.idle_ms())
-                  << " ms";
-        if (!release_idle.empty())
-            std::cout << ", " << median(release_idle) << " ms around a release";
-        std::cout << '\n';
-    } else
-        std::cout << "this device has no calibrated timestamps, so no GPU idle time\n";
+    return summary;
+}
+
+inline int run(int argc, char **) {
+    require(argc == 2, "Usage: consumer --profile");
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    gpu_check::Video video;
+    const auto window = gpu_check::window("Anima profile verification", 640, 480, SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    std::ostringstream report;
+    for (const std::uint32_t frames : {1U, 2U}) {
+        const auto summary = check_renderer(window.get(), frames);
+        report << "; with " << frames << " in flight, the CPU fields leave a median " << summary.steady_untimed
+               << " ms of draw() untimed, and " << summary.release_untimed << " ms of a draw() that released "
+               << released_meshes << " meshes, whose prepare_ms of " << summary.release_prepare
+               << " ms or more exceeds the median " << summary.steady_prepare << " ms, ";
+        if (summary.lag_contrast)
+            report << "the call " << frames << " after an atmosphere rebuild reports it, at a median "
+                   << *summary.lag_contrast << " times any other call's atmosphere time, ";
+        else
+            report << "no GPU timestamps, ";
+        if (!summary.idle.empty()) {
+            report << "GPU idle time in " << summary.idle.size() << " frames, median " << median(summary.idle) << " ms";
+            if (!summary.release_idle.empty())
+                report << ", " << median(summary.release_idle) << " ms around a release";
+        } else
+            report << "no calibrated timestamps, so no GPU idle time";
+    }
+    std::cout << "PASS profile" << report.str() << '\n';
     return 0;
 }
 } // namespace profile_test

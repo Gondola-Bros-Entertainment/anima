@@ -35,6 +35,8 @@
 namespace anima {
 namespace {
 constexpr std::uint64_t fence_timeout = 5'000'000'000ULL;
+// Most frames that RendererOptions::frames_in_flight allows.
+constexpr std::uint32_t max_frames_in_flight = 2;
 constexpr std::uint32_t vertex_code[] =
 #include "triangle.vert.inc"
     ;
@@ -135,21 +137,20 @@ struct VulkanRenderer::Impl {
     struct TimingQuery {
         enum : std::uint32_t { start, after_atmosphere, after_shadows, after_scene, after_resolve, end, count };
     };
+    // TimingQuery::count queries for each frame slot (FrameSlot::first_query).
     VkQueryPool timing_queries{};
     std::uint32_t timestamp_bits{};
     double timestamp_period{};
-    bool timing_pending{};
     // Whether a calibrated timestamps extension is enabled, so that timestamps from different submissions compare.
     bool calibrated_timestamps{};
-    // With calibrated timestamps, when the latest frame was submitted, on the host's clock; its timestamps follow it.
-    std::chrono::steady_clock::time_point timing_submitted;
     // A frame whose timestamps were read: its end timestamp, and when it was submitted on the host's clock.
     struct TimedFrame {
         std::uint64_t end{};
         std::chrono::steady_clock::time_point submitted;
     };
-    // The latest frame whose timestamps were read; empty when the latest submitted frame's could not be read, since
-    // each draw() reads the previous frame's before submitting its own.
+    // The latest frame whose timestamps were read; empty when the latest frame read could not be. Each draw() reads the
+    // timestamps of the frame that its slot submitted last, and the slots submit in turn, so frames are read in the
+    // order of their submission.
     std::optional<TimedFrame> previous_frame;
     std::atomic<std::uint32_t> warnings{}, errors{};
     VkInstance instance{};
@@ -168,10 +169,6 @@ struct VulkanRenderer::Impl {
     // Anisotropy of linear, mipmapped material samplers: RendererOptions::max_anisotropy within the device's limit, or
     // 1 without the samplerAnisotropy feature.
     float anisotropy = 1;
-    VkCommandPool command_pool{};
-    VkCommandBuffer command{};
-    VkFence frame_fence{};
-    VkSemaphore acquired{};
     VkShaderModule vertex_shader{}, fragment_shader{}, mesh_fragment_shader{};
     VkPipelineLayout pipeline_layout{}, environment_pipeline_layout{};
     VkShaderModule ui_vertex_shader{}, ui_fragment_shader{};
@@ -390,6 +387,8 @@ struct VulkanRenderer::Impl {
             throw std::invalid_argument("Maximum anisotropy must be finite and at least 1");
         if (!std::isfinite(options.lod_threshold) || options.lod_threshold < 0)
             throw std::invalid_argument("LOD threshold must be finite and nonnegative");
+        if (options.frames_in_flight < 1 || options.frames_in_flight > max_frames_in_flight)
+            throw std::invalid_argument("Frames in flight must be 1 or 2");
         if (!window)
             throw std::invalid_argument("Renderer requires an SDL window");
         create_instance();
@@ -620,26 +619,31 @@ struct VulkanRenderer::Impl {
         std::cout << "Texture anisotropy: " << anisotropy << '\n';
     }
     void create_frame_resources() {
-        VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        pool.queueFamilyIndex = graphics_family;
-        check(vkCreateCommandPool(device, &pool, nullptr, &command_pool), "Create command pool");
-        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        allocation.commandPool = command_pool;
-        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocation.commandBufferCount = 1;
-        check(vkAllocateCommandBuffers(device, &allocation, &command), "Allocate command buffer");
-        VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        check(vkCreateFence(device, &fence, nullptr, &frame_fence), "Create frame fence");
+        frames.resize(options.frames_in_flight);
+        for (std::uint32_t i = 0; i < frames.size(); ++i) {
+            auto &slot = frames[i];
+            // Each draw() resets the slot's whole pool once the slot's frame has finished.
+            VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+            pool.queueFamilyIndex = graphics_family;
+            check(vkCreateCommandPool(device, &pool, nullptr, &slot.pool), "Create command pool");
+            VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            allocation.commandPool = slot.pool;
+            allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocation.commandBufferCount = 1;
+            check(vkAllocateCommandBuffers(device, &allocation, &slot.command), "Allocate command buffer");
+            VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            check(vkCreateFence(device, &fence, nullptr, &slot.fence), "Create frame fence");
+            VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            check(vkCreateSemaphore(device, &semaphore, nullptr, &slot.acquired), "Create acquire semaphore");
+            slot.first_query = i * TimingQuery::count;
+        }
         if (options.profile && timestamp_bits && timestamp_period > 0) {
             VkQueryPoolCreateInfo queries{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             queries.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            queries.queryCount = TimingQuery::count;
+            queries.queryCount = TimingQuery::count * static_cast<std::uint32_t>(frames.size());
             check(vkCreateQueryPool(device, &queries, nullptr, &timing_queries), "Create timing query pool");
         }
-        VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        check(vkCreateSemaphore(device, &semaphore, nullptr, &acquired), "Create acquire semaphore");
         const auto make_shaders = [&](const auto &vert, const auto &frag, VkShaderModule &vs, VkShaderModule &fs) {
             VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
             shader.codeSize = sizeof(vert);
@@ -1508,11 +1512,12 @@ struct VulkanRenderer::Impl {
                                         "Create readback buffer", VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
                               .pMappedData;
     }
+    // Reads back the latest submitted frame, which copied its image into the capture buffer, once it has finished.
     void save_capture() {
         // Consume the request first, so a file that cannot be written is reported by one draw, not every draw.
         const auto path = std::exchange(options.capture, {});
         const bool to_memory = std::exchange(capture_to_memory, false);
-        check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait for capture");
+        check(vkWaitForFences(device, 1, &frames[latest_frame].fence, VK_TRUE, fence_timeout), "Wait for capture");
         check(vmaInvalidateAllocation(allocator, capture_allocation, 0, VK_WHOLE_SIZE), "Invalidate readback memory");
         const auto *bytes = static_cast<const std::uint8_t *>(capture_mapping);
         const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
@@ -1543,6 +1548,78 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_UI
 #include "ui_renderer.inc"
 #endif
+    // The resources of one frame in flight. draw() uses the RendererOptions::frames_in_flight slots in turn and waits
+    // for a slot's fence before it rewrites any of them, since until then the frame that the slot submitted last can
+    // still read them. Everything else that frames use is shared: images that frames write, such as the shadow maps,
+    // the scene targets and the atmosphere's tables, are ordered between frames by the barriers of each frame's
+    // commands, and shared objects that are replaced or released wait in a release list (release_after_frames()).
+    struct FrameSlot {
+        VkCommandPool pool{};
+        VkCommandBuffer command{};
+        // Signaled when the frame that the slot submitted last has finished, and at creation.
+        VkFence fence{};
+        // Signaled by the image acquisition that the slot's frame waits for.
+        VkSemaphore acquired{};
+        // Whether the slot submitted a frame whose fence has not been waited for since.
+        bool in_flight{};
+        // Objects retired while the slot's frame was the latest submitted, destroyed once its fence has been waited
+        // for.
+        std::vector<std::shared_ptr<void>> released;
+        // The slot's first timing query, whether its frame wrote timestamps that have not been read, and when that
+        // frame was submitted on the host's clock, before which none of its timestamps can be written.
+        std::uint32_t first_query{};
+        bool timing_pending{};
+        std::chrono::steady_clock::time_point timing_submitted;
+#ifdef ANIMA_HAS_ASSETS
+        // The palettes of the slot's frame, which pose_set points at.
+        std::unique_ptr<ResourceBuffer> pose_buffer;
+        VkDescriptorSet pose_set{};
+        // The environment block, which environment_set points at with the shadow maps of shadow_generation and the
+        // atmosphere's tables.
+        std::unique_ptr<ResourceBuffer> environment_buffer;
+        VkDescriptorSet environment_set{};
+        std::uint64_t shadow_generation{};
+        // The custom materials' frame block, which custom_frame_set points at with the opaque input copies of
+        // opaque_generation.
+        std::unique_ptr<ResourceBuffer> custom_frame_buffer;
+        VkDescriptorSet custom_frame_set{};
+        std::uint64_t opaque_generation{};
+#endif
+#ifdef ANIMA_UI
+        // The UI vertices of the slot's frame.
+        std::unique_ptr<UiBuffer> ui_buffer;
+#endif
+    };
+    std::vector<FrameSlot> frames;
+    // The slot that draw() prepares and records next, and the slot of the latest submitted frame.
+    std::size_t frame_index{}, latest_frame{};
+    FrameSlot &frame() noexcept { return frames[frame_index]; }
+    // Destroys @p retired, a pointer to an object that submitted frames may still use, once none can. Waiting for the
+    // fence of the latest submitted frame covers every earlier submission too, since a fence signal operation includes
+    // every command submitted to the queue before it, so @p retired waits in that frame's release list until draw(),
+    // set_scenes() or prepare_meshes() waits for its fence, or is destroyed now when that wait has already happened.
+    template <class Retired> void release_after_frames(Retired retired) {
+        if (auto &latest = frames[latest_frame]; retired && latest.in_flight)
+            latest.released.emplace_back(std::move(retired));
+    }
+    // Waits for the frame that @p slot submitted last; a failure names @p operation.
+    void wait_for_slot(FrameSlot &slot, const char *operation) {
+        check(vkWaitForFences(device, 1, &slot.fence, VK_TRUE, fence_timeout), operation);
+        slot.in_flight = false;
+    }
+    // Resets the commands of @p slot, whose frame has finished, and destroys what was retired while that frame was the
+    // latest submitted.
+    void recycle_slot(FrameSlot &slot) {
+        check(vkResetCommandPool(device, slot.pool, 0), "Reset frame commands");
+        slot.released.clear();
+    }
+    // Waits for every frame in flight and recycles every slot.
+    void wait_for_frames(const char *operation) {
+        for (auto &slot : frames) {
+            wait_for_slot(slot, operation);
+            recycle_slot(slot);
+        }
+    }
     bool draw(const detail::UiFrame *ui_frame = nullptr) {
         running();
         using Clock = std::chrono::steady_clock;
@@ -1571,10 +1648,11 @@ struct VulkanRenderer::Impl {
             if (!recreate(pixels))
                 return false;
         }
-        check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait for frame");
+        auto &slot = frame();
+        wait_for_slot(slot, "Wait for frame");
         measure(profile.fence_wait_ms);
+        recycle_slot(slot);
 #ifdef ANIMA_HAS_ASSETS
-        check(vkResetCommandBuffer(command, 0), "Reset retired resource commands");
         retire_resources();
         try {
             ensure_shadow_targets();
@@ -1590,15 +1668,15 @@ struct VulkanRenderer::Impl {
             throw SceneResourceError(error.what());
         }
 #endif
-        if (timing_pending) {
+        if (slot.timing_pending) {
             // With VK_QUERY_RESULT_64_BIT and VK_QUERY_RESULT_WITH_AVAILABILITY_BIT, each query writes its timestamp
             // and then a value that is nonzero once that timestamp is available.
             struct TimestampResult {
                 std::uint64_t timestamp, available;
             };
             std::array<TimestampResult, TimingQuery::count> results{};
-            const auto result = vkGetQueryPoolResults(device, timing_queries, 0, TimingQuery::count, sizeof(results),
-                                                      results.data(), sizeof(TimestampResult),
+            const auto result = vkGetQueryPoolResults(device, timing_queries, slot.first_query, TimingQuery::count,
+                                                      sizeof(results), results.data(), sizeof(TimestampResult),
                                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
             if (result != VK_NOT_READY)
                 check(result, "Read GPU timestamps");
@@ -1621,24 +1699,33 @@ struct VulkanRenderer::Impl {
                 profile.gpu_resolve_ms = between(TimingQuery::after_scene, TimingQuery::after_resolve);
                 profile.gpu_transfer_ms = between(TimingQuery::after_resolve, TimingQuery::end);
                 profile.gpu_available = true;
-                // This frame was submitted after the previous frame's fence signaled, so its first timestamp
-                // happens-after that frame's last, which calibrated timestamps keep from being lower. A counter of
-                // fewer than 64 bits wraps to zero, after which the masked difference is the span modulo the
-                // counter's period of 2^timestamp_bits ticks. The span begins after the previous frame's submission
-                // and ends before this draw()'s fence wait ended, the time in marked, so it is kept only while those
-                // host times are less than half that period apart; the margin covers a GPU clock faster than its
-                // stated period.
+                // The timed frame's first timestamp follows every command submitted before it. With one frame in
+                // flight, the timed frame was also submitted after the fence of the frame before it, so its first
+                // timestamp happens-after that frame's last, which calibrated timestamps keep from being lower. With
+                // two, Vulkan defines no order between the two writes, but calibrated timestamps put both in the
+                // device's one time domain, and a first timestamp below the earlier frame's last means that the queue
+                // held the timed frame before it finished the earlier one, so it went without frame work for no time.
+                //
+                // A counter of fewer than 64 bits wraps to zero, after which the masked difference is the true one
+                // modulo the counter's period of 2^timestamp_bits ticks, and negative in the upper half of that period.
+                // Both timestamps lie between the earlier frame's submission and the end of this draw()'s fence wait,
+                // the time in marked, so the difference is kept only while those host times are less than a quarter
+                // of that period apart: half of the period tells the signs apart, and the rest covers a GPU clock up
+                // to twice as fast as its stated period.
                 if (calibrated_timestamps && previous_frame) {
-                    constexpr double wrap_fraction = .5;
+                    constexpr double wrap_fraction = .25;
                     const std::chrono::duration<double, std::nano> wrap(
                         std::ldexp(timestamp_period, static_cast<int>(timestamp_bits)));
+                    const auto first = results[TimingQuery::start].timestamp;
                     if (marked - previous_frame->submitted < wrap * wrap_fraction)
-                        profile.gpu_idle_ms = milliseconds(previous_frame->end, results[TimingQuery::start].timestamp);
+                        profile.gpu_idle_ms = ((first - previous_frame->end) & mask) > mask / 2
+                                                  ? 0
+                                                  : milliseconds(previous_frame->end, first);
                 }
-                previous_frame = TimedFrame{results[TimingQuery::end].timestamp, timing_submitted};
+                previous_frame = TimedFrame{results[TimingQuery::end].timestamp, slot.timing_submitted};
             } else
                 previous_frame.reset();
-            timing_pending = false;
+            slot.timing_pending = false;
         }
 #ifdef ANIMA_UI
         retire_ui_unused();
@@ -1685,7 +1772,9 @@ struct VulkanRenderer::Impl {
 #endif
         measure(profile.upload_ms);
         std::uint32_t index = 0;
-        const auto acquire = vkAcquireNextImageKHR(device, swapchain, 100'000'000, acquired, VK_NULL_HANDLE, &index);
+        // The slot's fence ordered the last wait on its semaphore, so the semaphore has no pending operation.
+        const auto acquire =
+            vkAcquireNextImageKHR(device, swapchain, 100'000'000, slot.acquired, VK_NULL_HANDLE, &index);
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
             resize = true;
             return false;
@@ -1702,26 +1791,31 @@ struct VulkanRenderer::Impl {
             image.present_pending = false;
             check(vkResetFences(device, 1, &image.presented), "Reset present fence");
         }
-        check(vkResetCommandBuffer(command, 0), "Reset command buffer");
+        // recycle_slot() reset the slot's pool after its frame had finished.
+        const auto command = slot.command;
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(command, &begin), "Begin command buffer");
-        if (timing_queries) {
-            vkCmdResetQueryPool(command, timing_queries, 0, TimingQuery::count);
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timing_queries, TimingQuery::start);
-        }
+        // Writes timestamp @p query of the slot's range. A timestamp's first synchronization scope holds every command
+        // submitted before it, limited to its stage, and BOTTOM_OF_PIPE there stands for every stage, so each write
+        // follows all earlier work, that of earlier submissions included. The first therefore waits for the frame
+        // before, and with two frames in flight the GPU fields leave out the time spent finishing that frame.
+        const auto timestamp = [&](std::uint32_t query) {
+            if (timing_queries)
+                vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
+                                    slot.first_query + query);
+        };
+        if (timing_queries)
+            vkCmdResetQueryPool(command, timing_queries, slot.first_query, TimingQuery::count);
+        timestamp(TimingQuery::start);
 #ifdef ANIMA_HAS_ASSETS
         record_atmosphere();
 #endif
-        if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
-                                TimingQuery::after_atmosphere);
+        timestamp(TimingQuery::after_atmosphere);
 #ifdef ANIMA_HAS_ASSETS
         record_shadow();
 #endif
-        if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
-                                TimingQuery::after_shadows);
+        timestamp(TimingQuery::after_shadows);
         // The fixed background wherever neither the sky nor a mesh is drawn.
         constexpr VkClearColorValue clear_color{{0.018F, 0.027F, 0.041F, 1.0F}};
         std::array<VkClearValue, 2> clear{};
@@ -1782,9 +1876,7 @@ struct VulkanRenderer::Impl {
             record_ui(*ui_frame);
 #endif
         vkCmdEndRenderPass(command);
-        if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
-                                TimingQuery::after_scene);
+        timestamp(TimingQuery::after_scene);
 #ifdef ANIMA_HAS_ASSETS
         finish_world_writes();
         record_display(image.framebuffer);
@@ -1794,9 +1886,7 @@ struct VulkanRenderer::Impl {
 #endif
         vkCmdEndRenderPass(command);
 #endif
-        if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries,
-                                TimingQuery::after_resolve);
+        timestamp(TimingQuery::after_resolve);
         const bool capture = capture_buffer && (capture_to_memory || !options.capture.empty());
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -1832,25 +1922,27 @@ struct VulkanRenderer::Impl {
             vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
                                  nullptr, 0, nullptr, 1, &barrier);
         }
-        if (timing_queries)
-            vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing_queries, TimingQuery::end);
+        timestamp(TimingQuery::end);
         check(vkEndCommandBuffer(command), "End command buffer");
         const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &acquired;
+        submit.pWaitSemaphores = &slot.acquired;
         submit.pWaitDstStageMask = &wait_stage;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &command;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &image.rendered;
         // Reset only when submission will happen; an out-of-date acquire must not strand an unsignaled fence.
-        check(vkResetFences(device, 1, &frame_fence), "Reset frame fence");
+        check(vkResetFences(device, 1, &slot.fence), "Reset frame fence");
         // The GPU cannot write the frame's timestamps before it is submitted.
         if (calibrated_timestamps)
-            timing_submitted = Clock::now();
-        check(vkQueueSubmit(graphics_queue, 1, &submit, frame_fence), "Submit frame");
-        timing_pending = timing_queries != VK_NULL_HANDLE;
+            slot.timing_submitted = Clock::now();
+        check(vkQueueSubmit(graphics_queue, 1, &submit, slot.fence), "Submit frame");
+        slot.in_flight = true;
+        slot.timing_pending = timing_queries != VK_NULL_HANDLE;
+        latest_frame = frame_index;
+        frame_index = (frame_index + 1) % frames.size();
         measure(profile.record_submit_ms);
         VkSwapchainPresentFenceInfoEXT fence_info{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT};
         fence_info.swapchainCount = 1;
@@ -1951,6 +2043,9 @@ struct VulkanRenderer::Impl {
                 std::fprintf(stderr, "%s\n", error.what());
             }
             destroy_swapchain();
+            // Retired objects first, since some, such as shadow maps, were made for objects destroyed below.
+            for (auto &slot : frames)
+                slot.released.clear();
 #ifdef ANIMA_HAS_ASSETS
             resource_instances.clear();
             resource_blended_draws.clear();
@@ -1961,7 +2056,6 @@ struct VulkanRenderer::Impl {
             custom_cache.clear();
             placement_cache.clear();
             identity_placement.reset();
-            custom_frame_buffer.reset();
             if (custom_frame_pool)
                 vkDestroyDescriptorPool(device, custom_frame_pool, nullptr);
             if (custom_pipeline_layout)
@@ -1970,7 +2064,6 @@ struct VulkanRenderer::Impl {
                 vkDestroyDescriptorSetLayout(device, custom_frame_layout, nullptr);
             if (custom_material_layout)
                 vkDestroyDescriptorSetLayout(device, custom_material_layout, nullptr);
-            pose_buffer.reset();
             cascade_target.reset();
             detail_shadow_target.reset();
             if (shadow_opaque_pipeline)
@@ -1991,7 +2084,6 @@ struct VulkanRenderer::Impl {
                 vkDestroyShaderModule(device, shadow_resource_vertex_shader, nullptr);
             if (shadow_fragment_shader)
                 vkDestroyShaderModule(device, shadow_fragment_shader, nullptr);
-            environment_buffer.reset();
             destroy_atmosphere();
             if (post_pipeline_layout)
                 vkDestroyPipelineLayout(device, post_pipeline_layout, nullptr);
@@ -2018,7 +2110,6 @@ struct VulkanRenderer::Impl {
 #endif
 #ifdef ANIMA_UI
             ui_images.clear();
-            ui_buffer.reset();
 #endif
             if (ui_pipeline_layout)
                 vkDestroyPipelineLayout(device, ui_pipeline_layout, nullptr);
@@ -2040,14 +2131,18 @@ struct VulkanRenderer::Impl {
                 vkDestroyShaderModule(device, vertex_shader, nullptr);
             if (fragment_shader)
                 vkDestroyShaderModule(device, fragment_shader, nullptr);
-            if (acquired)
-                vkDestroySemaphore(device, acquired, nullptr);
-            if (frame_fence)
-                vkDestroyFence(device, frame_fence, nullptr);
+            for (const auto &slot : frames) {
+                if (slot.acquired)
+                    vkDestroySemaphore(device, slot.acquired, nullptr);
+                if (slot.fence)
+                    vkDestroyFence(device, slot.fence, nullptr);
+                if (slot.pool)
+                    vkDestroyCommandPool(device, slot.pool, nullptr);
+            }
+            // Their buffers, which need the allocator; the descriptor pools above freed their sets.
+            frames.clear();
             if (timing_queries)
                 vkDestroyQueryPool(device, timing_queries, nullptr);
-            if (command_pool)
-                vkDestroyCommandPool(device, command_pool, nullptr);
             // Every buffer and image, and so every allocation, is destroyed by now.
             if (allocator)
                 vmaDestroyAllocator(allocator);

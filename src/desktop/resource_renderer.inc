@@ -100,8 +100,8 @@ std::array<VkPipeline, 2> resource_pipelines{}, blended_resource_pipelines{};
 VkShaderModule impostor_vertex_shader{}, impostor_fragment_shader{}, impostor_shadow_fragment_shader{};
 std::array<VkPipeline, 2> impostor_pipelines{};
 VkPipeline shadow_impostor_pipeline{};
+// Holds each frame slot's pose set (FrameSlot::pose_set).
 VkDescriptorPool pose_pool{};
-VkDescriptorSet pose_set{};
 std::vector<std::shared_ptr<const Scene>> resource_scenes;
 std::map<const Mesh *, std::shared_ptr<GpuAsset>> resource_cache;
 std::map<const MeshPlacements *, std::shared_ptr<GpuPlacements>> placement_cache;
@@ -109,7 +109,6 @@ std::map<const MeshPlacements *, std::shared_ptr<GpuPlacements>> placement_cache
 std::unique_ptr<ResourceBuffer> identity_placement;
 // The runs that the instance being recorded draws in the current pass.
 std::vector<PlacementRun> placement_runs;
-std::unique_ptr<ResourceBuffer> pose_buffer;
 std::vector<ResourceInstance> resource_instances;
 std::vector<std::size_t> resource_draws, resource_shadow_draws;
 std::vector<BlendedDraw> resource_blended_draws;
@@ -221,17 +220,21 @@ void create_resource_layout() {
     info.pushConstantRangeCount = 1;
     info.pPushConstantRanges = &range;
     check(vkCreatePipelineLayout(device, &info, nullptr, &resource_pipeline_layout), "Create resource pipeline layout");
-    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    const auto slots = static_cast<std::uint32_t>(frames.size());
+    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, slots};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 1;
+    pool.maxSets = slots;
     pool.poolSizeCount = 1;
     pool.pPoolSizes = &size;
     check(vkCreateDescriptorPool(device, &pool, nullptr, &pose_pool), "Create pose descriptor pool");
-    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = pose_pool;
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &pose_layout;
-    check(vkAllocateDescriptorSets(device, &allocate, &pose_set), "Allocate pose descriptor");
+    // Each slot's set points at its pose buffer from the first preparation that writes palettes into it.
+    for (auto &slot : frames) {
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = pose_pool;
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &pose_layout;
+        check(vkAllocateDescriptorSets(device, &allocate, &slot.pose_set), "Allocate pose descriptor");
+    }
     const std::array<float, 12> identity_rows{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     identity_placement =
         resource_buffer(placement_stride, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -564,6 +567,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                 palettes.insert(palettes.end(), render_instance.palette.begin(), render_instance.palette.end());
             instances.push_back(std::move(prepared));
         }
+    // The palettes go to the pose buffer of the slot that the next frame uses, whose previous frame has finished.
+    auto &pose_buffer = frame().pose_buffer;
     const VkDeviceSize bytes = palettes.size() * sizeof(Mat4);
     if (bytes && (!pose_buffer || pose_buffer->bytes < bytes)) {
         // Grow only the small pose buffer; mesh resources and instance IDs stay put.
@@ -575,13 +580,13 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
         inject_scene(failure, RendererFailureStage::palette, false);
         const VkDescriptorBufferInfo buffer{candidate->buffer, 0, capacity};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = pose_set;
+        write.dstSet = frame().pose_set;
         write.dstBinding = 0;
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         write.pBufferInfo = &buffer;
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-        pose_buffer.swap(candidate); // Existing graphics fence has retired all users.
+        pose_buffer.swap(candidate); // The slot's fence has retired the only frame that read the old buffer.
     }
     if (bytes) {
         std::memcpy(pose_buffer->mapping, palettes.data(), bytes);
@@ -627,8 +632,7 @@ void set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacem
         failure != RendererFailureStage::upload_timeout && failure != RendererFailureStage::device_lost)
         throw std::invalid_argument("Unknown resource failure stage");
     try {
-        check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait before resource scene selection");
-        check(vkResetCommandBuffer(command, 0), "Reset commands before resource scene selection");
+        wait_for_frames("Wait before resource scene selection");
         // Selection preflights resources independently of the previous camera.
         // Visibility is evaluated again with the current camera at each draw.
         if (!sources.empty())
@@ -682,7 +686,7 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
     if (assets.empty())
         return;
     try {
-        check(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, fence_timeout), "Wait before resource preparation");
+        wait_for_frames("Wait before resource preparation");
         for (const auto &asset : assets)
             (void)gpu_asset(asset, failure, prepared);
         inject_scene(failure, RendererFailureStage::ready, false);
@@ -700,6 +704,7 @@ void prepare_meshes(std::span<const std::shared_ptr<const Mesh>> assets, const R
 }
 // Binds @p render_instance's vertices and indices, and its placement rows or the identity placement.
 void bind_geometry(const ResourceInstance &render_instance) {
+    const auto command = frame().command;
     const auto &gpu = *render_instance.gpu;
     const std::array<VkBuffer, 2> buffers{gpu.vertices->buffer, render_instance.placements
                                                                     ? render_instance.placements->rows->buffer
@@ -711,6 +716,7 @@ void bind_geometry(const ResourceInstance &render_instance) {
 // Records draw @p draw_index of @p render_instance with the bound pipeline and geometry, through @p view, and
 // counts it in the shadow or main-view statistics.
 void record_draw(const ResourceInstance &render_instance, std::size_t draw_index, const Mat4 &view, bool shadow) {
+    const auto command = frame().command;
     const auto &source = *render_instance.source;
     const auto &draw = source.asset->draws()[draw_index];
     const Material fallback;
@@ -718,22 +724,23 @@ void record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
     // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
     // its frames per side and layout where they say whether they are skinned, which an impostor never is.
-    const auto *frames = source.asset->impostor();
+    const auto *impostor_frames = source.asset->impostor();
     const ResourcePush push{view,
                             view_origin,
-                            frames ? std::array{frames->center.x, frames->center.y, frames->center.z, frames->radius}
-                                   : std::array{material.metallic, material.roughness, 0.F, 0.F},
+                            impostor_frames ? std::array{impostor_frames->center.x, impostor_frames->center.y,
+                                                         impostor_frames->center.z, impostor_frames->radius}
+                                            : std::array{material.metallic, material.roughness, 0.F, 0.F},
                             {render_instance.palette_offset + draw.palette_offset,
-                             frames         ? frames->count | std::uint32_t(frames->layout) << 8
-                             : draw.skinned ? 1U
-                                            : 0U,
+                             impostor_frames ? impostor_frames->count | std::uint32_t(impostor_frames->layout) << 8
+                             : draw.skinned  ? 1U
+                                             : 0U,
                              render_instance.object_offset,
                              (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
                             {factor.x, factor.y, factor.z, 1}};
     vkCmdPushConstants(command, resource_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
     const VkDescriptorSet sets[]{render_instance.gpu->materials->material_sets.at(std::size_t(draw.material + 1)),
-                                 environment_set, pose_set};
+                                 frame().environment_set, frame().pose_set};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 3, sets, 0, nullptr);
     record_indexed(render_instance, draw_index, shadow);
 }
@@ -759,6 +766,7 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
         }
         return level_for(draw, run.distance, run.scale * axis_scale(source.asset->rest_pose().world[draw.node]));
     };
+    const auto command = frame().command;
     const auto record = [&](const DrawLevel *level, std::uint32_t first, std::uint32_t count) {
         const auto index_count = level ? level->index_count : draw.index_count;
         vkCmdDrawIndexed(command, index_count, count, level ? level->first_index : draw.first_index, 0, first);
@@ -795,6 +803,7 @@ void record_indexed(const ResourceInstance &render_instance, std::size_t draw_in
 // then, unless the frame copies opaque inputs first, the blended draws back to front. A shadow pass records its meshes'
 // opaque casters before their masked ones.
 void record_resources(const ShadowPass *shadow = nullptr) {
+    const auto command = frame().command;
     if (!shadow) {
         resources.draw_calls = 0;
         resources.submitted_indices = 0;
@@ -858,6 +867,7 @@ void record_resources(const ShadowPass *shadow = nullptr) {
 // Records resource_blended_draws in order, each through the blended pipeline or its custom material's. Depth then
 // holds every opaque and masked surface, which these pipelines test against without writing.
 void record_blended() {
+    const auto command = frame().command;
     VkPipeline bound_pipeline = VK_NULL_HANDLE;
     const ResourceInstance *bound = nullptr;
     const auto *frustum = options.frustum_culling ? &resource_frustum : nullptr;
@@ -914,9 +924,13 @@ ResourceStats resource_stats() const {
     value.shadow_bytes = cascade_target ? cascade_target->texture.allocation_bytes : 0;
     value.shadow_bytes += detail_shadow_target ? detail_shadow_target->texture.allocation_bytes : 0;
     value.atmosphere_bytes = atmosphere_bytes();
-    value.pose_buffer_bytes = pose_buffer ? pose_buffer->allocation_bytes : 0;
+    value.pose_buffer_bytes = 0;
+    for (const auto &slot : frames)
+        value.pose_buffer_bytes += slot.pose_buffer ? slot.pose_buffer->allocation_bytes : 0;
     return value;
 }
+// Releases the cache entries that only the renderer still references, destroying them once no frame in flight can use
+// them.
 void retire_resources() {
     resource_instances.clear();
     resource_draws.clear();
@@ -925,22 +939,17 @@ void retire_resources() {
     resource_custom_draws.clear();
     resource_custom_shadow_draws.clear();
     resource_opaque_inputs = false;
-    for (auto it = resource_cache.begin(); it != resource_cache.end();) {
-        if (it->second->asset.use_count() == 1)
-            it = resource_cache.erase(it);
-        else
-            ++it;
-    }
-    for (auto it = custom_cache.begin(); it != custom_cache.end();) {
-        if (it->second->source.use_count() == 1)
-            it = custom_cache.erase(it);
-        else
-            ++it;
-    }
-    for (auto it = placement_cache.begin(); it != placement_cache.end();) {
-        if (it->second->source.use_count() == 1)
-            it = placement_cache.erase(it);
-        else
-            ++it;
-    }
+    // Drops each entry whose source @p source gives only the cache's reference to.
+    const auto release = [&](auto &cache, const auto &source) {
+        for (auto it = cache.begin(); it != cache.end();) {
+            if (source(*it->second).use_count() == 1) {
+                release_after_frames(std::move(it->second));
+                it = cache.erase(it);
+            } else
+                ++it;
+        }
+    };
+    release(resource_cache, [](const GpuAsset &gpu) -> const auto & { return gpu.asset; });
+    release(custom_cache, [](const GpuCustomMaterial &gpu) -> const auto & { return gpu.source; });
+    release(placement_cache, [](const GpuPlacements &gpu) -> const auto & { return gpu.source; });
 }
