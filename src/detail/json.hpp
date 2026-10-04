@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -121,6 +122,35 @@ inline float json_float(const nlohmann::json &value) {
     if (!(std::abs(number) <= std::numeric_limits<float>::max()))
         throw std::invalid_argument("JSON number outside the float range");
     return static_cast<float>(number);
+}
+
+// Reads a JSON array of exactly N numbers, each as json_float reads it, so every element is finite. Throws
+// std::invalid_argument with message for a value that is not an array of N elements. nlohmann's own conversion to
+// std::array would also accept a boolean, narrow without the range check and ignore elements past N.
+template <std::size_t N> std::array<float, N> json_floats(const nlohmann::json &value, const char *message) {
+    if (!value.is_array() || value.size() != N)
+        throw std::invalid_argument(message);
+    std::array<float, N> result{};
+    for (std::size_t i = 0; i < N; ++i)
+        result[i] = json_float(value[i]);
+    return result;
+}
+
+// The array or object that field of the object value holds. A field of another JSON type throws
+// std::invalid_argument naming it: iterating would otherwise read an object's values as a list, items() would name
+// an array's elements by their indices, and both would read null as empty. A missing field fails as
+// nlohmann::json::at reports it, so readers check fields with json_fields first.
+inline const nlohmann::json &json_array(const nlohmann::json &object, const char *field) {
+    const auto &value = object.at(field);
+    if (!value.is_array())
+        throw std::invalid_argument("JSON field must be an array: " + std::string(field));
+    return value;
+}
+inline const nlohmann::json &json_object(const nlohmann::json &object, const char *field) {
+    const auto &value = object.at(field);
+    if (!value.is_object())
+        throw std::invalid_argument("JSON field must be an object: " + std::string(field));
+    return value;
 }
 
 // Runs one document encode or decode step. The JSON library's own failures (a mistyped value, a missing

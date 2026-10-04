@@ -13,7 +13,7 @@ struct MotionRuntime::Impl {
           nearest_joint_(nearest_joints(*asset_, rig_)) {
         load_resource(manifest, contract);
         const auto &definition = contract.at("evaluation");
-        for (const auto &[name, roots] : definition.at("masks").items()) {
+        for (const auto &[name, roots] : detail::json_object(definition, "masks").items()) {
             if (name.empty() || !roots.is_array() || roots.empty())
                 throw std::invalid_argument("Invalid runtime mask");
             auto &weights = masks_[name];
@@ -28,7 +28,7 @@ struct MotionRuntime::Impl {
                     weights[i] = std::max(weights[i], mask[i]);
             }
         }
-        for (const auto &[name, value] : definition.at("chains").items()) {
+        for (const auto &[name, value] : detail::json_object(definition, "chains").items()) {
             detail::json_fields(value, {"joints", "minimum_angle", "maximum_angle"});
             const auto &joints = value.at("joints");
             if (name.empty() || joints.size() != 3)
@@ -264,7 +264,7 @@ struct MotionRuntime::Impl {
         }
         for (std::size_t i = 0; i < rig_.size(); ++i)
             (void)anima::unique_node(*resource_, asset_->nodes[rig_.asset_node(i)].name);
-        for (const auto &value : document.at("clips")) {
+        for (const auto &value : detail::json_array(document, "clips")) {
             detail::json_fields(value, {"name", "loop", "events"}, {"reference_speed"});
             anima::ClipMetadata info;
             info.name = value.at("name").get<std::string>();
@@ -275,7 +275,7 @@ struct MotionRuntime::Impl {
                     throw std::invalid_argument("Invalid motion reference speed");
             }
             double previous = -1;
-            for (const auto &event : value.at("events")) {
+            for (const auto &event : detail::json_array(value, "events")) {
                 detail::json_fields(event, {"time", "name"});
                 anima::ClipEvent cue{event.at("time").get<double>(), event.at("name").get<std::string>()};
                 if (!std::isfinite(cue.time) || cue.time < previous || cue.time < 0 ||
@@ -289,10 +289,12 @@ struct MotionRuntime::Impl {
             if (info.name.empty() || !metadata_.emplace(info.name, std::move(info)).second)
                 throw std::invalid_argument("Duplicate/empty motion identity");
         }
-        for (const auto &[name, value] : document.at("layers").items()) {
+        // Layers are read before the constructor decodes the masks, so each reads its mask's roots from the document.
+        const auto &masks = detail::json_object(document.at("evaluation"), "masks");
+        for (const auto &[name, value] : detail::json_object(document, "layers").items()) {
             detail::json_fields(value, {"mask", "owned_joints", "context_joints"});
             const auto mask = value.at("mask").get<std::string>();
-            const auto &roots = document.at("evaluation").at("masks").at(mask);
+            const auto &roots = masks.at(mask);
             std::set<std::string> owned, context;
             for (const auto &root : roots) {
                 const auto weights = rig_.subtree_mask(rig_.joint(root.get<std::string>()));
