@@ -1,5 +1,6 @@
 // The environment's uniform block, which the world's fragment shaders and the atmosphere's compute passes share.
-layout(set = 1, binding = 0, std140) uniform EnvironmentData {
+#include "shader_interface.h"
+layout(set = ANIMA_SET_ENVIRONMENT, binding = ANIMA_ENVIRONMENT_UNIFORM, std140) uniform EnvironmentData {
     // The sun's irradiance at the ground (atmosphere_sunlight()), which lights surfaces and the fog.
     vec4 sunDirection, sunIrradiance, fillDirection, fillIrradiance;
     vec4 ambientSky, ambientGround, ambientSpecular;
@@ -34,8 +35,7 @@ layout(set = 1, binding = 0, std140) uniform EnvironmentData {
     // sent apart from the radius whose float spacing would swallow it, the ozone layer's width and the sun's angular
     // radius; the ground's albedo with the altitude that the sky is seen from, which the renderer keeps while the eye's
     // altitude stays within a tolerance of it (sky_altitude() in src/desktop/atmosphere_renderer.inc), so that it can
-    // differ from the eye's own; and the sun's irradiance above the atmosphere, with 1 in w while the atmosphere is
-    // enabled.
+    // differ from the eye's own; and the sun's irradiance above the atmosphere.
     vec4 atmosphereOzone, atmosphereShape, atmosphereGround, atmosphereSun;
     // The linear radiance behind the scene while the atmosphere is disabled.
     vec4 background;

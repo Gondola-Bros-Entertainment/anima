@@ -6,6 +6,7 @@
 #include <anima/scene.hpp>
 #include <map>
 
+#include "../../shaders/shader_interface.h"
 #include "../assets/bc7.hpp"
 #endif
 #ifdef ANIMA_UI
@@ -1073,19 +1074,26 @@ struct VulkanRenderer::Impl {
         make_fragment(resolve_fragment_code, resolve_fragment_shader);
         make_fragment(background_fragment_code, background_fragment_shader);
         create_world_layout();
+        // write_material_textures() binds each texture at its index in material_texture_count order.
+        static_assert(ANIMA_MATERIAL_BASE_COLOR == 0 && ANIMA_MATERIAL_NORMAL == 1 &&
+                          ANIMA_MATERIAL_METALLIC_ROUGHNESS == 2 && ANIMA_MATERIAL_EMISSIVE == 3 &&
+                          ANIMA_MATERIAL_OCCLUSION == 4 && ANIMA_MATERIAL_UNIFORM == material_texture_count,
+                      "material.glsl binds the textures in material_texture_count order, then the uniform block");
         std::array<VkDescriptorSetLayoutBinding, material_texture_count + 1> bindings{};
         for (unsigned i = 0; i < bindings.size(); ++i)
             bindings[i] = {i,
-                           i == material_texture_count ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                           i == ANIMA_MATERIAL_UNIFORM ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
                                                        : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
         VkDescriptorSetLayoutCreateInfo descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         descriptor.bindingCount = static_cast<std::uint32_t>(bindings.size());
         descriptor.pBindings = bindings.data();
         check(vkCreateDescriptorSetLayout(device, &descriptor, nullptr, &texture_layout), "Create texture layout");
-        const VkDescriptorSetLayout environment_layouts[]{texture_layout, environment_layout};
-        layout.setLayoutCount = 2;
-        layout.pSetLayouts = environment_layouts;
+        std::array<VkDescriptorSetLayout, ANIMA_SET_ENVIRONMENT + 1> environment_layouts{};
+        environment_layouts[ANIMA_SET_MATERIAL] = texture_layout;
+        environment_layouts[ANIMA_SET_ENVIRONMENT] = environment_layout;
+        layout.setLayoutCount = static_cast<std::uint32_t>(environment_layouts.size());
+        layout.pSetLayouts = environment_layouts.data();
         layout.pushConstantRangeCount = 0;
         layout.pPushConstantRanges = nullptr;
         check(vkCreatePipelineLayout(device, &layout, nullptr, &environment_pipeline_layout),
@@ -1539,23 +1547,25 @@ struct VulkanRenderer::Impl {
 #ifdef ANIMA_HAS_ASSETS
         if (resource)
             stages[1].module = mesh_fragment_shader;
-        // Sets impostor.vert's constant 0, which selects the shadow passes' view.
+        // Sets impostor.vert's shadowPass, which selects the shadow passes' view.
         const VkBool32 enabled = VK_TRUE;
-        const VkSpecializationMapEntry constant_entry{0, 0, sizeof(enabled)};
+        const VkSpecializationMapEntry constant_entry{ANIMA_SPEC_SHADOW_PASS, 0, sizeof(enabled)};
         const VkSpecializationInfo constant_enabled{1, &constant_entry, sizeof(enabled), &enabled};
-        // The view's fragment constants: mesh.frag's 0 selects premultiplied output, 1 (environment.glsl) the height
-        // fog's code, in mesh.frag and impostor.frag, mesh.frag's 2 keeps its discards, 3 (environment.glsl) selects
-        // ShadowFilter::bilinear_2x2, in both, and impostor.frag's 4 (impostor_sample.glsl) reads a single frame.
+        // The view's fragment constants: mesh.frag's blended selects premultiplied output, environmentHeightFog
+        // (environment.glsl) the height fog's code, in mesh.frag and impostor.frag, mesh.frag's mayDiscard keeps its
+        // discards, bilinearShadowFilter (environment.glsl) selects ShadowFilter::bilinear_2x2, in both, and
+        // impostor.frag's singleImpostorFrame (impostor_sample.glsl) reads a single frame.
         const VkBool32 bilinear_shadows = options.shadow_filter == ShadowFilter::bilinear_2x2 ? VK_TRUE : VK_FALSE,
                        single_impostor_frame = options.impostor_frames == 1 ? VK_TRUE : VK_FALSE;
         const std::array<VkBool32, 5> fragment_constants{blended ? VK_TRUE : VK_FALSE, height_fog ? VK_TRUE : VK_FALSE,
                                                          mode == PipelineKind::opaque_resource ? VK_FALSE : VK_TRUE,
                                                          bilinear_shadows, single_impostor_frame};
-        const std::array<VkSpecializationMapEntry, 5> fragment_entries{{{0, 0, sizeof(VkBool32)},
-                                                                        {1, sizeof(VkBool32), sizeof(VkBool32)},
-                                                                        {2, 2 * sizeof(VkBool32), sizeof(VkBool32)},
-                                                                        {3, 3 * sizeof(VkBool32), sizeof(VkBool32)},
-                                                                        {4, 4 * sizeof(VkBool32), sizeof(VkBool32)}}};
+        const std::array<VkSpecializationMapEntry, 5> fragment_entries{
+            {{ANIMA_SPEC_BLENDED, 0, sizeof(VkBool32)},
+             {ANIMA_SPEC_HEIGHT_FOG, sizeof(VkBool32), sizeof(VkBool32)},
+             {ANIMA_SPEC_MAY_DISCARD, 2 * sizeof(VkBool32), sizeof(VkBool32)},
+             {ANIMA_SPEC_BILINEAR_SHADOW_FILTER, 3 * sizeof(VkBool32), sizeof(VkBool32)},
+             {ANIMA_SPEC_SINGLE_IMPOSTOR_FRAME, 4 * sizeof(VkBool32), sizeof(VkBool32)}}};
         const VkSpecializationInfo fragment_specialization{static_cast<std::uint32_t>(fragment_entries.size()),
                                                            fragment_entries.data(), sizeof(fragment_constants),
                                                            fragment_constants.data()};
@@ -2184,7 +2194,7 @@ struct VulkanRenderer::Impl {
             const VkDescriptorBufferInfo buffer_info{target.material_buffer, stride * i, sizeof(MaterialUniform)};
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet = target.material_sets[i];
-            write.dstBinding = material_texture_count;
+            write.dstBinding = ANIMA_MATERIAL_UNIFORM;
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             write.pBufferInfo = &buffer_info;

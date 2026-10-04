@@ -506,24 +506,21 @@ if(ANIMA_BUILD_DESKTOP)
     if(ANIMA_BUILD_UI)
         list(APPEND shader_sources ui.vert ui.frag)
     endif()
+    # glslc lists the files that each shader includes in a depfile, so that a change to any of them rebuilds it. It
+    # writes the depfile's paths without escaping their spaces, so it runs in the build tree on paths relative to it,
+    # which CMake resolves from there.
+    file(RELATIVE_PATH shader_directory "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
     foreach(shader IN LISTS shader_sources)
-        set(output "${CMAKE_CURRENT_BINARY_DIR}/generated/${shader}.inc")
-        add_custom_command(OUTPUT "${output}"
-            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
-            COMMAND Vulkan::glslc --target-env=vulkan1.1 -mfmt=c
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}" -o "${output}"
+        set(output "generated/${shader}.inc")
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${output}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory generated
+            COMMAND Vulkan::glslc --target-env=vulkan1.1 -mfmt=c -MD -MF "${output}.d"
+                "${shader_directory}/${shader}" -o "${output}"
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/material.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment_data.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/atmosphere.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/include/anima/fog.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/visibility.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/lighting.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/impostor.glsl"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/impostor_sample.glsl"
+            DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/${output}.d"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             VERBATIM)
-        list(APPEND shader_outputs "${output}")
+        list(APPEND shader_outputs "${CMAKE_CURRENT_BINARY_DIR}/${output}")
     endforeach()
 
     add_library(anima_desktop STATIC src/desktop/vulkan_renderer.cpp src/desktop/memory_allocator.cpp ${shader_outputs})

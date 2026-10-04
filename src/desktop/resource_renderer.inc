@@ -332,7 +332,8 @@ void create_resource_layout() {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
     if (properties.limits.maxPushConstantsSize < resource_push_bytes ||
-        properties.limits.maxPerStageDescriptorStorageBuffers < 1 || properties.limits.maxBoundDescriptorSets < 3 ||
+        properties.limits.maxPerStageDescriptorStorageBuffers < 1 ||
+        properties.limits.maxBoundDescriptorSets < ANIMA_SET_POSES + 1 ||
         properties.limits.maxVertexInputAttributes < resource_attributes.size() + placement_attributes.size() ||
         properties.limits.maxVertexInputBindings < resource_bindings.size() ||
         properties.limits.maxVertexInputBindingStride < sizeof(SourceVertex))
@@ -341,17 +342,20 @@ void create_resource_layout() {
     shader.codeSize = sizeof(resource_vertex_code);
     shader.pCode = resource_vertex_code;
     check(vkCreateShaderModule(device, &shader, nullptr, &resource_vertex_shader), "Create resource vertex shader");
-    const VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT,
-                                               nullptr};
+    const VkDescriptorSetLayoutBinding binding{ANIMA_POSE_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                               VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptor.bindingCount = 1;
     descriptor.pBindings = &binding;
     check(vkCreateDescriptorSetLayout(device, &descriptor, nullptr, &pose_layout), "Create pose layout");
-    const VkDescriptorSetLayout layouts[]{texture_layout, environment_layout, pose_layout};
+    std::array<VkDescriptorSetLayout, ANIMA_SET_POSES + 1> layouts{};
+    layouts[ANIMA_SET_MATERIAL] = texture_layout;
+    layouts[ANIMA_SET_ENVIRONMENT] = environment_layout;
+    layouts[ANIMA_SET_POSES] = pose_layout;
     const VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, resource_push_bytes};
     VkPipelineLayoutCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    info.setLayoutCount = 3;
-    info.pSetLayouts = layouts;
+    info.setLayoutCount = static_cast<std::uint32_t>(layouts.size());
+    info.pSetLayouts = layouts.data();
     info.pushConstantRangeCount = 1;
     info.pPushConstantRanges = &range;
     check(vkCreatePipelineLayout(device, &info, nullptr, &resource_pipeline_layout), "Create resource pipeline layout");
@@ -824,8 +828,8 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
             const auto &rest = render_instance.mesh->rest_pose().world;
             const bool ranged = render_instance.visibility_range != VisibilityRange{};
             const bool header = render_instance.placements || ranged;
-            const auto matrices =
-                (header ? 2 : 0) + (render_instance.placements ? rest.size() : render_instance.palette.size());
+            const auto matrices = (header ? ANIMA_POSE_HEADER_MATRICES : 0) +
+                                  (render_instance.placements ? rest.size() : render_instance.palette.size());
             const auto max_matrices = properties.limits.maxStorageBufferRange / sizeof(Mat4);
             if (palettes.size() > max_matrices || matrices > max_matrices - palettes.size())
                 throw std::length_error("Instance palettes exceed device storage-buffer range");
@@ -848,7 +852,9 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
                                       first_level,
                                       first_cluster};
             if (header) {
-                prepared.palette_offset = first_matrix + 2;
+                static_assert(ANIMA_POSE_HEADER_RANGE == 1 && ANIMA_POSE_HEADER_MATRICES == 2,
+                              "The header holds the world matrix, then the range's");
+                prepared.palette_offset = first_matrix + ANIMA_POSE_HEADER_MATRICES;
                 palettes.push_back(render_instance.world);
                 palettes.push_back(
                     range_columns(scaled_range(render_instance.visibility_range), range_center(*render_instance.mesh)));
@@ -876,7 +882,7 @@ void prepare_resources(std::span<const std::shared_ptr<const Scene>> sources, Re
         const VkDescriptorBufferInfo buffer{candidate->buffer, 0, capacity};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = frame().pose_set;
-        write.dstBinding = 0;
+        write.dstBinding = ANIMA_POSE_MATRICES;
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         write.pBufferInfo = &buffer;
@@ -1044,8 +1050,8 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
             // Binding set 0 keeps the sets after it only where set 0 already holds a set bound through this layout.
             if (!bound.material)
                 bound.frame = false;
-            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 0, 1, &set, 0,
-                                    nullptr);
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout,
+                                    ANIMA_SET_MATERIAL, 1, &set, 0, nullptr);
             bound.material = set;
         }
     }
@@ -1053,12 +1059,14 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
         // Binding the sets after set 0 keeps it, since it holds a set bound through this layout or none that the
         // pipeline reads.
         if (shadow)
-            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 2, 1,
-                                    &frame().pose_set, 0, nullptr);
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, ANIMA_SET_POSES,
+                                    1, &frame().pose_set, 0, nullptr);
         else {
+            static_assert(ANIMA_SET_POSES == ANIMA_SET_ENVIRONMENT + 1, "The sets bind together");
             const std::array sets{frame().environment_set, frame().pose_set};
-            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout, 1,
-                                    static_cast<std::uint32_t>(sets.size()), sets.data(), 0, nullptr);
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resource_pipeline_layout,
+                                    ANIMA_SET_ENVIRONMENT, static_cast<std::uint32_t>(sets.size()), sets.data(), 0,
+                                    nullptr);
         }
         const ResourceViewPush pass{view, view_origin};
         vkCmdPushConstants(command, resource_pipeline_layout, stages, 0, sizeof(pass), &pass);
@@ -1069,17 +1077,24 @@ bool record_draw(const ResourceInstance &render_instance, std::size_t draw_index
     const auto factor = draw.material < 0 ? Vec3{1, 1, 1} : source.factors.at(draw.material);
     // An impostor's draw carries its frames' sphere where other draws carry their metallic and roughness factors, and
     // its frames per side and layout where they say whether they are skinned, which an impostor never is.
-    static_assert(ImpostorFrames::max_frames_per_side <= 255, "The impostor shaders read frames per side from 8 bits");
+    static_assert(ImpostorFrames::max_frames_per_side <= ANIMA_IMPOSTOR_COUNT_MASK &&
+                      ANIMA_IMPOSTOR_COUNT_MASK < (1U << ANIMA_IMPOSTOR_LAYOUT_SHIFT),
+                  "The impostor shaders read frames per side through the mask, below the layout");
+    static_assert(static_cast<std::uint32_t>(ImpostorLayout::hemisphere) == ANIMA_IMPOSTOR_HEMISPHERE &&
+                      static_cast<std::uint32_t>(ImpostorLayout::sphere) == ANIMA_IMPOSTOR_SPHERE,
+                  "impostor.glsl compares the layout with these values");
     const auto *impostor_frames = source.mesh->impostor();
     const ResourceDrawPush push{
         impostor_frames ? std::array{impostor_frames->center.x, impostor_frames->center.y, impostor_frames->center.z,
                                      impostor_frames->radius}
                         : std::array{material.metallic, material.roughness, 0.F, 0.F},
         {render_instance.palette_offset + draw.palette_offset,
-         impostor_frames ? impostor_frames->frames_per_side | std::uint32_t(impostor_frames->layout) << 8
-         : draw.skinned  ? 1U
-                         : 0U,
-         render_instance.object_offset, (render_instance.placements ? 1U : 0U) | (render_instance.ranged ? 2U : 0U)},
+         impostor_frames
+             ? impostor_frames->frames_per_side | std::uint32_t(impostor_frames->layout) << ANIMA_IMPOSTOR_LAYOUT_SHIFT
+         : draw.skinned ? 1U
+                        : 0U,
+         render_instance.object_offset,
+         (render_instance.placements ? ANIMA_DRAW_PLACED : 0U) | (render_instance.ranged ? ANIMA_DRAW_RANGED : 0U)},
         {factor.x, factor.y, factor.z, 1}};
     vkCmdPushConstants(command, resource_pipeline_layout, stages, sizeof(ResourceViewPush), sizeof(push), &push);
     return record_indexed(render_instance, draw_index, shadow, routing);

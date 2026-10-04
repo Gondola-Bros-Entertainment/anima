@@ -6,12 +6,15 @@
 // the transmitted sun. Each step adds the light that the medium scatters toward the eye, once from the sun through the
 // Rayleigh and Mie phase functions and many times through the multiple scattering table, integrated over the step
 // against the step's own extinction.
-layout(local_size_x = 8, local_size_y = 8) in;
+#include "shader_interface.h"
+layout(local_size_x = ANIMA_ATMOSPHERE_GROUP_EDGE, local_size_y = ANIMA_ATMOSPHERE_GROUP_EDGE) in;
 #include "environment_data.glsl"
 #include "atmosphere.glsl"
-layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D skyViewTable;
-layout(set = 0, binding = 3) uniform sampler2D transmittanceTable;
-layout(set = 0, binding = 4) uniform sampler2D multipleScatteringTable;
+layout(set = ANIMA_SET_ATMOSPHERE, binding = ANIMA_ATMOSPHERE_WRITE_SKY_VIEW,
+       rgba16f) uniform writeonly image2D skyViewTable;
+layout(set = ANIMA_SET_ATMOSPHERE, binding = ANIMA_ATMOSPHERE_READ_TRANSMITTANCE) uniform sampler2D transmittanceTable;
+layout(set = ANIMA_SET_ATMOSPHERE,
+       binding = ANIMA_ATMOSPHERE_READ_MULTIPLE_SCATTERING) uniform sampler2D multipleScatteringTable;
 
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);

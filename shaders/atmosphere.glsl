@@ -3,12 +3,13 @@
 // Scattering: a New Implementation" (2017). Include it after environment_data.glsl. Lengths are in meters. Altitudes
 // are kept apart from the ground's radius, whose float spacing of half a meter would otherwise swallow them: every
 // r^2 - R^2 is formed as h (2R + h).
+#include "shader_interface.h"
 
 const float atmospherePi = 3.14159265359;
 // The tables' sizes, which the renderer allocates.
-const ivec2 transmittanceSize = ivec2(256, 64);
-const ivec2 multipleScatteringSize = ivec2(64, 32);
-const ivec2 skyViewSize = ivec2(192, 108);
+const ivec2 transmittanceSize = ivec2(ANIMA_TRANSMITTANCE_WIDTH, ANIMA_TRANSMITTANCE_HEIGHT);
+const ivec2 multipleScatteringSize = ivec2(ANIMA_MULTIPLE_SCATTERING_WIDTH, ANIMA_MULTIPLE_SCATTERING_HEIGHT);
+const ivec2 skyViewSize = ivec2(ANIMA_SKY_VIEW_WIDTH, ANIMA_SKY_VIEW_HEIGHT);
 
 float groundRadius() { return environment.atmosphereShape.x; }
 float thickness() { return environment.atmosphereShape.y; }

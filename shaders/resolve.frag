@@ -2,8 +2,9 @@
 #extension GL_GOOGLE_include_directive : require
 layout(location = 0) in vec2 screen;
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 0) uniform sampler2D sceneColor;
-layout(constant_id = 0) const bool encodeSrgb = false;
+#include "shader_interface.h"
+layout(set = ANIMA_SET_SCENE_INPUT, binding = ANIMA_SCENE_INPUT_COLOR) uniform sampler2D sceneColor;
+layout(constant_id = ANIMA_SPEC_ENCODE_SRGB) const bool encodeSrgb = false;
 // Scene target pixels per window pixel along each axis: the render scale, as rounding and the device's limits leave it.
 layout(push_constant) uniform Display { vec2 footprint; }
 display;

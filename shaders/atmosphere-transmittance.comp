@@ -3,10 +3,12 @@
 // The transmittance table: for each altitude and zenith cosine of a path that stays above the ground, the share of
 // light that crosses the atmosphere to its top. It integrates the extinction as atmosphere_transmittance() does, with
 // midpoint steps in the square root of the distance.
-layout(local_size_x = 8, local_size_y = 8) in;
+#include "shader_interface.h"
+layout(local_size_x = ANIMA_ATMOSPHERE_GROUP_EDGE, local_size_y = ANIMA_ATMOSPHERE_GROUP_EDGE) in;
 #include "environment_data.glsl"
 #include "atmosphere.glsl"
-layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D transmittanceTable;
+layout(set = ANIMA_SET_ATMOSPHERE, binding = ANIMA_ATMOSPHERE_WRITE_TRANSMITTANCE,
+       rgba16f) uniform writeonly image2D transmittanceTable;
 
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
