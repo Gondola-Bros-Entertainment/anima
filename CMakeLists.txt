@@ -48,6 +48,12 @@ function(anima_target_defaults target)
         endif()
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        # In optimized C++20 builds, GCC 12 reports -Wrestrict inside libstdc++'s char_traits::copy for a string
+        # literal concatenated with a std::string rvalue, which cannot overlap. GCC 13 does not.
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12
+           AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+            target_compile_options(${target} PRIVATE -Wno-restrict)
+        endif()
         if(ANIMA_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
         endif()
