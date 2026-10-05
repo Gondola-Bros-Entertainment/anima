@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for the ci-thread-sanitizer test preset.
+
+# libstdc++ is not instrumented, so ThreadSanitizer cannot see the atomic reference count that orders the release of an
+# exception object several threads hold. std::rethrow_exception throws the stored object itself, so the waiters on one
+# failed std::shared_future (ModelCache's shared imports) catch the same std::runtime_error, and the thread that drops
+# the last reference frees the message another thread read.
+race:std::runtime_error::~runtime_error

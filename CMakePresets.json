@@ -180,7 +180,7 @@
       "inherits": "defaults",
       "configurePreset": "ci-thread-sanitizer",
       "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1" }
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:suppressions=${sourceDir}/tests/thread_sanitizer.supp" }
     }
   ],
   "workflowPresets": [
