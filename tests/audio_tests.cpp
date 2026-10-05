@@ -880,9 +880,11 @@ TEST_CASE("A device's one-shots end on its thread and are released on the callin
                             step % 3 ? bus : AudioBus{});
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    // Each ends within 0.2 s of output, and a later call releases it: here one that plays a single frame.
+    // Each ends within 0.2 s of output, and a later call releases it: here one that plays a single frame. The device
+    // thread can fall behind these ticks, so the loop also waits until it has ended all but the latest.
     const auto tick = AudioClip::pcm({0}, 1, rate);
-    for (int wait = 0; wait < 200 && (brief.use_count() > 1 || streamed.use_count() > 1); ++wait) {
+    for (int wait = 0; wait < 200 && (brief.use_count() > 1 || streamed.use_count() > 1 || audio.voice_count() > 1);
+         ++wait) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         audio.play_one_shot(tick);
     }
