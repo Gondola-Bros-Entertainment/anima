@@ -1,4 +1,6 @@
 #include <anima/desktop/vulkan_renderer.hpp>
+// SpriteBatch, which set_sprites() takes with or without asset support.
+#include <anima/sprite.hpp>
 #ifdef ANIMA_HAS_ASSETS
 #include <anima/assets/material_textures.hpp>
 #include <anima/assets/mesh_preparation.hpp>
@@ -221,6 +223,12 @@ constexpr std::uint32_t atmosphere_scattering_code[] =
     ;
 constexpr std::uint32_t atmosphere_sky_code[] =
 #include "atmosphere-sky.comp.inc"
+    ;
+constexpr std::uint32_t sprite_vertex_code[] =
+#include "sprite.vert.inc"
+    ;
+constexpr std::uint32_t sprite_fragment_code[] =
+#include "sprite.frag.inc"
     ;
 #endif
 struct VulkanFailure : std::runtime_error {
@@ -573,6 +581,7 @@ struct VulkanRenderer::Impl {
 #include "world_renderer.inc"
 // Custom materials draw the resource renderer's instances, so their declarations follow it.
 #include "custom_renderer.inc"
+#include "sprite_renderer.inc"
 #endif
     Mat4 view_projection{};
     std::array<float, 4> view_origin{0, 0, -1, 0};
@@ -1105,6 +1114,8 @@ struct VulkanRenderer::Impl {
               "Create mesh pipeline layout");
         create_resource_layout();
         create_custom_layout();
+        make_shaders(sprite_vertex_code, sprite_fragment_code, sprite_vertex_shader, sprite_fragment_shader);
+        create_sprite_layout();
         make_shaders(shadow_resource_vertex_code, shadow_fragment_code, shadow_resource_vertex_shader,
                      shadow_fragment_shader);
         make_shaders(impostor_vertex_code, impostor_fragment_code, impostor_vertex_shader, impostor_fragment_shader);
@@ -1906,6 +1917,11 @@ struct VulkanRenderer::Impl {
                 if (replaced)
                     write_custom_textures(*gpu);
             }
+            for (const auto &[key, gpu] : sprite_cache) {
+                (void)key;
+                if (replace(gpu->texture))
+                    write_sprite_texture(*gpu);
+            }
             for (auto &[key, sampler] : material_samplers) {
                 (void)key;
                 if (const auto current = sampler.lock())
@@ -2297,6 +2313,8 @@ struct VulkanRenderer::Impl {
         std::unique_ptr<ResourceBuffer> custom_frame_buffer;
         VkDescriptorSet custom_frame_set{};
         std::uint64_t opaque_generation{};
+        // The sprites of the slot's frame, as its sprite draws read them.
+        std::unique_ptr<ResourceBuffer> sprite_buffer;
 #endif
 #ifdef ANIMA_UI
         // The UI vertices of the slot's frame.
@@ -2570,6 +2588,7 @@ struct VulkanRenderer::Impl {
             finish_shadow_cascades();
             update_environment();
         });
+        scene_resource_step([&] { prepare_sprites(); });
 #endif
         measure(profile.upload_ms);
         std::uint32_t index = 0;
@@ -2681,6 +2700,10 @@ struct VulkanRenderer::Impl {
             vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(scale), scale);
             vkCmdDraw(command, 3, 1, 0, 0);
         }
+#ifdef ANIMA_HAS_ASSETS
+        // Over everything else that the world pass draws, in the composite pass of a frame that splits it.
+        record_sprites();
+#endif
 #if defined(ANIMA_UI) && !defined(ANIMA_HAS_ASSETS)
         // Without the linear world target this pass renders the swapchain image, and the UI pipeline
         // was created for it, so the UI composites here rather than in the display pass below.
@@ -2914,6 +2937,7 @@ struct VulkanRenderer::Impl {
                 vkDestroyDescriptorSetLayout(device, custom_frame_layout, nullptr);
             if (custom_material_layout)
                 vkDestroyDescriptorSetLayout(device, custom_material_layout, nullptr);
+            destroy_sprites();
             cascade_target.reset();
             detail_shadow_target.reset();
             if (shadow_opaque_pipeline)
@@ -3145,6 +3169,16 @@ SceneColorFormat VulkanRenderer::scene_color_format() const noexcept {
         return SceneColorFormat::b10g11r11;
 #endif
     return SceneColorFormat::rgba16f;
+}
+void VulkanRenderer::set_sprites(std::vector<SpriteBatch> batches) {
+    impl_->running();
+#ifdef ANIMA_HAS_ASSETS
+    validate_sprites(batches);
+    impl_->sprite_batches = std::move(batches);
+#else
+    (void)batches;
+    throw std::logic_error("Sprites require asset support");
+#endif
 }
 void VulkanRenderer::set_scenes(std::vector<std::shared_ptr<const Scene>> sources, SceneReplacementOptions options) {
 #ifdef ANIMA_HAS_ASSETS

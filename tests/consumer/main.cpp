@@ -62,6 +62,7 @@
 #include "render_scale.hpp"
 #include "replacement.hpp"
 #include "resources.hpp"
+#include "sprites.hpp"
 #include "texture_memory.hpp"
 #include "tone_mapping.hpp"
 #include <SDL3/SDL.h>
@@ -406,6 +407,8 @@ int main(int argc, char **argv) {
             return blending_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--custom-materials")
             return custom_material_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--sprites")
+            return sprite_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--texture-memory")
             return texture_memory_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--compressed-textures")

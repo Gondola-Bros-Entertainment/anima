@@ -1347,14 +1347,21 @@ ResourceStats resource_stats() const {
         for (const auto &texture : gpu->textures)
             value.resident_texture_bytes += texture.allocation_bytes;
     }
+    value.cached_sprite_sheets = sprite_cache.size();
+    for (const auto &[key, gpu] : sprite_cache) {
+        (void)key;
+        value.resident_texture_bytes += gpu->texture.allocation_bytes;
+    }
     value.opaque_input_bytes =
         opaque_inputs ? opaque_inputs->color.allocation_bytes + opaque_inputs->depth.allocation_bytes : 0;
     value.shadow_bytes = cascade_target ? cascade_target->texture.allocation_bytes : 0;
     value.shadow_bytes += detail_shadow_target ? detail_shadow_target->texture.allocation_bytes : 0;
     value.atmosphere_bytes = atmosphere_bytes();
-    value.pose_buffer_bytes = 0;
-    for (const auto &slot : frames)
+    value.pose_buffer_bytes = value.sprite_buffer_bytes = 0;
+    for (const auto &slot : frames) {
         value.pose_buffer_bytes += slot.pose_buffer ? slot.pose_buffer->allocation_bytes : 0;
+        value.sprite_buffer_bytes += slot.sprite_buffer ? slot.sprite_buffer->allocation_bytes : 0;
+    }
     return value;
 }
 // Releases the cache entries that only the renderer still references, destroying them once no frame in flight can use
@@ -1370,6 +1377,7 @@ void retire_resources() {
     resource_draw_levels.clear();
     resource_cluster_bounds.clear();
     resource_opaque_inputs = false;
+    sprite_draws.clear();
     // Drops each entry whose source @p source gives only the cache's reference to.
     const auto release = [&](auto &cache, const auto &source) {
         for (auto it = cache.begin(); it != cache.end();) {
@@ -1382,5 +1390,6 @@ void retire_resources() {
     };
     release(resource_cache, [](const GpuMesh &gpu) -> const auto & { return gpu.mesh; });
     release(custom_cache, [](const GpuCustomMaterial &gpu) -> const auto & { return gpu.source; });
+    release(sprite_cache, [](const GpuSpriteSheet &gpu) -> const auto & { return gpu.source; });
     release(placement_cache, [](const GpuPlacements &gpu) -> const auto & { return gpu.source; });
 }

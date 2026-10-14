@@ -15,6 +15,8 @@
 #define ANIMA_SET_ATMOSPHERE 0
 #define ANIMA_SET_ENVIRONMENT 1
 #define ANIMA_SET_POSES 2
+// The sprite pipelines' only set, at 0: the sheet's texture.
+#define ANIMA_SET_SPRITE_SHEET 0
 
 // The material set (material.glsl): its textures in material_texture_count order, then its uniform block.
 #define ANIMA_MATERIAL_BASE_COLOR 0
@@ -46,6 +48,9 @@
 // The pose set: the frame's palettes, as matrices.
 #define ANIMA_POSE_MATRICES 0
 
+// The sprite sheet set: the sheet's texture.
+#define ANIMA_SPRITE_SHEET_TEXTURE 0
+
 // Vertex attribute locations (resource.vert): the SourceVertex fields, from the mesh's vertices, then rows 0 to 2 of
 // the affine matrix of the placement being drawn, per instance. Custom materials read the same locations
 // (anima/custom_material.hpp), which the renderer supplies from the same attribute descriptions.
@@ -60,6 +65,13 @@
 #define ANIMA_ATTRIBUTE_PLACEMENT_ROW0 8
 #define ANIMA_ATTRIBUTE_PLACEMENT_ROW1 9
 #define ANIMA_ATTRIBUTE_PLACEMENT_ROW2 10
+
+// Sprite attribute locations (sprite.vert), all per instance: the position and rotation, the size and pivot, the
+// frame's texture coordinates at its first column and row and past its last, and the color and alpha.
+#define ANIMA_SPRITE_PLACEMENT 0
+#define ANIMA_SPRITE_SHAPE 1
+#define ANIMA_SPRITE_FRAME 2
+#define ANIMA_SPRITE_COLOR 3
 
 // Specialization constant IDs, which each shader stage numbers apart. In the fragment stage of the view's pipelines:
 // mesh.frag's premultiplied output, the height fog's code (environment.glsl), mesh.frag's discards, the 2x2 shadow

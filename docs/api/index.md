@@ -14,6 +14,8 @@ Entry points:
 - anima::physics::World and anima::physics2d::World simulate rigid bodies.
 - anima::VulkanRenderer draws the selected scenes on the desktop, and
   anima::CustomMaterial gives their surfaces an application's own shaders.
+- anima::SpriteSheet and anima::SpriteBatch give the renderer textured 2D quads
+  to draw over the scenes.
 - anima::Camera and anima::CameraView select views; anima::resolve_camera resolves
   them into view and projection matrices, and anima::view_projection into the
   renderer's view.
