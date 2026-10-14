@@ -1,7 +1,7 @@
-// Custom materials without a GPU: SPIR-V validation against the documented interface, assignment to scene objects,
-// and persistence by name in scene, prefab, prefab variant and scene set documents, staged ones included. The
-// modules are assembled here word by word, so each test states exactly the interface it checks and no shader
-// compiler is needed.
+// Custom shaders and materials without a GPU: SPIR-V validation against the documented interface, the parameters and
+// textures that a material supplies its shader, assignment to scene objects, and persistence by name in scene, prefab,
+// prefab variant and scene set documents, staged ones included. The modules are assembled here word by word, so each
+// test states exactly the interface it checks and no shader compiler is needed.
 #include <anima/custom_material.hpp>
 #include <anima/prefab.hpp>
 #include <anima/prefab_variant.hpp>
@@ -198,20 +198,31 @@ Module fragment_module() {
     (void)shader.output_at(0, shader.vector(4));
     return shader;
 }
-CustomMaterialDefinition definition(const Module &vertex = vertex_module(),
-                                    const Module &fragment = fragment_module()) {
-    CustomMaterialDefinition result;
-    result.name = "surface";
+CustomShaderDefinition definition(const Module &vertex = vertex_module(), const Module &fragment = fragment_module()) {
+    CustomShaderDefinition result;
     result.vertex_shader = vertex.words();
     result.fragment_shader = fragment.words();
     return result;
 }
-CustomMaterialDefinition blended_definition(const Module &fragment) {
+CustomShaderDefinition blended_definition(const Module &fragment) {
     auto result = definition(vertex_module(), fragment);
     result.blend = CustomBlend::blended;
     return result;
 }
+std::shared_ptr<const CustomShader> shader(CustomShaderDefinition value = definition()) {
+    return std::make_shared<const CustomShader>(std::move(value));
+}
+// A material named "surface" of @p drawn, without parameters or textures.
+CustomMaterialDefinition material_definition(std::shared_ptr<const CustomShader> drawn = shader()) {
+    CustomMaterialDefinition result;
+    result.name = "surface";
+    result.shader = std::move(drawn);
+    return result;
+}
 Texture texture() { return {std::make_shared<Image>(Image{1, 1, {255, 255, 255, 255}}), {}, TextureEncoding::srgb}; }
+void rejects(const CustomShaderDefinition &value, const std::string &message) {
+    CHECK_THROWS_WITH_AS((void)CustomShader(value), message.c_str(), std::invalid_argument);
+}
 void rejects(const CustomMaterialDefinition &value, const std::string &message) {
     CHECK_THROWS_WITH_AS((void)CustomMaterial(value), message.c_str(), std::invalid_argument);
 }
@@ -244,7 +255,7 @@ struct TempFile {
 };
 } // namespace
 
-TEST_CASE("A custom material records the interface that its shaders declare") {
+TEST_CASE("A custom shader records the interface that its stages declare") {
     auto vertex = vertex_module();
     (void)vertex.input_at(4, vertex.vector(4, true));
     (void)vertex.poses();
@@ -253,6 +264,7 @@ TEST_CASE("A custom material records the interface that its shaders declare") {
     const auto draw =
         vertex.structure({{vertex.mat4(), 0}, {vertex.unsigned_scalar(), 68}, {vertex.vector(4), 80}}, {0});
     (void)vertex.variable(push_constant, draw);
+    (void)vertex.resource(uniform, vertex.structure({{vertex.vector(4), 0}}), 2, 0);
     auto fragment = fragment_module();
     (void)fragment.sampler(0, 1);
     (void)fragment.sampler(0, 2);
@@ -263,10 +275,7 @@ TEST_CASE("A custom material records the interface that its shaders declare") {
     auto value = blended_definition(fragment);
     value.vertex_shader = vertex.words();
     value.shadow_vertex_shader = shadow.words();
-    value.parameters.resize(28);
-    value.textures = {texture()};
-    const CustomMaterial custom(value);
-    CHECK(custom.name() == "surface");
+    const CustomShader custom(value);
     CHECK(custom.blend() == CustomBlend::blended);
     CHECK(custom.vertex_attributes() == 0b10001U);
     CHECK(custom.shadow_vertex_attributes() == 0b10000001U);
@@ -274,43 +283,107 @@ TEST_CASE("A custom material records the interface that its shaders declare") {
     CHECK(custom.reads_opaque_depth());
     CHECK(custom.reads_opaque_color());
     CHECK_FALSE(custom.reads_placements());
-    const CustomMaterial plain(definition());
+    // The fragment shader's parameter block spans more than the vertex shader's.
+    CHECK(custom.parameter_bytes() == 28);
+    CHECK(custom.texture_count() == 1);
+    CHECK(custom.definition().shadow_vertex_shader == value.shadow_vertex_shader);
+    const CustomShader plain(definition());
     CHECK_FALSE(plain.casts_shadows());
     CHECK_FALSE(plain.reads_opaque_depth());
     CHECK_FALSE(plain.reads_opaque_color());
     CHECK_FALSE(plain.reads_placements());
+    CHECK(plain.parameter_bytes() == 0);
+    CHECK(plain.texture_count() == 0);
+    // The highest texture counts, whatever the order of the declarations.
+    auto textured = fragment_module();
+    (void)textured.sampler(2, 4);
+    (void)textured.sampler(2, 2);
+    CHECK(CustomShader(definition(vertex_module(), textured)).texture_count() == 4);
 
-    // Drawing placements takes all three rows in every vertex shader the material has.
+    // The depth-only variant's stages count too: one declares a longer block, the other a later texture.
+    auto shadow_vertex = vertex_module();
+    (void)shadow_vertex.resource(
+        uniform, shadow_vertex.structure({{shadow_vertex.vector(4), 0}, {shadow_vertex.vector(4), 32}}), 2, 0);
+    auto shadow_fragment = Module(fragment_model);
+    (void)shadow_fragment.input_at(0, shadow_fragment.vector(2));
+    (void)shadow_fragment.sampler(2, 3);
+    value.shadow_vertex_shader = shadow_vertex.words();
+    value.shadow_fragment_shader = shadow_fragment.words();
+    const CustomShader variant(value);
+    CHECK(variant.parameter_bytes() == 48);
+    CHECK(variant.texture_count() == 3);
+
+    // Drawing placements takes all three rows in every vertex shader the shader has.
     const auto placed = [](std::initializer_list<std::uint32_t> rows) {
         auto module = vertex_module();
         for (const auto row : rows)
             (void)module.input_at(row, module.vector(4));
         return module.words();
     };
-    CHECK(CustomMaterial::placement_attributes == 0x700U);
+    CHECK(CustomShader::placement_attributes == 0x700U);
     auto rows = definition();
     rows.vertex_shader = placed({8, 9, 10});
-    CHECK(CustomMaterial(rows).vertex_attributes() == 0x701U);
-    CHECK(CustomMaterial(rows).reads_placements());
+    CHECK(CustomShader(rows).vertex_attributes() == 0x701U);
+    CHECK(CustomShader(rows).reads_placements());
     rows.vertex_shader = placed({8, 10});
-    CHECK_FALSE(CustomMaterial(rows).reads_placements());
+    CHECK_FALSE(CustomShader(rows).reads_placements());
     rows.vertex_shader = placed({8, 9, 10});
     rows.shadow_vertex_shader = placed({8, 9});
-    CHECK_FALSE(CustomMaterial(rows).reads_placements());
+    CHECK_FALSE(CustomShader(rows).reads_placements());
     rows.shadow_vertex_shader = placed({8, 9, 10});
-    CHECK(CustomMaterial(rows).reads_placements());
+    CHECK(CustomShader(rows).reads_placements());
+}
+
+TEST_CASE("A custom material holds its shader, name, parameters and textures") {
+    auto fragment = fragment_module();
+    (void)fragment.resource(uniform, fragment.structure({{fragment.vector(4), 0}}), 2, 0);
+    (void)fragment.sampler(2, 1);
+    const auto drawn = shader(definition(vertex_module(), fragment));
+    auto value = material_definition(drawn);
+    value.name = "water";
+    value.parameters.resize(20, std::byte{7});
+    value.textures = {texture(), texture()};
+    const CustomMaterial material(value);
+    CHECK(material.name() == "water");
+    CHECK(&material.shader() == drawn.get());
+    CHECK(material.definition().shader == drawn);
+    CHECK(material.definition().parameters == value.parameters);
+    CHECK(material.definition().textures.size() == 2);
+    // Many materials share one shader, which each holds.
+    const auto count = drawn.use_count();
+    const CustomMaterial tinted(value);
+    CHECK(drawn.use_count() == count + 1);
+}
+
+TEST_CASE("Custom shader definitions outside the documented limits are rejected") {
+    auto value = definition();
+    value.blend = static_cast<CustomBlend>(3);
+    rejects(value, "Unknown custom shader blend mode");
+    value = definition();
+    value.fragment_shader.clear();
+    rejects(value, "Custom shader needs a vertex and a fragment shader");
+    value = definition();
+    value.vertex_shader.clear();
+    rejects(value, "Custom shader needs a vertex and a fragment shader");
+    value = definition();
+    value.shadow_fragment_shader = fragment_module().words();
+    rejects(value, "Custom shader has a shadow fragment shader without a shadow vertex shader");
 }
 
 TEST_CASE("Custom material definitions outside the documented limits are rejected") {
-    auto value = definition();
+    auto value = material_definition();
     value.name.clear();
     rejects(value, "Custom material name must be 1 to 4096 bytes");
     value.name.assign(CustomMaterial::max_name_bytes + 1, 'n');
     rejects(value, "Custom material name must be 1 to 4096 bytes");
-    value = definition();
-    value.blend = static_cast<CustomBlend>(3);
-    rejects(value, "Unknown custom material blend mode");
-    value = definition();
+    value.name.assign(CustomMaterial::max_name_bytes, 'n');
+    CHECK_NOTHROW((void)CustomMaterial(value));
+    value = material_definition(nullptr);
+    rejects(value, "Custom material has no shader");
+    // A null shader is reported before the other fields.
+    value.parameters.resize(CustomMaterial::max_parameter_bytes + 1);
+    rejects(value, "Custom material has no shader");
+    value = material_definition();
     value.parameters.resize(CustomMaterial::max_parameter_bytes + 1);
     rejects(value, "Custom material parameters exceed 256 bytes");
     value.parameters.resize(CustomMaterial::max_parameter_bytes);
@@ -321,19 +394,41 @@ TEST_CASE("Custom material definitions outside the documented limits are rejecte
     rejects(value, "Invalid scene texture dimensions");
     value.textures = {Texture{std::make_shared<Image>(Image{1, 1, {}}), {}}};
     rejects(value, "Texture image has no texels");
-    value = definition();
+    value = material_definition();
     value.texel_retention = static_cast<TexelRetention>(2);
     rejects(value, "Unknown custom material texel retention");
-    value = definition();
-    value.fragment_shader.clear();
-    rejects(value, "Custom material needs a vertex and a fragment shader");
-    value = definition();
-    value.shadow_fragment_shader = fragment_module().words();
-    rejects(value, "Custom material has a shadow fragment shader without a shadow vertex shader");
+}
+
+TEST_CASE("A custom material supplies the parameters and textures that its shader declares") {
+    auto fragment = fragment_module();
+    (void)fragment.resource(uniform, fragment.structure({{fragment.vector(4), 0}, {fragment.vector(4), 16}}), 2, 0);
+    (void)fragment.sampler(2, 2);
+    const auto drawn = shader(definition(vertex_module(), fragment));
+    REQUIRE(drawn->parameter_bytes() == 32);
+    REQUIRE(drawn->texture_count() == 2);
+    auto value = material_definition(drawn);
+    value.textures = {texture(), texture()};
+    value.parameters.resize(31);
+    rejects(value, "Custom material supplies 31 parameter bytes, but its shader's parameter block spans 32");
+    value.parameters.clear();
+    rejects(value, "Custom material supplies 0 parameter bytes, but its shader's parameter block spans 32");
+    value.parameters.resize(32);
+    CHECK_NOTHROW((void)CustomMaterial(value));
+    // More than the shader reads is accepted.
+    value.parameters.resize(CustomMaterial::max_parameter_bytes);
+    value.textures.push_back(texture());
+    CHECK_NOTHROW((void)CustomMaterial(value));
+    value.textures = {texture()};
+    rejects(value, "Custom material supplies 1 texture, but its shader declares texture 1");
+    value.textures.clear();
+    rejects(value, "Custom material supplies 0 textures, but its shader declares texture 1");
+    // Short parameters are reported before missing textures.
+    value.parameters.resize(16);
+    rejects(value, "Custom material supplies 16 parameter bytes, but its shader's parameter block spans 32");
 }
 
 TEST_CASE("A custom material compiled until upload holds its textures' images until it is released") {
-    auto value = definition();
+    auto value = material_definition();
     value.textures = {texture(), texture()};
     value.textures.push_back(value.textures[0]); // A third texture sharing the first one's image.
     const std::weak_ptr<const Image> first = value.textures[0].image, second = value.textures[1].image;
@@ -358,7 +453,7 @@ TEST_CASE("A custom material compiled until upload holds its textures' images un
     CHECK_THROWS_WITH_AS((void)material->texel_images(), "Custom material texture texels were released after upload",
                          std::logic_error);
     // With TexelRetention::keep the definition's textures hold the images, and releasing does nothing.
-    auto kept = definition();
+    auto kept = material_definition();
     kept.textures = {texture()};
     const std::weak_ptr<const Image> held = kept.textures[0].image;
     const CustomMaterial retained(std::move(kept));
@@ -418,7 +513,7 @@ TEST_CASE("SPIR-V modules load from bytes and files in either byte order") {
     value.fragment_shader = load_spirv(fragment_file.path);
     CHECK(value.vertex_shader == vertex);
     CHECK(value.fragment_shader == fragment);
-    CHECK_NOTHROW((void)CustomMaterial(value));
+    CHECK_NOTHROW((void)CustomShader(value));
 }
 
 TEST_CASE("Bytes and files that cannot hold a SPIR-V module are rejected") {
@@ -427,7 +522,7 @@ TEST_CASE("Bytes and files that cannot hold a SPIR-V module are rejected") {
     };
     const auto size = "SPIR-V module must be between 1 byte and 16 MiB";
     rejects_bytes({}, size);
-    rejects_bytes(std::vector<std::byte>(CustomMaterial::max_shader_bytes + 4), size);
+    rejects_bytes(std::vector<std::byte>(CustomShader::max_shader_bytes + 4), size);
     auto bytes = module_bytes(vertex_module().words());
     bytes.pop_back();
     rejects_bytes(bytes, "SPIR-V module size must be a multiple of 4 bytes");
@@ -440,7 +535,7 @@ TEST_CASE("Bytes and files that cannot hold a SPIR-V module are rejected") {
     const TempFile empty({});
     CHECK_THROWS_WITH_AS((void)load_spirv(empty.path), size, std::runtime_error);
     const TempFile large(module_bytes(vertex_module().words()));
-    std::filesystem::resize_file(large.path, CustomMaterial::max_shader_bytes + 4);
+    std::filesystem::resize_file(large.path, CustomShader::max_shader_bytes + 4);
     CHECK_THROWS_WITH_AS((void)load_spirv(large.path), size, std::runtime_error);
     const TempFile odd(bytes);
     CHECK_THROWS_WITH_AS((void)load_spirv(odd.path), "SPIR-V module size must be a multiple of 4 bytes",
@@ -486,15 +581,12 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
             "The fragment shader declares set 3 binding 0, which the custom material interface does not provide");
     fragment = fragment_module();
     (void)fragment.sampler(2, 1, true);
-    auto value = definition(vertex_module(), fragment);
-    value.textures = {texture()};
-    rejects(value, "The fragment shader declares set 2 binding 1 as sampler2DShadow, but the custom material "
-                   "interface provides a sampler2D there");
+    rejects(definition(vertex_module(), fragment), "The fragment shader declares set 2 binding 1 as sampler2DShadow, "
+                                                   "but the custom material interface provides a sampler2D there");
     fragment = fragment_module();
-    (void)fragment.sampler(2, 2);
-    value = definition(vertex_module(), fragment);
-    value.textures = {texture()};
-    rejects(value, "The fragment shader declares texture 1 (set 2, binding 2), but the material supplies 1 texture");
+    (void)fragment.sampler(2, 5);
+    rejects(definition(vertex_module(), fragment),
+            "The fragment shader declares set 2 binding 5, which the custom material interface does not provide");
 
     vertex = vertex_module();
     (void)vertex.resource(uniform, vertex.structure({{vertex.vector(4), 0}}), 0, 0);
@@ -507,7 +599,7 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
     // The fog's shape and sunlight follow the time, and nothing follows them.
     vertex = vertex_module();
     (void)vertex.resource(uniform, vertex.structure({{vertex.vector(4), 304}, {vertex.vector(4), 320}}), 0, 0);
-    CHECK_NOTHROW((void)CustomMaterial(definition(vertex)));
+    CHECK_NOTHROW((void)CustomShader(definition(vertex)));
     vertex = vertex_module();
     (void)vertex.resource(uniform, vertex.structure({{vertex.scalar(), 304}}), 0, 0);
     rejects(definition(vertex), "The vertex shader declares the frame block member at offset 304 as float, but the "
@@ -534,7 +626,7 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
             "The fragment shader declares the pose buffer (set 1, binding 0), which only vertex shaders can read");
     vertex = vertex_module();
     (void)vertex.sampler(0, 1);
-    value = blended_definition(fragment_module());
+    auto value = blended_definition(fragment_module());
     value.vertex_shader = vertex.words();
     rejects(value, "The vertex shader declares opaque depth (set 0, binding 1), which only fragment shaders can read");
     fragment = fragment_module();
@@ -556,14 +648,18 @@ TEST_CASE("Shader interfaces that differ from the documented one are rejected") 
                    "target");
 }
 
-TEST_CASE("A parameter block larger than the supplied parameters is rejected") {
+TEST_CASE("A parameter block larger than a material can hold is rejected") {
     auto fragment = fragment_module();
-    (void)fragment.resource(uniform, fragment.structure({{fragment.vector(4), 0}, {fragment.vector(4), 16}}), 2, 0);
-    auto value = definition(vertex_module(), fragment);
-    value.parameters.resize(16);
-    rejects(value, "The fragment shader declares a parameter block of 32 bytes, but the material supplies 16");
-    value.parameters.resize(32);
-    CHECK_NOTHROW((void)CustomMaterial(value));
+    (void)fragment.resource(uniform, fragment.structure({{fragment.vector(4), 0}, {fragment.vector(4), 256}}), 2, 0);
+    rejects(definition(vertex_module(), fragment),
+            "The fragment shader declares a parameter block of 272 bytes, but custom materials hold at most 256");
+    fragment = fragment_module();
+    (void)fragment.resource(uniform, fragment.structure({{fragment.vector(4), 0}, {fragment.vector(4), 240}}), 2, 0);
+    CHECK(CustomShader(definition(vertex_module(), fragment)).parameter_bytes() == CustomMaterial::max_parameter_bytes);
+    auto vertex = vertex_module();
+    (void)vertex.resource(uniform, vertex.structure({{vertex.scalar(), 256}}), 2, 0);
+    rejects(definition(vertex),
+            "The vertex shader declares a parameter block of 260 bytes, but custom materials hold at most 256");
 }
 
 namespace {
@@ -584,7 +680,7 @@ std::shared_ptr<const Mesh> mesh(std::size_t materials = 1) {
     return Mesh::compile(asset);
 }
 std::shared_ptr<const CustomMaterial> material(std::string name) {
-    auto value = definition();
+    auto value = material_definition();
     value.name = std::move(name);
     return std::make_shared<const CustomMaterial>(std::move(value));
 }
@@ -644,10 +740,10 @@ TEST_CASE("Only custom materials that read placements draw them") {
     auto rows = vertex_module();
     for (const std::uint32_t row : {8U, 9U, 10U})
         (void)rows.input_at(row, rows.vector(4));
-    auto value = definition(rows);
+    auto value = material_definition(shader(definition(rows)));
     value.name = "grass";
     const auto grass = std::make_shared<const CustomMaterial>(std::move(value));
-    REQUIRE(grass->reads_placements());
+    REQUIRE(grass->shader().reads_placements());
 
     Scene scene;
     const auto shape = mesh(2);

@@ -156,7 +156,7 @@ class Scene {
     /// Render state of one object's MeshRenderer. A renderer draws a primitive only when #visible,
     /// #active and its #primitive_visible entry are all true, and into the key light's shadow maps
     /// only when #casts_shadows is also true and its material is lit and not AlphaMode::blend, or, for
-    /// a primitive whose material slot has a custom material, when that material casts shadows.
+    /// a primitive whose material slot has a custom material, when that material's shader casts shadows.
     struct Instance {
         /// Shared immutable mesh.
         std::shared_ptr<const Mesh> mesh;
@@ -652,8 +652,8 @@ class MeshRenderer {
     /// mesh's Material again when @p custom is null (Scene::Instance::custom_materials). The object's
     /// factor for that material still reaches the custom shaders. Throws `std::out_of_range` for an
     /// index outside the mesh's materials, and `std::invalid_argument` when the renderer draws
-    /// placements that @p custom does not read (CustomMaterial::reads_placements(): "A custom material
-    /// that draws placements must read them").
+    /// placements that the shader of @p custom does not read (CustomShader::reads_placements(): "A custom
+    /// material that draws placements must read them").
     void set_custom_material(std::size_t material, std::shared_ptr<const CustomMaterial> custom);
     /// Whether primitive @p primitive is shown, apart from the renderer's own visibility. Throws
     /// `std::out_of_range` as set_primitive_visible() does.
@@ -673,8 +673,8 @@ class MeshRenderer {
     /// time proportional to the mesh's primitives, as before, not to the placements. Throws `std::logic_error` when
     /// the renderer has a pose (set_pose(), or one that a document or prefab supplied): "A renderer with a pose
     /// cannot draw placements", and `std::invalid_argument` when @p placements copy another mesh ("Placements copy
-    /// another mesh") or a custom material of the renderer does not read them (CustomMaterial::reads_placements():
-    /// "A custom material that draws placements must read them").
+    /// another mesh") or the shader of a custom material of the renderer does not read them
+    /// (CustomShader::reads_placements(): "A custom material that draws placements must read them").
     void set_placements(std::shared_ptr<const MeshPlacements> placements);
     /// Draws one copy of the renderer's current mesh at each of @p transforms, as
     /// `set_placements(MeshPlacements::create(mesh(), transforms))` does: the set is created on the calling thread, in

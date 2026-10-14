@@ -214,7 +214,7 @@ void create_atmosphere(std::span<const std::uint32_t> transmittance, std::span<c
         info.stage.module = atmosphere_shaders[i];
         info.stage.pName = "main";
         info.layout = atmosphere_pipeline_layout;
-        check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &atmosphere_pipelines[i]),
+        check(vkCreateComputePipelines(device, pipeline_cache, 1, &info, nullptr, &atmosphere_pipelines[i]),
               "Create atmosphere pipeline");
     }
 }

@@ -179,8 +179,7 @@ class Grid {
 inline std::shared_ptr<const anima::CustomMaterial> ramp_material() {
     anima::CustomMaterialDefinition definition;
     definition.name = "tone mapping ramp";
-    definition.vertex_shader = custom_material_test::words(custom_material_test::surface_vertex);
-    definition.fragment_shader = custom_material_test::words(ramp_fragment);
+    definition.shader = custom_material_test::shader(custom_material_test::surface_vertex, ramp_fragment);
     definition.parameters = custom_material_test::parameters({{float(ramp_scale), 0, 0, 0}});
     return std::make_shared<const anima::CustomMaterial>(std::move(definition));
 }

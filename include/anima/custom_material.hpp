@@ -3,18 +3,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 /// @file
-/// Custom materials: application shaders that VulkanRenderer runs on scene meshes in place of their Material.
+/// Custom shaders and materials: application shaders that VulkanRenderer runs on scene meshes in place of their
+/// Material.
 ///
-/// Part of the `anima::assets` target, which validates custom materials without a display or GPU. A custom
-/// material pairs SPIR-V vertex and fragment shaders that the application compiles, for example with the Vulkan
-/// SDK's glslc, with a bounded parameter block, textures and a blend mode, as a ShaderMaterial does in Godot or a
-/// material with a custom shader does in Unity. The application supplies only shading: the renderer creates the
-/// pipelines and owns pass order, depth, sorting, synchronization and every Vulkan object.
+/// Part of the `anima::assets` target, which validates custom shaders and materials without a display or GPU. A
+/// CustomShader holds SPIR-V vertex and fragment shaders that the application compiles, for example with the Vulkan
+/// SDK's glslc, and a blend mode, validated once. A CustomMaterial pairs a shader with a bounded parameter block and
+/// textures, so that materials which differ only in those share one shader, as the Materials of one Shader do in Unity,
+/// or the ShaderMaterials of one Shader in Godot. The application supplies only shading: the renderer creates the
+/// pipelines, once per shader, and owns pass order, depth, sorting, synchronization and every Vulkan object.
 /// MeshRenderer::set_custom_material assigns a custom material to one material slot of one object, and scene and prefab
 /// documents store its name.
 ///
@@ -30,7 +33,7 @@
 /// tangent and 7 `float` alpha; then per instance, 8 to 10 `vec4`, rows 0 to 2 of the affine matrix of the
 /// placement being drawn (MeshRenderer::set_placements), whose last row is (0, 0, 0, 1), or of an identity for an
 /// object without placements. A shader may read any subset, but only one that reads all three placement rows, in every
-/// vertex shader it has, can draw placements (reads_placements()).
+/// vertex shader it has, can draw placements (CustomShader::reads_placements()).
 ///
 /// Descriptors:
 /// - Set 0, binding 0, any stage: the `std140` uniform block `AnimaFrame`, the same for every draw of a frame. At
@@ -47,7 +50,7 @@
 ///   HeightFog::sky_distance and HeightFog::sun_anisotropy; and 320 `vec4 fogSun`, HeightFog::sun_scattering times
 ///   `sunIrradiance`, capped at the largest float, with w 0. `animaFogged()` in custom_material.glsl applies this fog
 ///   as the standard material does.
-/// - Set 0, binding 1, fragment shaders of blended and additive materials only: `sampler2D` opaque depth, the
+/// - Set 0, binding 1, fragment shaders of blended and additive shaders only: `sampler2D` opaque depth, the
 ///   depth buffer after every opaque draw of the frame, at the scene target's size, so that `gl_FragCoord.xy` times
 ///   the `zw` of `viewport` addresses the fragment's own pixel; reversed Vulkan depth from 1 at the near plane to 0 at
 ///   the far one in `r`, 0 where nothing opaque drew, sampled with nearest filtering and clamped at the edges. Nearer
@@ -64,11 +67,11 @@
 ///   times the view distance scale (VulkanRenderer::set_view_distance_scale()), with an endless range ending at the
 ///   largest finite `float` and no end margin. The `xyz` of its second column is the
 ///   center of Mesh::rest_bounds(), which the range measures to once the object, and each placement, places it.
-/// - Set 2, binding 0, any stage: the parameter block, a uniform block that holds
+/// - Set 2, binding 0, any stage: the parameter block, a uniform block that holds the drawing material's
 ///   CustomMaterialDefinition::parameters from its start, laid out as the shader declares it.
-/// - Set 2, bindings 1 to 4, any stage: `sampler2D` for CustomMaterialDefinition::textures 0 to 3, sampled as their
-///   Sampler states, through mip chains built as texture_mips() builds them when Sampler::mipmapped is set, less the
-///   top levels that VulkanRenderer::set_texture_mip_skip() drops, and filtered anisotropically as
+/// - Set 2, bindings 1 to 4, any stage: `sampler2D` for the drawing material's CustomMaterialDefinition::textures 0 to
+///   3, sampled as their Sampler states, through mip chains built as texture_mips() builds them when Sampler::mipmapped
+///   is set, less the top levels that VulkanRenderer::set_texture_mip_skip() drops, and filtered anisotropically as
 ///   VulkanRenderer::max_anisotropy() describes.
 ///
 /// Push constants, any stage: the block `AnimaDraw`, per draw. At offset 0 `mat4 viewProjection`, the matrix of
@@ -93,8 +96,8 @@
 /// is 0, and in the margins those that the standard material's 4x4 ordered dither discards, the pixels complementary in
 /// a begin margin to those of an end margin. The depth-only variant's vertex shader moves a copy out of the clip
 /// volume, for example to `animaCulledPosition`, (2, 2, 2, 1), while `abs(animaVisibility())` is at most
-/// `animaShadowCastShare`, 0.5. A material whose shaders do neither draws whole every copy that the renderer does not
-/// skip, including copies outside the range.
+/// `animaShadowCastShare`, 0.5. A shader that does neither draws whole every copy that the renderer does not skip,
+/// including copies outside the range.
 ///
 /// On a Mesh compiled with Mesh::compile_impostor(), a custom material draws the quad's own vertices, not an impostor
 /// facing the eye: their positions lie on a diagonal plane of the cube around the sphere of Mesh::impostor(), and
@@ -116,17 +119,19 @@
 ///
 /// ## Validation
 ///
-/// The constructor reads each module's header, instruction framing, capabilities, entry point, types, decorations
-/// and global variables, and compares its interface with the one above; it does not apply the whole SPIR-V
+/// The CustomShader constructor reads each module's header, instruction framing, capabilities, entry point, types,
+/// decorations and global variables, and compares its interface with the one above; it does not apply the whole SPIR-V
 /// specification, so supply modules that `spirv-val` accepts, as glslc writes them. A declared resource counts as
 /// read even when the shader never uses it. Accepted modules use only the `Shader`, `Matrix`, `ImageQuery` and
 /// `DerivativeControl` capabilities, no extensions, only the `GLSL.std.450` extended instructions, and the
 /// `Logical` addressing and `GLSL450` memory models, which a Vulkan 1.1 device runs without optional features.
 /// The matrices of the frame block, the draw push constants and the pose buffer are column-major; resources need
-/// explicit sets and bindings, and inputs and outputs explicit locations without components.
+/// explicit sets and bindings, and inputs and outputs explicit locations without components. The shader records the
+/// parameter bytes and textures that its stages declare, and the CustomMaterial constructor requires each material of
+/// it to supply them.
 
 namespace anima {
-/// How a custom material's fragments combine with the scene target. VulkanRenderer states the passes and order.
+/// How a custom shader's fragments combine with the scene target. VulkanRenderer states the passes and order.
 enum class CustomBlend {
     /// Replaces the target and writes depth, drawing with the opaque and masked meshes.
     opaque,
@@ -139,88 +144,57 @@ enum class CustomBlend {
     additive
 };
 
-/// Everything that defines a custom material; CustomMaterial validates it.
-struct CustomMaterialDefinition {
-    /// The name that scene and prefab documents store, 1 to 4,096 bytes. Documents resolve it through a
-    /// CustomMaterialResolver, and one document cannot name two different materials alike.
-    std::string name;
+/// Everything that defines a custom shader; CustomShader validates it.
+struct CustomShaderDefinition {
     /// SPIR-V words of the vertex shader, in host byte order, such as glslc writes with `-mfmt=c`, or
     /// load_spirv() reads from a `.spv` file.
     std::vector<std::uint32_t> vertex_shader;
     /// SPIR-V words of the fragment shader.
     std::vector<std::uint32_t> fragment_shader;
-    /// SPIR-V words of the depth-only variant's vertex shader. Empty, the default, means the material casts no
-    /// shadows; otherwise the renderer draws it into the shadow maps of objects that cast shadows
-    /// (Scene::Instance::casts_shadows), whatever the blend mode, and what it covers casts a full shadow.
+    /// SPIR-V words of the depth-only variant's vertex shader. Empty, the default, means the shader's materials cast no
+    /// shadows; otherwise the renderer draws them into the shadow maps of objects that cast shadows
+    /// (Scene::Instance::casts_shadows), whatever the blend mode, and what they cover casts a full shadow.
     std::vector<std::uint32_t> shadow_vertex_shader;
     /// SPIR-V words of the depth-only variant's fragment shader, which may discard fragments and writes no color.
     /// Empty, the default, writes the depth of every covered pixel. It requires #shadow_vertex_shader.
     std::vector<std::uint32_t> shadow_fragment_shader;
     /// How the fragments combine with the target, which also selects the pass that draws them.
     CustomBlend blend = CustomBlend::opaque;
-    /// Contents of the parameter block, at most CustomMaterial::max_parameter_bytes bytes, and at least as many
-    /// as any stage's declaration of the block spans. Encode them as the shaders lay the block out, `std140` in
-    /// GLSL.
-    std::vector<std::byte> parameters;
-    /// At most CustomMaterial::max_textures textures, valid as validate_scene() requires of a mesh's textures and
-    /// with texels, bound in order at set 2, bindings 1 to 4. Their images are shared, not copied (see Image).
-    std::vector<Texture> textures;
-    /// How long the material holds its textures' texels. With TexelRetention::until_upload, the textures of
-    /// CustomMaterial::definition() refer to images without texels, and CustomMaterial::texel_images() returns the
-    /// supplied ones while it or anything else holds them.
-    TexelRetention texel_retention = TexelRetention::keep;
 };
 
-/// A validated, immutable custom material.
+/// A validated, immutable custom shader: the stages and blend mode that custom materials draw with.
 ///
-/// Share it as `std::shared_ptr<const CustomMaterial>`: objects that use it hold that pointer, and VulkanRenderer
-/// caches its pipelines and GPU resources per CustomMaterial object, so assign one material to many objects rather
-/// than creating copies. Nothing changes after construction, so a CustomMaterial may be read from several
-/// threads.
-class CustomMaterial {
+/// Share it as `std::shared_ptr<const CustomShader>`: materials hold that pointer, and VulkanRenderer creates shader
+/// modules and pipelines once per CustomShader object, which every material of the shader draws through, so build
+/// materials that differ only in parameters or textures from one shader rather than from copies. Nothing changes after
+/// construction, so a CustomShader may be read from several threads.
+class CustomShader {
   public:
-    /// Largest CustomMaterialDefinition::name, in bytes.
-    static constexpr std::size_t max_name_bytes = 4096;
-    /// Largest parameter block, in bytes; the minimum `maxUniformBufferRange` of Vulkan devices is far larger.
-    static constexpr std::size_t max_parameter_bytes = 256;
-    /// Most textures a material binds.
-    static constexpr std::size_t max_textures = 4;
     /// Largest shader module, in bytes.
     static constexpr std::size_t max_shader_bytes = 16 * 1024 * 1024;
     /// The bits of vertex_attributes() and shadow_vertex_attributes() for the three placement rows, locations 8 to 10,
     /// all of which reads_placements() requires.
     static constexpr std::uint32_t placement_attributes = 1U << 8 | 1U << 9 | 1U << 10;
 
-    /// Validates @p definition and keeps it, holding its textures' images as
-    /// CustomMaterialDefinition::texel_retention says.
+    /// Validates @p definition and keeps it.
     ///
-    /// Throws `std::invalid_argument` before keeping anything: for a name that is empty or longer than #max_name_bytes;
-    /// for a blend mode other than the CustomBlend enumerators; for an unknown texel retention; for more than
-    /// #max_parameter_bytes parameters or #max_textures textures, or an invalid texture, including one whose image has
-    /// no texels; for a missing vertex or fragment shader, or a shadow fragment shader without a shadow vertex shader;
-    /// for a module that is not SPIR-V, is larger than #max_shader_bytes, has broken instruction framing, uses a SPIR-V
-    /// version, capability, extension, extended instruction set or memory model outside those listed in the file
-    /// documentation, or has no entry point named `main` for its stage; and for an interface that differs from the
-    /// documented one: an undocumented or mistyped input, output or resource, a resource in a stage that cannot read
-    /// it, opaque depth or color in an opaque material or the depth-only variant, a parameter block larger than
-    /// CustomMaterialDefinition::parameters, a texture binding beyond the supplied textures, a writable pose buffer, or
-    /// a fragment shader input that the preceding vertex shader does not write with the same type. Each message names
-    /// the stage and the mismatch.
-    explicit CustomMaterial(CustomMaterialDefinition definition);
-    /// The validated definition. With TexelRetention::until_upload its textures' images have no texels.
-    [[nodiscard]] const CustomMaterialDefinition &definition() const noexcept { return definition_; }
-    /// The image of each texture of definition(), in order, with its texels, as Mesh::texel_images() returns a
-    /// mesh's; throws `std::logic_error` ("Custom material texture texels were released after upload") once one
-    /// that TexelRetention::until_upload let go is gone. Safe to call from any thread.
-    [[nodiscard]] std::vector<std::shared_ptr<const Image>> texel_images() const;
-    /// Ends the material's own hold on the images of TexelRetention::until_upload, as VulkanRenderer does once it
-    /// has uploaded them, and as Mesh::release_texels() does for a mesh; does nothing for TexelRetention::keep.
-    void release_texels() const noexcept;
-    /// CustomMaterialDefinition::name.
-    [[nodiscard]] const std::string &name() const noexcept { return definition_.name; }
-    /// CustomMaterialDefinition::blend.
+    /// Throws `std::invalid_argument` before keeping anything: for a blend mode other than the CustomBlend enumerators
+    /// ("Unknown custom shader blend mode"); for a missing vertex or fragment shader ("Custom shader needs a vertex and
+    /// a fragment shader"), or a shadow fragment shader without a shadow vertex shader ("Custom shader has a shadow
+    /// fragment shader without a shadow vertex shader"); for a module that is not SPIR-V, is larger than
+    /// #max_shader_bytes, has broken instruction framing, uses a SPIR-V version, capability, extension, extended
+    /// instruction set or memory model outside those listed in the file documentation, or has no entry point named
+    /// `main` for its stage; and for an interface that differs from the documented one: an undocumented or mistyped
+    /// input, output or resource, a resource in a stage that cannot read it, opaque depth or color in an opaque shader
+    /// or the depth-only variant, a parameter block larger than CustomMaterial::max_parameter_bytes, a writable pose
+    /// buffer, or a fragment shader input that the preceding vertex shader does not write with the same type. Each
+    /// message about a module names its stage and the mismatch.
+    explicit CustomShader(CustomShaderDefinition definition);
+    /// The validated definition.
+    [[nodiscard]] const CustomShaderDefinition &definition() const noexcept { return definition_; }
+    /// CustomShaderDefinition::blend.
     [[nodiscard]] CustomBlend blend() const noexcept { return definition_.blend; }
-    /// Whether the material has a depth-only variant, and so casts shadows.
+    /// Whether the shader has a depth-only variant, so that its materials cast shadows.
     [[nodiscard]] bool casts_shadows() const noexcept { return !definition_.shadow_vertex_shader.empty(); }
     /// Vertex attributes that the vertex shader declares: bit `i` for location `i`.
     [[nodiscard]] std::uint32_t vertex_attributes() const noexcept { return vertex_attributes_; }
@@ -233,30 +207,104 @@ class CustomMaterial {
         return (vertex_attributes_ & rows) == rows && (!casts_shadows() || (shadow_vertex_attributes_ & rows) == rows);
     }
     /// Whether the fragment shader declares opaque depth; either input makes the renderer copy opaque depth and
-    /// color on frames that draw the material.
+    /// color on frames that draw a material of the shader.
     [[nodiscard]] bool reads_opaque_depth() const noexcept { return reads_opaque_depth_; }
     /// Whether the fragment shader declares opaque color; either input makes the renderer copy opaque depth and
-    /// color on frames that draw the material.
+    /// color on frames that draw a material of the shader.
     [[nodiscard]] bool reads_opaque_color() const noexcept { return reads_opaque_color_; }
+    /// Bytes from the start of the parameter block (set 2, binding 0) to the end of its last member, in the stage whose
+    /// declaration spans the most, or 0 when no stage declares it: at most CustomMaterial::max_parameter_bytes. Each
+    /// material of the shader supplies at least this many (CustomMaterialDefinition::parameters).
+    [[nodiscard]] std::size_t parameter_bytes() const noexcept { return parameter_bytes_; }
+    /// One more than the highest texture that a stage declares, texture `i` at set 2, binding `i + 1`, or 0 when no
+    /// stage declares one: at most CustomMaterial::max_textures. Each material of the shader supplies at least this
+    /// many (CustomMaterialDefinition::textures).
+    [[nodiscard]] std::size_t texture_count() const noexcept { return texture_count_; }
+
+  private:
+    CustomShaderDefinition definition_;
+    std::uint32_t vertex_attributes_{}, shadow_vertex_attributes_{};
+    bool reads_opaque_depth_{}, reads_opaque_color_{};
+    std::size_t parameter_bytes_{}, texture_count_{};
+};
+
+/// Everything that defines a custom material; CustomMaterial validates it.
+struct CustomMaterialDefinition {
+    /// The name that scene and prefab documents store, 1 to 4,096 bytes. Documents resolve it through a
+    /// CustomMaterialResolver, and one document cannot name two different materials alike.
+    std::string name;
+    /// The shader that draws the material, which the material holds.
+    std::shared_ptr<const CustomShader> shader;
+    /// Contents of the parameter block, at most CustomMaterial::max_parameter_bytes bytes, and at least
+    /// CustomShader::parameter_bytes(). Encode them as the shader lays the block out, `std140` in GLSL.
+    std::vector<std::byte> parameters;
+    /// At most CustomMaterial::max_textures textures, and at least CustomShader::texture_count(), valid as
+    /// validate_scene() requires of a mesh's textures and with texels, bound in order at set 2, bindings 1 to 4. Their
+    /// images are shared, not copied (see Image).
+    std::vector<Texture> textures;
+    /// How long the material holds its textures' texels. With TexelRetention::until_upload, the textures of
+    /// CustomMaterial::definition() refer to images without texels, and CustomMaterial::texel_images() returns the
+    /// supplied ones while it or anything else holds them.
+    TexelRetention texel_retention = TexelRetention::keep;
+};
+
+/// A validated, immutable custom material: a CustomShader with its parameters and textures.
+///
+/// Share it as `std::shared_ptr<const CustomMaterial>`: objects that use it hold that pointer, and VulkanRenderer
+/// caches its parameter buffer, textures and descriptors per CustomMaterial object, so assign one material to many
+/// objects rather than creating copies. Nothing changes after construction, so a CustomMaterial may be read from
+/// several threads.
+class CustomMaterial {
+  public:
+    /// Largest CustomMaterialDefinition::name, in bytes.
+    static constexpr std::size_t max_name_bytes = 4096;
+    /// Largest parameter block, in bytes; the minimum `maxUniformBufferRange` of Vulkan devices is far larger.
+    static constexpr std::size_t max_parameter_bytes = 256;
+    /// Most textures a material binds.
+    static constexpr std::size_t max_textures = 4;
+
+    /// Validates @p definition and keeps it, holding its shader, and its textures' images as
+    /// CustomMaterialDefinition::texel_retention says.
+    ///
+    /// Throws `std::invalid_argument` before keeping anything, in this order: for a name that is empty or longer than
+    /// #max_name_bytes ("Custom material name must be 1 to 4096 bytes"); for a null shader ("Custom material has no
+    /// shader"); for an unknown texel retention ("Unknown custom material texel retention"); for more than
+    /// #max_parameter_bytes parameters ("Custom material parameters exceed 256 bytes") or #max_textures textures
+    /// ("Custom material has more than 4 textures"); for an invalid texture, as validate_scene() words it, including
+    /// one whose image has no texels; for fewer parameters than CustomShader::parameter_bytes(), as in "Custom material
+    /// supplies 16 parameter bytes, but its shader's parameter block spans 32"; and for fewer textures than
+    /// CustomShader::texture_count(), as in "Custom material supplies 1 texture, but its shader declares texture 2".
+    explicit CustomMaterial(CustomMaterialDefinition definition);
+    /// The validated definition. With TexelRetention::until_upload its textures' images have no texels.
+    [[nodiscard]] const CustomMaterialDefinition &definition() const noexcept { return definition_; }
+    /// The image of each texture of definition(), in order, with its texels, as Mesh::texel_images() returns a
+    /// mesh's; throws `std::logic_error` ("Custom material texture texels were released after upload") once one
+    /// that TexelRetention::until_upload let go is gone. Safe to call from any thread.
+    [[nodiscard]] std::vector<std::shared_ptr<const Image>> texel_images() const;
+    /// Ends the material's own hold on the images of TexelRetention::until_upload, as VulkanRenderer does once it
+    /// has uploaded them, and as Mesh::release_texels() does for a mesh; does nothing for TexelRetention::keep.
+    void release_texels() const noexcept;
+    /// CustomMaterialDefinition::name.
+    [[nodiscard]] const std::string &name() const noexcept { return definition_.name; }
+    /// CustomMaterialDefinition::shader, which is never null.
+    [[nodiscard]] const CustomShader &shader() const noexcept { return *definition_.shader; }
 
   private:
     CustomMaterialDefinition definition_;
-    std::uint32_t vertex_attributes_{}, shadow_vertex_attributes_{};
-    bool reads_opaque_depth_{}, reads_opaque_color_{};
     detail::TexelHoldPtr texels_;
 };
 
-/// Reads a SPIR-V module file of 1 byte to CustomMaterial::max_shader_bytes, such as glslc writes by default, as
+/// Reads a SPIR-V module file of 1 byte to CustomShader::max_shader_bytes, such as glslc writes by default, as
 /// spirv_words() reads its bytes. Throws `std::runtime_error` also when the file cannot be opened ("Cannot open
 /// SPIR-V file") or read ("Cannot read SPIR-V file").
 [[nodiscard]] std::vector<std::uint32_t> load_spirv(const std::filesystem::path &path);
-/// The words of the SPIR-V module in @p bytes, in host byte order, for a CustomMaterialDefinition shader; @p bytes
+/// The words of the SPIR-V module in @p bytes, in host byte order, for a CustomShaderDefinition shader; @p bytes
 /// is not retained.
 ///
 /// The module may be in either byte order: a first word that reads as the SPIR-V magic number in host order keeps
 /// every word as stored, and one that reads as its byte swap swaps every word. Nothing past the magic number is
-/// checked; CustomMaterial validates the module. Throws `std::runtime_error` for 0 bytes or more than
-/// CustomMaterial::max_shader_bytes ("SPIR-V module must be between 1 byte and 16 MiB"), for a size that is not a
+/// checked; CustomShader validates the module. Throws `std::runtime_error` for 0 bytes or more than
+/// CustomShader::max_shader_bytes ("SPIR-V module must be between 1 byte and 16 MiB"), for a size that is not a
 /// multiple of 4 ("SPIR-V module size must be a multiple of 4 bytes"), and for a first word that is neither ("SPIR-V
 /// module does not start with the SPIR-V magic number").
 [[nodiscard]] std::vector<std::uint32_t> spirv_words(std::span<const std::byte> bytes);

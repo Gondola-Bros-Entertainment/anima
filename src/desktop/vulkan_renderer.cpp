@@ -368,6 +368,10 @@ struct VulkanRenderer::Impl {
     VkDevice device{};
     // Suballocates every buffer and image, so allocations stay far below maxMemoryAllocationCount.
     VmaAllocator allocator{};
+    // Every graphics and compute pipeline compiles through it, so one whose shaders and state match an earlier one, as
+    // a custom shader's do when it is released and drawn again, can reuse the driver's compiled code. It lives in
+    // memory as long as the renderer and is never saved.
+    VkPipelineCache pipeline_cache{};
     std::uint32_t graphics_family{}, present_family{};
     VkQueue graphics_queue{}, present_queue{};
     bool maintenance_instance{}, present_fences{}, resize = true, stopped = false, fatal = false;
@@ -1012,6 +1016,8 @@ struct VulkanRenderer::Impl {
         allocator_info.device = device;
         allocator_info.instance = instance;
         check(vmaCreateAllocator(&allocator_info, &allocator), "Create memory allocator");
+        const VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        check(vkCreatePipelineCache(device, &cache, nullptr, &pipeline_cache), "Create pipeline cache");
         vkGetDeviceQueue(device, graphics_family, 0, &graphics_queue);
         vkGetDeviceQueue(device, present_family, 0, &present_queue);
         log(RendererLogLevel::info, "Presentation retirement: ",
@@ -1526,7 +1532,7 @@ struct VulkanRenderer::Impl {
         info.layout = state.layout;
         info.renderPass = state.pass;
         VkPipeline created{};
-        check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &created), action);
+        check(vkCreateGraphicsPipelines(device, pipeline_cache, 1, &info, nullptr, &created), action);
         return created;
     }
     // Returns a new pipeline of @p mode, which the caller owns, culling the faces that @p cull_mode names; one that
@@ -2927,6 +2933,8 @@ struct VulkanRenderer::Impl {
             resource_scenes.clear();
             resource_cache.clear();
             custom_cache.clear();
+            // After the materials, which point at their shaders' entries.
+            custom_shader_cache.clear();
             placement_cache.clear();
             identity_placement.reset();
             if (custom_frame_pool)
@@ -3022,6 +3030,8 @@ struct VulkanRenderer::Impl {
             // Every buffer and image, and so every allocation, is destroyed by now.
             if (allocator)
                 vmaDestroyAllocator(allocator);
+            if (pipeline_cache)
+                vkDestroyPipelineCache(device, pipeline_cache, nullptr);
             vkDestroyDevice(device, nullptr);
         }
         if (surface)

@@ -373,8 +373,8 @@ constexpr Color probe_color{.6, .4, .2};
 inline std::shared_ptr<const anima::CustomMaterial> fogged_probe() {
     anima::CustomMaterialDefinition definition;
     definition.name = "fogged probe";
-    definition.vertex_shader = custom_material_test::words(custom_material_test::surface_vertex);
-    definition.fragment_shader = custom_material_test::words(custom_material_test::probe_fragment);
+    definition.shader =
+        custom_material_test::shader(custom_material_test::surface_vertex, custom_material_test::probe_fragment);
     definition.parameters = custom_material_test::parameters({{0, 0, 0, 0}});
     constexpr std::uint32_t probe = 14; // The probe that custom_probe.frag fogs probe_color in.
     std::memcpy(definition.parameters.data(), &probe, sizeof(probe));

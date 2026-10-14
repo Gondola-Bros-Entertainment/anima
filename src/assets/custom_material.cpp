@@ -93,7 +93,7 @@ constexpr std::array<Attribute, 11> attribute_types{{{ANIMA_ATTRIBUTE_POSITION, 
                                                      {ANIMA_ATTRIBUTE_PLACEMENT_ROW0, "vec4"},
                                                      {ANIMA_ATTRIBUTE_PLACEMENT_ROW1, "vec4"},
                                                      {ANIMA_ATTRIBUTE_PLACEMENT_ROW2, "vec4"}}};
-static_assert(CustomMaterial::placement_attributes ==
+static_assert(CustomShader::placement_attributes ==
                   (1U << ANIMA_ATTRIBUTE_PLACEMENT_ROW0 | 1U << ANIMA_ATTRIBUTE_PLACEMENT_ROW1 |
                    1U << ANIMA_ATTRIBUTE_PLACEMENT_ROW2),
               "placement_attributes holds the vertex_attributes() bits of the placement rows' locations");
@@ -379,8 +379,8 @@ class Module {
             fail(stage_, "is invalid SPIR-V: it defines type " + number(id) + " twice");
     }
     void parse(std::span<const std::uint32_t> words) {
-        if (words.size() > CustomMaterial::max_shader_bytes / sizeof(std::uint32_t))
-            fail(stage_, "is larger than " + number(CustomMaterial::max_shader_bytes) + " bytes");
+        if (words.size() > CustomShader::max_shader_bytes / sizeof(std::uint32_t))
+            fail(stage_, "is larger than " + number(CustomShader::max_shader_bytes) + " bytes");
         if (words.size() < 5)
             fail(stage_, "is not SPIR-V: it is shorter than the five-word module header");
         if (words[0] == spv::swapped_magic)
@@ -567,6 +567,9 @@ struct StageInterface {
     std::map<std::uint32_t, std::string> inputs, outputs;
     std::uint32_t attributes{};
     bool opaque_depth{}, opaque_color{};
+    // Bytes that its parameter block spans, and one more than the highest texture that it declares.
+    std::uint64_t parameter_bytes{};
+    std::uint32_t textures{};
 };
 
 // Checks the members of @p structure, the block @p what, against @p documented.
@@ -591,7 +594,7 @@ void check_members(const Module &shader, std::uint32_t structure, const std::arr
     }
 }
 
-StageInterface check_stage(const Module &shader, const CustomMaterialDefinition &definition) {
+StageInterface check_stage(const Module &shader, CustomBlend blend) {
     const auto stage = shader.stage();
     StageInterface result;
     using Kind = Type::Kind;
@@ -637,7 +640,7 @@ StageInterface check_stage(const Module &shader, const CustomMaterialDefinition 
                 fail(stage, "declares " + input + ", which only fragment shaders can read");
             if (stage == Stage::shadow_fragment)
                 fail(stage, "declares " + input + ", which the depth-only variant cannot read");
-            if (definition.blend == CustomBlend::opaque)
+            if (blend == CustomBlend::opaque)
                 fail(stage, "declares " + input + ", but only blended and additive custom materials can read it");
             (binding == 1 ? result.opaque_depth : result.opaque_color) = true;
         } else if (set == 1 && binding == 0) {
@@ -654,15 +657,14 @@ StageInterface check_stage(const Module &shader, const CustomMaterialDefinition 
         } else if (set == 2 && binding == 0) {
             expect("uniform block", "the parameter uniform block");
             const auto bytes = shader.extent(pointee);
-            if (bytes > definition.parameters.size())
-                fail(stage, "declares a parameter block of " + number(bytes) + " bytes, but the material supplies " +
-                                number(definition.parameters.size()));
+            if (bytes > CustomMaterial::max_parameter_bytes)
+                fail(stage, "declares a parameter block of " + number(bytes) +
+                                " bytes, but custom materials hold at most " +
+                                number(CustomMaterial::max_parameter_bytes));
+            result.parameter_bytes = bytes;
         } else if (set == 2 && binding >= 1 && binding <= CustomMaterial::max_textures) {
             expect("sampler2D", "a sampler2D");
-            if (binding > definition.textures.size())
-                fail(stage, "declares texture " + number(binding - 1) + " (set 2, binding " + number(binding) +
-                                "), but the material supplies " + number(definition.textures.size()) +
-                                (definition.textures.size() == 1 ? " texture" : " textures"));
+            result.textures = std::max(result.textures, binding);
         } else
             fail(stage, "declares " + where + ", which the custom material interface does not provide");
     }
@@ -747,36 +749,61 @@ void match(const StageInterface &vertex, const StageInterface &fragment, Stage f
 }
 } // namespace
 
-CustomMaterial::CustomMaterial(CustomMaterialDefinition definition) : definition_(std::move(definition)) {
+CustomShader::CustomShader(CustomShaderDefinition definition) : definition_(std::move(definition)) {
     const auto &value = definition_;
-    static_assert(max_name_bytes == 4096 && max_parameter_bytes == 256 && max_textures == 4,
-                  "The name, parameter and texture messages state these limits");
-    require(!value.name.empty() && value.name.size() <= max_name_bytes, "Custom material name must be 1 to 4096 bytes");
     require(value.blend == CustomBlend::opaque || value.blend == CustomBlend::blended ||
                 value.blend == CustomBlend::additive,
-            "Unknown custom material blend mode");
-    require(value.texel_retention == TexelRetention::keep || value.texel_retention == TexelRetention::until_upload,
-            "Unknown custom material texel retention");
-    require(value.parameters.size() <= max_parameter_bytes, "Custom material parameters exceed 256 bytes");
-    require(value.textures.size() <= max_textures, "Custom material has more than 4 textures");
-    detail::validate_surfaces({}, value.textures, detail::Texels::required);
+            "Unknown custom shader blend mode");
     require(!value.vertex_shader.empty() && !value.fragment_shader.empty(),
-            "Custom material needs a vertex and a fragment shader");
+            "Custom shader needs a vertex and a fragment shader");
     require(value.shadow_fragment_shader.empty() || !value.shadow_vertex_shader.empty(),
-            "Custom material has a shadow fragment shader without a shadow vertex shader");
-    const auto vertex = check_stage(Module(value.vertex_shader, Stage::vertex), value);
-    const auto fragment = check_stage(Module(value.fragment_shader, Stage::fragment), value);
+            "Custom shader has a shadow fragment shader without a shadow vertex shader");
+    // What each stage declares of the material's parameters and textures, of which the shader needs the most.
+    const auto declare = [&](const StageInterface &stage) {
+        parameter_bytes_ = std::max(parameter_bytes_, static_cast<std::size_t>(stage.parameter_bytes));
+        texture_count_ = std::max(texture_count_, static_cast<std::size_t>(stage.textures));
+    };
+    const auto vertex = check_stage(Module(value.vertex_shader, Stage::vertex), value.blend);
+    const auto fragment = check_stage(Module(value.fragment_shader, Stage::fragment), value.blend);
     match(vertex, fragment, Stage::fragment, "vertex shader");
+    declare(vertex);
+    declare(fragment);
     if (!value.shadow_vertex_shader.empty()) {
-        const auto shadow = check_stage(Module(value.shadow_vertex_shader, Stage::shadow_vertex), value);
-        if (!value.shadow_fragment_shader.empty())
-            match(shadow, check_stage(Module(value.shadow_fragment_shader, Stage::shadow_fragment), value),
-                  Stage::shadow_fragment, "shadow vertex shader");
+        const auto shadow = check_stage(Module(value.shadow_vertex_shader, Stage::shadow_vertex), value.blend);
+        declare(shadow);
+        if (!value.shadow_fragment_shader.empty()) {
+            const auto shadow_fragment =
+                check_stage(Module(value.shadow_fragment_shader, Stage::shadow_fragment), value.blend);
+            match(shadow, shadow_fragment, Stage::shadow_fragment, "shadow vertex shader");
+            declare(shadow_fragment);
+        }
         shadow_vertex_attributes_ = shadow.attributes;
     }
     vertex_attributes_ = vertex.attributes;
     reads_opaque_depth_ = fragment.opaque_depth;
     reads_opaque_color_ = fragment.opaque_color;
+}
+
+CustomMaterial::CustomMaterial(CustomMaterialDefinition definition) : definition_(std::move(definition)) {
+    const auto &value = definition_;
+    static_assert(max_name_bytes == 4096 && max_parameter_bytes == 256 && max_textures == 4,
+                  "The name, parameter and texture messages state these limits");
+    require(!value.name.empty() && value.name.size() <= max_name_bytes, "Custom material name must be 1 to 4096 bytes");
+    require(value.shader != nullptr, "Custom material has no shader");
+    require(value.texel_retention == TexelRetention::keep || value.texel_retention == TexelRetention::until_upload,
+            "Unknown custom material texel retention");
+    require(value.parameters.size() <= max_parameter_bytes, "Custom material parameters exceed 256 bytes");
+    require(value.textures.size() <= max_textures, "Custom material has more than 4 textures");
+    detail::validate_surfaces({}, value.textures, detail::Texels::required);
+    const auto &shader = *value.shader;
+    if (value.parameters.size() < shader.parameter_bytes())
+        throw std::invalid_argument("Custom material supplies " + number(value.parameters.size()) +
+                                    " parameter bytes, but its shader's parameter block spans " +
+                                    number(shader.parameter_bytes()));
+    if (value.textures.size() < shader.texture_count())
+        throw std::invalid_argument("Custom material supplies " + number(value.textures.size()) +
+                                    (value.textures.size() == 1 ? " texture" : " textures") +
+                                    ", but its shader declares texture " + number(shader.texture_count() - 1));
     if (value.texel_retention == TexelRetention::until_upload)
         texels_ =
             detail::hold_texels(definition_.textures, "Custom material texture texels were released after upload");
@@ -796,8 +823,8 @@ void CustomMaterial::release_texels() const noexcept {
 }
 
 std::vector<std::uint32_t> spirv_words(std::span<const std::byte> bytes) {
-    static_assert(CustomMaterial::max_shader_bytes == 16 * 1024 * 1024, "the message states 16 MiB");
-    if (bytes.empty() || bytes.size() > CustomMaterial::max_shader_bytes)
+    static_assert(CustomShader::max_shader_bytes == 16 * 1024 * 1024, "the message states 16 MiB");
+    if (bytes.empty() || bytes.size() > CustomShader::max_shader_bytes)
         throw std::runtime_error("SPIR-V module must be between 1 byte and 16 MiB");
     if (bytes.size() % sizeof(std::uint32_t) != 0)
         throw std::runtime_error("SPIR-V module size must be a multiple of 4 bytes");
@@ -815,7 +842,7 @@ std::vector<std::uint32_t> load_spirv(const std::filesystem::path &path) {
     if (!file)
         throw std::runtime_error("Cannot open SPIR-V file");
     const auto length = file.tellg();
-    if (length <= 0 || length > static_cast<std::streamoff>(CustomMaterial::max_shader_bytes))
+    if (length <= 0 || length > static_cast<std::streamoff>(CustomShader::max_shader_bytes))
         throw std::runtime_error("SPIR-V module must be between 1 byte and 16 MiB");
     std::vector<std::byte> bytes(static_cast<std::size_t>(length));
     file.seekg(0);

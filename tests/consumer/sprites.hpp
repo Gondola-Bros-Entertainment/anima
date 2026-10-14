@@ -264,9 +264,8 @@ inline void check_depth(Harness &harness) {
 inline void check_after_opaque_inputs(Harness &harness) {
     anima::CustomMaterialDefinition definition;
     definition.name = "depth probe";
-    definition.vertex_shader = custom_material_test::words(custom_material_test::surface_vertex);
-    definition.fragment_shader = custom_material_test::words(custom_material_test::depth_fragment);
-    definition.blend = anima::CustomBlend::blended;
+    definition.shader = custom_material_test::shader(custom_material_test::surface_vertex,
+                                                     custom_material_test::depth_fragment, anima::CustomBlend::blended);
     const auto probe = std::make_shared<const anima::CustomMaterial>(std::move(definition));
     auto scene = std::make_shared<anima::Scene>();
     (void)custom_material_test::add(*scene, custom_material_test::surface({0, 0, -2}, 1, 1), probe);

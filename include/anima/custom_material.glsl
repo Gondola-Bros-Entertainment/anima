@@ -6,8 +6,8 @@
 // Define these before including the file to declare more:
 // - ANIMA_VERTEX in vertex shaders: the vertex attributes, the placement rows, the pose buffer, animaModelMatrix(),
 //   animaWorldNormal() and animaVisibility();
-// - ANIMA_OPAQUE_DEPTH and ANIMA_OPAQUE_COLOR in the fragment shader of a blended or additive material: the
-//   opaque depth and color, which cost a copy on every frame that draws the material.
+// - ANIMA_OPAQUE_DEPTH and ANIMA_OPAQUE_COLOR in the fragment shader of a blended or additive shader: the opaque
+//   depth and color, which cost a copy on every frame that draws a material of the shader.
 // Parameter blocks and textures belong to each material: declare them at set 2, binding 0, and bindings 1 to 4.
 #ifndef ANIMA_CUSTOM_MATERIAL_GLSL
 #define ANIMA_CUSTOM_MATERIAL_GLSL

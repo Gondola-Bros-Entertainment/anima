@@ -964,7 +964,7 @@ void Scene::set_custom_material(Id id, std::size_t material, std::shared_ptr<con
     auto &value = get(id);
     auto &slots = value.custom_materials;
     require_index(material, slots.size(), custom_material_slot);
-    require(!value.placements || !custom || custom->reads_placements(),
+    require(!value.placements || !custom || custom->shader().reads_placements(),
             "A custom material that draws placements must read them");
     slots[material] = std::move(custom);
 }
@@ -998,7 +998,7 @@ void Scene::set_placements(Id id, std::shared_ptr<const MeshPlacements> placemen
     if (placements) {
         require(placements->mesh() == value.mesh, "Placements copy another mesh");
         require(std::all_of(value.custom_materials.begin(), value.custom_materials.end(),
-                            [](const auto &custom) { return !custom || custom->reads_placements(); }),
+                            [](const auto &custom) { return !custom || custom->shader().reads_placements(); }),
                 "A custom material that draws placements must read them");
         if (entry.pose)
             throw std::logic_error("A renderer with a pose cannot draw placements");
