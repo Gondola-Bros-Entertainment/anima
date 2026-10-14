@@ -28,4 +28,4 @@ RGBA32 output for the DDS file; ImageMagick decodes the whole blocks of every ba
 level identically, which the script checks. (ImageMagick 7.1.2-22 misplaces the texels
 of partial blocks at the right edge of an image whose width is not a multiple of 4.)
 
-These files are original to Anima and share its [Apache-2.0](../../LICENSE) license.
+These files are original to Anima and share its [MIT](../../LICENSE) license.
