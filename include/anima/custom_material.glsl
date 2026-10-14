@@ -1,8 +1,9 @@
 // GLSL declarations of the custom material shader interface that anima/custom_material.hpp documents. Include it
 // in shaders compiled for Vulkan 1.1, for example with `glslc --target-env=vulkan1.1 -I <anima>/include`.
 //
-// Every stage receives the frame block (animaFrame), the draw push constants (animaDraw), animaWorldPosition() and
-// animaFogged(), and the declarations of fog.glsl and visibility.glsl, which it includes, such as animaDissolved().
+// Every stage receives the draw push constants (animaDraw) and what frame.glsl, which it includes, declares: the frame
+// block (animaFrame), animaWorldPosition() and animaFogged(), and the declarations of fog.glsl and visibility.glsl,
+// such as animaDissolved().
 // Define these before including the file to declare more:
 // - ANIMA_VERTEX in vertex shaders: the vertex attributes, the placement rows, the pose buffer, animaModelMatrix(),
 //   animaWorldNormal() and animaVisibility();
@@ -12,41 +13,7 @@
 #ifndef ANIMA_CUSTOM_MATERIAL_GLSL
 #define ANIMA_CUSTOM_MATERIAL_GLSL
 
-layout(set = 0, binding = 0, std140) uniform AnimaFrame {
-    mat4 viewProjection;
-    mat4 inverseViewProjection;
-    // The eye with w 1, or in an orthographic view the unit direction toward the camera with w 0.
-    vec4 viewOrigin;
-    vec4 sunDirection;
-    vec4 sunIrradiance;
-    vec4 fillDirection;
-    vec4 fillIrradiance;
-    vec4 ambientSky;
-    vec4 ambientGround;
-    vec4 ambientSpecular;
-    // The fog's color, and in w its density per unit at its height (fogShape.x), which fogShape.y's falloff varies.
-    vec4 fog;
-    // The scene target's width and height in pixels, the window's times the render scale, and their reciprocals.
-    vec4 viewport;
-    float time;
-    // The fog's height, falloff, sky distance and phase asymmetry.
-    vec4 fogShape;
-    // The sunlight that the fog scatters, before its phase function: HeightFog::sun_scattering times sunIrradiance.
-    vec4 fogSun;
-}
-animaFrame;
-
-#include "fog.glsl"
-#include "visibility.glsl"
-
-// @p color at world position @p position as the standard material fogs it: seen from the eye through the
-// environment's fog in a perspective view with fog, and unchanged otherwise.
-vec3 animaFogged(vec3 color, vec3 position) {
-    if (animaFrame.viewOrigin.w > 0.5 && animaFrame.fog.w > 0.0)
-        color = animaFog(color, animaFrame.viewOrigin.xyz, position, animaFrame.fog, animaFrame.fogShape,
-                         animaFrame.fogSun, animaFrame.sunDirection.xyz);
-    return color;
-}
+#include "frame.glsl"
 
 layout(push_constant) uniform AnimaDraw {
     // The camera's view-projection, or in the depth-only variant a shadow pass's: a cascade's or the detail region's.
@@ -64,13 +31,6 @@ layout(push_constant) uniform AnimaDraw {
     uint ranged;
 }
 animaDraw;
-
-// The world position that Vulkan depth @p depth shows at the framebuffer coordinates @p pixel, such as
-// gl_FragCoord.xy.
-vec3 animaWorldPosition(vec2 pixel, float depth) {
-    vec4 world = animaFrame.inverseViewProjection * vec4(pixel * animaFrame.viewport.zw * 2.0 - 1.0, depth, 1.0);
-    return world.xyz / world.w;
-}
 
 #ifdef ANIMA_VERTEX
 layout(location = 0) in vec3 animaPosition;

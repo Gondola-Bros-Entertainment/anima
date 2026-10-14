@@ -152,19 +152,21 @@ function(add_anima_consumer mode target test_name)
         target_compile_definitions(${target} PRIVATE CONSUMER_DESKTOP=1)
         anima_copy_sdl_runtime(${target})
         anima_copy_sdl_runtime(${target}) # Idempotent for application helpers wrapping it.
-        # The application's custom material shaders, compiled to SPIR-V by the Vulkan SDK's glslc in its own build,
-        # against the interface declarations that Anima publishes beside custom_material.hpp.
+        # The application's custom material and sprite shaders, compiled to SPIR-V by the Vulkan SDK's glslc in its own
+        # build, against the interface declarations that Anima publishes beside custom_material.hpp and sprite.hpp.
         find_package(Vulkan REQUIRED COMPONENTS glslc)
         set(shader_directory "${CMAKE_CURRENT_BINARY_DIR}/${target}-shaders")
         set(shader_outputs)
         foreach(shader IN ITEMS custom_surface.vert custom_water.frag custom_effect.frag custom_probe.frag custom_shadow.vert
-                custom_fade.vert custom_fade.frag custom_fade_shadow.vert custom_depth.frag custom_ramp.frag)
+                custom_fade.vert custom_fade.frag custom_fade_shadow.vert custom_depth.frag custom_ramp.frag
+                custom_sprite_runes.frag)
             set(output "${shader_directory}/${shader}.inc")
             add_custom_command(OUTPUT "${output}"
                 COMMAND "${CMAKE_COMMAND}" -E make_directory "${shader_directory}"
                 COMMAND Vulkan::glslc --target-env=vulkan1.1 -mfmt=c -I "${ANIMA_SOURCE_DIR}/include"
                     "${CMAKE_CURRENT_SOURCE_DIR}/${shader}" -o "${output}"
                 DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${shader}" "${ANIMA_SOURCE_DIR}/include/anima/custom_material.glsl"
+                    "${ANIMA_SOURCE_DIR}/include/anima/sprite.glsl" "${ANIMA_SOURCE_DIR}/include/anima/frame.glsl"
                     "${ANIMA_SOURCE_DIR}/include/anima/fog.glsl" "${ANIMA_SOURCE_DIR}/include/anima/visibility.glsl"
                 VERBATIM)
             list(APPEND shader_outputs "${output}")

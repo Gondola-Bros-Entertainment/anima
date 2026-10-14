@@ -1355,6 +1355,7 @@ ResourceStats resource_stats() const {
             value.resident_texture_bytes += texture.allocation_bytes;
     }
     value.cached_sprite_sheets = sprite_cache.size();
+    value.cached_sprite_shaders = sprite_shader_cache.size();
     for (const auto &[key, gpu] : sprite_cache) {
         (void)key;
         value.resident_texture_bytes += gpu->texture.allocation_bytes;
@@ -1400,5 +1401,6 @@ void retire_resources() {
     // After the materials, each of which holds its shader until it is destroyed.
     release(custom_shader_cache, [](const GpuCustomShader &gpu) -> const auto & { return gpu.source; });
     release(sprite_cache, [](const GpuSpriteSheet &gpu) -> const auto & { return gpu.source; });
+    release(sprite_shader_cache, [](const GpuSpriteShader &gpu) -> const auto & { return gpu.source; });
     release(placement_cache, [](const GpuPlacements &gpu) -> const auto & { return gpu.source; });
 }

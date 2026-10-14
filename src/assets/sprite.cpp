@@ -1,6 +1,8 @@
 #include "surface_validation.hpp"
 #include <anima/sprite.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -14,6 +16,9 @@ void require(bool condition, const char *message) {
 }
 bool finite(Vec2 v) { return std::isfinite(v.x) && std::isfinite(v.y); }
 bool finite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+bool finite(const std::array<float, 4> &values) {
+    return std::all_of(values.begin(), values.end(), [](float value) { return std::isfinite(value); });
+}
 // Whether @p length texels from @p first stay within @p edge texels, without overflowing.
 bool inside(std::uint32_t first, std::uint32_t length, std::uint32_t edge) {
     return length > 0 && std::uint64_t{first} + length <= edge;
@@ -43,6 +48,7 @@ void validate_sprites(std::span<const SpriteBatch> batches) {
             require(finite(sprite.color) && sprite.color.x >= 0 && sprite.color.y >= 0 && sprite.color.z >= 0,
                     "Sprite color must be finite and non-negative");
             require(sprite.alpha >= 0 && sprite.alpha <= 1, "Sprite alpha must be in [0, 1]");
+            require(finite(sprite.parameters), "Sprite parameters must be finite");
         }
     }
 }

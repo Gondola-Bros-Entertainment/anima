@@ -436,6 +436,9 @@ struct ResourceStats {
     std::uint64_t cached_custom_shaders{};
     /// Sprite sheets in the GPU cache (VulkanRenderer::set_sprites).
     std::uint64_t cached_sprite_sheets{};
+    /// Sprite shaders in the GPU cache (SpriteBatch::shader), each with its shader module and a pipeline for each
+    /// SpriteBlend that has drawn a batch of it.
+    std::uint64_t cached_sprite_shaders{};
     /// Whether the latest preparation draws a custom material that reads opaque depth or color, so that its frame
     /// copies both after the opaque draws.
     bool opaque_inputs{};
@@ -449,7 +452,7 @@ struct ResourceStats {
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
     std::uint64_t pose_uploaded_bytes{};
     /// Allocation bytes of the sprite buffers, one for each frame in flight, each of which holds the sprites of the
-    /// frames that it serves, 64 bytes per sprite, and doubles from 64 bytes until it holds the most that one of them
+    /// frames that it serves, 80 bytes per sprite, and doubles from 80 bytes until it holds the most that one of them
     /// drew.
     std::uint64_t sprite_buffer_bytes{};
     /// Main-view draw calls of the latest frame. A draw of an object with placements takes one call per run of
@@ -999,24 +1002,29 @@ class VulkanRenderer {
     /// A scene that its SceneSet unloads or replaces stays selected but is empty.
     void set_scenes(std::vector<std::shared_ptr<const Scene>> scenes, SceneReplacementOptions options = {});
     /// Replaces the sprites (anima/sprite.hpp) that every later draw() draws; it starts with none, and an empty list
-    /// clears them. The renderer keeps @p batches, and with them their sheets, until the next call.
+    /// clears them. The renderer keeps @p batches, and with them their sheets and shaders, until the next call.
     ///
     /// Each draw() draws them in the world pass through the current view (set_view()), after every other draw of that
     /// pass, the blended meshes included: the batches in order, each in one instanced draw call
     /// (ResourceStats::sprite_draw_calls), and each batch's sprites in order, each over those before it. They test
     /// depth with `GREATER` and write none, as blended meshes do, so nearer opaque and masked surfaces hide them and
-    /// they hide nothing, and a blended mesh in front of a sprite still draws under it. Sprites are unlit: a pixel's
-    /// color is its texel's, decoded and filtered as the sheet's TextureEncoding and Sampler say, times Sprite::color,
-    /// and its alpha the texel's times Sprite::alpha, composited as the batch's SpriteBlend says. They receive no fog
-    /// or shadows and cast none; exposure and tone mapping apply at display conversion to the whole target, sprites
-    /// included.
+    /// they hide nothing, and a blended mesh in front of a sprite still draws under it. Sprites are unlit: with the
+    /// built-in shader a pixel's color is its texel's, decoded and filtered as the sheet's TextureEncoding and Sampler
+    /// say, times Sprite::color, and its alpha the texel's times Sprite::alpha; with the batch's SpriteShader
+    /// (SpriteBatch::shader) they are what the shader writes. Either is composited as the batch's SpriteBlend says.
+    /// They receive no fog or shadows and cast none; exposure and tone mapping apply at display conversion to the whole
+    /// target, sprites included.
     ///
     /// A sheet's texture uploads on the first draw() that draws one of its sprites, as a custom material's textures do,
     /// except that an ImageFormat::rgba8 texture that samples a mip chain builds it weighting color by alpha
     /// (TextureMipOptions::alpha_weighted_color); set_texture_mip_skip() and set_max_anisotropy() apply to it. The GPU
     /// cache keeps it per SpriteSheet object and releases it as it releases meshes, once only the renderer references
-    /// the sheet. That draw() throws SceneResourceError when the upload fails, as for a texture beyond the device's 2D
-    /// image limit. Each frame's sprites go to a buffer of the frame's slot (ResourceStats::sprite_buffer_bytes).
+    /// the sheet. A SpriteShader's module is created on the first draw() that draws a batch of it, and its pipeline for
+    /// a SpriteBlend on the first that draws a batch of it with that mode; the GPU cache keeps them per SpriteShader
+    /// object and releases them as it releases sheets (ResourceStats::cached_sprite_shaders). That draw() throws
+    /// SceneResourceError when an upload or a creation fails, as for a texture beyond the device's 2D image limit.
+    /// Each frame's sprites, their parameters included, go to a buffer of the frame's slot
+    /// (ResourceStats::sprite_buffer_bytes), so a batch takes one draw call whatever its sprites' parameters.
     ///
     /// Throws `std::invalid_argument` as validate_sprites() does, keeping the previous sprites, and `std::logic_error`
     /// without asset support.

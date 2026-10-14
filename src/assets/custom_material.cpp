@@ -4,6 +4,7 @@
 #include "texel_hold.hpp"
 #include <algorithm>
 #include <anima/custom_material.hpp>
+#include <anima/sprite.hpp>
 #include <array>
 #include <cstring>
 #include <fstream>
@@ -37,12 +38,19 @@ constexpr std::uint32_t capability_matrix = 0, capability_shader = 1, capability
 constexpr std::uint32_t vertex_model = 0, fragment_model = 4, logical_addressing = 0, glsl450_memory = 1;
 } // namespace spv
 
-enum class Stage { vertex, fragment, shadow_vertex, shadow_fragment };
+// The stages of a custom shader, then a sprite shader, which is a fragment shader after the renderer's sprite vertex
+// shader. Both read the frame block and follow the same SPIR-V rules, but their other inputs differ.
+enum class Stage { vertex, fragment, shadow_vertex, shadow_fragment, sprite };
 bool vertex_stage(Stage stage) { return stage == Stage::vertex || stage == Stage::shadow_vertex; }
 [[noreturn]] void fail(Stage stage, const std::string &message) {
-    constexpr std::array<const char *, 4> names{"vertex shader", "fragment shader", "shadow vertex shader",
-                                                "shadow fragment shader"};
+    constexpr std::array<const char *, 5> names{"vertex shader", "fragment shader", "shadow vertex shader",
+                                                "shadow fragment shader", "sprite shader"};
     throw std::invalid_argument(std::string("The ") + names[static_cast<std::size_t>(stage)] + ' ' + message);
+}
+// What messages call the shaders of @p stage, and the interface that they read.
+std::string users(Stage stage) { return stage == Stage::sprite ? "sprite shaders" : "custom materials"; }
+std::string interface_of(Stage stage) {
+    return stage == Stage::sprite ? "the sprite shader interface" : "the custom material interface";
 }
 void require(bool accepted, const char *message) {
     if (!accepted)
@@ -389,8 +397,8 @@ class Module {
             fail(stage_, "is not SPIR-V: its first word is not the SPIR-V magic number");
         const auto version_major = (words[1] >> 16) & 0xFFU, version_minor = (words[1] >> 8) & 0xFFU;
         if ((words[1] & 0xFF0000FFU) != 0 || version_major != 1 || version_minor > 3)
-            fail(stage_, "is SPIR-V " + number(version_major) + '.' + number(version_minor) +
-                             ", but custom materials accept SPIR-V 1.0 to 1.3");
+            fail(stage_, "is SPIR-V " + number(version_major) + '.' + number(version_minor) + ", but " + users(stage_) +
+                             " accept SPIR-V 1.0 to 1.3");
         bound_ = words[3];
         const auto model = vertex_stage(stage_) ? spv::vertex_model : spv::fragment_model;
         bool entry = false, memory_model = false;
@@ -410,18 +418,18 @@ class Module {
                 const auto capability = instruction[1];
                 if (capability != spv::capability_matrix && capability != spv::capability_shader &&
                     capability != spv::capability_image_query && capability != spv::capability_derivative_control)
-                    fail(stage_, "requires SPIR-V capability " + number(capability) +
-                                     ", which custom materials do not support");
+                    fail(stage_, "requires SPIR-V capability " + number(capability) + ", which " + users(stage_) +
+                                     " do not support");
                 break;
             }
             case spv::op_extension:
-                fail(stage_, "requires the SPIR-V extension " + instruction.string(1, next) +
-                                 ", which custom materials do not support");
+                fail(stage_, "requires the SPIR-V extension " + instruction.string(1, next) + ", which " +
+                                 users(stage_) + " do not support");
             case spv::op_ext_inst_import: {
                 const auto set = instruction.string(2, next);
                 if (set != "GLSL.std.450")
                     fail(stage_,
-                         "imports the extended instructions " + set + ", which custom materials do not support");
+                         "imports the extended instructions " + set + ", which " + users(stage_) + " do not support");
                 break;
             }
             case spv::op_memory_model:
@@ -586,14 +594,16 @@ void check_members(const Module &shader, std::uint32_t structure, const std::arr
                                         [&](const Member &entry) { return entry.offset == *decorated.offset; });
         if (found == documented.end())
             fail(shader.stage(), "declares " + what + " member at offset " + number(*decorated.offset) + " as " + type +
-                                     ", but the custom material interface has no member there");
+                                     ", but " + interface_of(shader.stage()) + " has no member there");
         if (found->type != type)
             fail(shader.stage(), "declares " + what + " member at offset " + number(*decorated.offset) + " as " + type +
-                                     ", but the custom material interface has a " + std::string(found->type) +
+                                     ", but " + interface_of(shader.stage()) + " has a " + std::string(found->type) +
                                      " there");
     }
 }
 
+// Checks the interface of @p shader, a stage of a custom shader of blend mode @p blend, or a sprite shader, which reads
+// no input that a blend mode restricts.
 StageInterface check_stage(const Module &shader, CustomBlend blend) {
     const auto stage = shader.stage();
     StageInterface result;
@@ -608,6 +618,8 @@ StageInterface check_stage(const Module &shader, CustomBlend blend) {
         const auto &type_decorations = shader.decorations(pointee);
         const bool structure = type.kind == Kind::structure;
         if (variable.storage == spv::push_constant) {
+            if (stage == Stage::sprite)
+                fail(stage, "declares push constants, which the sprite shader interface does not provide");
             if (!structure || !type_decorations.block)
                 fail(stage, "declares push constants that are not a block");
             check_members(shader, pointee, draw_members, "the draw push constant");
@@ -626,12 +638,16 @@ StageInterface check_stage(const Module &shader, CustomBlend blend) {
         const auto where = "set " + number(set) + " binding " + number(binding);
         const auto expect = [&](std::string_view wanted, std::string_view provided) {
             if (kind != wanted)
-                fail(stage, "declares " + where + " as " + kind + ", but the custom material interface provides " +
+                fail(stage, "declares " + where + " as " + kind + ", but " + interface_of(stage) + " provides " +
                                 std::string(provided) + " there");
         };
         if (set == 0 && binding == 0) {
             expect("uniform block", "the frame uniform block");
             check_members(shader, pointee, frame_members, "the frame block");
+        } else if (stage == Stage::sprite) {
+            if (set != 1 || binding != 0)
+                fail(stage, "declares " + where + ", which the sprite shader interface does not provide");
+            expect("sampler2D", "the sheet's sampler2D");
         } else if (set == 0 && (binding == 1 || binding == 2)) {
             const std::string input =
                 binding == 1 ? "opaque depth (set 0, binding 1)" : "opaque color (set 0, binding 2)";
@@ -666,7 +682,7 @@ StageInterface check_stage(const Module &shader, CustomBlend blend) {
             expect("sampler2D", "a sampler2D");
             result.textures = std::max(result.textures, binding);
         } else
-            fail(stage, "declares " + where + ", which the custom material interface does not provide");
+            fail(stage, "declares " + where + ", which " + interface_of(stage) + " does not provide");
     }
     // Inputs and outputs that the entry point lists.
     bool color = false;
@@ -690,9 +706,8 @@ StageInterface check_stage(const Module &shader, CustomBlend blend) {
             fail(stage, "declares " + direction + " without a location");
         const auto location = *decorated.location;
         if (decorated.component)
-            fail(stage, "declares location " + number(location) +
-                            " with a component, which custom materials do "
-                            "not support");
+            fail(stage, "declares location " + number(location) + " with a component, which " + users(stage) +
+                            " do not support");
         const auto name = shader.name(pointee);
         if (input && vertex_stage(stage)) {
             const auto attribute = std::find_if(attribute_types.begin(), attribute_types.end(),
@@ -712,25 +727,35 @@ StageInterface check_stage(const Module &shader, CustomBlend blend) {
                 fail(stage, "writes color at location " + number(location) +
                                 ", but the depth-only variant has no color target");
             if (location != 0)
-                fail(stage, "writes location " + number(location) +
-                                ", but custom materials have one color output at location 0");
+                fail(stage, "writes location " + number(location) + ", but " + users(stage) +
+                                " have one color output at location 0");
             if (name != "vec4")
-                fail(stage, "writes location 0 as " + name + ", but custom materials write a vec4 there");
+                fail(stage, "writes location 0 as " + name + ", but " + users(stage) + " write a vec4 there");
             color = true;
             continue;
         }
         // A value passed from the vertex shader to the fragment shader.
         if (std::find(varying_types.begin(), varying_types.end(), name) == varying_types.end())
-            fail(stage, "passes " + name + " at location " + number(location) +
-                            " between stages, but custom materials pass 32-bit scalars and vectors");
+            fail(stage, "passes " + name + " at location " + number(location) + " between stages, but " + users(stage) +
+                            " pass 32-bit scalars and vectors");
         if (location >= varying_locations)
-            fail(stage, "passes a value at location " + number(location) +
-                            " between stages, but custom materials use locations 0 to 15");
+            fail(stage, "passes a value at location " + number(location) + " between stages, but " + users(stage) +
+                            " use locations 0 to 15");
         if (!(input ? result.inputs : result.outputs).emplace(location, name).second)
             fail(stage, "declares location " + number(location) + " twice");
     }
-    if (stage == Stage::fragment && !color)
+    if ((stage == Stage::fragment || stage == Stage::sprite) && !color)
         fail(stage, "writes no color at location 0");
+    return result;
+}
+
+// What the renderer's sprite vertex shader (shaders/sprite.vert) passes to a sprite shader.
+StageInterface sprite_vertex_outputs() {
+    StageInterface result;
+    result.outputs = {{ANIMA_SPRITE_OUT_SHEET_UV, "vec2"},
+                      {ANIMA_SPRITE_OUT_COLOR, "vec4"},
+                      {ANIMA_SPRITE_OUT_UV, "vec2"},
+                      {ANIMA_SPRITE_OUT_PARAMETERS, "vec4"}};
     return result;
 }
 
@@ -808,6 +833,12 @@ CustomMaterial::CustomMaterial(CustomMaterialDefinition definition) : definition
         texels_ =
             detail::hold_texels(definition_.textures, "Custom material texture texels were released after upload");
 }
+SpriteShader::SpriteShader(std::vector<std::uint32_t> fragment_shader) : fragment_shader_(std::move(fragment_shader)) {
+    // No sprite resource depends on a blend mode, which the batch chooses.
+    const auto fragment = check_stage(Module(fragment_shader_, Stage::sprite), CustomBlend::opaque);
+    match(sprite_vertex_outputs(), fragment, Stage::sprite, "sprite vertex shader");
+}
+
 std::vector<std::shared_ptr<const Image>> CustomMaterial::texel_images() const {
     if (const auto *hold = texels_.get())
         return hold->images();
