@@ -92,6 +92,15 @@ struct UiImage {
     /// `4 * width * height` bytes: rows from top to bottom, each pixel's red, green, blue and
     /// alpha, with sRGB-encoded color that is not multiplied by alpha, as PNG files store it.
     std::vector<std::uint8_t> rgba;
+    /// Pixels per RCSS `dp` that the image was drawn for, finite and positive.
+    ///
+    /// RmlUi measures an image file as one `dp` per pixel. Documents measure this image as #width
+    /// and #height divided by #scale instead, each rounded to the nearest whole `dp`, halves away
+    /// from zero, and at least 1; neither may exceed 8,192. The `rect` attribute of an `img`
+    /// element counts in those `dp`. An image drawn at the SDL display scale, which `dp` lengths
+    /// scale with, thus measures the size it was drawn to have, and an element that takes its size
+    /// from the image draws about one image pixel on each framebuffer pixel.
+    float scale = 1;
 };
 /// Role of a font face that UiContext::load_font loads.
 enum class UiFontRole {
@@ -169,11 +178,12 @@ class UiContext {
     /// attributes and RCSS values take it unquoted. Names are case-sensitive.
     ///
     /// Registering a name again replaces its image. Documents that use the name draw the new
-    /// pixels from the next render(). When the dimensions change, each `img` element whose `src`
-    /// names the image measures it again at the next update(), so one sized by its image takes the
-    /// new size. An `image()` decorator measures its image once, when it first draws, and keeps
-    /// that size while its style sheet lives. Only a fit mode other than the default `fill` uses
-    /// that size, so keep the dimensions of a name that such a decorator draws.
+    /// pixels from the next render(). When the size that documents measure changes (see
+    /// UiImage::scale), each `img` element whose `src` names the image measures it again at the
+    /// next update(), so one sized by its image takes the new size. An `image()` decorator measures
+    /// its image once, when it first draws, and keeps that size while its style sheet lives. Only a
+    /// fit mode other than the default `fill` uses that size, so keep the measured size of a name
+    /// that such a decorator draws.
     ///
     /// A document may use a name before it is registered or after remove_image(): the name then
     /// draws nothing, as a transparent 1x1 image, and each time a document loads it the context
@@ -183,8 +193,11 @@ class UiContext {
     ///
     /// The context keeps the pixels of @p image, multiplied by alpha, until the name is replaced
     /// or removed or the context shuts down; move the pixels in to avoid a copy. Throws
-    /// `std::invalid_argument`, changing nothing, for an invalid name, for a width or height that
-    /// is 0 or over 8,192, and when `rgba` does not hold `4 * width * height` bytes.
+    /// `std::invalid_argument`, changing nothing, for an invalid name ("Invalid UI image name"),
+    /// for a width or height that is 0 or over 8,192 and when `rgba` does not hold
+    /// `4 * width * height` bytes ("Invalid UI image dimensions or bytes"), and for a scale that is
+    /// not finite and positive or that measures the image over 8,192 `dp` along either axis
+    /// ("Invalid UI image scale").
     void set_image(std::string_view name, UiImage image);
     /// Removes the image registered under @p name. Documents that use the name draw nothing from
     /// the next render(), as set_image describes for a name that is not registered. Returns

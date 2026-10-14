@@ -36,7 +36,7 @@
     },
     {
       "name": "full",
-      "displayName": "Every module: desktop, UI, physics, 2D physics and SDL input",
+      "displayName": "Every module: desktop, UI, physics, 2D physics, SDL input and vector art",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/full",
       "cacheVariables": {
@@ -46,7 +46,8 @@
         "ANIMA_BUILD_UI_DOCUMENTS": true,
         "ANIMA_BUILD_PHYSICS": true,
         "ANIMA_BUILD_PHYSICS2D": true,
-        "ANIMA_BUILD_INPUT_SDL": true
+        "ANIMA_BUILD_INPUT_SDL": true,
+        "ANIMA_BUILD_VECTOR": true
       }
     },
     {
@@ -100,6 +101,7 @@
         "ANIMA_BUILD_PHYSICS2D": true,
         "ANIMA_BUILD_UI_DOCUMENTS": true,
         "ANIMA_BUILD_INPUT_SDL": true,
+        "ANIMA_BUILD_VECTOR": true,
         "SDL_VIDEO": false,
         "SDL_UNIX_CONSOLE_BUILD": true
       }

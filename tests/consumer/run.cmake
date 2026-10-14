@@ -25,7 +25,7 @@ endif()
 # an external source dependency; no engine implementation enters this fixture.
 file(MAKE_DIRECTORY "${CONSUMER_BINARY_DIR}/source")
 foreach(file CMakeLists.txt main.cpp presentation.hpp replacement.hpp
-             camera.hpp lighting.hpp runtime.hpp scene_set.hpp staging.hpp state_machine.hpp prefab_variant.hpp prefab_composition.hpp references.hpp lifecycle.hpp audio.hpp audio_scene.hpp input.hpp resources.hpp reference.hpp allocations.hpp culling.hpp placements.hpp profile.hpp frames_in_flight.hpp present_modes.hpp render_scale.hpp lod.hpp impostors.hpp cascades.hpp ui.hpp environment.hpp fog.hpp tone_mapping.hpp tone_mapping_reference.hpp atmosphere.hpp atmosphere_reference.hpp foliage.hpp scene_objects.hpp components.hpp physics.hpp physics2d.hpp navigation.hpp documents.hpp gpu_checks.hpp gltf_fixture.hpp materials.hpp rejection.hpp blending.hpp draw_order.hpp custom_materials.hpp sprites.hpp texture_memory.hpp compressed_textures.hpp custom_surface.vert custom_water.frag custom_effect.frag custom_probe.frag custom_shadow.vert custom_fade.vert custom_fade.frag custom_fade_shadow.vert custom_depth.frag custom_ramp.frag)
+             camera.hpp lighting.hpp runtime.hpp scene_set.hpp staging.hpp state_machine.hpp prefab_variant.hpp prefab_composition.hpp references.hpp lifecycle.hpp audio.hpp audio_scene.hpp input.hpp resources.hpp reference.hpp allocations.hpp culling.hpp placements.hpp profile.hpp frames_in_flight.hpp present_modes.hpp render_scale.hpp lod.hpp impostors.hpp cascades.hpp ui.hpp environment.hpp fog.hpp tone_mapping.hpp tone_mapping_reference.hpp atmosphere.hpp atmosphere_reference.hpp foliage.hpp scene_objects.hpp components.hpp physics.hpp physics2d.hpp navigation.hpp documents.hpp gpu_checks.hpp gltf_fixture.hpp materials.hpp rejection.hpp blending.hpp draw_order.hpp custom_materials.hpp sprites.hpp texture_memory.hpp compressed_textures.hpp vector.hpp vector_ui.hpp custom_surface.vert custom_water.frag custom_effect.frag custom_probe.frag custom_shadow.vert custom_fade.vert custom_fade.frag custom_fade_shadow.vert custom_depth.frag custom_ramp.frag)
     configure_file("${ANIMA_SOURCE_DIR}/tests/consumer/${file}" "${CONSUMER_BINARY_DIR}/source/${file}" COPYONLY)
 endforeach()
 set(configure_args -S "${CONSUMER_BINARY_DIR}/source" -B "${CONSUMER_BINARY_DIR}/build"
@@ -75,7 +75,7 @@ if(CONSUMER_SDL_DIR AND NOT CONSUMER_SDL_DIR MATCHES "NOTFOUND$")
 endif()
 # Only the desktop consumers build SDL. The input converter takes the parent's SDL headers, and fetching SDL for it
 # would bring SDL's runtime into consumers that must not have it.
-if(CONSUMER_FETCH_SDL AND consumer_modes MATCHES "(^|;)(desktop|ui)(;|$)")
+if(CONSUMER_FETCH_SDL AND consumer_modes MATCHES "(^|;)(desktop|ui|vector_ui)(;|$)")
     list(APPEND configure_args -DANIMA_FETCH_SDL=ON)
     if(CONSUMER_SDL_SOURCE)
         list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_SDL3=${CONSUMER_SDL_SOURCE}")
@@ -89,7 +89,7 @@ else()
     # Stated rather than left unset, so a build directory configured before fetching was limited keeps no ON.
     list(APPEND configure_args -DANIMA_FETCH_SDL=OFF)
 endif()
-if(consumer_modes MATCHES "(^|;)(ui|ui_documents|ui_scene)(;|$)" AND CONSUMER_RMLUI_SOURCE)
+if(consumer_modes MATCHES "(^|;)(ui|ui_documents|ui_scene|vector_ui)(;|$)" AND CONSUMER_RMLUI_SOURCE)
     list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_RMLUI=${CONSUMER_RMLUI_SOURCE}")
 endif()
 if(consumer_modes MATCHES "(^|;)(physics|physics_scene|runtime)(;|$)" AND CONSUMER_JOLT_SOURCE)
@@ -97,6 +97,9 @@ if(consumer_modes MATCHES "(^|;)(physics|physics_scene|runtime)(;|$)" AND CONSUM
 endif()
 if(consumer_modes MATCHES "(^|;)(physics2d|physics2d_scene|runtime)(;|$)" AND CONSUMER_BOX2D_SOURCE)
     list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_BOX2D=${CONSUMER_BOX2D_SOURCE}")
+endif()
+if(consumer_modes MATCHES "(^|;)(vector|vector_ui)(;|$)" AND CONSUMER_LINEA_SOURCE)
+    list(APPEND configure_args "-DFETCHCONTENT_SOURCE_DIR_LINEA=${CONSUMER_LINEA_SOURCE}")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" ${configure_args} COMMAND_ERROR_IS_FATAL ANY)
 if(CONSUMER_ACTION STREQUAL "configure")

@@ -767,10 +767,24 @@ inline int run(int argc, char **argv) {
                                     solid(1, oversized_edge, red), anima::UiImage{2, 1, {255, 0, 0, 255}}})
             rejection::rejects<std::invalid_argument>([&] { memory.set_image("checks/rejected", invalid); },
                                                       "Invalid UI image dimensions or bytes");
+        // A scale that is not finite and positive, or at which two pixels measure 16,384 dp, past the 8,192 limit.
+        for (const float scale :
+             {0.F, -1.F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 1.F / 8192}) {
+            auto scaled = solid(2, 1, red);
+            scaled.scale = scale;
+            rejection::rejects<std::invalid_argument>([&] { memory.set_image("checks/rejected", scaled); },
+                                                      "Invalid UI image scale");
+        }
         require(!memory.remove_image("checks/rejected"), "A rejected memory image was registered");
         memory.set_image("checks/exact", pattern(exact_width, exact_texels));
         memory.set_image("checks/sized", solid(2, 2, green));
         memory.set_image("checks/decorator", solid(2, 2, yellow));
+        // Images sized only by themselves: three by two pixels at one pixel per dp, and six by four at two, both three
+        // by two dp.
+        memory.set_image("checks/natural", solid(3, 2, green));
+        auto doubled = solid(6, 4, blue);
+        doubled.scale = 2;
+        memory.set_image("checks/scaled", std::move(doubled));
         // checks/late is registered only after the document has drawn it. The invalid name can never be registered,
         // so it is handled as a missing file is.
         auto drawn = memory.documents().from_memory(
@@ -784,11 +798,21 @@ inline int run(int argc, char **argv) {
             "30px;'/>"
             "<div id='decorated'/>"
             "<img src='memory:checks//invalid' style='position: absolute; left: 200px; top: 20px; width: 10px; height: "
-            "10px;'/></body></rml>");
+            "10px;'/>"
+            "<img id='natural' src='memory:checks/natural' style='position: absolute; left: 260px; top: 20px;'/>"
+            "<img id='scaled' src='memory:checks/scaled' style='position: absolute; left: 260px; top: 60px;'/>"
+            "</body></rml>");
         require(drawn.valid(), "The memory image fixture did not load");
         drawn.show();
         auto *sized = drawn.native().GetElementById("sized");
-        require(sized, "The memory image fixture has no sized image");
+        auto *natural = drawn.native().GetElementById("natural");
+        auto *scaled = drawn.native().GetElementById("scaled");
+        require(sized && natural && scaled, "The memory image fixture lost an image");
+        // RmlUi multiplies the dp that an image measures by the context's dp ratio.
+        const auto measures = [&](Rml::Element *element, float width, float height) {
+            const float dp = memory.context().GetDensityIndependentPixelRatio();
+            return element->GetBox().GetSize() == Rml::Vector2f(width * dp, height * dp);
+        };
         const auto capture_memory = [&](const std::string &name) {
             renderer.request_capture();
             memory.update();
@@ -853,12 +877,17 @@ inline int run(int argc, char **argv) {
                      "The unregistered image");
         require_fill("memory-images", decorated_left, decorated_top, decorated_edge, decorated_edge, yellow,
                      "The decorator image");
+        require(measures(natural, 3, 2), "An image of one pixel per dp did not measure its pixels in dp");
+        require(measures(scaled, 3, 2), "An image of two pixels per dp did not measure half its pixels in dp");
         // Replacing an image changes its pixels and, for an img element, its size.
         memory.set_image("checks/exact", pattern(exact_width, replaced_texels));
         memory.set_image("checks/sized", solid(6, 3, blue));
         memory.set_image("checks/late", solid(3, 3, magenta));
         memory.set_image("checks/decorator", solid(5, 5, cyan));
+        // The same pixels at one pixel per dp measure twice the dp, which the img element takes at the next update.
+        memory.set_image("checks/scaled", solid(6, 4, blue));
         capture_memory("memory-replaced");
+        require(measures(scaled, 6, 4), "A new scale did not change the size that an image measures");
         require_texels("memory-replaced", replaced_texels);
         require(sized->GetBox().GetSize().x == float(2 * sized_height),
                 "The replaced memory image did not take its new aspect ratio");
