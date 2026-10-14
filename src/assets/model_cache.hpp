@@ -18,11 +18,13 @@ template <class T> class ModelCache {
   public:
     // The record of @p path: the one alive, else the one another call is loading, else @p load(resident), which runs
     // on this thread without the lock and returns a record that is not null. resident is the newest Mesh of an
-    // earlier record of @p path that something else keeps alive, or null. Calls for one path that find a load in
-    // progress wait for it and rethrow its failure, except a StagingCancelled while @p stop, the waiting call's own
-    // token, reports no stop: another caller cancelled that load, so the waiting call looks again and loads the file
-    // itself when no other call has started. A failed load caches nothing, so the next call loads again. A load holds
-    // up no call for another path.
+    // earlier record of @p path that something else keeps alive, or null. A call for one path that finds a load in
+    // progress waits for it and returns its record. A failure stays with the call that loaded, since an exception
+    // object that several threads catch is freed by whichever releases it last, through a reference count in the C++
+    // runtime that ThreadSanitizer cannot see. So when that load was cancelled and @p stop, the waiting call's own
+    // token, reports a stop, the waiting call throws a StagingCancelled of its own; otherwise it looks again and loads
+    // the file itself when no other call has started, so that it fails, if it does, with its own exception. A failed
+    // load caches nothing, so the next call loads again. A load holds up no call for another path.
     template <class Load>
     std::shared_ptr<const T> load(const std::filesystem::path &path, const StopToken &stop, Load &&load) {
         std::unique_lock lock(mutex_);
@@ -35,20 +37,27 @@ template <class T> class ModelCache {
                 break;
             const auto loading = entry.loading;
             lock.unlock();
-            try {
-                return loading.get();
-            } catch (const StagingCancelled &) {
-                if (stop.stop_requested())
-                    throw;
-            }
+            const Outcome &outcome = loading.get();
+            if (outcome.value)
+                return outcome.value;
+            if (outcome.cancelled && stop.stop_requested())
+                throw StagingCancelled{};
             lock.lock();
         }
         std::shared_ptr<const Mesh> resident;
         for (auto mesh = entry.meshes.rbegin(); mesh != entry.meshes.rend() && !resident; ++mesh)
             resident = mesh->lock();
-        std::promise<std::shared_ptr<const T>> promise;
+        std::promise<Outcome> promise;
         entry.loading = promise.get_future().share();
         lock.unlock();
+        // Ends the load in progress as failed, telling the calls that wait for it whether it was cancelled.
+        const auto fail = [&](bool cancelled) {
+            if (!lock.owns_lock())
+                lock.lock();
+            entry.loading = {};
+            lock.unlock();
+            promise.set_value({nullptr, cancelled});
+        };
         try {
             std::shared_ptr<const T> value = std::forward<Load>(load)(std::move(resident));
             lock.lock();
@@ -58,14 +67,13 @@ template <class T> class ModelCache {
             if (std::ranges::none_of(entry.meshes, [&](const auto &mesh) { return mesh.lock() == value->render; }))
                 entry.meshes.push_back(value->render);
             lock.unlock();
-            promise.set_value(value);
+            promise.set_value({value, false});
             return value;
+        } catch (const StagingCancelled &) {
+            fail(true);
+            throw;
         } catch (...) {
-            if (!lock.owns_lock())
-                lock.lock();
-            entry.loading = {};
-            lock.unlock();
-            promise.set_exception(std::current_exception());
+            fail(false);
             throw;
         }
     }
@@ -83,13 +91,19 @@ template <class T> class ModelCache {
     }
 
   private:
+    // How a load ended: its record, or null and whether it was cancelled. It carries no exception, so that none
+    // reaches more than one thread.
+    struct Outcome {
+        std::shared_ptr<const T> value;
+        bool cancelled = false;
+    };
     struct Entry {
         std::weak_ptr<const T> value;
         // Meshes of the path's records that may be alive, oldest first. A loader that keeps the resident Mesh adds
         // none, so there are several only while a Mesh it did not keep, from an earlier version of the file, lives.
         std::vector<std::weak_ptr<const Mesh>> meshes;
         // The load in progress, if any.
-        std::shared_future<std::shared_ptr<const T>> loading;
+        std::shared_future<Outcome> loading;
     };
     mutable std::mutex mutex_;
     std::map<std::filesystem::path, Entry> entries_;
