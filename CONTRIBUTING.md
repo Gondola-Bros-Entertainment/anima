@@ -34,10 +34,11 @@ cmake --workflow --preset full
 
 For an offline build, set `FETCHCONTENT_FULLY_DISCONNECTED=ON` and point
 `FETCHCONTENT_SOURCE_DIR_JOLT`, `FETCHCONTENT_SOURCE_DIR_BOX2D`,
-`FETCHCONTENT_SOURCE_DIR_RMLUI` and `FETCHCONTENT_SOURCE_DIR_SDL3` at the pinned
-sources; an RmlUi override must already carry the patch described in
-[third_party/rmlui](third_party/rmlui/README.md). `ANIMA_TEST_GLB` and
-`ANIMA_TEST_MANIFEST` add regressions against an exported model and its manifest.
+`FETCHCONTENT_SOURCE_DIR_RMLUI`, `FETCHCONTENT_SOURCE_DIR_LINEA` and
+`FETCHCONTENT_SOURCE_DIR_SDL3` at the pinned sources; an RmlUi override must
+already carry the patch described in [third_party/rmlui](third_party/rmlui/README.md).
+`ANIMA_TEST_GLB` and `ANIMA_TEST_MANIFEST` add regressions against an exported model
+and its manifest.
 
 ### Benchmarks
 
@@ -106,9 +107,9 @@ races in `std::runtime_error`'s destructor.
 ### GPU and device checks
 
 CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
-drives the viewer, and `consumer_desktop` and `consumer_ui` render synthetic scenes
-through the public API. `consumer_desktop` runs one mode per check, such as
-`--cascades` or `--fog`, each defined by its header in `tests/consumer`.
+drives the viewer, and `consumer_desktop`, `consumer_ui` and `consumer_vector_ui`
+render synthetic scenes through the public API. `consumer_desktop` runs one mode per
+check, such as `--cascades` or `--fog`, each defined by its header in `tests/consumer`.
 Each check opens a window, requires Khronos validation, compares its frames in memory,
 and fails on a pixel mismatch or any validation message. CTest also turns on
 synchronization validation, set to track the shaders' accesses through descriptors.
@@ -147,8 +148,8 @@ cmake --build build/docs --target anima_docs
 
 ## Dependencies
 
-Jolt, Box2D and RmlUi are fetched from pinned archives, and SDL, when fetched, from
-a pinned release commit. Each pin is in its `cmake/Anima*.cmake` file and recorded
+Jolt, Box2D, RmlUi and Linea are fetched from pinned archives, and SDL, when fetched,
+from a pinned release commit. Each pin is in its `cmake/Anima*.cmake` file and recorded
 in its notes under [third_party](third_party/README.md). To update one:
 
 1. Point the URL or `GIT_TAG` at the new release, keeping the release name in a
@@ -158,8 +159,8 @@ in its notes under [third_party](third_party/README.md). To update one:
    license changed, and any patch it carries; RmlUi's patch must still apply.
 3. Read the upstream release notes for API and behavior changes.
 4. Run the `full` workflow and the CI presets that fetch the dependency
-   (`ci-full-release` and `ci-sanitizers`), and the `gpu` label when SDL or RmlUi
-   changes.
+   (`ci-full-release` and `ci-sanitizers`), and the `gpu` label when SDL, RmlUi or
+   Linea changes.
 
 Vendored files under `third_party` are replaced whole at the new revision: update
 their table and SHA-256 list in [third_party/README.md](third_party/README.md) and

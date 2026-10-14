@@ -63,9 +63,11 @@ subdirectory, and compiler warning policy stays private to Anima's targets.
 | 2D physics | `anima::physics2d`, `anima::physics2d_scene` | `ANIMA_BUILD_PHYSICS2D` | Box2D simulation and queries; the scene target also needs assets |
 | SDL input | `anima::input_sdl` | `ANIMA_BUILD_INPUT_SDL` | SDL event conversion using SDL headers only |
 | UI | `anima::ui_documents`, `anima::ui_scene`, `anima::ui` | `ANIMA_BUILD_UI_DOCUMENTS`, `ANIMA_BUILD_UI` | Headless RmlUi documents, their scene integration, and desktop presentation (requires desktop) |
+| Vector art | `anima::vector`, `anima::vector_ui` | `ANIMA_BUILD_VECTOR` | Linea drawings rendered at the display's resolution into a sprite sheet and as UI images, again at each new scale; requires assets, and `anima::vector_ui` also UI |
 
 Jolt, Box2D, miniaudio, meshoptimizer and the importers stay private implementation
-dependencies; `anima::ui` exposes RmlUi deliberately for native interoperability. For
+dependencies; `anima::ui` exposes RmlUi deliberately for native interoperability, and
+`anima::vector` exposes Linea, whose drawings describe the art it renders. For
 audio, `anima::core` links the platform's thread library, and on macOS the Core Audio
 frameworks; Linux audio libraries load at run time. The
 [consumer suite](tests/consumer) builds each target as an external project with the

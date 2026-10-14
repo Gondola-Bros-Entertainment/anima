@@ -1,5 +1,6 @@
 // Impostors: a CPU rasterizer that views a Mesh from each frame of an octahedral grid, and the compilation of its atlas
 // into a Mesh that VulkanRenderer draws as an impostor.
+#include "../detail/dilate.hpp"
 #include "alpha_coverage.hpp"
 #include "srgb.hpp"
 #include <algorithm>
@@ -7,7 +8,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <deque>
 #include <limits>
 #include <map>
 #include <memory>
@@ -551,38 +551,20 @@ class Baker {
     // keeping its coverage 0.
     void dilate(std::uint32_t i, std::uint32_t j, Images &images) {
         const auto size = options_.frame_size, atlas = options_.frames_per_side * size;
-        std::deque<std::uint32_t> queue;
-        for (std::uint32_t texel = 0; texel < size * size; ++texel)
-            if (covered_[texel])
-                queue.push_back(texel);
         const auto offset = [&](std::uint32_t texel) {
             return ((std::size_t{j} * size + texel / size) * atlas + std::size_t{i} * size + texel % size) * 4;
         };
-        while (!queue.empty()) {
-            const auto texel = queue.front();
-            queue.pop_front();
-            const auto s = texel % size, t = texel / size;
-            const std::array<std::pair<long, long>, 4> steps{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
-            for (const auto &[dx, dy] : steps) {
-                const long x = long(s) + dx, y = long(t) + dy;
-                if (x < 0 || y < 0 || x >= long(size) || y >= long(size))
-                    continue;
-                const auto next = std::uint32_t(y) * size + std::uint32_t(x);
-                if (covered_[next])
-                    continue;
-                covered_[next] = 1;
-                const auto from = offset(texel), to = offset(next);
-                for (std::size_t c = 0; c < 3; ++c) {
-                    images.color[to + c] = images.color[from + c];
-                    images.surface[to + c] = images.surface[from + c];
-                    if (emits_)
-                        images.emissive[to + c] = images.emissive[from + c];
-                }
-                for (std::size_t c = 0; c < 4; ++c)
-                    images.normal_depth[to + c] = images.normal_depth[from + c];
-                queue.push_back(next);
+        detail::dilate(size, size, covered_, [&](std::uint32_t source, std::uint32_t texel) {
+            const auto from = offset(source), to = offset(texel);
+            for (std::size_t c = 0; c < 3; ++c) {
+                images.color[to + c] = images.color[from + c];
+                images.surface[to + c] = images.surface[from + c];
+                if (emits_)
+                    images.emissive[to + c] = images.emissive[from + c];
             }
-        }
+            for (std::size_t c = 0; c < 4; ++c)
+                images.normal_depth[to + c] = images.normal_depth[from + c];
+        });
     }
 
     ImpostorOptions options_;

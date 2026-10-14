@@ -367,8 +367,9 @@ jobs:
             (
               while sleep 10; do
                 ps -eo pid=,etimes=,comm= | while read -r pid seconds name; do
-                  # comm holds at most 15 characters, so consumer_desktop reads as consumer_deskto.
-                  case "$name" in anima_check | consumer_deskto | consumer_ui) ;; *) continue ;; esac
+                  # comm holds at most 15 characters, so consumer_desktop reads as consumer_deskto and
+                  # consumer_vector_ui as consumer_vector.
+                  case "$name" in anima_check | consumer_deskto | consumer_ui | consumer_vector) ;; *) continue ;; esac
                   [ "$seconds" -gt 330 ] || continue
                   echo "::warning::GPU check $name ($pid) outlived its own timeout; its stacks follow"
                   sudo gdb -p "$pid" -batch -ex "thread apply all bt" 2>&1 | tee "$hangs/$name-$pid.txt"

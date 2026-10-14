@@ -77,6 +77,14 @@
 #ifdef CONSUMER_UI
 #include "ui.hpp"
 #endif
+#ifdef CONSUMER_VECTOR
+#include "vector.hpp"
+#endif
+#ifdef CONSUMER_VECTOR_UI
+#include "vector_ui.hpp"
+#include <SDL3/SDL_main.h>
+#include <string_view>
+#endif
 
 namespace {
 void require(bool condition, const char *message) {
@@ -346,6 +354,13 @@ int main(int argc, char **argv) {
         if (argc > 1 && std::string_view(argv[1]) == "--ui")
             return ui_test::run(argc, argv);
 #endif
+#ifdef CONSUMER_VECTOR
+        vector_consumer::run();
+#endif
+#ifdef CONSUMER_VECTOR_UI
+        if (argc > 1 && std::string_view(argv[1]) == "--vector")
+            return vector_ui_test::run(argc, argv);
+#endif
 #ifdef CONSUMER_DESKTOP
         replacement_test::reject_unfireable_injection();
         replacement_test::reject_invalid_lod_threshold();
@@ -477,7 +492,7 @@ int main(int argc, char **argv) {
         std::cout << "PASS external consumer using public Anima targets\n";
         return 0;
     }
-#ifdef CONSUMER_DESKTOP
+#if defined(CONSUMER_DESKTOP) || defined(CONSUMER_VECTOR_UI)
     catch (const anima::RendererUnavailableError &error) {
         return gpu_check::unavailable(error);
     } catch (const gpu_check::Unavailable &error) {

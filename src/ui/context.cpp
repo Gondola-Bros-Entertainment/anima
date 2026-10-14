@@ -1,4 +1,5 @@
 #include "../detail/image_limits.hpp"
+#include "../detail/memory_image.hpp"
 #include "ui_draw.hpp"
 #include <RmlUi_Platform_SDL.h>
 #include <algorithm>
@@ -35,26 +36,11 @@ constexpr std::string_view source_attribute = "src";
 // Prefix of the sources that name images registered with UiContext::set_image. RmlUi's JoinPath returns a path with a
 // colon before its first slash unchanged, as a Windows drive path, so the name reaches LoadTexture as written.
 constexpr std::string_view memory_image_scheme = "memory:";
-constexpr std::string_view memory_image_characters =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.";
 bool ui_active{}; // RmlUi process globals; all access is on the UI/render thread.
 // Whether neither axis of @p dimensions exceeds the image edge limit that the shared decoder applies.
 bool within_image_edge(Rml::Vector2i dimensions) {
     return std::cmp_less_equal(dimensions.x, detail::maximum_image_edge) &&
            std::cmp_less_equal(dimensions.y, detail::maximum_image_edge);
-}
-// Whether @p name is a memory image name: segments of memory_image_characters joined by '/', none empty, "." or "..".
-bool memory_image_name(std::string_view name) {
-    for (std::size_t start = 0;;) {
-        const auto end = name.find('/', start);
-        const auto segment = name.substr(start, end - start);
-        if (segment.empty() || segment == "." || segment == ".." ||
-            segment.find_first_not_of(memory_image_characters) != std::string_view::npos)
-            return false;
-        if (end == std::string_view::npos)
-            return true;
-        start = end + 1;
-    }
 }
 // Multiplies the color of 8-bit RGBA @p pixels by their alpha, as GenerateTexture takes them.
 void premultiply(std::span<std::uint8_t> pixels) {
@@ -160,14 +146,22 @@ class Render final : public Rml::RenderInterface {
   public:
     detail::UiFrame frame;
     std::string failure;
-    // Images registered with UiContext::set_image by name, premultiplied.
-    std::map<std::string, std::shared_ptr<const detail::UiTexture>, std::less<>> memory_images;
-    // The dimensions that a source naming the memory image @p name loads with.
-    Rml::Vector2i memory_image_dimensions(std::string_view name) const {
-        const auto found = memory_images.find(name);
-        const auto &image = found == memory_images.end() ? unregistered_image : found->second;
-        return {int(image->width), int(image->height)};
+    // An image registered with UiContext::set_image: its pixels, premultiplied, and the size in dp that documents
+    // measure, which RmlUi takes as the texture's dimensions and multiplies by the dp ratio.
+    struct MemoryImage {
+        std::shared_ptr<const detail::UiTexture> texture;
+        Rml::Vector2i dimensions;
+    };
+    // Images registered with UiContext::set_image by name.
+    std::map<std::string, MemoryImage, std::less<>> memory_images;
+    // The image that a source naming @p name loads, the transparent stand-in while the name is not registered.
+    MemoryImage memory_image(std::string_view name) const {
+        if (const auto found = memory_images.find(name); found != memory_images.end())
+            return found->second;
+        return {unregistered_image, {int(unregistered_image->width), int(unregistered_image->height)}};
     }
+    // The dimensions that a source naming the memory image @p name loads with.
+    Rml::Vector2i memory_image_dimensions(std::string_view name) const { return memory_image(name).dimensions; }
     void begin(Rml::Vector2i dimensions) {
         frame.vertices.clear();
         frame.batches.clear();
@@ -253,16 +247,14 @@ class Render final : public Rml::RenderInterface {
     // registered loads a transparent stand-in instead, which registering the name releases for it to load anew.
     Rml::TextureHandle load_memory_image(Rml::Vector2i &dimensions, const Rml::String &path) {
         const auto name = std::string_view(path).substr(memory_image_scheme.size());
-        if (!memory_image_name(name))
+        if (!detail::memory_image_name(name))
             return unloadable(dimensions, "has an invalid name", path);
-        auto image = unregistered_image;
-        if (const auto found = memory_images.find(name); found != memory_images.end())
-            image = found->second;
-        else
+        if (!memory_images.contains(name))
             Rml::Log::Message(Rml::Log::LT_WARNING, "UI image is not registered: %s", path.c_str());
-        dimensions = {int(image->width), int(image->height)};
+        auto image = memory_image(name);
+        dimensions = image.dimensions;
         const auto handle = next_texture++;
-        textures.emplace(handle, std::move(image));
+        textures.emplace(handle, std::move(image.texture));
         return handle;
     }
     Rml::TextureHandle LoadTexture(Rml::Vector2i &dimensions, const Rml::String &path) override {
@@ -429,24 +421,28 @@ struct UiContext::Impl {
     }
     void set_image(std::string_view name, UiImage image) {
         running();
-        if (!memory_image_name(name))
+        if (!detail::memory_image_name(name))
             throw std::invalid_argument("Invalid UI image name");
         if (!image.width || !image.height || image.width > detail::maximum_image_edge ||
             image.height > detail::maximum_image_edge ||
             image.rgba.size() != std::uint64_t(image.width) * image.height * detail::rgba_bytes_per_pixel)
             throw std::invalid_argument("Invalid UI image dimensions or bytes");
+        const Rml::Vector2i measured{detail::measured_dp(image.width, image.scale),
+                                     detail::measured_dp(image.height, image.scale)};
+        if (!measured.x || !measured.y)
+            throw std::invalid_argument("Invalid UI image scale");
         premultiply(image.rgba);
         auto texture = std::make_shared<detail::UiTexture>();
         texture->width = image.width;
         texture->height = image.height;
         texture->rgba = std::move(image.rgba);
         const auto before = render.memory_image_dimensions(name);
-        render.memory_images.insert_or_assign(std::string(name), std::move(texture));
+        render.memory_images.insert_or_assign(std::string(name), Render::MemoryImage{std::move(texture), measured});
         reload_image(name, before);
     }
     bool remove_image(std::string_view name) {
         running();
-        if (!memory_image_name(name))
+        if (!detail::memory_image_name(name))
             throw std::invalid_argument("Invalid UI image name");
         const auto found = render.memory_images.find(name);
         if (found == render.memory_images.end())

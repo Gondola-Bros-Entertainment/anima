@@ -16,6 +16,8 @@ Entry points:
   anima::CustomMaterial gives their surfaces an application's own shaders.
 - anima::SpriteSheet and anima::SpriteBatch give the renderer textured 2D quads
   to draw over the scenes.
+- anima::VectorAtlas renders Linea drawings into a sprite sheet at the display's
+  resolution, and anima::set_ui_images registers them as UI images.
 - anima::Camera and anima::CameraView select views; anima::resolve_camera resolves
   them into view and projection matrices, and anima::view_projection into the
   renderer's view.

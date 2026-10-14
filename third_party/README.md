@@ -91,6 +91,7 @@ f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26  meshoptimizer/
 - [Box2D](box2d/README.md): pinned source and [MIT license](box2d/LICENSE).
 - [RmlUi and FreeType](rmlui/README.md): source provenance, RmlUi's
   [MIT license](rmlui/LICENSE.txt), and the [FreeType License](rmlui/FreeType-FTL.txt).
+- [Linea](linea/README.md): pinned source and [MIT license](linea/LICENSE).
 
 SDL3 is found from an installed package by default. The optional CMake fetch is
 pinned to SDL 3.4.16 commit `fa2c02bb6e21974a89ea9824bc53c9932abe5f9c`.
