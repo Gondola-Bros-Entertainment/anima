@@ -44,29 +44,43 @@ static_assert(offsetof(CustomPush, view) == detail::custom_draw_view_projection 
 // Descriptor bindings of a custom material's set: its parameter block, then its textures.
 static constexpr std::uint32_t custom_material_bindings = CustomMaterial::max_textures + 1;
 
-// GPU state of one CustomMaterial, cached per object as meshes are. Its pipelines are compatible with every world
-// and shadow pass, whose attachment formats never change, so they last as long as the material.
+// GPU state of one CustomShader, cached per object as meshes are, which every material of the shader draws through.
+// Its pipelines are compatible with every world and shadow pass, whose attachment formats never change, so they last as
+// long as the shader.
+struct GpuCustomShader {
+    VkDevice device{};
+    std::shared_ptr<const CustomShader> source;
+    VkShaderModule vertex{}, fragment{}, shadow_vertex{}, shadow_fragment{};
+    // The main-view pipeline and the depth-only variant's.
+    VkPipeline pipeline{}, shadow_pipeline{};
+    ~GpuCustomShader() {
+        for (const auto handle : {pipeline, shadow_pipeline})
+            if (handle)
+                vkDestroyPipeline(device, handle, nullptr);
+        for (const auto shader : {vertex, fragment, shadow_vertex, shadow_fragment})
+            if (shader)
+                vkDestroyShaderModule(device, shader, nullptr);
+    }
+    GpuCustomShader() = default;
+    GpuCustomShader(const GpuCustomShader &) = delete;
+    GpuCustomShader &operator=(const GpuCustomShader &) = delete;
+};
+// GPU state of one CustomMaterial, cached per object as meshes are: its parameters, textures and descriptor set.
 struct GpuCustomMaterial {
     VkDevice device{};
     VmaAllocator allocator{};
     std::shared_ptr<const CustomMaterial> source;
-    VkShaderModule vertex{}, fragment{}, shadow_vertex{}, shadow_fragment{};
+    // The cached state of the material's shader. The source holds the shader, so retire_resources() keeps that entry
+    // at least as long as this one.
+    const GpuCustomShader *shader{};
     std::unique_ptr<ResourceBuffer> parameters;
     // Images and views are owned; samplers are the shared material samplers.
     std::vector<GpuTexture> textures;
     VkDescriptorPool pool{};
     VkDescriptorSet set{};
-    // The main-view pipeline and the depth-only variant's.
-    VkPipeline pipeline{}, shadow_pipeline{};
     ~GpuCustomMaterial() {
-        for (const auto handle : {pipeline, shadow_pipeline})
-            if (handle)
-                vkDestroyPipeline(device, handle, nullptr);
         if (pool)
             vkDestroyDescriptorPool(device, pool, nullptr);
-        for (const auto shader : {vertex, fragment, shadow_vertex, shadow_fragment})
-            if (shader)
-                vkDestroyShaderModule(device, shader, nullptr);
         for (auto &texture : textures) {
             if (texture.view)
                 vkDestroyImageView(device, texture.view, nullptr);
@@ -101,6 +115,7 @@ VkDescriptorSetLayout custom_frame_layout{}, custom_material_layout{};
 VkPipelineLayout custom_pipeline_layout{};
 // Holds each frame slot's frame set (FrameSlot::custom_frame_set).
 VkDescriptorPool custom_frame_pool{};
+std::map<const CustomShader *, std::unique_ptr<GpuCustomShader>> custom_shader_cache;
 std::map<const CustomMaterial *, std::unique_ptr<GpuCustomMaterial>> custom_cache;
 // Seconds that VulkanRenderer::set_time received.
 float shader_time{};
@@ -216,9 +231,29 @@ VkShaderModule custom_module(std::span<const std::uint32_t> words) const {
     check(vkCreateShaderModule(device, &info, nullptr, &shader), "Create custom shader module");
     return shader;
 }
-// The GPU state of @p material with its pipelines, created and uploaded on first use. Throws `std::invalid_argument`
-// for a texture beyond the device's image limits and `std::runtime_error` for failed Vulkan calls; a failure leaves
-// nothing cached for @p material.
+// The GPU state of @p shader, its modules and pipelines, created on first use. Throws `std::runtime_error` for failed
+// Vulkan calls; a failure leaves nothing cached for @p shader.
+const GpuCustomShader &gpu_custom_shader(const std::shared_ptr<const CustomShader> &shader) {
+    if (const auto found = custom_shader_cache.find(shader.get()); found != custom_shader_cache.end())
+        return *found->second;
+    const auto &definition = shader->definition();
+    auto value = std::make_unique<GpuCustomShader>();
+    value->device = device;
+    value->source = shader;
+    value->vertex = custom_module(definition.vertex_shader);
+    value->fragment = custom_module(definition.fragment_shader);
+    if (!definition.shadow_vertex_shader.empty())
+        value->shadow_vertex = custom_module(definition.shadow_vertex_shader);
+    if (!definition.shadow_fragment_shader.empty())
+        value->shadow_fragment = custom_module(definition.shadow_fragment_shader);
+    if (value->shadow_vertex)
+        value->shadow_pipeline = create_custom_pipeline(*value, true);
+    value->pipeline = create_custom_pipeline(*value, false);
+    return *custom_shader_cache.emplace(shader.get(), std::move(value)).first->second;
+}
+// The GPU state of @p material, created and uploaded on first use, with its shader's (gpu_custom_shader()). Throws
+// `std::invalid_argument` for a texture beyond the device's image limits and `std::runtime_error` for failed Vulkan
+// calls; a failure leaves nothing cached for @p material, though its shader's state stays cached once created.
 GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &material) {
     if (const auto found = custom_cache.find(material.get()); found != custom_cache.end())
         return *found->second;
@@ -236,12 +271,7 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     value->device = device;
     value->allocator = allocator;
     value->source = material;
-    value->vertex = custom_module(definition.vertex_shader);
-    value->fragment = custom_module(definition.fragment_shader);
-    if (!definition.shadow_vertex_shader.empty())
-        value->shadow_vertex = custom_module(definition.shadow_vertex_shader);
-    if (!definition.shadow_fragment_shader.empty())
-        value->shadow_fragment = custom_module(definition.shadow_fragment_shader);
+    value->shader = &gpu_custom_shader(definition.shader);
     if (!definition.parameters.empty()) {
         value->parameters = resource_buffer(definition.parameters.size(), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -272,8 +302,8 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
     allocate.descriptorSetCount = 1;
     allocate.pSetLayouts = &custom_material_layout;
     check(vkAllocateDescriptorSets(device, &allocate, &value->set), "Allocate custom material set");
-    // Validation limited the shaders to the supplied parameters and textures, so the bindings left unwritten here
-    // are never used.
+    // Validation required the material to supply the parameters and textures that its shader declares, so the
+    // bindings left unwritten here are never used.
     if (value->parameters) {
         const VkDescriptorBufferInfo buffer{value->parameters->buffer, 0, definition.parameters.size()};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -285,9 +315,6 @@ GpuCustomMaterial &gpu_custom(const std::shared_ptr<const CustomMaterial> &mater
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
     write_custom_textures(*value);
-    if (value->shadow_vertex)
-        value->shadow_pipeline = create_custom_pipeline(*value, true);
-    value->pipeline = create_custom_pipeline(*value, false);
     auto &cached = *custom_cache.emplace(material.get(), std::move(value)).first->second;
     // Every copy has completed, so a material with TexelRetention::until_upload no longer needs its texels.
     material->release_texels();
@@ -312,7 +339,7 @@ void write_custom_textures(const GpuCustomMaterial &gpu) const {
         vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(gpu.textures.size()), writes.data(), 0, nullptr);
 }
 // Returns a new main-view pipeline for @p gpu, or with @p shadow its depth-only variant's, which the caller owns.
-[[nodiscard]] VkPipeline create_custom_pipeline(const GpuCustomMaterial &gpu, bool shadow) const {
+[[nodiscard]] VkPipeline create_custom_pipeline(const GpuCustomShader &gpu, bool shadow) const {
     const auto &source = *gpu.source;
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     for (auto &stage : stages) {
@@ -348,15 +375,13 @@ void write_custom_textures(const GpuCustomMaterial &gpu) const {
     }
     state.layout = custom_pipeline_layout;
     state.pass = shadow ? shadow_pass : render_pass;
-    return create_graphics_pipeline(state, "Create custom material pipeline");
+    return create_graphics_pipeline(state, "Create custom shader pipeline");
 }
-// Binds @p gpu's pipeline, or with @p shadow its depth-only variant's, with the frame, pose and material sets, which
-// disturbs the sets bound through resource_pipeline_layout, so it clears resource_bound.
-void bind_custom(const GpuCustomMaterial &gpu, bool shadow) {
-    const auto command = frame().command;
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow ? gpu.shadow_pipeline : gpu.pipeline);
+// Binds @p gpu's frame, pose and material sets, which disturbs the sets bound through resource_pipeline_layout, so it
+// clears resource_bound. Every custom pipeline has custom_pipeline_layout, so binding one of them keeps the sets.
+void bind_custom(const GpuCustomMaterial &gpu) {
     const VkDescriptorSet sets[]{frame().custom_frame_set, frame().pose_set, gpu.set};
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, custom_pipeline_layout, 0,
+    vkCmdBindDescriptorSets(frame().command, VK_PIPELINE_BIND_POINT_GRAPHICS, custom_pipeline_layout, 0,
                             static_cast<std::uint32_t>(std::size(sets)), sets, 0, nullptr);
     resource_bound = {};
 }
@@ -382,6 +407,7 @@ void record_custom_draw(const ResourceInstance &render_instance, std::size_t dra
 // or in shadow pass @p shadow, whose frustum @p frustum is, the depth-only variants that it holds (shadow_holds()).
 void record_custom_draws(const std::vector<CustomDraw> &draws, const Mat4 &view, const RenderFrustum *frustum,
                          const ShadowPass *shadow) {
+    VkPipeline bound_pipeline = VK_NULL_HANDLE;
     const GpuCustomMaterial *bound_material = nullptr;
     const ResourceInstance *bound_geometry = nullptr;
     for (const auto &entry : draws) {
@@ -391,9 +417,15 @@ void record_custom_draws(const std::vector<CustomDraw> &draws, const Mat4 &view,
         find_placement_runs(render_instance, frustum, shadow ? shadow->min_caster_radius : 0);
         if (placement_runs.empty())
             continue;
+        // Materials of one shader share its pipeline and differ in their sets.
+        const auto draw_pipeline = shadow ? entry.custom->shader->shadow_pipeline : entry.custom->shader->pipeline;
+        if (draw_pipeline != bound_pipeline) {
+            bound_pipeline = draw_pipeline;
+            vkCmdBindPipeline(frame().command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw_pipeline);
+        }
         if (entry.custom != bound_material) {
             bound_material = entry.custom;
-            bind_custom(*bound_material, shadow != nullptr);
+            bind_custom(*bound_material);
         }
         if (&render_instance != bound_geometry) {
             bound_geometry = &render_instance;

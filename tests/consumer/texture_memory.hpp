@@ -398,7 +398,8 @@ inline int run(int argc, char **argv) {
     second.render("shared");
     second.images.require_same("kept", "shared", "An image that the application keeps drew differently");
     // Custom materials hold their textures' texels until upload in the same way.
-    auto definition = custom_material_test::effect_definition("effect", anima::CustomBlend::opaque, {{1, 1, 1}});
+    auto definition = custom_material_test::effect_definition(
+        "effect", custom_material_test::effect_shader(anima::CustomBlend::opaque), {{1, 1, 1}});
     definition.texel_retention = anima::TexelRetention::until_upload;
     const std::weak_ptr<const anima::Image> effect_image = definition.textures.at(0).image;
     const auto material = std::make_shared<const anima::CustomMaterial>(std::move(definition));

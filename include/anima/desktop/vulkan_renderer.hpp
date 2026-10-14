@@ -429,8 +429,11 @@ struct ResourceStats {
     std::uint64_t resident_texture_bytes{};
     /// Device allocation bytes of cached placements (MeshPlacements), 48 bytes per placement before alignment.
     std::uint64_t resident_placement_bytes{};
-    /// Custom materials in the GPU cache.
+    /// Custom materials in the GPU cache, each with its own parameter buffer, textures and descriptors.
     std::uint64_t cached_custom_materials{};
+    /// Custom shaders in the GPU cache, each with one set of shader modules and pipelines that every cached custom
+    /// material of the shader draws through.
+    std::uint64_t cached_custom_shaders{};
     /// Sprite sheets in the GPU cache (VulkanRenderer::set_sprites).
     std::uint64_t cached_sprite_sheets{};
     /// Whether the latest preparation draws a custom material that reads opaque depth or color, so that its frame
@@ -534,11 +537,11 @@ struct ResourceStats {
 /// only in the floating-point format, whose values crowd toward 0 as the depths of distant surfaces do; the fixed-point
 /// formats space their values evenly, which leaves distant surfaces the precision of forward depth.
 ///
-/// Applications customize shading, not the frame. A CustomMaterial supplies SPIR-V vertex and fragment shaders,
-/// an optional depth-only variant, a parameter block, textures and a blend mode for the mesh material slots it
-/// is assigned to (MeshRenderer::set_custom_material), and its shaders read the inputs that custom_material.hpp
-/// documents. The renderer creates its pipelines and keeps the passes and their order, depth testing, sorting,
-/// the vertex, descriptor and push constant layouts, the display conversion and every Vulkan object.
+/// Applications customize shading, not the frame. A CustomMaterial supplies a CustomShader, which holds SPIR-V vertex
+/// and fragment shaders, an optional depth-only variant and a blend mode, with a parameter block and textures for the
+/// mesh material slots it is assigned to (MeshRenderer::set_custom_material), and its shaders read the inputs that
+/// custom_material.hpp documents. The renderer creates its pipelines and keeps the passes and their order, depth
+/// testing, sorting, the vertex, descriptor and push constant layouts, the display conversion and every Vulkan object.
 /// Applications cannot add render passes, render targets, post-processing or compute work, cannot reach Vulkan
 /// objects, and cannot change the standard material's shading.
 ///
@@ -682,21 +685,26 @@ struct ResourceStats {
 /// - The copies of an object with placements sort as one draw, by the bounds of every copy, and blend in
 ///   MeshPlacements::transforms() order.
 ///
-/// A custom material draws in the pass that its CustomBlend mode selects. An opaque one draws in the world pass
-/// after every opaque and masked mesh and before the sky, testing depth with `GREATER` and writing it, so it hides
+/// A custom material draws in the pass that its shader's CustomBlend mode selects. An opaque one draws in the world
+/// pass after every opaque and masked mesh and before the sky, testing depth with `GREATER` and writing it, so it hides
 /// and is hidden as they are. Blended and additive ones are blended draws: they sort with blended materials and draw
 /// in that order, testing depth with `GREATER` and writing none. When a frame draws a blended or additive custom
-/// material whose fragment shader reads opaque depth or color (CustomMaterial::reads_opaque_depth,
-/// CustomMaterial::reads_opaque_color), the world pass ends after the opaque draws, the renderer copies the depth
+/// material whose fragment shader reads opaque depth or color (CustomShader::reads_opaque_depth,
+/// CustomShader::reads_opaque_color), the world pass ends after the opaque draws, the renderer copies the depth
 /// and color targets into images that those shaders sample, and a second pass loads the targets and draws the
 /// blended draws; other frames copy nothing. The copies are allocated on the first frame that needs them and released
-/// with the swapchain or when the scene targets are resized. A custom material casts shadows only through its
+/// with the swapchain or when the scene targets are resized. A custom material casts shadows only through its shader's
 /// depth-only variant, which draws into each shadow pass, each cascade and the detail region, with that pass's
 /// view-projection; without one it casts none. Custom shaders read no shadow maps, and fog is theirs to apply, through
 /// `animaFogged()` or from the documented inputs, while exposure and tone mapping apply to the whole target at display
-/// conversion. A CustomMaterial's shader modules, pipelines, parameter buffer, textures and descriptors are created the
-/// first time a preparation draws it and are released as cached meshes are, once only the renderer references the
-/// material; creating them fails as a mesh upload does.
+/// conversion. A CustomShader's shader modules and pipelines are created the first time a preparation draws one of its
+/// materials, and a CustomMaterial's parameter buffer, textures and descriptors the first time a preparation draws it,
+/// so materials of one shader share its modules and pipelines (ResourceStats::cached_custom_shaders). Each is
+/// released as cached meshes are, once only the renderer references the shader or the material, and a cached material
+/// keeps its shader referenced; creating either fails as a mesh upload does. Every pipeline that the renderer creates
+/// compiles through one `VkPipelineCache`, which lives as long as the renderer and is never saved, so a pipeline whose
+/// shaders and state match one compiled earlier, such as that of a shader released and drawn again, can reuse the
+/// driver's compiled code.
 ///
 /// Swapchains follow the window's pixel size and present in the mode that set_present_mode() requests where the surface
 /// offers it, otherwise in PresentMode::fifo, and the scene targets follow the swapchain's size times the render scale.

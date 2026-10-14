@@ -163,7 +163,8 @@ inline int run(int argc, char **argv) {
                                                     {.texel_retention = anima::TexelRetention::until_upload}));
     // The linear pair samples the texels as data through the consumer's effect shader, on the close quad.
     const auto effect = [&](std::shared_ptr<const anima::Image> image) {
-        auto definition = custom_material_test::effect_definition("pattern", anima::CustomBlend::opaque, {{1, 1, 1}});
+        auto definition = custom_material_test::effect_definition(
+            "pattern", custom_material_test::effect_shader(anima::CustomBlend::opaque), {{1, 1, 1}});
         auto &texture = definition.textures.at(0);
         texture.image = std::move(image);
         texture.encoding = anima::TextureEncoding::linear;

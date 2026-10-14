@@ -6,8 +6,9 @@
 // a surface that fades across its visibility range. Every expected pixel follows from those shaders and the
 // renderer's contract: the frame inputs are the renderer's settings, opaque custom materials draw with the opaque
 // meshes, blended and additive ones sort with the blended meshes, opaque inputs are copied only on frames that draw a
-// material that reads them, skinned draws blend their joints, only a depth-only variant casts shadows, and the fading
-// helpers dissolve and cast as the standard material does.
+// material that reads them, skinned draws blend their joints, only a depth-only variant casts shadows, the fading
+// helpers dissolve and cast as the standard material does, and materials of one shader share its modules and
+// pipelines while each draws with its own parameters.
 #include "blending.hpp"
 #include "gpu_checks.hpp"
 #include "rejection.hpp"
@@ -68,9 +69,6 @@ inline void require(bool condition, const std::string &message) {
     if (!condition)
         throw std::runtime_error(message);
 }
-template <std::size_t Count> std::vector<std::uint32_t> words(const std::uint32_t (&code)[Count]) {
-    return {code, code + Count};
-}
 // The std140 bytes of a block of vec4 members.
 inline std::vector<std::byte> parameters(std::initializer_list<std::array<float, 4>> members) {
     std::vector<std::byte> bytes(members.size() * sizeof(std::array<float, 4>));
@@ -114,13 +112,28 @@ struct Effect {
         return result;
     }
 };
-inline anima::CustomMaterialDefinition effect_definition(const std::string &name, anima::CustomBlend blend,
-                                                         const Effect &effect) {
+// A shader of the application's own stages, which @p shadow_vertex_code gives a depth-only variant when not empty.
+inline std::shared_ptr<const anima::CustomShader> shader(std::span<const std::uint32_t> vertex_code,
+                                                         std::span<const std::uint32_t> fragment_code,
+                                                         anima::CustomBlend blend = anima::CustomBlend::opaque,
+                                                         std::span<const std::uint32_t> shadow_vertex_code = {}) {
+    anima::CustomShaderDefinition definition;
+    definition.vertex_shader.assign(vertex_code.begin(), vertex_code.end());
+    definition.fragment_shader.assign(fragment_code.begin(), fragment_code.end());
+    definition.shadow_vertex_shader.assign(shadow_vertex_code.begin(), shadow_vertex_code.end());
+    definition.blend = blend;
+    return std::make_shared<const anima::CustomShader>(std::move(definition));
+}
+// The effect shader in @p blend mode, with the depth-only variant when @p shadows.
+inline std::shared_ptr<const anima::CustomShader> effect_shader(anima::CustomBlend blend, bool shadows = false) {
+    return shader(surface_vertex, effect_fragment, blend,
+                  shadows ? std::span<const std::uint32_t>(shadow_vertex) : std::span<const std::uint32_t>());
+}
+inline anima::CustomMaterialDefinition
+effect_definition(const std::string &name, std::shared_ptr<const anima::CustomShader> drawn, const Effect &effect) {
     anima::CustomMaterialDefinition definition;
     definition.name = name;
-    definition.vertex_shader = words(surface_vertex);
-    definition.fragment_shader = words(effect_fragment);
-    definition.blend = blend;
+    definition.shader = std::move(drawn);
     definition.parameters =
         parameters({{float(effect.color[0]), float(effect.color[1]), float(effect.color[2]), float(effect.coverage)},
                     {float(effect.base), float(effect.amplitude), float(effect.frequency), 0}});
@@ -130,10 +143,8 @@ inline anima::CustomMaterialDefinition effect_definition(const std::string &name
 // The effect in @p blend mode, with the depth-only variant when @p shadows.
 inline std::shared_ptr<const anima::CustomMaterial> effect_material(const std::string &name, anima::CustomBlend blend,
                                                                     const Effect &effect, bool shadows = false) {
-    auto definition = effect_definition(name, blend, effect);
-    if (shadows)
-        definition.shadow_vertex_shader = words(shadow_vertex);
-    return std::make_shared<const anima::CustomMaterial>(std::move(definition));
+    return std::make_shared<const anima::CustomMaterial>(
+        effect_definition(name, effect_shader(blend, shadows), effect));
 }
 // Parameters of the water shader.
 struct Water {
@@ -146,9 +157,7 @@ inline std::shared_ptr<const anima::CustomMaterial>
 water_material(const Water &water, anima::CustomBlend blend = anima::CustomBlend::blended) {
     anima::CustomMaterialDefinition definition;
     definition.name = "water";
-    definition.vertex_shader = words(surface_vertex);
-    definition.fragment_shader = words(water_fragment);
-    definition.blend = blend;
+    definition.shader = shader(surface_vertex, water_fragment, blend);
     definition.parameters = parameters(
         {{float(water.deep[0]), float(water.deep[1]), float(water.deep[2]), 0}, {float(water.absorption), 0, 0, 0}});
     return std::make_shared<const anima::CustomMaterial>(std::move(definition));
@@ -256,18 +265,20 @@ inline void check_rejections(Harness &harness) {
         "materials can read it");
     rejects<std::invalid_argument>(
         [] {
-            auto definition = effect_definition("short", anima::CustomBlend::opaque, {});
+            auto definition = effect_definition("short", effect_shader(anima::CustomBlend::opaque), {});
             definition.parameters.resize(16);
             (void)anima::CustomMaterial(std::move(definition));
         },
-        "The fragment shader declares a parameter block of 32 bytes, but the material supplies 16");
+        "Custom material supplies 16 parameter bytes, but its shader's parameter block spans 32");
     rejects<std::invalid_argument>(
         [] {
-            auto definition = effect_definition("untextured", anima::CustomBlend::opaque, {});
+            auto definition = effect_definition("untextured", effect_shader(anima::CustomBlend::opaque), {});
             definition.textures.clear();
             (void)anima::CustomMaterial(std::move(definition));
         },
-        "The fragment shader declares texture 0 (set 2, binding 1), but the material supplies 0 textures");
+        "Custom material supplies 0 textures, but its shader declares texture 0");
+    rejects<std::invalid_argument>([] { (void)anima::CustomMaterial(effect_definition("unshaded", nullptr, {})); },
+                                   "Custom material has no shader");
 }
 
 // Probes that write the frame inputs as colors show the camera, lights, fog and viewport that the renderer was given.
@@ -318,11 +329,11 @@ inline void check_inputs(Harness &harness) {
         {"fog phase asymmetry, and sunlight w", {environment.fog.sun_anisotropy, .25, .5}}};
     auto scene = std::make_shared<anima::Scene>();
     std::vector<anima::Vec3> centers;
+    const auto probe = shader(surface_vertex, probe_fragment);
     for (std::uint32_t i = 0; i < inputs.size(); ++i) {
         anima::CustomMaterialDefinition definition;
         definition.name = "probe " + std::to_string(i);
-        definition.vertex_shader = words(surface_vertex);
-        definition.fragment_shader = words(probe_fragment);
+        definition.shader = probe;
         definition.parameters.resize(16);
         std::memcpy(definition.parameters.data(), &i, sizeof(i));
         centers.push_back(eye + anima::Vec3{-1.2F + .6F * float(i % 5), .6F - .6F * float(i / 5), -3});
@@ -330,6 +341,8 @@ inline void check_inputs(Harness &harness) {
                   std::make_shared<const anima::CustomMaterial>(std::move(definition)));
     }
     harness.render("inputs", {scene}, view, environment);
+    require(harness.stats.cached_custom_shaders == 1 && harness.stats.cached_custom_materials == inputs.size(),
+            "The probes' materials did not share one shader's modules and pipelines");
     for (std::size_t i = 0; i < inputs.size(); ++i)
         harness.expect("inputs", view, centers[i], inputs[i].second, "The frame's " + inputs[i].first);
     harness.images.discard({"inputs"});
@@ -698,9 +711,7 @@ inline void check_fading(Harness &harness) {
 
     anima::CustomMaterialDefinition definition;
     definition.name = "fade";
-    definition.vertex_shader = words(fade_vertex);
-    definition.fragment_shader = words(fade_fragment);
-    definition.shadow_vertex_shader = words(fade_shadow_vertex);
+    definition.shader = shader(fade_vertex, fade_fragment, anima::CustomBlend::opaque, fade_shadow_vertex);
     const auto fade = std::make_shared<const anima::CustomMaterial>(std::move(definition));
     // A unit quad, which each object or placement scales to cover the same angle at its distance.
     const auto quad = blending_test::facing(blending_test::opaque({.9, .25, .2}, true), {0, 0, 0}, 1, 1);
@@ -836,8 +847,7 @@ inline void check_crossfade(Harness &harness) {
     const auto quad = blending_test::facing(blending_test::opaque({1, 1, 1}), {0, 0, 0}, 2, 2);
     anima::CustomMaterialDefinition definition;
     definition.name = "fade";
-    definition.vertex_shader = words(fade_vertex);
-    definition.fragment_shader = words(fade_fragment);
+    definition.shader = shader(fade_vertex, fade_fragment);
     const auto fade = std::make_shared<const anima::CustomMaterial>(std::move(definition));
     for (const bool custom : {false, true}) {
         const std::string path = custom ? "custom" : "standard";
@@ -935,11 +945,9 @@ inline void check_opaque_depth(Harness &harness) {
     const auto depth_at = [&](double z) { return near_plane * (far_plane - z) / ((far_plane - near_plane) * z); };
     anima::CustomMaterialDefinition definition;
     definition.name = "depth probe";
-    definition.vertex_shader = words(surface_vertex);
-    definition.fragment_shader = words(depth_fragment);
-    definition.blend = anima::CustomBlend::blended;
+    definition.shader = shader(surface_vertex, depth_fragment, anima::CustomBlend::blended);
     const auto probe = std::make_shared<const anima::CustomMaterial>(std::move(definition));
-    require(probe->reads_opaque_depth(), "The depth probe does not read opaque depth");
+    require(probe->shader().reads_opaque_depth(), "The depth probe does not read opaque depth");
     auto scene = std::make_shared<anima::Scene>();
     (void)scene->create({}, blending_test::facing(blending_test::opaque({.9, .5, .1}), {-1.5F, 0, -4}, 1, 2));
     (void)scene->create({}, blending_test::facing(blending_test::opaque({.1, .6, .9}), {1.5F, 0, -9}, 1, 2));
@@ -966,6 +974,56 @@ inline void check_opaque_depth(Harness &harness) {
     harness.images.discard({"opaque-depth"});
 }
 
+// Ten opaque materials of one shader and ten blended materials of another, drawn in one frame, create one set of shader
+// modules and pipelines per shader and draw each with its own parameters. The blended ones are blended draws, recorded
+// one after another through the pipeline already bound, so each binds its own material set. The GPU cache keeps the
+// shaders while the check holds them after the materials are gone, and releases them once only the renderer would.
+inline void check_shared_shaders(Harness &harness) {
+    const auto view = blending_test::perspective_view(harness.aspect());
+    auto opaque_shader = effect_shader(anima::CustomBlend::opaque),
+         blended_shader = effect_shader(anima::CustomBlend::blended);
+    auto scene = std::make_shared<anima::Scene>();
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(gray), {0, 0, -8}, 4, 3));
+    constexpr int count = 10;
+    std::vector<Effect> effects;
+    std::vector<anima::Vec3> opaque_centers, blended_centers;
+    for (int i = 0; i < count; ++i) {
+        const Effect effect{.color = {.1 + .08 * i, .85 - .07 * i, .2 + .06 * (i % 4)}};
+        auto glaze = effect;
+        glaze.coverage = .5;
+        effects.push_back(effect);
+        const float x = -1.8F + .4F * float(i);
+        opaque_centers.push_back({x, .5F, -4});
+        blended_centers.push_back({x, -.5F, -4});
+        (void)add(*scene, surface(opaque_centers.back(), .15F, .15F),
+                  std::make_shared<const anima::CustomMaterial>(
+                      effect_definition("opaque " + std::to_string(i), opaque_shader, effect)));
+        (void)add(*scene, surface(blended_centers.back(), .15F, .15F),
+                  std::make_shared<const anima::CustomMaterial>(
+                      effect_definition("blended " + std::to_string(i), blended_shader, glaze)));
+    }
+    harness.render("shared", {scene}, view);
+    std::cout << "CUSTOM shared shaders: " << harness.stats.cached_custom_materials << " materials of "
+              << harness.stats.cached_custom_shaders << " shaders in " << harness.stats.draw_calls << " draw calls\n";
+    require(harness.stats.draw_calls == 2 * count + 1, "The materials of shared shaders did not draw every quad");
+    require(harness.stats.cached_custom_shaders == 2 && harness.stats.cached_custom_materials == 2 * count,
+            "Twenty materials of two shaders did not share two shaders' modules and pipelines");
+    for (int i = 0; i < count; ++i) {
+        const auto which = " material " + std::to_string(i) + " of a shared shader";
+        harness.expect("shared", view, opaque_centers[i], effects[i].shaded(), "Opaque" + which);
+        harness.expect("shared", view, blended_centers[i], over(.5, effects[i].shaded(), gray), "Blended" + which);
+    }
+    scene.reset();
+    harness.render("shared-materials-released", {}, view);
+    require(harness.stats.cached_custom_materials == 0 && harness.stats.cached_custom_shaders == 2,
+            "The cache did not keep the shaders that the check holds, or kept materials that only it held");
+    opaque_shader.reset();
+    blended_shader.reset();
+    harness.render("shared-shaders-released", {}, view);
+    require(harness.stats.cached_custom_shaders == 0, "The cache kept shaders that only it held");
+    harness.images.discard({"shared", "shared-materials-released", "shared-shaders-released"});
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3, "Usage: consumer --custom-materials OUTPUT");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
@@ -982,11 +1040,13 @@ inline int run(int argc, char **argv) {
     check_placements(harness);
     check_fading(harness);
     check_crossfade(harness);
+    check_shared_shaders(harness);
     harness.finish();
     std::cout << "PASS custom materials: application SPIR-V reading the frame inputs, in the opaque pass and sorted "
                  "with blended draws, a time-driven effect, water that reads opaque depth and color copied only when "
                  "drawn, raw reversed opaque depth, skinning, shadows only from a depth-only variant, placed copies, "
-                 "and fading that dissolves, casts and crossfades as the standard material does\n";
+                 "fading that dissolves, casts and crossfades as the standard material does, and materials that share "
+                 "their shaders' modules and pipelines\n";
     return 0;
 }
 } // namespace custom_material_test
