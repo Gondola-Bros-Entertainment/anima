@@ -182,7 +182,7 @@ before upload. Record the commands and results of checks CI cannot run, such as
 GPU and device checks, in the pull request.
 
 Submit only material you are authorized to contribute. Contributions to Anima's
-original code and documentation use [Apache-2.0](LICENSE); preserve third-party
+original code and documentation use the [MIT license](LICENSE); preserve third-party
 notices and licenses when modifying dependency integration or test assets.
 
 Report suspected vulnerabilities through the [security policy](SECURITY.md). Keep

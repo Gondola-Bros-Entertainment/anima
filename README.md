@@ -189,6 +189,6 @@ Public headers live in `include/anima`, implementations in `src`, applications i
 
 ## License
 
-Anima's original code and documentation are licensed under [Apache-2.0](LICENSE).
-Third-party dependencies and test assets retain their own licenses; see
-[third-party notices](third_party/README.md) and the accompanying license files.
+MIT. See [LICENSE](LICENSE). Third-party dependencies and test assets retain their
+own licenses; see [third-party notices](third_party/README.md) and the accompanying
+license files.
