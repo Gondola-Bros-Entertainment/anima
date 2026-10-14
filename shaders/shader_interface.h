@@ -1,9 +1,10 @@
 // The numbers that the built-in shaders and the renderer must agree on: descriptor sets and bindings, vertex attribute
 // locations, specialization constant IDs, what a draw's push constants pack, and the atmosphere's table sizes and
 // workgroups. The shaders here include it, and so do src/desktop/vulkan_renderer.cpp and, for the vertex attributes
-// that custom materials read, src/assets/custom_material.cpp, so it holds only macros, which GLSL's preprocessor and
-// C++'s both read. A mismatch between same-typed bindings, attributes or specialization IDs passes validation, so
-// neither side states these numbers itself. The public include/anima/custom_material.glsl states its own.
+// that custom materials read and the sprite values that sprite shaders read, src/assets/custom_material.cpp, so it
+// holds only macros, which GLSL's preprocessor and C++'s both read. A mismatch between same-typed bindings, attributes
+// or specialization IDs passes validation, so neither side states these numbers itself. The public
+// include/anima/custom_material.glsl and include/anima/sprite.glsl state their own.
 #ifndef ANIMA_SHADER_INTERFACE_H
 #define ANIMA_SHADER_INTERFACE_H
 
@@ -15,8 +16,10 @@
 #define ANIMA_SET_ATMOSPHERE 0
 #define ANIMA_SET_ENVIRONMENT 1
 #define ANIMA_SET_POSES 2
-// The sprite pipelines' only set, at 0: the sheet's texture.
-#define ANIMA_SET_SPRITE_SHEET 0
+// The sprite pipelines' sets, built-in and sprite shaders' alike: the frame block that custom materials read too, then
+// the sheet's texture.
+#define ANIMA_SET_SPRITE_FRAME 0
+#define ANIMA_SET_SPRITE_SHEET 1
 
 // The material set (material.glsl): its textures in material_texture_count order, then its uniform block.
 #define ANIMA_MATERIAL_BASE_COLOR 0
@@ -67,11 +70,19 @@
 #define ANIMA_ATTRIBUTE_PLACEMENT_ROW2 10
 
 // Sprite attribute locations (sprite.vert), all per instance: the position and rotation, the size and pivot, the
-// frame's texture coordinates at its first column and row and past its last, and the color and alpha.
+// frame's texture coordinates at its first column and row and past its last, the color and alpha, and the parameters.
 #define ANIMA_SPRITE_PLACEMENT 0
 #define ANIMA_SPRITE_SHAPE 1
 #define ANIMA_SPRITE_FRAME 2
 #define ANIMA_SPRITE_COLOR 3
+#define ANIMA_SPRITE_PARAMETERS 4
+
+// What sprite.vert passes to the fragment shader, which sprite shaders read (anima/sprite.glsl): the texture
+// coordinates in the sheet, the color and alpha, the coordinates across the sprite from 0 to 1, and the parameters.
+#define ANIMA_SPRITE_OUT_SHEET_UV 0
+#define ANIMA_SPRITE_OUT_COLOR 1
+#define ANIMA_SPRITE_OUT_UV 2
+#define ANIMA_SPRITE_OUT_PARAMETERS 3
 
 // Specialization constant IDs, which each shader stage numbers apart. In the fragment stage of the view's pipelines:
 // mesh.frag's premultiplied output, the height fog's code (environment.glsl), mesh.frag's discards, the 2x2 shadow

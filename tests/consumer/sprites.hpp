@@ -2,12 +2,14 @@
 // Sprites against VulkanRenderer::set_sprites() and anima/sprite.hpp, through an orthographic view down -Z: placement,
 // rotation, mirroring and pivots; tint and texel alpha; sprite and batch order; blended and additive compositing; depth
 // against opaque meshes; drawing after a frame's blended draws when the frame copies opaque inputs; ten thousand
-// sprites in one draw call; the GPU cache's release of sheets; and rejected batches, which keep the previous sprites.
-// The sheet's texels are exact colors sampled with nearest filtering, so each expected pixel follows from that
-// contract alone.
+// sprites in one draw call; the GPU cache's release of sheets; rejected batches, which keep the previous sprites; and a
+// sprite shader of the application's own, custom_sprite_runes.frag, compiled to SPIR-V by glslc in this application's
+// build, whose frames match a reference that this file computes for every pixel. The sheet's texels are exact colors
+// sampled with nearest filtering, so each expected pixel follows from that contract alone.
 #include "blending.hpp"
 #include "custom_materials.hpp"
 #include "gpu_checks.hpp"
+#include "rejection.hpp"
 #include <algorithm>
 #include <anima/scene.hpp>
 #include <anima/sprite.hpp>
@@ -18,6 +20,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <numbers>
 #include <stdexcept>
@@ -27,6 +30,9 @@
 #include <vector>
 
 namespace sprite_test {
+constexpr std::uint32_t runes_fragment[] =
+#include "custom_sprite_runes.frag.inc"
+    ;
 using blending_test::Color;
 using blending_test::over;
 constexpr Color black{0, 0, 0}, red{1, 0, 0}, green{0, 1, 0}, blue{0, 0, 1}, white{1, 1, 1};
@@ -290,7 +296,7 @@ inline void check_many(Harness &harness) {
                                      color_of(column, row)));
     harness.render("many", {{sheet(), anima::SpriteBlend::blended, std::move(sprites)}});
     require(harness.stats.sprite_draw_calls == 1, "Ten thousand sprites in one batch did not draw in one call");
-    require(harness.stats.sprite_buffer_bytes >= std::uint64_t{side} * side * 64,
+    require(harness.stats.sprite_buffer_bytes >= std::uint64_t{side} * side * 80,
             "The sprite buffers cannot hold ten thousand sprites");
     for (const auto &[column, row] : {std::array{0, 0}, std::array{99, 99}, std::array{50, 25}, std::array{7, 93}})
         harness.expect("many", first + spacing * float(column), first + spacing * float(row), color_of(column, row),
@@ -324,6 +330,188 @@ inline void check_lifetime(Harness &harness) {
     harness.images.discard({"kept", "after-rejection", "cleared", "released"});
 }
 
+// The runes of custom_sprite_runes.frag around its ring.
+constexpr double rune_count = 6;
+inline std::shared_ptr<const anima::SpriteShader> runes_shader() {
+    return std::make_shared<const anima::SpriteShader>(
+        std::vector<std::uint32_t>(std::begin(runes_fragment), std::end(runes_fragment)));
+}
+// The texel of @p sheet that nearest filtering samples at texture coordinates @p u and @p v: its decoded linear color,
+// then its alpha.
+inline std::array<double, 4> texel_at(const anima::SpriteSheet &sheet, double u, double v) {
+    const auto &image = *sheet.definition().texture.image;
+    const auto index = [](double coordinate, std::uint32_t texels) {
+        return std::size_t(std::clamp(std::floor(coordinate * texels), 0., double(texels - 1)));
+    };
+    const auto *rgba = &image.rgba[(index(v, image.height) * image.width + index(u, image.width)) * 4];
+    return {custom_material_test::decoded(rgba[0]), custom_material_test::decoded(rgba[1]),
+            custom_material_test::decoded(rgba[2]), rgba[3] / 255.};
+}
+// What @p batch's shader writes for @p sprite at the point @p corner of its quad, from 0 to 1 along the quad's own
+// axes from its -X, -Y corner, at shader time @p time: premultiplied color, then alpha, computed in double from the
+// shader's source, as custom_sprite_runes.frag or the built-in shader states it.
+inline std::array<double, 4> shaded(const anima::SpriteBatch &batch, const anima::Sprite &sprite,
+                                    std::array<double, 2> corner, double time) {
+    const auto &sheet = *batch.sheet;
+    const auto &frame = sheet.definition().frames[sprite.frame];
+    const auto &image = *sheet.definition().texture.image;
+    // As sprite.vert: the frame's first row lies along the quad's +Y edge.
+    const double first_u = double(frame.x) / image.width, first_v = double(frame.y) / image.height,
+                 last_u = (double(frame.x) + frame.width) / image.width,
+                 last_v = (double(frame.y) + frame.height) / image.height;
+    const auto texel =
+        texel_at(sheet, first_u + (last_u - first_u) * corner[0], last_v + (first_v - last_v) * corner[1]);
+    double alpha = texel[3] * sprite.alpha;
+    if (batch.shader) {
+        const auto &ring = sprite.parameters;
+        const double x = corner[0] * 2 - 1, y = (1 - corner[1]) * 2 - 1;
+        const double band = std::clamp(1 - std::abs(std::hypot(x, y) - ring[0]) / ring[1], 0., 1.);
+        const double angle = std::atan2(y, x) + double(ring[2]) * time + ring[3];
+        alpha *= band * (.5 + .5 * std::cos(rune_count * angle));
+    }
+    return {texel[0] * sprite.color.x * alpha, texel[1] * sprite.color.y * alpha, texel[2] * sprite.color.z * alpha,
+            alpha};
+}
+// How capture @p name, of @p batches over @p backdrop at shader time @p time, compares with the reference.
+struct Comparison {
+    std::size_t compared{}, shaded{}, mismatched{};
+    double largest{};
+};
+// Compares every pixel of capture @p name with the reference: the backdrop's linear color, then each sprite of each
+// batch, in order, composited as its batch's blend says. Pixels within 1.5 pixels of an edge of a texel of a covering
+// sprite's frame, the quad's own edges included, are left out, since there the GPU's sampling and coverage may round
+// either way.
+inline Comparison compare(const Harness &harness, const std::string &name,
+                          const std::vector<anima::SpriteBatch> &batches, const Color &backdrop, double time) {
+    const auto &image = harness.images[name];
+    const auto inverse = anima::inverse(harness.view);
+    // The view is 4 units high.
+    const double pixels_per_unit = image.height / 4.;
+    constexpr double margin = 1.5;
+    Comparison result;
+    for (std::size_t py = 0; py < image.height; ++py)
+        for (std::size_t px = 0; px < image.width; ++px) {
+            const double ndc_x = (double(px) + .5) / image.width * 2 - 1,
+                         ndc_y = (double(py) + .5) / image.height * 2 - 1;
+            const auto world = [&](unsigned row) {
+                return double(inverse[row]) * ndc_x + double(inverse[4 + row]) * ndc_y + double(inverse[8 + row]) * .5 +
+                       double(inverse[12 + row]);
+            };
+            const double w = world(3), wx = world(0) / w, wy = world(1) / w;
+            auto color = backdrop;
+            bool covered = false, ambiguous = false, lit = false;
+            for (const auto &batch : batches)
+                for (const auto &sprite : batch.sprites) {
+                    const double c = std::cos(double(sprite.rotation)), s = std::sin(double(sprite.rotation));
+                    const double dx = wx - sprite.position.x, dy = wy - sprite.position.y;
+                    const std::array<double, 2> corner{(c * dx + s * dy) / sprite.size.x + sprite.pivot.x,
+                                                       (c * dy - s * dx) / sprite.size.y + sprite.pivot.y};
+                    const auto &frame = batch.sheet->definition().frames[sprite.frame];
+                    const std::array<double, 2> texels{double(frame.width), double(frame.height)},
+                        extent{std::abs(sprite.size.x) * pixels_per_unit, std::abs(sprite.size.y) * pixels_per_unit};
+                    // Only points within the margin of the quad can be ambiguous.
+                    bool near = true;
+                    for (std::size_t axis = 0; axis < 2; ++axis)
+                        near =
+                            near && corner[axis] > -margin / extent[axis] && corner[axis] < 1 + margin / extent[axis];
+                    if (!near)
+                        continue;
+                    for (std::size_t axis = 0; axis < 2; ++axis) {
+                        const double along = corner[axis] * texels[axis];
+                        const double nearest = std::clamp(std::round(along), 0., texels[axis]);
+                        ambiguous = ambiguous || std::abs(along - nearest) / texels[axis] * extent[axis] < margin;
+                    }
+                    if (corner[0] < 0 || corner[0] > 1 || corner[1] < 0 || corner[1] > 1)
+                        continue;
+                    covered = true;
+                    const auto value = shaded(batch, sprite, corner, time);
+                    lit = lit || value[3] > 0;
+                    for (std::size_t channel = 0; channel < color.size(); ++channel)
+                        color[channel] =
+                            value[channel] +
+                            color[channel] * (batch.blend == anima::SpriteBlend::additive ? 1 : 1 - value[3]);
+                }
+            if (!covered || ambiguous)
+                continue;
+            ++result.compared;
+            result.shaded += lit;
+            const auto actual = gpu_check::pixel(image, px, py);
+            double difference = 0;
+            for (std::size_t channel = 0; channel < color.size(); ++channel)
+                difference = std::max(difference, std::abs(actual[channel] - blending_test::encoded(color[channel])));
+            result.largest = std::max(result.largest, difference);
+            result.mismatched += difference > blending_test::tolerance;
+        }
+    return result;
+}
+
+// A batch drawn with the application's sprite shader matches the reference in every pixel that its sprites cover: three
+// additive sprites of the shader, a blended batch of the built-in shader, then two blended sprites of the shader, each
+// of the shader's five sprites with its own color, size, rotation, mirroring and parameters, which reach the shader
+// without a draw call per sprite. At two shader times the runes turn and both frames match. A custom material's
+// fragment shader is refused as a sprite shader, and the GPU cache keeps the shader while the check holds it and
+// releases it after.
+inline void check_shader(Harness &harness) {
+    rejection::rejects<std::invalid_argument>(
+        [] {
+            (void)anima::SpriteShader(std::vector<std::uint32_t>(std::begin(custom_material_test::effect_fragment),
+                                                                 std::end(custom_material_test::effect_fragment)));
+        },
+        "The sprite shader declares set 2 binding 0, which the sprite shader interface does not provide");
+    auto shader = runes_shader();
+    const auto atlas = sheet();
+    // Each sprite's ring: radius and half width as fractions of half its size, then turn and phase.
+    const auto rune = [](float x, float y, float width, float height, float rotation, const Color &color, float alpha,
+                         std::array<float, 4> ring) {
+        auto result = sprite(x, y, quadrants, width, height, color, alpha);
+        result.rotation = rotation;
+        result.parameters = ring;
+        return result;
+    };
+    std::vector<anima::SpriteBatch> batches{
+        {atlas,
+         anima::SpriteBlend::additive,
+         {rune(-1.85F, .95F, 1.3F, 1.3F, 0, {1, .8, .5}, 1, {.7F, .2F, 1, 0}),
+          rune(0, .95F, 1.2F, -1.2F, .5F, {.4, 1, .6}, .8F, {.55F, .3F, -2, 1}),
+          rune(1.8F, .95F, 1, 1.3F, -1.2F, {.6, .7, 1}, 1, {.8F, .15F, .5F, 2})},
+         shader},
+        {atlas, anima::SpriteBlend::blended, {sprite(0, -1.05F, quadrants, 1, 1, white, .7F)}},
+        {atlas,
+         anima::SpriteBlend::blended,
+         {rune(-1.85F, -1.05F, 1.3F, 1.3F, .3F, white, .9F, {.6F, .25F, 3, 0}),
+          rune(1.85F, -1.05F, -1.3F, 1.3F, 0, {1, .5, .9}, 1, {.45F, .4F, 0, .5F})},
+         shader}};
+    const Color backdrop{.05, .1, .15};
+    auto scene = std::make_shared<anima::Scene>();
+    (void)scene->create({}, blending_test::facing(blending_test::opaque(backdrop), {0, 0, plane - 1}, 4, 3));
+    for (const float time : {0.F, .7F}) {
+        const auto name = "shader-" + std::to_string(time);
+        harness.renderer().set_time(time);
+        harness.render(name, batches, {scene});
+        require(harness.stats.sprite_draw_calls == batches.size(),
+                "A batch of a sprite shader took more than one call");
+        require(harness.stats.cached_sprite_shaders == 1, "Two batches of one sprite shader did not share it");
+        const auto result = compare(harness, name, batches, backdrop, time);
+        const auto report = name + ": " + std::to_string(result.mismatched) + " of " + std::to_string(result.compared) +
+                            " covered pixels, " + std::to_string(result.shaded) +
+                            " of them shaded, differ from the reference by more than " +
+                            std::to_string(blending_test::tolerance) + " levels; the largest difference is " +
+                            std::to_string(result.largest);
+        std::cout << "SPRITES " << report << '\n';
+        harness.images.require(result.compared > 0 && result.shaded > result.compared / 4 && result.mismatched == 0,
+                               "A sprite shader's frame differs from the reference: " + report, {name});
+    }
+    harness.images.require_changed("shader-0.000000", "shader-0.700000", .01, "The runes did not turn with time");
+    harness.renderer().set_time(0);
+    batches.clear();
+    harness.render("shader-cleared", {});
+    require(harness.stats.cached_sprite_shaders == 1, "The cache released a sprite shader that the check still holds");
+    shader.reset();
+    harness.redraw("shader-released");
+    require(harness.stats.cached_sprite_shaders == 0, "The cache kept a sprite shader that only the renderer held");
+    harness.images.discard({"shader-0.000000", "shader-0.700000", "shader-cleared", "shader-released"});
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3 || (argc == 5 && std::string_view(argv[3]) == "--frames-in-flight"),
             "Usage: consumer --sprites OUTPUT [--frames-in-flight COUNT]");
@@ -337,11 +525,13 @@ inline int run(int argc, char **argv) {
     check_after_opaque_inputs(harness);
     check_many(harness);
     check_lifetime(harness);
+    check_shader(harness);
     harness.finish();
     std::cout
         << "PASS sprites: placement, rotation, mirroring and pivots, tint and texel alpha, sprite and batch order "
            "with blended and additive compositing, depth against opaque meshes, drawing after a split frame's "
-           "blended draws, ten thousand sprites in one call, sheet release and rejected batches, with "
+           "blended draws, ten thousand sprites in one call, sheet release, rejected batches and a sprite shader "
+           "that matches its reference with per-sprite parameters, with "
         << frames << " frames in flight\n";
     return 0;
 }

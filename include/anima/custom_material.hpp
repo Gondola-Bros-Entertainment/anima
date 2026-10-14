@@ -25,8 +25,9 @@
 ///
 /// Shaders can read only the inputs below, which `anima/custom_material.glsl`, beside this header, declares for
 /// GLSL. Compile each stage for SPIR-V 1.0 to 1.3 (glslc `--target-env=vulkan1.1`) with an entry point named `main`.
-/// Every name refers to the GLSL declaration in that file or in the two it includes: `anima/fog.glsl` and
-/// `anima/visibility.glsl`, which the standard material's shaders include too.
+/// Every name refers to the GLSL declaration in that file or in those it includes: `anima/frame.glsl`, which sprite
+/// shaders include too (sprite.hpp), and `anima/fog.glsl` and `anima/visibility.glsl`, which the standard material's
+/// shaders include too.
 ///
 /// Vertex attributes, read only by vertex shaders, are the mesh's SourceVertex fields in mesh space: location 0
 /// `vec3` position, 1 `vec3` normal, 2 `vec3` color, 3 `vec2` uv, 4 `uvec4` joints, 5 `vec4` weights, 6 `vec4`
