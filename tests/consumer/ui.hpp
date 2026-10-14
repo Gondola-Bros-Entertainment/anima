@@ -4,18 +4,22 @@
 #include "rejection.hpp"
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
+#include <algorithm>
 #include <anima/assets/mesh_snapshot.hpp>
 #include <anima/input_sdl.hpp>
 #include <anima/ui/context.hpp>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ui_test {
 inline void require(bool value, const char *message) {
@@ -32,6 +36,13 @@ inline void test_attribute_conversion() {
         }
     }
 }
+// The sRGB transfer functions, from an encoded value from 0 to 1 to linear light and from linear light to a byte.
+inline double linear(double encoded) {
+    return encoded <= .04045 ? encoded / 12.92 : std::pow((encoded + .055) / 1.055, 2.4);
+}
+inline int srgb(double value) {
+    return int(std::nearbyint(255 * (value <= .0031308 ? 12.92 * value : 1.055 * std::pow(value, 1 / 2.4) - .055)));
+}
 // The removed Python check's comparisons of the UI captures, in the document's density-independent pixels, which
 // @p scale converts to framebuffer pixels: exact rectangular clipping, a translated element, white at alpha
 // 128/255 blended in linear light over the clear color and over a mesh, the external PNG's texels, rendered
@@ -39,13 +50,6 @@ inline void test_attribute_conversion() {
 inline void check_images(const gpu_check::Captures &images, float scale) {
     const auto at = [&](const std::string &name, double x, double y) {
         return gpu_check::pixel(images[name], std::size_t(x * scale), std::size_t(y * scale));
-    };
-    const auto linear = [](int byte) {
-        const auto s = byte / 255.;
-        return s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4);
-    };
-    const auto srgb = [](double value) {
-        return int(std::nearbyint(255 * (value <= .0031308 ? 12.92 * value : 1.055 * std::pow(value, 1 / 2.4) - .055)));
     };
     constexpr int darkest_background = 80, alpha_tolerance = 3, texel_tolerance = 8;
     const auto background = at("empty-ui", 0, 0);
@@ -73,7 +77,7 @@ inline void check_images(const gpu_check::Captures &images, float scale) {
         const auto actual = at(image, 400, 160);
         gpu_check::Rgb expected{};
         for (std::size_t c = 0; c < 3; ++c)
-            expected[c] = srgb(alpha + linear(under[c]) * (1 - alpha));
+            expected[c] = srgb(alpha + linear(under[c] / 255.) * (1 - alpha));
         if (image == "empty-ui")
             over_clear = expected;
         images.require(gpu_check::difference(actual, expected) <= alpha_tolerance,
@@ -724,6 +728,164 @@ inline int run(int argc, char **argv) {
                     !unloadable_context.stats().log_errors,
                 "An image that could not be loaded was not reported as a warning");
     }
+    { // Images registered from memory draw their exact pixels, and registering, replacing or removing one changes the
+      // documents that use it. The document's px lengths are framebuffer pixels, so each texel of checks/exact covers
+      // one pixel, whose center samples the texel alone, and every other image is one color.
+        using Texel = std::array<std::uint8_t, 4>;
+        constexpr Texel red{255, 0, 0, 255}, green{0, 255, 0, 255}, blue{0, 0, 255, 255}, white{255, 255, 255, 255},
+            cyan{0, 255, 255, 255}, magenta{255, 0, 255, 255}, yellow{255, 255, 0, 255}, black{0, 0, 0, 255};
+        // Half red at half alpha draws as this check expects only if the context multiplies its color by alpha; taken
+        // as already multiplied, it draws as full red at half alpha.
+        constexpr Texel half_red{128, 0, 0, 128}, clear{0, 0, 0, 0};
+        constexpr std::uint32_t exact_width = 4;
+        constexpr std::size_t exact_left = 20, exact_top = 20, background_x = 300, background_y = 200;
+        constexpr int alpha_tolerance = 3;
+        // Every opaque texel differs, so a flipped or transposed image fails, and the replacement changes each one.
+        std::vector<Texel> exact_texels{red,    green, blue,     white, cyan,     magenta,
+                                        yellow, black, half_red, clear, half_red, clear};
+        auto replaced_texels = exact_texels;
+        std::ranges::reverse(replaced_texels);
+        const auto pattern = [](std::uint32_t width, const std::vector<Texel> &texels) {
+            anima::UiImage result{width, std::uint32_t(texels.size() / width), {}};
+            for (const auto &texel : texels)
+                result.rgba.insert(result.rgba.end(), texel.begin(), texel.end());
+            return result;
+        };
+        const auto solid = [&](std::uint32_t width, std::uint32_t height, Texel texel) {
+            return pattern(width, std::vector<Texel>(std::size_t{width} * height, texel));
+        };
+        anima::UiContext memory(window.get(), renderer);
+        for (const std::string_view name :
+             {"", "memory:checks/name", "/checks", "checks/", "checks//name", "./name", "checks/../name", "check name",
+              "check(name)", "checks\\name", "caf\xc3\xa9"})
+            rejection::rejects<std::invalid_argument>([&] { memory.set_image(name, solid(1, 1, red)); },
+                                                      "Invalid UI image name");
+        rejection::rejects<std::invalid_argument>([&] { (void)memory.remove_image("checks//name"); },
+                                                  "Invalid UI image name");
+        constexpr std::uint32_t oversized_edge = 8193;
+        for (const auto &invalid : {anima::UiImage{0, 1, {}}, anima::UiImage{1, 0, {}}, solid(oversized_edge, 1, red),
+                                    solid(1, oversized_edge, red), anima::UiImage{2, 1, {255, 0, 0, 255}}})
+            rejection::rejects<std::invalid_argument>([&] { memory.set_image("checks/rejected", invalid); },
+                                                      "Invalid UI image dimensions or bytes");
+        require(!memory.remove_image("checks/rejected"), "A rejected memory image was registered");
+        memory.set_image("checks/exact", pattern(exact_width, exact_texels));
+        memory.set_image("checks/sized", solid(2, 2, green));
+        memory.set_image("checks/decorator", solid(2, 2, yellow));
+        // checks/late is registered only after the document has drawn it. The invalid name can never be registered,
+        // so it is handled as a missing file is.
+        auto drawn = memory.documents().from_memory(
+            "<rml><head><style>#decorated { position: absolute; left: 120px; top: 20px; width: 20px; height: 20px; "
+            "decorator: image(memory:checks/decorator); }</style></head><body>"
+            "<img src='memory:checks/exact' style='position: absolute; left: 20px; top: 20px; width: 4px; height: "
+            "3px;'/>"
+            "<img id='sized' src='memory:checks/sized' style='position: absolute; left: 20px; top: 60px; height: "
+            "30px;'/>"
+            "<img src='memory:checks/late' style='position: absolute; left: 20px; top: 100px; width: 30px; height: "
+            "30px;'/>"
+            "<div id='decorated'/>"
+            "<img src='memory:checks//invalid' style='position: absolute; left: 200px; top: 20px; width: 10px; height: "
+            "10px;'/></body></rml>");
+        require(drawn.valid(), "The memory image fixture did not load");
+        drawn.show();
+        auto *sized = drawn.native().GetElementById("sized");
+        require(sized, "The memory image fixture has no sized image");
+        const auto capture_memory = [&](const std::string &name) {
+            renderer.request_capture();
+            memory.update();
+            while (!memory.render()) {
+                SDL_Delay(5);
+                memory.update();
+            }
+            ++frames;
+            ++captures;
+            images.add(name, gpu_check::take(renderer));
+        };
+        const auto at = [](const gpu_check::Image &shot, std::size_t x, std::size_t y) {
+            return gpu_check::pixel(shot, x, y);
+        };
+        const auto color = [](Texel texel) { return gpu_check::Rgb{texel[0], texel[1], texel[2]}; };
+        // Opaque and transparent texels are exact; half alpha blends in linear light as the UI shader does.
+        const auto require_texels = [&](const std::string &name, const std::vector<Texel> &texels) {
+            const auto &shot = images[name];
+            const auto background = at(shot, background_x, background_y);
+            for (std::size_t i = 0; i < texels.size(); ++i) {
+                const auto &texel = texels[i];
+                const double alpha = texel[3] / 255.;
+                gpu_check::Rgb expected = background;
+                if (texel[3])
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        const auto premultiplied = (texel[c] * texel[3] + 127) / 255;
+                        expected[c] = srgb(linear(double(premultiplied) / texel[3]) * alpha +
+                                           linear(background[c] / 255.) * (1 - alpha));
+                    }
+                const auto x = exact_left + i % exact_width, y = exact_top + i / exact_width;
+                const int tolerance = texel[3] == 0 || texel[3] == 255 ? 0 : alpha_tolerance;
+                const auto actual = at(shot, x, y);
+                images.require(gpu_check::difference(actual, expected) <= tolerance,
+                               "The memory image texel at " + std::to_string(x) + ", " + std::to_string(y) + " is " +
+                                   gpu_check::text(actual) + " instead of " + gpu_check::text(expected),
+                               {name});
+            }
+        };
+        // Requires the rectangle from (left, top) of width by height pixels to be @p expected, or the background.
+        const auto require_fill = [&](const std::string &name, std::size_t left, std::size_t top, std::size_t width,
+                                      std::size_t height, std::optional<Texel> expected, const char *what) {
+            const auto &shot = images[name];
+            const auto wanted = expected ? color(*expected) : at(shot, background_x, background_y);
+            for (auto y = top; y < top + height; ++y)
+                for (auto x = left; x < left + width; ++x)
+                    images.require(at(shot, x, y) == wanted,
+                                   std::string(what) + " is " + gpu_check::text(at(shot, x, y)) + " at " +
+                                       std::to_string(x) + ", " + std::to_string(y) + " instead of " +
+                                       gpu_check::text(wanted),
+                                   {name});
+        };
+        constexpr std::size_t sized_left = 20, sized_top = 60, sized_height = 30, late_left = 20, late_top = 100,
+                              late_edge = 30, decorated_left = 120, decorated_top = 20, decorated_edge = 20;
+        capture_memory("memory-images");
+        require_texels("memory-images", exact_texels);
+        // An img element that only has a height takes its width from the image's aspect ratio.
+        require(sized->GetBox().GetSize().x == float(sized_height), "The square memory image is not square");
+        require_fill("memory-images", sized_left, sized_top, sized_height, sized_height, green, "The sized image");
+        require_fill("memory-images", sized_left + sized_height, sized_top, 1, sized_height, std::nullopt,
+                     "Right of the sized image");
+        require_fill("memory-images", late_left, late_top, late_edge, late_edge, std::nullopt,
+                     "The unregistered image");
+        require_fill("memory-images", decorated_left, decorated_top, decorated_edge, decorated_edge, yellow,
+                     "The decorator image");
+        // Replacing an image changes its pixels and, for an img element, its size.
+        memory.set_image("checks/exact", pattern(exact_width, replaced_texels));
+        memory.set_image("checks/sized", solid(6, 3, blue));
+        memory.set_image("checks/late", solid(3, 3, magenta));
+        memory.set_image("checks/decorator", solid(5, 5, cyan));
+        capture_memory("memory-replaced");
+        require_texels("memory-replaced", replaced_texels);
+        require(sized->GetBox().GetSize().x == float(2 * sized_height),
+                "The replaced memory image did not take its new aspect ratio");
+        require_fill("memory-replaced", sized_left, sized_top, 2 * sized_height, sized_height, blue,
+                     "The replaced sized image");
+        require_fill("memory-replaced", sized_left + 2 * sized_height, sized_top, 1, sized_height, std::nullopt,
+                     "Right of the replaced sized image");
+        require_fill("memory-replaced", late_left, late_top, late_edge, late_edge, magenta,
+                     "The image registered after the document drew it");
+        require_fill("memory-replaced", decorated_left, decorated_top, decorated_edge, decorated_edge, cyan,
+                     "The replaced decorator image");
+        require(memory.remove_image("checks/late") && !memory.remove_image("checks/late"),
+                "Removing a memory image did not report whether it was registered");
+        capture_memory("memory-removed");
+        require_fill("memory-removed", late_left, late_top, late_edge, late_edge, std::nullopt, "The removed image");
+        require_texels("memory-removed", replaced_texels);
+        // A warning each time checks/late loaded unregistered, before it was registered and after it was removed, and
+        // two for the invalid name: the reason, then RmlUi's own report of the texture.
+        constexpr unsigned memory_warnings = 4;
+        require(memory.stats().log_warnings == memory_warnings && !memory.stats().log_errors,
+                "A memory image that is not registered or has an invalid name was not reported as a warning");
+        memory.shutdown();
+        rejection::rejects<std::logic_error>([&] { memory.set_image("checks/exact", solid(1, 1, red)); },
+                                             "UI context is shut down");
+        rejection::rejects<std::logic_error>([&] { (void)memory.remove_image("checks/exact"); },
+                                             "UI context is shut down");
+    }
     { // A corrected document can render after unsupported contexts are destroyed.
         anima::UiContext recovered(window.get(), renderer);
         recovered.load_font(assets / "LatoLatin-Regular.ttf");
@@ -792,7 +954,7 @@ inline int run(int argc, char **argv) {
         shut_down_rejected = std::string_view(error.what()) == "Renderer is shut down";
     }
     require(shut_down_rejected, "A UI context was created over a shut-down renderer");
-    constexpr unsigned expected_captures = 9, expected_rejected_features = 2;
+    constexpr unsigned expected_captures = 12, expected_rejected_features = 2;
     require(captures == expected_captures && images.size() == captures &&
                 rejected_features == expected_rejected_features,
             "The UI check took unexpected captures or rejected unexpected features");
@@ -800,7 +962,7 @@ inline int run(int argc, char **argv) {
     std::cout << "RESULT {\"frames\":" << frames << ",\"captures\":" << captures << ",\"clicks\":" << clicks
               << ",\"utf8_edit\":true,\"select_keyboard\":true,\"scroll\":true,"
                  "\"hidden_focus_released\":true,\"world_input_passthrough\":true,\"pointer_actions\":true,"
-                 "\"relative_mode_passthrough\":true,\"resize_hit_test\":true,"
+                 "\"relative_mode_passthrough\":true,\"resize_hit_test\":true,\"memory_images\":true,"
                  "\"drag_ownership\":true,\"hidden_drag_released\":true,\"caret_coordinates\":true,\"duplicate_owner_"
                  "rejected\":true,\"context_"
                  "recreations\":4,"

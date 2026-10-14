@@ -4,10 +4,13 @@
 #include <SDL3/SDL_events.h>
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/ui/document.hpp>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 /// @file
 /// Desktop UI: RmlUi documents that take SDL3 input and draw through the VulkanRenderer.
@@ -80,6 +83,16 @@ class UiUnsupportedFeature : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
 };
+/// Pixels that UiContext::set_image registers for documents to draw without a file.
+struct UiImage {
+    /// Width in pixels, from 1 to 8,192.
+    std::uint32_t width{};
+    /// Height in pixels, from 1 to 8,192.
+    std::uint32_t height{};
+    /// `4 * width * height` bytes: rows from top to bottom, each pixel's red, green, blue and
+    /// alpha, with sRGB-encoded color that is not multiplied by alpha, as PNG files store it.
+    std::vector<std::uint8_t> rgba;
+};
 /// Role of a font face that UiContext::load_font loads.
 enum class UiFontRole {
     /// Renders text whose family, style and weight match the face.
@@ -146,6 +159,38 @@ class UiContext {
     /// A UiFontRole::fallback face also supplies glyphs that other faces lack. Text renders only
     /// in loaded faces. Throws `std::runtime_error` when RmlUi cannot load the face.
     void load_font(const std::filesystem::path &path, UiFontRole role = UiFontRole::primary);
+    /// Registers @p image under @p name, for documents to draw as they draw an image file.
+    ///
+    /// A document refers to it by the source `memory:` followed by the name, as in
+    /// `<img src="memory:icons/damage"/>` or `decorator: image(memory:icons/damage)`. A source
+    /// that begins with `memory:` never names a file, and RmlUi does not resolve it against the
+    /// document's path. A name is one or more segments joined by `/`, each made of ASCII letters,
+    /// digits, `-`, `_` and `.`, and none of them `.` or `..`: one name has one spelling, and RML
+    /// attributes and RCSS values take it unquoted. Names are case-sensitive.
+    ///
+    /// Registering a name again replaces its image. Documents that use the name draw the new
+    /// pixels from the next render(). When the dimensions change, each `img` element whose `src`
+    /// names the image measures it again at the next update(), so one sized by its image takes the
+    /// new size. An `image()` decorator measures its image once, when it first draws, and keeps
+    /// that size while its style sheet lives. Only a fit mode other than the default `fill` uses
+    /// that size, so keep the dimensions of a name that such a decorator draws.
+    ///
+    /// A document may use a name before it is registered or after remove_image(): the name then
+    /// draws nothing, as a transparent 1x1 image, and each time a document loads it the context
+    /// logs a warning, which UiStats::log_warnings counts. Registering the name later shows the
+    /// image as a replacement does. A `memory:` source with an invalid name is handled as a missing image
+    /// file is; see UiUnsupportedFeature.
+    ///
+    /// The context keeps the pixels of @p image, multiplied by alpha, until the name is replaced
+    /// or removed or the context shuts down; move the pixels in to avoid a copy. Throws
+    /// `std::invalid_argument`, changing nothing, for an invalid name, for a width or height that
+    /// is 0 or over 8,192, and when `rgba` does not hold `4 * width * height` bytes.
+    void set_image(std::string_view name, UiImage image);
+    /// Removes the image registered under @p name. Documents that use the name draw nothing from
+    /// the next render(), as set_image describes for a name that is not registered. Returns
+    /// whether the name was registered. Throws `std::invalid_argument` for a name that set_image
+    /// rejects.
+    bool remove_image(std::string_view name);
 
     /// Routes one SDL event to the UI. Call it for every event before gameplay sees it.
     ///
