@@ -109,13 +109,15 @@ class FittedLibrary {
     /// alive: with only the Mesh alive, a load imports the file again and keeps the Mesh when the
     /// Mesh accepts the new model as an animation source (see Mesh::accepts_animation_source) and
     /// has as many textures, and otherwise compiles a new one. Concurrent loads of one file share
-    /// one import, and its failure, which caches nothing, so a later load imports again.
+    /// one import. A failed import caches nothing, so a later load imports again, and its
+    /// exception reaches only the load that imported: a load that waited for it imports the file
+    /// itself unless another load has begun, so that each load that fails throws its own exception.
     ///
     /// @p options cancel and count the import only, not the binding and compile after it. A load
     /// that returns a live FittedAsset, or waits for another load's import, adds no steps to its
-    /// StagingProgress, and its StopToken does not end the wait. When the import it waits for
-    /// throws StagingCancelled, the load throws it too if its own token reports a stop, and
-    /// otherwise looks again, so that it imports the file itself unless another load has begun.
+    /// StagingProgress, and its StopToken does not end the wait. When the import it waits for is
+    /// cancelled, the load throws StagingCancelled if its own token reports a stop, and otherwise
+    /// imports the file itself as after any failure.
     ///
     /// Throws `std::out_of_range` unless the item fits this body, StagingCancelled when its import
     /// is cancelled, and as load_asset and FittedAsset do.

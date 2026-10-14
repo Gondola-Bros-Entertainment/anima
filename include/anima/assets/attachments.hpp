@@ -177,14 +177,16 @@ class AttachmentLibrary {
     /// alive: with only the Mesh alive, a load imports the file again and keeps the Mesh when the
     /// Mesh accepts the new model as an animation source (see Mesh::accepts_animation_source) and
     /// has as many textures, and otherwise compiles a new one. Concurrent loads of one file share
-    /// one import and compile, and their failure, which caches nothing, so a later load imports
-    /// again. Each load then checks the model against its own visual.
+    /// one import and compile. A failed one caches nothing, so a later load imports again, and its
+    /// exception reaches only the load that imported: a load that waited for it imports the file
+    /// itself unless another load has begun, so that each load that fails throws its own
+    /// exception. Each load then checks the model against its own visual.
     ///
     /// @p options cancel and count the import only, not the compile after it. A load that returns
     /// a live AttachmentAsset, or waits for another load's import, adds no steps to its
-    /// StagingProgress, and its StopToken does not end the wait. When the import it waits for
-    /// throws StagingCancelled, the load throws it too if its own token reports a stop, and
-    /// otherwise looks again, so that it imports the file itself unless another load has begun.
+    /// StagingProgress, and its StopToken does not end the wait. When the import it waits for is
+    /// cancelled, the load throws StagingCancelled if its own token reports a stop, and otherwise
+    /// imports the file itself as after any failure.
     ///
     /// Throws `std::out_of_range` for an unknown visual, `std::invalid_argument` for an animated
     /// model without AttachmentVisual::animation_tracks, `std::runtime_error` when the model does
