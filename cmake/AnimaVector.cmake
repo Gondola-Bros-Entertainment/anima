@@ -1,13 +1,15 @@
 # Linea is configured only for explicitly enabled vector art targets. anima::vector exposes it, since applications
-# describe their art as Linea drawings; see third_party/linea.
+# describe their art as Linea drawings; see third_party/linea. Anima follows Linea's main branch while the two are
+# developed together. FETCHCONTENT_SOURCE_DIR_LINEA builds against a local checkout instead.
 include(FetchContent)
 function(anima_add_linea)
     set(BUILD_SHARED_LIBS OFF)
     set(LINEA_BUILD_TESTS OFF)
     set(LINEA_WARNINGS_AS_ERRORS OFF)
     FetchContent_Declare(linea
-        URL https://codeload.github.com/Gondola-Bros-Entertainment/linea/tar.gz/16648e644c4864be81811ee765455a3397448ae1
-        URL_HASH SHA256=f4655c2d15139f41ff030ff82e60d1b13472bb88527e8bb07b6861074ad0dffe
+        GIT_REPOSITORY https://github.com/Gondola-Bros-Entertainment/linea.git
+        GIT_TAG main
+        GIT_SHALLOW TRUE
         SYSTEM)
     FetchContent_MakeAvailable(linea)
     anima_enable_sanitizers(linea)
