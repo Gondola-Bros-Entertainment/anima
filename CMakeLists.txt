@@ -156,6 +156,7 @@ if(ANIMA_BUILD_ASSETS)
     src/assets/scene_set.cpp
     src/assets/components.cpp
     src/assets/custom_material.cpp
+    src/assets/sprite.cpp
     src/assets/prefab.cpp
     src/assets/prefab_variant.cpp
     src/assets/prefab_composition.cpp
@@ -381,6 +382,10 @@ if(ANIMA_BUILD_ASSETS)
         target_link_libraries(anima_custom_material_tests PRIVATE anima::assets anima_test_main Threads::Threads)
         anima_target_defaults(anima_custom_material_tests)
         add_test(NAME custom_materials COMMAND anima_custom_material_tests)
+        add_executable(anima_sprite_tests tests/sprite_tests.cpp)
+        target_link_libraries(anima_sprite_tests PRIVATE anima::assets anima_test_main)
+        anima_target_defaults(anima_sprite_tests)
+        add_test(NAME sprites COMMAND anima_sprite_tests)
         add_executable(anima_mesh_placements_tests tests/mesh_placements_tests.cpp)
         target_link_libraries(anima_mesh_placements_tests PRIVATE anima::assets anima_test_main)
         anima_target_defaults(anima_mesh_placements_tests)
@@ -507,7 +512,7 @@ if(ANIMA_BUILD_DESKTOP)
     if(ANIMA_BUILD_ASSETS)
         list(APPEND shader_sources mesh.frag resource.vert sky.vert sky.frag background.frag shadow-resource.vert
             shadow.frag resolve.frag impostor.vert impostor.frag impostor-shadow.frag atmosphere-transmittance.comp
-            atmosphere-scattering.comp atmosphere-sky.comp)
+            atmosphere-scattering.comp atmosphere-sky.comp sprite.vert sprite.frag)
     endif()
     if(ANIMA_BUILD_UI)
         list(APPEND shader_sources ui.vert ui.frag)
@@ -747,7 +752,7 @@ if(ANIMA_BUILD_TESTS)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
         foreach(check_mode IN ITEMS allocations culling placements lod impostors cascades foliage fog tone-mapping
             atmosphere environment resources frames-in-flight present-modes render-scale
-            material-sampling pbr surface-maps sidedness draw-order blending custom-materials texture-memory)
+            material-sampling pbr surface-maps sidedness draw-order blending custom-materials sprites texture-memory)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})
@@ -756,6 +761,10 @@ if(ANIMA_BUILD_TESTS)
         anima_add_gpu_check(desktop_render_scale_one_frame "${desktop}" --render-scale
             "${anima_gpu_checks}/desktop_render_scale_one_frame" --frames-in-flight 1)
         list(APPEND desktop_checks render_scale_one_frame)
+        # Sprites with one frame in flight, where each draw() rewrites the only sprite buffer.
+        anima_add_gpu_check(desktop_sprites_one_frame "${desktop}" --sprites
+            "${anima_gpu_checks}/desktop_sprites_one_frame" --frames-in-flight 1)
+        list(APPEND desktop_checks sprites_one_frame)
         # Changing the render scale must not recreate the swapchain between these markers, which only the log shows.
         set_property(TEST gpu_desktop_render_scale gpu_desktop_render_scale_one_frame APPEND PROPERTY
             FAIL_REGULAR_EXPRESSION "STABLE_SWAPCHAIN_BEGIN.*Swapchain [0-9].*STABLE_SWAPCHAIN_END")

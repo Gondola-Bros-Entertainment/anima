@@ -22,8 +22,9 @@
 /// Part of the optional `anima::desktop` target (`ANIMA_BUILD_DESKTOP=ON`); no Vulkan type appears in the
 /// public API. Scenes, environments and mesh preparation also need asset support (`ANIMA_BUILD_ASSETS=ON`).
 /// Without it anima::VulkanRenderer draws only the default EnvironmentSettings::background and the diagnostic
-/// triangle, with a UiContext's UI composited over them; its set_scenes, prepare_meshes and prepare_mesh members throw
-/// `std::logic_error`, and set_environment and set_time validate their arguments, then throw `std::logic_error`.
+/// triangle, with a UiContext's UI composited over them; its set_scenes, set_sprites, prepare_meshes and prepare_mesh
+/// members throw `std::logic_error`, and set_environment and set_time validate their arguments, then throw
+/// `std::logic_error`.
 
 struct SDL_Window;
 
@@ -31,6 +32,7 @@ namespace anima {
 
 class Scene;
 class Mesh;
+struct SpriteBatch;
 class MeshPreparation;
 class UiContext;
 namespace detail {
@@ -68,8 +70,8 @@ enum class ShadowFilter {
     bilinear_2x2,
 };
 
-/// The format of the scene's linear color target, into which the sky, meshes and custom materials render before
-/// display conversion; see RendererOptions::scene_color_format and VulkanRenderer::scene_color_format.
+/// The format of the scene's linear color target, into which the sky, meshes, custom materials and sprites render
+/// before display conversion; see RendererOptions::scene_color_format and VulkanRenderer::scene_color_format.
 enum class SceneColorFormat {
     /// `VK_FORMAT_R16G16B16A16_SFLOAT`: 8 bytes per pixel, half floats with a 10-bit mantissa in each of red, green,
     /// blue and alpha, up to 65504.
@@ -252,12 +254,12 @@ class RendererFatalError : public std::runtime_error {
 };
 /// draw() could not prepare the selected scenes, the environment's shadow maps, the scene targets
 /// (VulkanRenderer::set_render_scale), the view's pipelines for a new shadow filter
-/// (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames), or the material
-/// samplers for a new anisotropy (VulkanRenderer::set_max_anisotropy).
+/// (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames), the material
+/// samplers for a new anisotropy (VulkanRenderer::set_max_anisotropy), or the sprites (VulkanRenderer::set_sprites).
 ///
 /// Thrown before an image is acquired, so no frame was submitted. The renderer stays usable and the next
-/// draw() prepares again: repair the selected scenes or environment, change the selection, lower the render scale, or
-/// request the previous shadow filter, impostor frame count or anisotropy.
+/// draw() prepares again: repair the selected scenes or environment, change the selection or the sprites, lower the
+/// render scale, or request the previous shadow filter, impostor frame count or anisotropy.
 class SceneResourceError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -423,12 +425,14 @@ struct ResourceStats {
     std::uint64_t geometry_uploaded_bytes{};
     /// Device allocation bytes of cached vertex and index buffers.
     std::uint64_t resident_geometry_bytes{};
-    /// Device allocation bytes of cached material images, custom materials' included.
+    /// Device allocation bytes of cached material images, custom materials' and sprite sheets' included.
     std::uint64_t resident_texture_bytes{};
     /// Device allocation bytes of cached placements (MeshPlacements), 48 bytes per placement before alignment.
     std::uint64_t resident_placement_bytes{};
     /// Custom materials in the GPU cache.
     std::uint64_t cached_custom_materials{};
+    /// Sprite sheets in the GPU cache (VulkanRenderer::set_sprites).
+    std::uint64_t cached_sprite_sheets{};
     /// Whether the latest preparation draws a custom material that reads opaque depth or color, so that its frame
     /// copies both after the opaque draws.
     bool opaque_inputs{};
@@ -441,10 +445,17 @@ struct ResourceStats {
     std::uint64_t pose_buffer_bytes{};
     /// Palette bytes written by the latest preparation, including instances that only cast shadows.
     std::uint64_t pose_uploaded_bytes{};
+    /// Allocation bytes of the sprite buffers, one for each frame in flight, each of which holds the sprites of the
+    /// frames that it serves, 64 bytes per sprite, and doubles from 64 bytes until it holds the most that one of them
+    /// drew.
+    std::uint64_t sprite_buffer_bytes{};
     /// Main-view draw calls of the latest frame. A draw of an object with placements takes one call per run of
     /// adjacent visible placement clusters that draw the same level of detail and, for an opaque or masked material,
     /// through the same pipeline (#discarding_draw_calls).
     std::uint64_t draw_calls{};
+    /// Sprite draw calls of the latest frame, one for each SpriteBatch with sprites (VulkanRenderer::set_sprites),
+    /// which #draw_calls does not count.
+    std::uint64_t sprite_draw_calls{};
     /// Copies drawn by main-view draw calls of the latest frame: one per call of an object without placements, and
     /// one per placement that a call draws.
     std::uint64_t drawn_copies{};
@@ -504,9 +515,10 @@ struct ResourceStats {
 ///
 /// Each frame renders the sun's shadow maps, then into a linear color target, in the format that scene_color_format()
 /// reports, the opaque and masked meshes, the optional sky, which shades only the pixels that they leave at the far
-/// plane, and the blended meshes; it converts the target for display at the window's pixel size and composites UI last.
-/// That target and the view's depth buffer are the scene targets, whose size is the window's pixel size times the
-/// render scale (set_render_scale()). The window must outlive the renderer, which never destroys it.
+/// plane, the blended meshes and the sprites (set_sprites()); it converts the target for display at the window's pixel
+/// size and composites UI last. That target and the view's depth buffer are the scene targets, whose size is the
+/// window's pixel size times the render scale (set_render_scale()). The window must outlive the renderer, which never
+/// destroys it.
 ///
 /// The sun's shadow maps are its cascades (ShadowCascades), which each frame fits to the current view as
 /// fit_shadow_cascades() does and extends toward the sun over the casters that each one's square reaches, as layers of
@@ -533,10 +545,10 @@ struct ResourceStats {
 /// Use the renderer from the application's SDL video thread, with no concurrent calls. Scenes and settings
 /// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. Up to
 /// RendererOptions::frames_in_flight frames are in flight. Each has its own command buffers, palettes, environment and
-/// custom material frame blocks, UI vertices and descriptor sets, which draw() rewrites only once the frame that used
-/// them last has finished. Frames share the shadow maps, the atmosphere's tables, the scene targets and the opaque
-/// input copies, which their commands order on the GPU, and cached resources, UI images and replaced shadow maps are
-/// destroyed only once every frame that may use them has finished. Transfers go through staging buffers, which are
+/// custom material frame blocks, sprites, UI vertices and descriptor sets, which draw() rewrites only once the frame
+/// that used them last has finished. Frames share the shadow maps, the atmosphere's tables, the scene targets and the
+/// opaque input copies, which their commands order on the GPU, and cached resources, UI images and replaced shadow maps
+/// are destroyed only once every frame that may use them has finished. Transfers go through staging buffers, which are
 /// freed only after their upload completes.
 ///
 /// Uploads read texels through Mesh::texel_images() and CustomMaterial::texel_images(), and once an upload has
@@ -707,7 +719,8 @@ struct ResourceStats {
 ///
 /// After shutdown(), every public non-const member except request_resize(), take_capture() and shutdown() throws
 /// `std::logic_error` ("Renderer is shut down"); after a RendererFatalError they throw RendererFatalError. Without
-/// asset support, set_scenes(), prepare_meshes() and prepare_mesh() throw their `std::logic_error` in either state.
+/// asset support, set_scenes(), set_sprites(), prepare_meshes() and prepare_mesh() throw their `std::logic_error` in
+/// either state.
 class VulkanRenderer {
   public:
     /// Smallest render scale that set_render_scale() and RendererOptions::render_scale accept.
@@ -850,10 +863,10 @@ class VulkanRenderer {
     /// buffer, are the window's pixel size times @p scale, each side rounded to the nearest pixel and kept from 1 to
     /// the device's 2D image and framebuffer limits. It starts as RendererOptions::render_scale.
     ///
-    /// Shading, sky, meshes and custom materials render at the scene targets' size, and display conversion maps the
-    /// whole color target onto the window. While the targets are no larger than the window, it interpolates their
-    /// linear color bilinearly, before exposure and tone mapping, so below 1 the view renders fewer pixels and shows
-    /// them magnified. Once they are larger, each window pixel shows the mean of the target pixels that its area
+    /// Shading, sky, meshes, custom materials and sprites render at the scene targets' size, and display conversion
+    /// maps the whole color target onto the window. While the targets are no larger than the window, it interpolates
+    /// their linear color bilinearly, before exposure and tone mapping, so below 1 the view renders fewer pixels and
+    /// shows them magnified. Once they are larger, each window pixel shows the mean of the target pixels that its area
     /// covers, each weighted by the area it covers and taken after exposure, tone mapping and clamping to the
     /// display's range of 0 to 1, so that an edge blends in proportion to its coverage however bright either side is;
     /// at 2, unless the device's limits reduce the targets, that is a 2x2 block of them. The swapchain, UI, captures
@@ -931,10 +944,10 @@ class VulkanRenderer {
     /// applies to a texture's own size, before any level is dropped. Custom shaders that read a texture's size or fetch
     /// its texels by index see the kept levels.
     ///
-    /// Only uploads after the call drop the new count: meshes and custom materials already in the GPU cache keep their
-    /// device images until draw() releases them, once only the renderer references them, and upload again with the
-    /// count set then. Without asset support the renderer uploads no material textures, so the count has no effect.
-    /// Every value is accepted.
+    /// Only uploads after the call drop the new count: meshes, custom materials and sprite sheets already in the GPU
+    /// cache keep their device images until draw() releases them, once only the renderer references them, and upload
+    /// again with the count set then. Without asset support the renderer uploads no material textures, so the count has
+    /// no effect. Every value is accepted.
     void set_texture_mip_skip(std::uint32_t levels);
     /// The level count that RendererOptions::texture_mip_skip or the latest set_texture_mip_skip() set.
     [[nodiscard]] std::uint32_t texture_mip_skip() const noexcept;
@@ -977,6 +990,29 @@ class VulkanRenderer {
     /// Selected scenes remain the caller's to change between draws; each draw() prepares their current content.
     /// A scene that its SceneSet unloads or replaces stays selected but is empty.
     void set_scenes(std::vector<std::shared_ptr<const Scene>> scenes, SceneReplacementOptions options = {});
+    /// Replaces the sprites (anima/sprite.hpp) that every later draw() draws; it starts with none, and an empty list
+    /// clears them. The renderer keeps @p batches, and with them their sheets, until the next call.
+    ///
+    /// Each draw() draws them in the world pass through the current view (set_view()), after every other draw of that
+    /// pass, the blended meshes included: the batches in order, each in one instanced draw call
+    /// (ResourceStats::sprite_draw_calls), and each batch's sprites in order, each over those before it. They test
+    /// depth with `GREATER` and write none, as blended meshes do, so nearer opaque and masked surfaces hide them and
+    /// they hide nothing, and a blended mesh in front of a sprite still draws under it. Sprites are unlit: a pixel's
+    /// color is its texel's, decoded and filtered as the sheet's TextureEncoding and Sampler say, times Sprite::color,
+    /// and its alpha the texel's times Sprite::alpha, composited as the batch's SpriteBlend says. They receive no fog
+    /// or shadows and cast none; exposure and tone mapping apply at display conversion to the whole target, sprites
+    /// included.
+    ///
+    /// A sheet's texture uploads on the first draw() that draws one of its sprites, as a custom material's textures do,
+    /// except that an ImageFormat::rgba8 texture that samples a mip chain builds it weighting color by alpha
+    /// (TextureMipOptions::alpha_weighted_color); set_texture_mip_skip() and set_max_anisotropy() apply to it. The GPU
+    /// cache keeps it per SpriteSheet object and releases it as it releases meshes, once only the renderer references
+    /// the sheet. That draw() throws SceneResourceError when the upload fails, as for a texture beyond the device's 2D
+    /// image limit. Each frame's sprites go to a buffer of the frame's slot (ResourceStats::sprite_buffer_bytes).
+    ///
+    /// Throws `std::invalid_argument` as validate_sprites() does, keeping the previous sprites, and `std::logic_error`
+    /// without asset support.
+    void set_sprites(std::vector<SpriteBatch> batches);
     /// Uploads @p meshes into the mesh cache without selecting or drawing them, for example while loading.
     /// Cached or repeated meshes are reused.
     ///
@@ -1011,24 +1047,25 @@ class VulkanRenderer {
     /// set_max_anisotropy() changes it: the smaller of RendererOptions::max_anisotropy, or the latest accepted
     /// set_max_anisotropy(), and the device's `maxSamplerAnisotropy`, or 1 on a device without the `samplerAnisotropy`
     /// feature, which the renderer enables wherever the device has it. Only textures whose magnification and
-    /// minification filters are linear and that sample a mip chain use it, custom material textures included.
+    /// minification filters are linear and that sample a mip chain use it, those of custom materials and sprite sheets
+    /// included.
     [[nodiscard]] float max_anisotropy() const noexcept;
     /// Requests that material textures filter with up to @p samples samples, as RendererOptions::max_anisotropy
     /// describes; it starts as that option, and max_anisotropy() reports the degree that the device allows.
     ///
     /// Textures with equal sampling settings and mip level counts share a sampler, and the descriptors of each cached
-    /// mesh and custom material hold their textures' samplers, which Vulkan does not let change while a submitted frame
-    /// may read them. The first draw() that prepares a frame while max_anisotropy() differs from the degree that the
-    /// renderer last applied applies it, once it has waited for its frame. When a texture whose magnification and
-    /// minification filters are linear and that samples a mip chain belongs to a cached mesh or custom material, or to
-    /// one released while frames that may use it were in flight, that draw() waits for every frame in flight, which
-    /// destroys the released ones, creates a replacement for each shared sampler of such textures, and points their
-    /// descriptors at the replacements, destroying the samplers they replace; otherwise it only records the degree. The
-    /// wait holds that draw() (FrameProfile::prepare_ms). Nothing is uploaded again, so meshes whose texels
-    /// TexelRetention::until_upload let go keep their textures, and each replacement takes its sampler's place in
-    /// ResourceStats::resident_material_samplers. If creating the samplers fails, that draw() throws SceneResourceError
-    /// and keeps the previous samplers, and the next draw() tries again. Meshes and custom materials uploaded before
-    /// that draw() filter with the previous degree until it applies the new one.
+    /// mesh, custom material and sprite sheet hold their textures' samplers, which Vulkan does not let change while a
+    /// submitted frame may read them. The first draw() that prepares a frame while max_anisotropy() differs from the
+    /// degree that the renderer last applied applies it, once it has waited for its frame. When a texture whose
+    /// magnification and minification filters are linear and that samples a mip chain belongs to a cached mesh, custom
+    /// material or sprite sheet, or to one released while frames that may use it were in flight, that draw() waits for
+    /// every frame in flight, which destroys the released ones, creates a replacement for each shared sampler of such
+    /// textures, and points their descriptors at the replacements, destroying the samplers they replace; otherwise it
+    /// only records the degree. The wait holds that draw() (FrameProfile::prepare_ms). Nothing is uploaded again, so
+    /// meshes whose texels TexelRetention::until_upload let go keep their textures, and each replacement takes its
+    /// sampler's place in ResourceStats::resident_material_samplers. If creating the samplers fails, that draw() throws
+    /// SceneResourceError and keeps the previous samplers, and the next draw() tries again. Meshes, custom materials
+    /// and sprite sheets uploaded before that draw() filter with the previous degree until it applies the new one.
     ///
     /// Without asset support the renderer has no material textures, so the request changes only max_anisotropy().
     /// Throws `std::invalid_argument` unless @p samples is finite and at least 1 ("Maximum anisotropy must be finite
