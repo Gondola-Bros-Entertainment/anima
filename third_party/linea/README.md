@@ -1,12 +1,10 @@
 # Linea
 
 Optional vector graphics library, MIT licensed, upstream
-https://github.com/Gondola-Bros-Entertainment/linea. It has no releases yet; Anima pins
-version 0.1.0 at commit `16648e644c4864be81811ee765455a3397448ae1`.
-
-Download: <https://codeload.github.com/Gondola-Bros-Entertainment/linea/tar.gz/16648e644c4864be81811ee765455a3397448ae1>
-
-Archive SHA-256: `f4655c2d15139f41ff030ff82e60d1b13472bb88527e8bb07b6861074ad0dffe`
+https://github.com/Gondola-Bros-Entertainment/linea. It has no releases yet. While the
+two are developed together, Anima follows Linea's `main` branch, so each configure
+fetches its latest commit. Set `FETCHCONTENT_SOURCE_DIR_LINEA` to a local checkout to
+build against that instead.
 
 The MIT license is retained in [LICENSE](LICENSE). Source is fetched by
 `cmake/AnimaVector.cmake` only when `ANIMA_BUILD_VECTOR=ON`; source is not vendored here.
