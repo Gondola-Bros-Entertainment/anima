@@ -27,13 +27,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: actions
           build-mode: none
           queries: security-extended
       - name: Analyze
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: /language:actions
 
@@ -96,7 +96,7 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: c-cpp
           build-mode: manual
@@ -107,7 +107,7 @@ jobs:
           CCACHE_DISABLE: '1'
         run: cmake --build build/codeql
       - name: Analyze
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: /language:c-cpp
           upload: never
@@ -128,7 +128,7 @@ jobs:
             jq -r '"\(input_filename): \([.runs[].results[]] | length) results"' "$sarif"
           done
       - name: Upload results
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: ${{ runner.temp }}/codeql-sarif
           category: /language:c-cpp
