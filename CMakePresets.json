@@ -60,7 +60,6 @@
       "hidden": true,
       "cacheVariables": {
         "ANIMA_FETCH_SDL": true,
-        "ANIMA_INPUT_SDL_INCLUDE_DIR": "${sourceDir}/build/${presetName}/_deps/sdl3-src/include",
         "SDL_SHARED": false,
         "SDL_STATIC": true,
         "SDL_RENDER": false,
