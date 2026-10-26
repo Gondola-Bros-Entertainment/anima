@@ -1,7 +1,7 @@
 # Security policy
 
 Anima is under active development. Security fixes target the current `main`
-branch; there are no maintained release branches yet.
+branch; there are no maintained release branches.
 
 ## Report a vulnerability
 
