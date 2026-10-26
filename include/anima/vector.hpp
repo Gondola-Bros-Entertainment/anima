@@ -18,7 +18,7 @@
 ///
 /// Part of the optional `anima::vector` target (`ANIMA_BUILD_VECTOR=ON`, which requires `ANIMA_BUILD_ASSETS=ON`),
 /// which renders without a display or GPU. It fetches [Linea](https://github.com/Gondola-Bros-Entertainment/linea), a
-/// C++20 vector graphics library with no dependencies, at a pinned commit, and exposes its headers: an application
+/// C++20 vector graphics library with no dependencies, from its main branch, and exposes its headers: an application
 /// describes its art as `linea::Drawing` values, layers of filled and stroked paths that Linea rasterizes anti-aliased
 /// at any size. The `anima::vector_ui` target registers the same drawings as UI images (anima/vector_ui.hpp).
 
