@@ -4,18 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
-  merge_group:
   workflow_dispatch:
   schedule:
-    # A full weekly run on main refreshes the compiler and dependency caches that every run restores, since
-    # merges from the queue no longer rebuild. It also runs the weekly CodeQL analysis.
+    # A weekly run on main restores every cache, so none expires after a week without a push, and runs the
+    # weekly CodeQL analysis. It also builds against what changes without a push here: Linea's main branch, the
+    # runner images and the packages CI installs.
     - cron: '23 6 * * 2'
 
 permissions:
   contents: read
 
 # Only a newer push to the same pull request supersedes a run. Every other run has a group of its own, so
-# runs on main and in the merge queue are never cancelled or held pending behind one another.
+# runs on main are never cancelled or held pending behind one another.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
@@ -27,7 +27,6 @@ defaults:
 jobs:
   repository:
     name: Repository checks
-    if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -82,7 +81,6 @@ jobs:
   codeql:
     name: CodeQL
     needs: repository
-    if: github.event.repository.private == false
     permissions:
       contents: read
       actions: read
@@ -92,9 +90,6 @@ jobs:
   build:
     name: ${{ matrix.preset }} / ${{ matrix.os }}
     needs: repository
-    # The merge queue pushes to main the exact commit its run already built and tested, so that push runs
-    # only the repository checks and CodeQL. Any other push, a schedule or a dispatch builds.
-    if: github.event_name != 'push' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -205,8 +200,8 @@ jobs:
             echo 'CMAKE_CXX_COMPILER_LAUNCHER=ccache'
           } >> "$GITHUB_ENV"
       # Only runs on main save caches. A run restores caches from its own branch and from main, so a cache
-      # saved for a pull request or the merge queue would serve no other run, and would push main's out of
-      # the repository's cache quota.
+      # saved for a pull request would serve no other run, and would push main's out of the repository's cache
+      # quota.
       - name: Restore compiler cache
         id: compiler-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -341,7 +336,7 @@ jobs:
       # Openbox has finished starting: it runs its --startup command just before its event loop. It sets
       # _NET_SUPPORTING_WM_CHECK earlier, and a window mapped between the two could wait forever: startup moves
       # pending events into Openbox's own queue, which its event loop drains only when another event arrives, and
-      # SDL_CreateWindow waits for the map without a time limit (#151).
+      # SDL_CreateWindow waits for the map without a time limit.
       - name: Test the renderer on lavapipe
         if: runner.os == 'Linux' && matrix.preset == 'ci-full-release'
         timeout-minutes: 30
@@ -397,9 +392,6 @@ jobs:
   documentation:
     name: Doxygen reference
     needs: repository
-    if: >-
-      github.event.repository.private == false &&
-      (github.event_name != 'push' || github.actor != 'github-merge-queue[bot]')
     runs-on: macos-15
     timeout-minutes: 15
     steps:
@@ -418,7 +410,7 @@ jobs:
   required:
     name: CI required
     needs: [repository, codeql, build, documentation]
-    if: always() && (github.event_name != 'push' || github.actor != 'github-merge-queue[bot]')
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
