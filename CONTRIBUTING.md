@@ -1,9 +1,9 @@
 # Contributing to Anima
 
 Keep changes focused on reusable engine behavior. Applications supply their own
-content, gameplay rules, scheduling and deployment policy; see the
-[architecture](README.md#architecture). Documents use one current format; do not
-add compatibility readers or forwarding APIs for removed contracts.
+content, gameplay rules, scheduling and deployment policy. Documents use one
+current format; do not add compatibility readers or forwarding APIs for removed
+contracts.
 
 ## Code
 
@@ -57,15 +57,12 @@ build/benchmarks/anima_scene_benchmarks --repetitions 5
 ```
 
 Timings are noisy, so CTest checks scaling by counting instead. `scene_scaling`
-compares the bytes that attaching, destroying, reusing slots and querying components
-allocate at 4,096 and 8,192 objects. Work that allocates nothing, such as a scan, is
-counted in instructions: where configuration finds Valgrind, which runs on Linux, and
-sanitizers are off, the `callgrind` label's `scene_scaling_instructions` runs the same
-scenarios under Callgrind at 16,384 and 32,768 objects, collecting only the measured
-operation. Doubling the objects may at most triple its instructions, since n log n
-work multiplies them by about 2.1 and quadratic work by 4; a component query, which
-should not grow with objects of other types, may grow by half. CI runs the label on
-the `ci-headless-release` leg; to run it yourself:
+counts the bytes that attaching, destroying, reusing slots and querying components
+allocate, and where configuration finds Valgrind, which runs on Linux, and sanitizers
+are off, the `callgrind` label's `scene_scaling_instructions` counts the instructions
+of the same scenarios under Callgrind. Each fails when doubling the objects grows a
+count past the limit its source states. CI runs the label on the
+`ci-headless-release` leg; to run it yourself:
 
 ```sh
 cmake --build build/benchmarks --target anima_scene_scaling_scenario
@@ -97,18 +94,16 @@ threads while the owning thread updates and commits:
 cmake --workflow --preset ci-thread-sanitizer
 ```
 
-ThreadSanitizer sees only instrumented code, so it cannot find a race inside the C
-library, such as one on the static buffer that glibc's `localeconv()` rewrites.
-
 ### GPU and device checks
 
 CTest's `gpu` label checks the renderer and UI on a Vulkan device: `anima_check`
 drives the viewer, and `consumer_desktop`, `consumer_ui` and `consumer_vector_ui`
 render synthetic scenes through the public API. `consumer_desktop` runs one mode per
 check, such as `--cascades` or `--fog`, each defined by its header in `tests/consumer`.
-Each check opens a window, requires Khronos validation, compares its frames in memory,
-and fails on a pixel mismatch or any validation message. CTest also turns on
-synchronization validation, set to track the shaders' accesses through descriptors.
+Each check opens a window. Most require Khronos validation, most compare the frames
+they draw in memory, and a check fails on a pixel mismatch or any validation
+message. CTest also turns on synchronization validation, set to track the shaders'
+accesses through descriptors.
 The checks run one at a time:
 
 ```sh
@@ -135,12 +130,8 @@ methods and display scaling also need checks on real hardware.
 
 ## Documentation
 
-The API reference renders from the headers; Doxygen warnings fail the build:
-
-```sh
-cmake -S docs -B build/docs
-cmake --build build/docs --target anima_docs
-```
+The [API reference](README.md#api-reference) renders from the headers, and Doxygen
+warnings, such as an undocumented public declaration, fail its build.
 
 ## Dependencies
 
@@ -166,22 +157,18 @@ version comment, and Dependabot proposes their updates.
 
 ## Pull requests
 
-CI builds headless, full and sanitizer configurations on Linux, macOS and Windows,
-plus an optimized full build on Linux, and runs every test. Each of these legs is a
-preset, so `cmake --workflow --preset <preset>` reproduces it: `ci-headless-debug`,
+CI builds headless (Debug and Release), full and sanitizer configurations on Linux,
+macOS and Windows, plus an optimized full build and a ThreadSanitizer build on
+Linux, and runs their tests. Each of these legs is a preset, so
+`cmake --workflow --preset <preset>` reproduces it: `ci-headless-debug`,
 `ci-full-release` and the others, and `full` itself on macOS. CI also lints the
-workflows, checks formatting, scans the Git history for secrets, and runs CodeQL
-and the Doxygen build; `CI required` gates merging. CodeQL runs its
-`security-extended` queries on the workflows and on C++. It analyzes C++ from a
-traced build of every module, because extraction without a build infers compiler
-flags and include paths, which is less accurate for code with many external
-dependencies. Results in fetched dependencies and vendored code are dropped
-before upload. Record the commands and results of checks CI cannot run, such as
-GPU and device checks, in the pull request.
+workflows, checks formatting, scans the Git history for secrets, runs CodeQL's
+`security-extended` queries on the workflows and on C++, and builds the API
+reference; `CI required` gates merging. Record the commands and results of checks
+CI cannot run, such as GPU and device checks, in the pull request.
 
 Submit only material you are authorized to contribute. Contributions to Anima's
 original code and documentation use the [MIT license](LICENSE); preserve third-party
 notices and licenses when modifying dependency integration or test assets.
 
-Report suspected vulnerabilities through the [security policy](SECURITY.md). Keep
-credentials in local ignored files and check staged changes before pushing.
+Report suspected vulnerabilities through the [security policy](SECURITY.md).

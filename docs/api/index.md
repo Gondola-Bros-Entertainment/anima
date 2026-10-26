@@ -24,5 +24,5 @@ Entry points:
   them into view and projection matrices, and anima::view_projection into the
   renderer's view.
 
-Build instructions, module targets, architecture and conventions are in the
+Requirements, build instructions, module targets and conventions are in the
 repository's [README](https://github.com/Gondola-Bros-Entertainment/anima#readme).
