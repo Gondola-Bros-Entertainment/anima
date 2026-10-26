@@ -19,7 +19,7 @@ function(anima_add_jolt)
         set(GENERATE_DEBUG_SYMBOLS OFF)
     endif()
     FetchContent_Declare(jolt
-        URL https://codeload.github.com/jrouwe/JoltPhysics/tar.gz/e77f175595e64cb44218cc9d9d56fc365ad0e36a
+        URL https://codeload.github.com/jrouwe/JoltPhysics/tar.gz/e77f175595e64cb44218cc9d9d56fc365ad0e36a # v5.6.0
         URL_HASH SHA256=1f32328fb763135de10a244568d6ccb2ed9b1e6593fafe6dc6db5b2719d330bd
         SOURCE_SUBDIR Build
         SYSTEM)
