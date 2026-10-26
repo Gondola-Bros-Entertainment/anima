@@ -316,8 +316,8 @@ inline int run(int argc, char **argv) {
     if (path.empty()) {
         const auto samplers = renderer.resource_stats().resident_material_samplers;
         std::vector<anima::GameObject> joined;
-        // Distinct assets previously allocated more than the M2's 1,024-sampler
-        // limit even though every image used the same two sampling policies.
+        // 600 distinct assets whose images use the same two sampling policies must share those samplers; a pair
+        // each would exceed a device's sampler limit, such as the M2's 1,024.
         for (unsigned i = 0; i < 600; ++i)
             joined.push_back(source->create({}, anima::Mesh::compile(*asset)));
         frame();

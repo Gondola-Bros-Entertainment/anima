@@ -410,7 +410,7 @@ TEST_CASE("Mips of an impostor's color keep the color spread into its uncovered 
         }
         CHECK(off_color == 0);
         if (level == 1)
-            CHECK(uncovered > 0); // Whole blocks of uncovered texels, which zero-weighted averaging used to blacken.
+            CHECK(uncovered > 0); // Texels from wholly uncovered blocks, which take the blocks' unweighted color.
     }
 }
 
