@@ -3,7 +3,6 @@
 
 Needs Python 3 with Pillow, and basisu 2.50 (Homebrew formula basis_universal) and ImageMagick 7 (magick) on PATH.
 """
-import os
 from pathlib import Path
 import shutil
 import struct
@@ -12,7 +11,7 @@ import tempfile
 
 from PIL import Image
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = Path(__file__).resolve().parent
 # A BC7 block covers BC7_BLOCK_EDGE by BC7_BLOCK_EDGE texels in BC7_BLOCK_BYTES.
 BC7_BLOCK_EDGE, BC7_BLOCK_BYTES = 4, 16
 BC7_BLOCK_BITS = BC7_BLOCK_BYTES * 8
@@ -125,7 +124,7 @@ def dfd(transfer):
 
 def dds_levels(path):
     """Width, height and each mip level's blocks of a BC7 DX10 DDS file."""
-    data = Path(path).read_bytes()
+    data = path.read_bytes()
     require(data.startswith(DDS_MAGIC), f'{path} is not a DDS file')
     height, width, _, _, levels = struct.unpack_from('<IIIII', data, DDS_HEIGHT_OFFSET)
     require(data[DDS_FOURCC_OFFSET:DDS_FOURCC_OFFSET + len(DDS_FOURCC_DX10)] == DDS_FOURCC_DX10,
@@ -164,7 +163,7 @@ def write_ktx2(path, width, height, levels, vk_format, transfer):
     for start, size in placed:
         header += struct.pack('<QQQ', start, size, size)
     require(len(header) == header_bytes, 'The KTX2 header layout is wrong')
-    Path(path).write_bytes(header + descriptor + body)
+    path.write_bytes(header + descriptor + body)
 
 
 def decoded_atlas(dds, work, name):
@@ -175,9 +174,9 @@ def decoded_atlas(dds, work, name):
     width, height, levels = dds_levels(dds)
     # basisu names each level's file after its level only when the file has several.
     level_names = [f'_level_{level}' for level in range(len(levels))] if len(levels) > 1 else ['']
-    decoded = [Image.open(os.path.join(work, f'{name}_unpacked_rgba_RGBA32{level}_face_0_layer_0000.png'))
+    decoded = [Image.open(work / f'{name}_unpacked_rgba_RGBA32{level}_face_0_layer_0000.png')
                .convert('RGBA') for level in level_names]
-    magick = os.path.join(work, f'{name}-magick.png')
+    magick = work / f'{name}-magick.png'
     subprocess.run(['magick', dds, magick], check=True)
     whole = (0, 0, width // BC7_BLOCK_EDGE * BC7_BLOCK_EDGE, height // BC7_BLOCK_EDGE * BC7_BLOCK_EDGE)
     require(Image.open(magick).convert('RGBA').crop(whole).tobytes() == decoded[0].crop(whole).tobytes(),
@@ -266,11 +265,12 @@ def write_dds(path, width, height, blocks, dxgi_format):
     # DDS_HEADER_DXT10: dxgiFormat, resourceDimension, miscFlag, arraySize and miscFlags2.
     header += struct.pack('<5I', dxgi_format, D3D10_RESOURCE_DIMENSION_TEXTURE2D, 0, 1, 0)
     require(len(header) == DDS_FILE_HEADER_BYTES, 'The DDS header layout is wrong')
-    Path(path).write_bytes(header + b''.join(blocks))
+    path.write_bytes(header + b''.join(blocks))
 
 
 def main():
-    with tempfile.TemporaryDirectory() as work:
+    with tempfile.TemporaryDirectory() as temporary:
+        work = Path(temporary)
         # The linear fixtures encode their sources' texels as data, as a normal or metallic-roughness map would be.
         for name, source, (width, height), linear in (('pattern', 'pattern', (64, 64), False),
                                                       ('pattern-odd', 'pattern-odd', (30, 18), False),
@@ -278,27 +278,27 @@ def main():
                                                       ('opaque', 'opaque', (64, 64), False),
                                                       ('opaque-linear', 'opaque', (64, 64), True)):
             if not linear:
-                (opaque if source == 'opaque' else pattern)(width, height).save(os.path.join(HERE, f'{source}.png'))
-            staged = os.path.join(work, f'{name}.png')
-            shutil.copyfile(os.path.join(HERE, f'{source}.png'), staged)
-            dds = os.path.join(work, f'{name}.dds')
+                (opaque if source == 'opaque' else pattern)(width, height).save(HERE / f'{source}.png')
+            staged = work / f'{name}.png'
+            shutil.copyfile(HERE / f'{source}.png', staged)
+            dds = work / f'{name}.dds'
             subprocess.run(['basisu', '-dds', '-dds_format', 'BC7', '-mipmap', '-dds_bc7e_scalar_level', '6'] +
                            (['-linear'] if linear else []) + ['-output_file', dds, staged],
                            check=True, capture_output=True)
             width, height, levels = dds_levels(dds)
-            write_ktx2(os.path.join(HERE, f'{name}-bc7.ktx2'), width, height, levels,
+            write_ktx2(HERE / f'{name}-bc7.ktx2', width, height, levels,
                        VK_FORMAT_BC7_UNORM_BLOCK if linear else VK_FORMAT_BC7_SRGB_BLOCK,
                        KHR_DF_TRANSFER_LINEAR if linear else KHR_DF_TRANSFER_SRGB)
-            decoded_atlas(dds, work, name).save(os.path.join(HERE, f'{name}-bc7-decoded.png'))
+            decoded_atlas(dds, work, name).save(HERE / f'{name}-bc7-decoded.png')
         # The blocks lie row by row in the order partition_blocks() makes them.
         blocks = partition_blocks()
         blocks_per_row = 16
         width, height = blocks_per_row * BC7_BLOCK_EDGE, len(blocks) // blocks_per_row * BC7_BLOCK_EDGE
-        dds = os.path.join(work, 'partitions.dds')
+        dds = work / 'partitions.dds'
         write_dds(dds, width, height, blocks, DXGI_FORMAT_BC7_UNORM)
-        write_ktx2(os.path.join(HERE, 'partitions-bc7.ktx2'), width, height, [b''.join(blocks)],
+        write_ktx2(HERE / 'partitions-bc7.ktx2', width, height, [b''.join(blocks)],
                    VK_FORMAT_BC7_UNORM_BLOCK, KHR_DF_TRANSFER_LINEAR)
-        decoded_atlas(dds, work, 'partitions').save(os.path.join(HERE, 'partitions-bc7-decoded.png'))
+        decoded_atlas(dds, work, 'partitions').save(HERE / 'partitions-bc7-decoded.png')
 
 
 if __name__ == '__main__':
