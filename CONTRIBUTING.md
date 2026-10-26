@@ -98,11 +98,7 @@ cmake --workflow --preset ci-thread-sanitizer
 ```
 
 ThreadSanitizer sees only instrumented code, so it cannot find a race inside the C
-library, such as one on the static buffer that glibc's `localeconv()` rewrites. Nor
-does it see the synchronization there: libstdc++ frees an exception object that
-several threads caught through one `std::shared_future` after an atomic count it does
-not instrument, so the preset reads `tests/thread_sanitizer.supp`, which suppresses
-races in `std::runtime_error`'s destructor.
+library, such as one on the static buffer that glibc's `localeconv()` rewrites.
 
 ### GPU and device checks
 
