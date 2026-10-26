@@ -33,7 +33,8 @@ SDL 3.4.16) and a Vulkan SDK with `glslc` whose headers declare
 renderer needs Vulkan 1.1, through MoltenVK on macOS. `--validation` requires the
 Vulkan validation layer, and the UI modules require FreeType. `anima --help` lists
 the viewer's options; with several Vulkan drivers installed, choose one with
-`VK_DRIVER_FILES`. Tests use synthetic fixtures and never open a window. See
+`VK_DRIVER_FILES`. Tests use synthetic fixtures. Only the `gpu` label's checks open a
+window, and each is skipped without a display or Vulkan device. See
 [contributing](CONTRIBUTING.md) for the full configuration, sanitizers and GPU checks.
 
 ## Use Anima in a project

@@ -32,10 +32,10 @@ The `full` preset builds and tests every module:
 cmake --workflow --preset full
 ```
 
-For an offline build, set `FETCHCONTENT_FULLY_DISCONNECTED=ON` and point
+For an offline build, set `FETCHCONTENT_FULLY_DISCONNECTED=ON`, point
 `FETCHCONTENT_SOURCE_DIR_JOLT`, `FETCHCONTENT_SOURCE_DIR_BOX2D`,
-`FETCHCONTENT_SOURCE_DIR_RMLUI`, `FETCHCONTENT_SOURCE_DIR_LINEA` and
-`FETCHCONTENT_SOURCE_DIR_SDL3` at the pinned sources; an RmlUi override must
+`FETCHCONTENT_SOURCE_DIR_RMLUI` and `FETCHCONTENT_SOURCE_DIR_SDL3` at the pinned
+sources, and `FETCHCONTENT_SOURCE_DIR_LINEA` at a Linea checkout; an RmlUi override must
 already carry the patch described in [third_party/rmlui](third_party/rmlui/README.md).
 `ANIMA_TEST_GLB` and `ANIMA_TEST_MANIFEST` add regressions against an exported model
 and its manifest.
@@ -148,9 +148,10 @@ cmake --build build/docs --target anima_docs
 
 ## Dependencies
 
-Jolt, Box2D, RmlUi and Linea are fetched from pinned archives, and SDL, when fetched,
-from a pinned release commit. Each pin is in its `cmake/Anima*.cmake` file and recorded
-in its notes under [third_party](third_party/README.md). To update one:
+Jolt, Box2D and RmlUi are fetched from pinned archives, and SDL, when fetched, from a
+pinned release commit. Each pin is in its `cmake/Anima*.cmake` file and recorded in its
+notes under [third_party](third_party/README.md). Linea has no pin: Anima follows its
+`main` branch while the two are developed together. To update a pinned dependency:
 
 1. Point the URL or `GIT_TAG` at the new release, keeping the release name in a
    comment beside a commit, and replace `URL_HASH` with the SHA-256 of the new
@@ -159,8 +160,8 @@ in its notes under [third_party](third_party/README.md). To update one:
    license changed, and any patch it carries; RmlUi's patch must still apply.
 3. Read the upstream release notes for API and behavior changes.
 4. Run the `full` workflow and the CI presets that fetch the dependency
-   (`ci-full-release` and `ci-sanitizers`), and the `gpu` label when SDL, RmlUi or
-   Linea changes.
+   (`ci-full-release` and `ci-sanitizers`), and the `gpu` label when SDL or RmlUi
+   changes.
 
 Vendored files under `third_party` are replaced whole at the new revision: update
 their table and SHA-256 list in [third_party/README.md](third_party/README.md) and

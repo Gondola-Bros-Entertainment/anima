@@ -163,7 +163,7 @@ class Harness {
 };
 
 // A quad textured with a gray checker of 0 and 128, 2x2 texels, or 64x64 when mipmapped, repeated @p uv_extent
-// times across it, as gpu_material_smoke.py generated it.
+// times across it.
 inline std::vector<std::byte> checker_quad(int wrap, int mag, int min, bool mipmapped, double uv_extent) {
     const unsigned size = mipmapped ? 64 : 2;
     std::vector<std::uint8_t> pixels;
@@ -556,9 +556,9 @@ inline int run_pbr(int argc, char **argv) {
     return 0;
 }
 
-// A quad with one 1x1 RGBA texel, as gpu_surface_smoke.py generated it. The reference variant bakes the texel
-// into constant factors or the vertex normal instead of mapping it; @p authored adds a TANGENT attribute, and
-// without it the renderer derives the tangent frame from screen derivatives.
+// A quad with one 1x1 RGBA texel. The reference variant bakes the texel into constant factors or the vertex normal
+// instead of mapping it; @p authored adds a TANGENT attribute, and without it the renderer derives the tangent frame
+// from screen derivatives.
 inline std::vector<std::byte> surface_quad(std::string_view kind, bool reference, bool authored) {
     std::array<std::uint8_t, 4> texel{};
     if (kind == "normal" || kind == "shared")
