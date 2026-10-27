@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -68,29 +69,53 @@ std::pair<std::uint64_t, std::uint64_t> pack(std::vector<Cell> &cells, std::uint
     return {width, y + shelf};
 }
 
+// The cells of @p art at @p scale, each a frame and its border, packed, and the width and height they span; or, when
+// they do not fit one sheet, why not.
+struct Packing {
+    std::vector<Cell> cells;
+    std::pair<std::uint64_t, std::uint64_t> extent{};
+    const char *misfit = nullptr;
+};
+Packing pack_sheet(std::span<const VectorArt> art, float scale) {
+    constexpr auto border = VectorAtlas::padding;
+    Packing packing;
+    packing.cells.reserve(art.size());
+    std::uint64_t area = 0, widest = 0;
+    for (const auto &drawing : art) {
+        const auto width = pixels(drawing.size.x, scale), height = pixels(drawing.size.y, scale);
+        if (!width || !height) {
+            packing.misfit = size_message;
+            return packing;
+        }
+        const Cell cell{width + 2 * border, height + 2 * border, 0, 0};
+        packing.cells.push_back(cell);
+        area += std::uint64_t{cell.width} * cell.height;
+        widest = std::max<std::uint64_t>(widest, cell.width);
+    }
+    if (widest > VectorAtlas::max_sheet_edge) {
+        packing.misfit = fit_message;
+        return packing;
+    }
+    // Shelves about as wide as a square of the cells' area, or as wide as a sheet may be when that leaves it too tall.
+    // The square root is correctly rounded, so the width is the same on every platform.
+    const auto square = std::uint64_t(std::ceil(std::sqrt(double(area))));
+    packing.extent = pack(packing.cells, std::clamp<std::uint64_t>(square, widest, VectorAtlas::max_sheet_edge));
+    if (packing.extent.second > VectorAtlas::max_sheet_edge)
+        packing.extent = pack(packing.cells, VectorAtlas::max_sheet_edge);
+    if (packing.extent.second > VectorAtlas::max_sheet_edge)
+        packing.misfit = fit_message;
+    return packing;
+}
+
 // The sheet of @p art at @p scale; see VectorAtlas.
 std::shared_ptr<const SpriteSheet> render_sheet(const std::vector<VectorArt> &art, float scale) {
     validate_scale(scale);
     constexpr auto border = VectorAtlas::padding;
-    std::vector<Cell> cells;
-    cells.reserve(art.size());
-    std::uint64_t area = 0, widest = 0;
-    for (const auto &drawing : art) {
-        const auto width = pixels(drawing.size.x, scale), height = pixels(drawing.size.y, scale);
-        require(width && height, size_message);
-        const Cell cell{width + 2 * border, height + 2 * border, 0, 0};
-        cells.push_back(cell);
-        area += std::uint64_t{cell.width} * cell.height;
-        widest = std::max<std::uint64_t>(widest, cell.width);
-    }
-    require(widest <= VectorAtlas::max_sheet_edge, fit_message);
-    // Shelves about as wide as a square of the cells' area, or as wide as a sheet may be when that leaves it too tall.
-    // The square root is correctly rounded, so the width is the same on every platform.
-    const auto square = std::uint64_t(std::ceil(std::sqrt(double(area))));
-    auto extent = pack(cells, std::clamp<std::uint64_t>(square, widest, VectorAtlas::max_sheet_edge));
-    if (extent.second > VectorAtlas::max_sheet_edge)
-        extent = pack(cells, VectorAtlas::max_sheet_edge);
-    require(extent.second <= VectorAtlas::max_sheet_edge, fit_message);
+    const Packing packing = pack_sheet(art, scale);
+    if (packing.misfit)
+        throw std::invalid_argument(packing.misfit);
+    const auto &cells = packing.cells;
+    const auto extent = packing.extent;
 
     auto image = std::make_shared<Image>();
     image->width = std::uint32_t(extent.first);
@@ -159,6 +184,13 @@ VectorAtlas::VectorAtlas(std::vector<VectorArt> art, float scale) : art_(std::mo
         throw std::invalid_argument("Duplicate vector art name: " + art_[*duplicate].name);
     sheet_ = render_sheet(art_, scale);
     scale_ = scale;
+}
+
+bool VectorAtlas::fits(std::span<const VectorArt> art, float scale) {
+    for (const auto &drawing : art)
+        validate_art(drawing);
+    validate_scale(scale);
+    return !pack_sheet(art, scale).misfit;
 }
 
 void VectorAtlas::set_scale(float scale) {

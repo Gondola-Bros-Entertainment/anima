@@ -331,3 +331,38 @@ TEST_CASE("Vector art outside the documented limits is rejected") {
     CHECK(atlas.scale() == 1);
     CHECK(atlas.sheet() == sheet);
 }
+
+TEST_CASE("fits() says whether an atlas renders art at a scale, without rendering it") {
+    constexpr auto infinity = std::numeric_limits<float>::infinity();
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
+    const auto valid = disc("valid", {2, 2}, {255, 0, 0, 255});
+    CHECK(VectorAtlas::fits(std::vector{valid}, 1));
+    // A frame wider than a sheet fits at a scale that narrows it enough, and an atlas renders it there.
+    auto wide = valid;
+    wide.size = {8192.5F, 1};
+    CHECK_FALSE(VectorAtlas::fits(std::vector{wide}, 1));
+    CHECK(VectorAtlas::fits(std::vector{wide}, .5F));
+    CHECK_NOTHROW(VectorAtlas({wide}, .5F));
+    // 8191 texels and a border of one on each side are 8193 across; at .99, 8109 and its border fit.
+    auto bordered = valid;
+    bordered.size = {8191, 1};
+    CHECK_FALSE(VectorAtlas::fits(std::vector{bordered}, 1));
+    CHECK(VectorAtlas::fits(std::vector{bordered}, .99F));
+    CHECK_NOTHROW(VectorAtlas({bordered}, .99F));
+    // Five square frames pack two to a shelf on three shelves: at .66 each is 2705 texels with its border, 8115 down,
+    // and at .67 each is 2746, 8238 down, past a sheet even on shelves a whole sheet wide.
+    std::vector<VectorArt> many;
+    for (int i = 0; i < 5; ++i)
+        many.push_back(disc("large/" + std::to_string(i), {4096, 4096}, {255, 0, 0, 255}));
+    CHECK(VectorAtlas::fits(many, .66F));
+    CHECK_FALSE(VectorAtlas::fits(many, .67F));
+    CHECK_FALSE(VectorAtlas::fits(many, 1));
+    // It rejects what an atlas rejects before packing.
+    for (const float scale : {0.F, -1.F, nan, infinity})
+        CHECK_THROWS_WITH_AS((void)VectorAtlas::fits(std::vector{valid}, scale),
+                             "Vector art scale must be finite and positive", std::invalid_argument);
+    auto unsized = valid;
+    unsized.size = {0, 1};
+    CHECK_THROWS_WITH_AS((void)VectorAtlas::fits(std::vector{unsized}, 1),
+                         "Vector art size must be finite and positive", std::invalid_argument);
+}
