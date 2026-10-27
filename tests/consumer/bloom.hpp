@@ -1,19 +1,28 @@
 #pragma once
 // Bloom (anima::Bloom) through VulkanRenderer::set_bloom(), in an orthographic view down -Z over a black background.
+// The checks of bloom's light turn dithering off, so that frames compare exactly; check_dither() covers it.
+//
 // A field of one color, a sprite that covers the view, passes every downsample and upsample unchanged but for the
 // rounding of the chain's stores, so with bloom each of its pixels must show its exposed color plus the intensity times
 // the light that the threshold keeps of it, within 2 levels of what that light gives exactly or through stores rounded,
 // to nearest or toward zero, in the chain's coarser possible format: above the knee, in it, with a hard threshold and
-// with none, after exposure, at radii that sum one
-// level, several with a fractional coarsest weight and every level, and at render scales 0.5, 1 and 2, in the RGBA16F
-// and the packed scene targets. A field whose light the threshold keeps none of shows exactly as without bloom. Bright
-// light from an additive sprite, a blended sprite, an emissive mesh and a custom material spreads into the black around
-// each, and farther with a larger radius, while a scene of light under the knee, an intensity of 0, a threshold above
-// the scene's light and an exposure that lowers the light under the knee all show exactly as without bloom. Disabling
-// bloom restores the frame exactly and releases the chain on the next draw(); the chain follows render scale changes
-// and window resizes, and a window resized back shows its first frame again exactly. Invalid settings are rejected,
-// keeping the previous ones, and validation, synchronization validation included, stays clean. reject_invalid_bloom()
-// checks construction's rejections without a window.
+// with none, after exposure, at radii that sum one level, several with a fractional coarsest weight and every level,
+// and at render scales 0.5, 1 and 2, in the RGBA16F and the packed scene targets. A field whose light the threshold
+// keeps none of shows exactly as without bloom. Bright light from an additive sprite, a blended sprite, an emissive
+// mesh and a custom material spreads into the black around each, and farther with a larger radius, while a scene of
+// light under the knee, an intensity of 0, a threshold above the scene's light and an exposure that lowers the light
+// under the knee all show exactly as without bloom. Disabling bloom restores the frame exactly and releases the chain
+// on the next draw(); the chain follows render scale changes and window resizes, and a window resized back shows its
+// first frame again exactly.
+//
+// Dithering, at render scales 1 and 2, leaves a dark horizontal gradient, whose levels are each many pixels wide, with
+// no band: no edge, a step of half a level between the mean levels of adjacent columns, for a band to lie between, and
+// it brings the column means at least a quarter level closer to the gradient's exact encoded values than quantization
+// alone; without dithering the same measures find an edge at most levels. A dithered frame drawn again is the same,
+// black stays black, and bloom without dithering shows the gradient exactly as without bloom.
+//
+// Invalid settings are rejected, keeping the previous ones, and validation, synchronization validation included, stays
+// clean. reject_invalid_bloom() checks construction's rejections without a window.
 #include "blending.hpp"
 #include "custom_materials.hpp"
 #include "gpu_checks.hpp"
@@ -22,8 +31,10 @@
 #include "tone_mapping.hpp"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <anima/assets/asset.hpp>
 #include <anima/desktop/vulkan_renderer.hpp>
 #include <anima/environment.hpp>
+#include <anima/mesh.hpp>
 #include <anima/scene.hpp>
 #include <anima/sprite.hpp>
 #include <array>
@@ -36,6 +47,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -68,10 +80,10 @@ constexpr Color dim{.4, .35, .3};
 // A threshold above the light of every source in the scene, the emissive mesh's specular highlights included.
 constexpr float above_every_source = 10;
 
-// Bloom enabled with @p threshold, @p knee, @p intensity and @p radius.
+// Bloom enabled with @p threshold, @p knee, @p intensity and @p radius, without dithering.
 inline anima::Bloom enabled(float threshold = anima::Bloom{}.threshold, float knee = anima::Bloom{}.knee,
                             float intensity = anima::Bloom{}.intensity, float radius = anima::Bloom{}.radius) {
-    return {true, threshold, knee, intensity, radius};
+    return {true, threshold, knee, intensity, radius, false};
 }
 
 // Construction rejects each invalid field with its message, in the fields' order, before it needs a window.
@@ -357,11 +369,11 @@ inline void check_settings(Harness &harness) {
     auto &renderer = harness.renderer();
     const auto same = [](const anima::Bloom &a, const anima::Bloom &b) {
         return a.enabled == b.enabled && a.threshold == b.threshold && a.knee == b.knee && a.intensity == b.intensity &&
-               a.radius == b.radius;
+               a.radius == b.radius && a.dither == b.dither;
     };
     const anima::Bloom defaults;
     require(!defaults.enabled && defaults.threshold == 1 && defaults.knee == .5F && defaults.intensity == .35F &&
-                defaults.radius == .1F,
+                defaults.radius == .1F && defaults.dither,
             "The default bloom changed");
     require(same(renderer.bloom(), defaults), "The renderer did not start with the default bloom");
     const auto kept = enabled(2, .25F, .5F, .3F);
@@ -538,6 +550,148 @@ inline void check_sizes(Harness &harness) {
     renderer.set_bloom({});
 }
 
+// The dark gradient's linear colors at its left and right edges, which display shows from about level 13 to level 48,
+// so that each level spans many pixels; and its half width and half height in the view.
+constexpr Color gradient_left{.004, .004, .004}, gradient_right{.03, .03, .03};
+constexpr float gradient_half_width = 2.4F, gradient_half_height = 1;
+// How far inside the gradient's edges, in pixels and in view units, the measured columns and rows lie, clear of the
+// pixels that its edges cover in part.
+constexpr int gradient_margin = 2;
+constexpr float gradient_row_margin = .1F;
+// The banding measures' limits: a step between adjacent columns' mean levels that is a band edge, which the eye sees as
+// a contour; and the least that dithering must bring the column means closer to the exact gradient than quantization
+// alone, which leaves errors of up to half a level.
+constexpr double band_edge = .5, least_mean_gain = .25;
+
+// A quad facing the view, unlit and white, whose vertex colors run from gradient_left along its left edge to
+// gradient_right along its right edge, so that its color is linear across the view.
+inline std::shared_ptr<const anima::Mesh> gradient_quad() {
+    anima::Asset asset;
+    asset.nodes.resize(1);
+    asset.materials.push_back(blending_test::opaque({1, 1, 1}));
+    anima::SourcePrimitive primitive;
+    primitive.material = 0;
+    const float x = gradient_half_width, y = gradient_half_height;
+    const std::array<anima::Vec3, 4> corners{{{-x, -y, sprite_test::plane},
+                                              {x, -y, sprite_test::plane},
+                                              {x, y, sprite_test::plane},
+                                              {-x, y, sprite_test::plane}}};
+    for (const auto corner : {0U, 1U, 2U, 0U, 2U, 3U}) {
+        anima::SourceVertex vertex;
+        vertex.position = corners[corner];
+        vertex.normal = {0, 0, 1};
+        const auto &color = corners[corner].x < 0 ? gradient_left : gradient_right;
+        vertex.color = {float(color[0]), float(color[1]), float(color[2])};
+        primitive.vertices.push_back(vertex);
+    }
+    asset.primitives.push_back(std::move(primitive));
+    return anima::Mesh::compile(asset);
+}
+
+// What the dither check measures of the red levels of a capture of the gradient, away from its edges: the largest
+// distance between a column's mean level over the gradient's rows and the gradient's exact encoded value at the
+// column's center; the largest difference between adjacent columns' means, and how many adjacent columns differ by a
+// band edge; and the widest band, the most columns between two consecutive band edges, 0 without two edges.
+struct Banding {
+    double mean_error{}, steepest{};
+    int edges{}, widest{};
+    [[nodiscard]] std::string text() const {
+        return "largest mean error " + std::to_string(mean_error) + " levels, largest step between columns " +
+               std::to_string(steepest) + " levels, " + std::to_string(edges) + " band edges, widest band " +
+               std::to_string(widest) + " columns";
+    }
+};
+inline Banding banding(const Harness &harness, const std::string &name) {
+    const auto &image = harness.images[name];
+    const auto &v = harness.view;
+    // The window column, as a continuous coordinate, that shows view position @p x on the gradient's plane.
+    const auto column_of = [&](float x) {
+        const double clip = double(v[0]) * x + double(v[8]) * sprite_test::plane + double(v[12]),
+                     w = double(v[3]) * x + double(v[11]) * sprite_test::plane + double(v[15]);
+        return (clip / w + 1) / 2 * image.width;
+    };
+    const double left = column_of(-gradient_half_width), right = column_of(gradient_half_width);
+    const auto first_row = blending_test::pixel_of(
+                   v, {0, gradient_half_height - gradient_row_margin, sprite_test::plane}, image)[1],
+               last_row = blending_test::pixel_of(
+                   v, {0, -gradient_half_height + gradient_row_margin, sprite_test::plane}, image)[1];
+    const auto first_column = std::size_t(std::ceil(left)) + gradient_margin,
+               last_column = std::size_t(std::floor(right)) - 1 - gradient_margin;
+    Banding result;
+    std::vector<double> means;
+    // The column after the latest band edge, once there has been one.
+    std::optional<std::size_t> band_start;
+    for (auto column = first_column; column <= last_column; ++column) {
+        double sum = 0;
+        for (auto row = first_row; row <= last_row; ++row)
+            sum += gpu_check::pixel(image, column, row)[0];
+        means.push_back(sum / double(last_row - first_row + 1));
+        const double share = (double(column) + .5 - left) / (right - left),
+                     exact = blending_test::encoded(gradient_left[0] + (gradient_right[0] - gradient_left[0]) * share);
+        result.mean_error = std::max(result.mean_error, std::abs(means.back() - exact));
+        if (means.size() < 2)
+            continue;
+        const double step = std::abs(means.back() - means[means.size() - 2]);
+        result.steepest = std::max(result.steepest, step);
+        if (step < band_edge)
+            continue;
+        ++result.edges;
+        if (band_start)
+            result.widest = std::max(result.widest, int(column - *band_start));
+        band_start = column;
+    }
+    return result;
+}
+
+// Dithering removes the gradient's bands, keeps black black and stays the same from frame to frame, and bloom without
+// it shows the gradient exactly as without bloom. A threshold above the gradient's light keeps bloom from adding any.
+inline void check_dither(Harness &harness, const std::string &suffix) {
+    auto &renderer = harness.renderer();
+    auto scene = std::make_shared<anima::Scene>();
+    (void)scene->create({}, gradient_quad());
+    const std::vector<std::shared_ptr<const anima::Scene>> scenes{scene};
+    const auto off = "gradient-off-" + suffix, plain = "gradient-plain-" + suffix,
+               dithered = "gradient-dithered-" + suffix, again = "gradient-dithered-again-" + suffix;
+    renderer.set_bloom({});
+    harness.render(off, {}, scenes);
+    renderer.set_bloom(enabled(above_every_source));
+    harness.render(plain, {}, scenes);
+    harness.images.require_same(off, plain, "Bloom that keeps no light, without dithering, changed the gradient");
+    auto dithering = enabled(above_every_source);
+    dithering.dither = true;
+    renderer.set_bloom(dithering);
+    harness.render(dithered, {}, scenes);
+    harness.redraw(again);
+    harness.images.require_same(dithered, again, "The dithered gradient changed while the view held still");
+    // Every pixel of the black above the gradient, clear of the pixels that its edge covers in part.
+    const auto &image = harness.images[dithered];
+    const auto black_rows = blending_test::pixel_of(
+        harness.view, {0, gradient_half_height + gradient_row_margin, sprite_test::plane}, image)[1];
+    std::size_t lifted = 0;
+    for (std::size_t row = 0; row < black_rows; ++row)
+        for (std::size_t column = 0; column < image.width; ++column)
+            lifted += brightest(gpu_check::pixel(image, column, row)) != 0;
+    harness.images.require(lifted == 0,
+                           "Dithering lifted " + std::to_string(lifted) + " pixels of the black above the gradient",
+                           {dithered});
+    const auto banded = banding(harness, off), smooth = banding(harness, dithered);
+    std::cout << "BLOOM gradient " << suffix << " without dithering: " << banded.text() << '\n'
+              << "BLOOM gradient " << suffix << " with dithering: " << smooth.text() << '\n';
+    // The measures must find the bands that 8-bit levels leave, about one edge per level that the gradient crosses.
+    const int crossings =
+        int(blending_test::encoded(gradient_right[0])) - int(blending_test::encoded(gradient_left[0]));
+    harness.images.require(banded.edges >= crossings / 2,
+                           "The banding measures found no bands without dithering: " + banded.text(), {off});
+    // No band edge leaves no band, and the column means follow the gradient, but for the device's own error in
+    // encoding sRGB, which dithering leaves and quantization adds its half level to.
+    harness.images.require(smooth.edges == 0 && smooth.mean_error <= banded.mean_error - least_mean_gain,
+                           "The dithered gradient shows bands: " + smooth.text() + "; without dithering, " +
+                               banded.text(),
+                           {off, dithered});
+    harness.images.discard({off, plain, dithered, again});
+    renderer.set_bloom({});
+}
+
 inline int run(int argc, char **argv) {
     require(argc == 3 || (argc == 5 && std::string_view(argv[3]) == "--frames-in-flight"),
             "Usage: consumer --bloom OUTPUT [--frames-in-flight COUNT]");
@@ -550,6 +704,10 @@ inline int run(int argc, char **argv) {
         for (const float scale : {1.F, .5F, 2.F}) {
             harness.renderer().set_render_scale(scale);
             check_fields(harness, "rgba16f-scale-" + std::to_string(scale));
+        }
+        for (const float scale : {1.F, 2.F}) {
+            harness.renderer().set_render_scale(scale);
+            check_dither(harness, "scale-" + std::to_string(scale));
         }
         harness.renderer().set_render_scale(1);
         check_spread(harness);
@@ -568,8 +726,8 @@ inline int run(int argc, char **argv) {
                  "keeps, within 2 levels, across the knee, exposure, radii and render scales 0.5 to 2 in both scene "
                  "formats; additive and blended sprites, emissive meshes and custom materials spread light, farther "
                  "with a larger radius; dim light, no intensity, a high threshold and low exposure show exactly as "
-                 "without bloom; disabling restores the frame and releases the chain; and the chain follows render "
-                 "scales and resizes, with "
+                 "without bloom; dithering leaves a dark gradient without bands, black and steady; disabling restores "
+                 "the frame and releases the chain; and the chain follows render scales and resizes, with "
               << frames << " frames in flight\n";
     return 0;
 }
