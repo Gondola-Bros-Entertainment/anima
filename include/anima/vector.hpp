@@ -108,6 +108,13 @@ class VectorAtlas {
     /// or a drawing, and when the frames and their borders do not fit one sheet of #max_sheet_edge texels a side
     /// ("Vector art must fit one sheet of 8192 by 8192 texels").
     void set_scale(float scale);
+    /// Whether the frames of @p art rendered at @p scale, with their borders, fit one sheet of #max_sheet_edge texels a
+    /// side: whether an atlas of @p art renders at @p scale rather than throwing for its size. It packs the frames as
+    /// set_scale() does without rendering them, so it costs little next to rendering, as a search for the largest scale
+    /// that fits needs.
+    ///
+    /// Throws `std::invalid_argument` for a scale, or a drawing's size or canvas, that is not finite and positive.
+    [[nodiscard]] static bool fits(std::span<const VectorArt> art, float scale);
     /// Pixels per logical unit of the art in sheet().
     [[nodiscard]] float scale() const noexcept { return scale_; }
     /// The art rendered at scale(); a new sheet after each set_scale() that changes the scale.
