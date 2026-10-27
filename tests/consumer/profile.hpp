@@ -105,11 +105,12 @@ class Check {
         require(call.cpu_ms() <= call.wall_ms() + rounding_ms, "The CPU fields add up to more than the draw() call");
         // Likewise the GPU interval fields divide gpu_ms at the frame's timestamps between its first and its last.
         if (profile.gpu_available) {
-            for (const double field : {profile.gpu_ms, profile.gpu_atmosphere_ms, profile.gpu_shadow_ms,
-                                       profile.gpu_scene_ms, profile.gpu_resolve_ms, profile.gpu_transfer_ms})
+            for (const double field :
+                 {profile.gpu_ms, profile.gpu_atmosphere_ms, profile.gpu_shadow_ms, profile.gpu_scene_ms,
+                  profile.gpu_bloom_ms, profile.gpu_resolve_ms, profile.gpu_transfer_ms})
                 require(std::isfinite(field) && field >= 0, "A GPU field is negative or not finite");
             const double intervals = profile.gpu_atmosphere_ms + profile.gpu_shadow_ms + profile.gpu_scene_ms +
-                                     profile.gpu_resolve_ms + profile.gpu_transfer_ms;
+                                     profile.gpu_bloom_ms + profile.gpu_resolve_ms + profile.gpu_transfer_ms;
             require(std::abs(intervals - profile.gpu_ms) <= rounding_ms,
                     "The GPU interval fields add up to " + std::to_string(intervals) + " ms, not the " +
                         std::to_string(profile.gpu_ms) + " ms of gpu_ms");

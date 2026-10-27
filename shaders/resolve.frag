@@ -4,9 +4,18 @@ layout(location = 0) in vec2 screen;
 layout(location = 0) out vec4 outColor;
 #include "shader_interface.h"
 layout(set = ANIMA_SET_SCENE_INPUT, binding = ANIMA_SCENE_INPUT_COLOR) uniform sampler2D sceneColor;
+// The bloom chain's first level, exposed linear light that display.bloom scales. Without bloom the renderer binds the
+// scene target here, since every bound descriptor must be valid, and display.bloom of 0 keeps it unread.
+layout(set = ANIMA_SET_BLOOM, binding = ANIMA_SCENE_INPUT_COLOR) uniform sampler2D bloomColor;
 layout(constant_id = ANIMA_SPEC_ENCODE_SRGB) const bool encodeSrgb = false;
-// Scene target pixels per window pixel along each axis: the render scale, as rounding and the device's limits leave it.
-layout(push_constant) uniform Display { vec2 footprint; }
+layout(push_constant) uniform Display {
+    // Scene target pixels per window pixel along each axis: the render scale, as rounding and the device's limits leave
+    // it.
+    vec2 footprint;
+    // The factor of bloomColor added to the exposed scene: Bloom::intensity over the total weight of the levels that
+    // the chain sums, and 0 without bloom.
+    float bloom;
+}
 display;
 #include "environment.glsl"
 // The values of anima::ToneMapping's reinhard, agx and pbr_neutral, as controls.y holds the tone mapping.
@@ -69,9 +78,9 @@ vec3 agx(vec3 color) {
     return clamp(agxOutset * (low + (high - low) * shares), 0.0, 1.0);
 }
 
-// Linear scene color after exposure and tone mapping.
-vec3 exposed(vec3 color) {
-    color = clamp(color * environment.controls.x, vec3(0), vec3(animaMaximumHalfFloat));
+// Linear scene @p color after exposure, with the exposed bloom light @p glow added, and tone mapping.
+vec3 exposed(vec3 color, vec3 glow) {
+    color = clamp(color * environment.controls.x + glow, vec3(0), vec3(animaMaximumHalfFloat));
     if (environment.controls.y == toneMappingReinhard)
         color = color / (vec3(1) + color);
     else if (environment.controls.y == toneMappingAgx)
@@ -81,10 +90,10 @@ vec3 exposed(vec3 color) {
     return color;
 }
 // The mean of the scene target pixels that the window pixel's area covers, each weighted by the area it covers and
-// taken as the window shows it: exposed, then clamped to the display's range of 0 to 1. An edge against a surface
-// brighter than white then blends in proportion to its coverage, where averaging radiance first would show white
-// wherever the bright side covers enough of the area to outweigh the clamp.
-vec3 supersampled() {
+// taken as the window shows it: exposed with @p glow added, then clamped to the display's range of 0 to 1. An edge
+// against a surface brighter than white then blends in proportion to its coverage, where averaging radiance first would
+// show white wherever the bright side covers enough of the area to outweigh the clamp.
+vec3 supersampled(vec3 glow) {
     vec2 low = floor(gl_FragCoord.xy) * display.footprint, high = low + display.footprint;
     ivec2 first = ivec2(floor(low)), last = min(ivec2(ceil(high)) - 1, textureSize(sceneColor, 0) - 1);
     vec3 sum = vec3(0);
@@ -93,17 +102,21 @@ vec3 supersampled() {
         float covered = min(high.y, float(y + 1)) - max(low.y, float(y));
         for (int x = first.x; x <= last.x; ++x) {
             float weight = covered * (min(high.x, float(x + 1)) - max(low.x, float(x)));
-            sum += weight * min(exposed(texelFetch(sceneColor, ivec2(x, y), 0).rgb), vec3(1));
+            sum += weight * min(exposed(texelFetch(sceneColor, ivec2(x, y), 0).rgb, glow), vec3(1));
             total += weight;
         }
     }
     return sum / total;
 }
 void main() {
+    vec2 coordinates = screen * 0.5 + 0.5;
+    // The bloom light varies slowly, so each window pixel reads it once, interpolated bilinearly at its center, and
+    // adds it to every scene target pixel that it shows.
+    vec3 glow = display.bloom > 0.0 ? display.bloom * texture(bloomColor, coordinates).rgb : vec3(0);
     // Up to the window's size the target is interpolated bilinearly, before exposure; beyond it each window pixel
     // filters its own area.
-    vec3 color = any(greaterThan(display.footprint, vec2(1))) ? supersampled()
-                                                              : exposed(texture(sceneColor, screen * 0.5 + 0.5).rgb);
+    vec3 color = any(greaterThan(display.footprint, vec2(1))) ? supersampled(glow)
+                                                              : exposed(texture(sceneColor, coordinates).rgb, glow);
     if (encodeSrgb)
         color = mix(1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, 12.92 * color, lessThanEqual(color, vec3(0.0031308)));
     outColor = vec4(color, 1);

@@ -67,8 +67,13 @@ VkPipeline resolve_pipeline{};
 VkFormat display_format{};
 // The largest scene targets that the device can create and attach: its 2D image and framebuffer limits.
 VkExtent2D max_scene_extent{};
-// The push constant of resolve.frag: scene target pixels per window pixel along each axis.
-using DisplayFootprint = std::array<float, 2>;
+// The push constants of resolve.frag: scene target pixels per window pixel along each axis, and the factor of the bloom
+// chain's first level that it adds to the exposed scene (bloom_factor()).
+struct DisplayPush {
+    std::array<float, 2> footprint;
+    float bloom;
+};
+static_assert(sizeof(DisplayPush) == 3 * sizeof(float), "resolve.frag's Display holds a vec2 and a float");
 
 void create_world_layout() {
     const VkDescriptorSetLayoutBinding binding{ANIMA_SCENE_INPUT_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
@@ -77,16 +82,18 @@ void create_world_layout() {
     info.bindingCount = 1;
     info.pBindings = &binding;
     check(vkCreateDescriptorSetLayout(device, &info, nullptr, &scene_input_layout), "Create scene input layout");
-    std::array<VkDescriptorSetLayout, ANIMA_SET_ENVIRONMENT + 1> layouts{};
+    static_assert(ANIMA_SET_SCENE_INPUT < ANIMA_SET_ENVIRONMENT && ANIMA_SET_ENVIRONMENT < ANIMA_SET_BLOOM,
+                  "The display pipeline layout binds the scene target, the environment and the bloom, in that order");
+    std::array<VkDescriptorSetLayout, ANIMA_SET_BLOOM + 1> layouts{};
     layouts[ANIMA_SET_SCENE_INPUT] = scene_input_layout;
     layouts[ANIMA_SET_ENVIRONMENT] = environment_layout;
-    // The display shader's footprint (DisplayFootprint).
-    const VkPushConstantRange footprint{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(DisplayFootprint)};
+    layouts[ANIMA_SET_BLOOM] = scene_input_layout;
+    const VkPushConstantRange display{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(DisplayPush)};
     VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout.setLayoutCount = static_cast<std::uint32_t>(layouts.size());
     layout.pSetLayouts = layouts.data();
     layout.pushConstantRangeCount = 1;
-    layout.pPushConstantRanges = &footprint;
+    layout.pPushConstantRanges = &display;
     check(vkCreatePipelineLayout(device, &layout, nullptr, &post_pipeline_layout), "Create display pipeline layout");
 }
 // The scene targets' size for a swapchain of @p size: each side times the render scale, rounded to the nearest pixel
@@ -278,16 +285,19 @@ void record_display(VkCommandBuffer command, VkFramebuffer framebuffer) {
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
-    const DisplayFootprint footprint{static_cast<float>(double(scene_extent.width) / extent.width),
-                                     static_cast<float>(double(scene_extent.height) / extent.height)};
-    std::array<VkDescriptorSet, ANIMA_SET_ENVIRONMENT + 1> sets{};
+    const DisplayPush push{{static_cast<float>(double(scene_extent.width) / extent.width),
+                            static_cast<float>(double(scene_extent.height) / extent.height)},
+                           bloom_factor()};
+    std::array<VkDescriptorSet, ANIMA_SET_BLOOM + 1> sets{};
     sets[ANIMA_SET_SCENE_INPUT] = world_target->descriptor;
     sets[ANIMA_SET_ENVIRONMENT] = frame().environment_set;
+    // The first level, which this frame's bloom passes wrote. Without bloom the scene target stands in, since every
+    // bound descriptor must be valid, and a factor of 0 keeps the shader from reading it.
+    sets[ANIMA_SET_BLOOM] = bloom_chain ? bloom_chain->descriptors.front() : world_target->descriptor;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipeline_layout, 0,
                             static_cast<std::uint32_t>(sets.size()), sets.data(), 0, nullptr);
-    vkCmdPushConstants(command, post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(footprint),
-                       footprint.data());
+    vkCmdPushConstants(command, post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     vkCmdDraw(command, 3, 1, 0, 0);
     // Caller draws UI here, in display colour, then ends this render pass.
 }
@@ -318,5 +328,6 @@ void destroy_display() noexcept {
 }
 void destroy_world_targets() noexcept {
     opaque_inputs.reset();
+    bloom_chain.reset();
     world_target.reset();
 }

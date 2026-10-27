@@ -23,7 +23,7 @@
 /// public API. Scenes, environments and mesh preparation also need asset support (`ANIMA_BUILD_ASSETS=ON`).
 /// Without it anima::VulkanRenderer draws only the default EnvironmentSettings::background and the diagnostic
 /// triangle, with a UiContext's UI composited over them; its set_scenes, set_sprites, prepare_meshes and prepare_mesh
-/// members throw `std::logic_error`, and set_environment and set_time validate their arguments, then throw
+/// members throw `std::logic_error`, and set_environment, set_time and set_bloom validate their arguments, then throw
 /// `std::logic_error`.
 
 struct SDL_Window;
@@ -85,6 +85,55 @@ enum class SceneColorFormat {
     /// value above the largest that the channel holds, 65024 in red and green and 64512 in blue, becomes that value,
     /// and any other rounds to the nearest representable value, or toward zero where the implementation chooses.
     b10g11r11,
+};
+
+/// Bloom: light from the bright parts of the scene that spreads into the pixels around them, as a lens scatters it, so
+/// that fire, lightning, magic and other glows bleed soft light into the scene; see VulkanRenderer::set_bloom. The
+/// defaults leave it off; enabled, they bloom light from a brightness of 0.5, softly up to 1.5 and fully above it.
+///
+/// Each frame with bloom enabled reads the scene's linear color target once the world pass has drawn everything into
+/// it, sprites included, and blurs its bright light through a chain of levels, each half the size of the one before,
+/// the first half the scene targets' size, as Call of Duty: Advanced Warfare's bloom does. A bright pass downsamples
+/// the target into the first level with a 13-tap filter: 13 bilinear samples, each the mean of a 2 by 2 block of
+/// pixels, which it weights as five overlapping 2 by 2 groups of samples, the central group by half and the four
+/// around it by an eighth each, after keeping of each sample only the light that #threshold and #knee pass. Each
+/// further level downsamples the one before it with the same filter. Then, from the coarsest, each level adds the one
+/// after it, upsampled with a 3 by 3 tent filter of bilinear samples one texel of that level apart. Display conversion
+/// adds the first level, divided by the total weight of the levels that it sums and times #intensity, to the exposed
+/// color before tone mapping, so the bloom adds #intensity times the light that the bright pass keeps, spread around
+/// where it came from, apart from what the edges of the view clamp and the chain's format rounds
+/// (VulkanRenderer::set_bloom).
+///
+/// Brightness is a color's largest channel after EnvironmentSettings::exposure, in the scene target's linear units, in
+/// which display conversion without tone mapping shows 1 as white. With `b` a sample's brightness, `t` the threshold
+/// and `w` the knee's width, `t * knee`, a sample keeps its color times `max(b - t, s) / b`, where
+/// `s = min(max(b - t + w, 0), 2 * w)^2 / (4 * w)`, or 0 when `w` is 0: `s` is 0 up to `t - w` and rises along a
+/// parabola that meets `b - t` at `t + w`, above which `b - t` alone counts, so the share that blooms rises smoothly
+/// from 0 at `t - w`. A sample no brighter than `t - w` keeps no light at all, so a scene whose light stays below it
+/// shows exactly as without bloom. Since samples are block means, a bright pixel smaller than a block blooms only as
+/// far as the block's mean passes the threshold, and a bright pixel on a dark background adds the same light wherever
+/// it lies on the pixel grid, since every pixel's share of the bright pass's samples is the same.
+struct Bloom {
+    /// Whether frames bloom. While false, the renderer records no bloom passes, holds no bloom images once a draw() has
+    /// released them, and shows each frame exactly as it would without bloom.
+    bool enabled = false;
+    /// The brightness above which light blooms, but for what the knee softens around it: finite and at least 0, and at
+    /// 0 all light blooms whole. With a knee of 0, a threshold of 1 blooms only light that display conversion without
+    /// tone mapping shows brighter than white.
+    float threshold = 1;
+    /// The width of the soft knee around #threshold, as a share of it: finite, from 0, a hard cut at the threshold, to
+    /// 1, a curve from black up to twice the threshold.
+    float knee = .5F;
+    /// The share of the light that the bright pass keeps which the bloom adds back to the scene, spread around where it
+    /// came from: finite and at least 0. At 0 the bloom adds nothing, though its passes still run while #enabled.
+    float intensity = .35F;
+    /// How far the bloom spreads, as a share of the scene targets' height, so that it covers the same share of the view
+    /// at every window size and render scale: finite, above 0 and at most 1. The chain sums the levels from the first
+    /// to the first whose texels span at least this share, `ceil(log2(radius * height))` of them, at least 1 and at
+    /// most those down to 1 pixel, and weights the coarsest by how far `log2(radius * height)` passes the level count
+    /// less 1, from 0 to 1, so that the bloom widens continuously as the radius or the scene targets' height grows,
+    /// rather than in steps of a level.
+    float radius = .1F;
 };
 
 /// Severity of a message that VulkanRenderer passes to RendererOptions::log.
@@ -152,7 +201,7 @@ struct RendererOptions {
     /// Draws a built-in triangle while no scene is selected, even without asset support. A selected scene
     /// with no instances shows only the sky or EnvironmentSettings::background.
     bool diagnostic_triangle = false;
-    /// Enables FrameProfile timings, with six GPU timestamp queries for each frame in flight
+    /// Enables FrameProfile timings, with seven GPU timestamp queries for each frame in flight
     /// (RendererOptions::frames_in_flight) when the graphics queue supports them, calibrated timestamps where the
     /// device also offers them (see VulkanRenderer::measures_gpu_idle), and `VK_GOOGLE_display_timing` where the device
     /// offers it (see VulkanRenderer::measures_present_interval). With that extension every present carries an id for
@@ -215,6 +264,10 @@ struct RendererOptions {
     /// Initial levels that each mipmapped material texture drops from the top of its mip chain when it is uploaded;
     /// see VulkanRenderer::set_texture_mip_skip. Every value is accepted, and 0 uploads every level.
     std::uint32_t texture_mip_skip = 0;
+    /// Initial bloom; see VulkanRenderer::set_bloom. Construction throws `std::invalid_argument` for a Bloom that
+    /// set_bloom() rejects, with its message, and, without asset support, for an enabled one ("Bloom requires asset
+    /// support").
+    Bloom bloom;
 };
 
 /// Failure injection for VulkanRenderer::set_scenes, for lifecycle tests.
@@ -253,13 +306,14 @@ class RendererFatalError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 /// draw() could not prepare the selected scenes, the environment's shadow maps, the scene targets
-/// (VulkanRenderer::set_render_scale), the view's pipelines for a new shadow filter
-/// (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames), the material
-/// samplers for a new anisotropy (VulkanRenderer::set_max_anisotropy), or the sprites (VulkanRenderer::set_sprites).
+/// (VulkanRenderer::set_render_scale), the bloom chain (VulkanRenderer::set_bloom), the view's pipelines for a new
+/// shadow filter (VulkanRenderer::set_shadow_filter) or impostor frame count (VulkanRenderer::set_impostor_frames), the
+/// material samplers for a new anisotropy (VulkanRenderer::set_max_anisotropy), or the sprites
+/// (VulkanRenderer::set_sprites).
 ///
 /// Thrown before an image is acquired, so no frame was submitted. The renderer stays usable and the next
 /// draw() prepares again: repair the selected scenes or environment, change the selection or the sprites, lower the
-/// render scale, or request the previous shadow filter, impostor frame count or anisotropy.
+/// render scale, disable bloom, or request the previous shadow filter, impostor frame count or anisotropy.
 class SceneResourceError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -323,8 +377,9 @@ struct FrameProfile {
     /// Frame preparation after that wait: destroying what earlier calls released once no frame in flight can use it,
     /// releasing unowned cache entries, which destroys them at once unless a frame that may use them is still in flight
     /// and otherwise in a later call, once that frame has finished, creating the scene targets after a swapchain
-    /// creation or a render scale change (VulkanRenderer::set_render_scale), compiling the view's pipelines after a
-    /// shadow filter change (VulkanRenderer::set_shadow_filter) or an impostor frame count change
+    /// creation or a render scale change (VulkanRenderer::set_render_scale), creating or releasing the bloom chain
+    /// (VulkanRenderer::set_bloom), compiling the view's pipelines after a shadow filter change
+    /// (VulkanRenderer::set_shadow_filter) or an impostor frame count change
     /// (VulkanRenderer::set_impostor_frames), replacing the material samplers after an anisotropy change, which waits
     /// for every frame in flight (VulkanRenderer::set_max_anisotropy), sizing the shadow maps and fitting their
     /// cascades to the view, writing the custom materials' frame block, reading the GPU timestamps of the frame that
@@ -354,7 +409,7 @@ struct FrameProfile {
     /// means unsupported or not yet available, not zero cost.
     bool gpu_available{};
     /// The frame's commands, from its first timestamp to its last: the sum of gpu_atmosphere_ms, gpu_shadow_ms,
-    /// gpu_scene_ms, gpu_resolve_ms and gpu_transfer_ms.
+    /// gpu_scene_ms, gpu_bloom_ms, gpu_resolve_ms and gpu_transfer_ms.
     double gpu_ms{};
     /// The atmosphere's compute dispatches, which write its tables while it is enabled. The first frame drawn with it
     /// enabled, and each frame whose Atmosphere differs from the one the tables were last built for in a field other
@@ -371,6 +426,9 @@ struct FrameProfile {
     /// Sky and meshes into the scene target, with the copy of opaque inputs on frames that make one. Without asset
     /// support the frame draws into its swapchain image here instead, UI included (see gpu_resolve_ms).
     double gpu_scene_ms{};
+    /// The bloom passes (VulkanRenderer::set_bloom), which follow the scene's commands in the same batch. A frame
+    /// without bloom records none, so the field only times two adjacent timestamps.
+    double gpu_bloom_ms{};
     /// With asset support, display conversion and UI, the frame's first commands that write its swapchain image. Image
     /// acquisition can return before the presentation engine has released the image, and these commands wait until it
     /// has, while the scene's commands before them do not. Where the image is released only after the scene has been
@@ -515,16 +573,22 @@ struct ResourceStats {
     /// until the first frame that copies opaque inputs (opaque_inputs) replaces it with a device-local one that can be
     /// copied. Scene targets keep a depth target of that kind, through resizes, until the swapchain is recreated.
     std::uint64_t world_target_bytes{};
+    /// Allocation bytes of the bloom chain (VulkanRenderer::set_bloom), which a draw() creates while bloom is enabled
+    /// and none of the scene targets' size exists, and 0 while there is none: before the first such draw(), after a
+    /// draw() that finds bloom disabled, which releases it, after a swapchain recreation, until a draw() creates it
+    /// again, and after shutdown(). A chain that a resize of the scene targets or disabling bloom retired, but that a
+    /// frame in flight still uses, is excluded.
+    std::uint64_t bloom_bytes{};
 };
 
 /// Renders selected scenes into one borrowed SDL window.
 ///
 /// Each frame renders the sun's shadow maps, then into a linear color target, in the format that scene_color_format()
 /// reports, the opaque and masked meshes, the optional sky, which shades only the pixels that they leave at the far
-/// plane, the blended meshes and the sprites (set_sprites()); it converts the target for display at the window's pixel
-/// size and composites UI last. That target and the view's depth buffer are the scene targets, whose size is the
-/// window's pixel size times the render scale (set_render_scale()). The window must outlive the renderer, which never
-/// destroys it.
+/// plane, the blended meshes and the sprites (set_sprites()); it blooms the target's bright light when set_bloom()
+/// enables bloom, converts the target for display at the window's pixel size and composites UI last. That target and
+/// the view's depth buffer are the scene targets, whose size is the window's pixel size times the render scale
+/// (set_render_scale()). The window must outlive the renderer, which never destroys it.
 ///
 /// The sun's shadow maps are its cascades (ShadowCascades), which each frame fits to the current view as
 /// fit_shadow_cascades() does and extends toward the sun over the casters that each one's square reaches, as layers of
@@ -544,18 +608,18 @@ struct ResourceStats {
 /// and fragment shaders, an optional depth-only variant and a blend mode, with a parameter block and textures for the
 /// mesh material slots it is assigned to (MeshRenderer::set_custom_material), and its shaders read the inputs that
 /// custom_material.hpp documents. The renderer creates its pipelines and keeps the passes and their order, depth
-/// testing, sorting, the vertex, descriptor and push constant layouts, the display conversion and every Vulkan object.
-/// Applications cannot add render passes, render targets, post-processing or compute work, cannot reach Vulkan
-/// objects, and cannot change the standard material's shading.
+/// testing, sorting, the vertex, descriptor and push constant layouts, the bloom, the display conversion and every
+/// Vulkan object. Applications cannot add render passes, render targets, post-processing or compute work, cannot reach
+/// Vulkan objects, and cannot change the standard material's shading.
 ///
 /// Use the renderer from the application's SDL video thread, with no concurrent calls. Scenes and settings
 /// change only between draws, on that thread; a `const` Scene pointer does not synchronize access. Up to
 /// RendererOptions::frames_in_flight frames are in flight. Each has its own command buffers, palettes, environment and
 /// custom material frame blocks, sprites, UI vertices and descriptor sets, which draw() rewrites only once the frame
-/// that used them last has finished. Frames share the shadow maps, the atmosphere's tables, the scene targets and the
-/// opaque input copies, which their commands order on the GPU, and cached resources, UI images and replaced shadow maps
-/// are destroyed only once every frame that may use them has finished. Transfers go through staging buffers, which are
-/// freed only after their upload completes.
+/// that used them last has finished. Frames share the shadow maps, the atmosphere's tables, the scene targets, the
+/// opaque input copies and the bloom chain, which their commands order on the GPU, and cached resources, UI images and
+/// replaced shadow maps are destroyed only once every frame that may use them has finished. Transfers go through
+/// staging buffers, which are freed only after their upload completes.
 ///
 /// Uploads read texels through Mesh::texel_images() and CustomMaterial::texel_images(), and once an upload has
 /// completed they call release_texels() on the Mesh or CustomMaterial, so that one compiled with
@@ -715,18 +779,19 @@ struct ResourceStats {
 /// mode and, where the instance supports `VK_EXT_surface_maintenance1`, in the swapchain's mode, but no more than the
 /// most that it allows in them; Vulkan lets the driver create more images than that. Recreation after a resize, a
 /// change of present mode or an out-of-date or suboptimal result waits for the device to go idle, so it can stall
-/// briefly, and releases the scene targets, which the same draw() then creates as set_render_scale() describes; a
-/// render scale change recreates only the scene targets, without that wait. Where the device supports
-/// `VK_KHR_present_id` and `VK_KHR_present_wait` (waits_for_presents()), presents in the FIFO modes carry ids, which
-/// wait_for_frame() and draw() wait for. Display output is sRGB-encoded once: by an sRGB swapchain format when the
-/// surface offers one, otherwise in the display shader for 8-bit UNORM formats. With asset support each frame is one
-/// submission of two batches, and only the second, display conversion, UI and capture, waits for the acquired image, so
-/// the GPU can draw the scene while the presentation engine still holds that image; without it, the frame draws into
-/// the image and waits for it from its first color write. Presentation semaphores belong to swapchain images. Where the
-/// instance and device support `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain
-/// resources are destroyed; otherwise, or with RendererOptions::disable_present_fences, a device wait-idle is used,
-/// which unextended Vulkan does not guarantee to cover presentation. Portability enumeration and
-/// `VK_KHR_portability_subset` are enabled when advertised, as on MoltenVK. Diagnostics go to RendererOptions::log.
+/// briefly, and releases the scene targets and the bloom chain, which the same draw() then creates as
+/// set_render_scale() and set_bloom() describe; a render scale change recreates only the scene targets and the bloom
+/// chain, without that wait. Where the device supports `VK_KHR_present_id` and `VK_KHR_present_wait`
+/// (waits_for_presents()), presents in the FIFO modes carry ids, which wait_for_frame() and draw() wait for. Display
+/// output is sRGB-encoded once: by an sRGB swapchain format when the surface offers one, otherwise in the display
+/// shader for 8-bit UNORM formats. With asset support each frame is one submission of two batches, and only the second,
+/// display conversion, UI and capture, waits for the acquired image, so the GPU can draw and bloom the scene while the
+/// presentation engine still holds that image; without it, the frame draws into the image and waits for it from its
+/// first color write. Presentation semaphores belong to swapchain images. Where the instance and device support
+/// `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain resources are destroyed; otherwise,
+/// or with RendererOptions::disable_present_fences, a device wait-idle is used, which unextended Vulkan does not
+/// guarantee to cover presentation. Portability enumeration and `VK_KHR_portability_subset` are enabled when
+/// advertised, as on MoltenVK. Diagnostics go to RendererOptions::log.
 ///
 /// After shutdown(), every public non-const member except request_resize(), take_capture() and shutdown() throws
 /// `std::logic_error` ("Renderer is shut down"); after a RendererFatalError they throw RendererFatalError. Without
@@ -757,10 +822,11 @@ class VulkanRenderer {
     /// support"), for a RendererOptions::shadow_filter that is not a ShadowFilter enumerator ("Unknown shadow filter"),
     /// for a RendererOptions::impostor_frames other than 1 or 3 ("Impostor frames must be 1 or 3"), for a
     /// RendererOptions::scene_color_format that is not a SceneColorFormat enumerator ("Unknown scene color format"),
-    /// and for a null @p window; RendererUnavailableError when no driver or device can present to the window; what
-    /// set_scenes() throws for the initial selection; InjectedRendererFailure for RendererOptions::fail_after; and
-    /// `std::runtime_error` for other failures, including failed Vulkan calls. Completed stages are released before the
-    /// exception propagates.
+    /// for a RendererOptions::bloom that set_bloom() rejects, with its message, or that is enabled without asset
+    /// support ("Bloom requires asset support"), and for a null @p window; RendererUnavailableError when no driver or
+    /// device can present to the window; what set_scenes() throws for the initial selection; InjectedRendererFailure
+    /// for RendererOptions::fail_after; and `std::runtime_error` for other failures, including failed Vulkan calls.
+    /// Completed stages are released before the exception propagates.
     VulkanRenderer(SDL_Window *window, RendererOptions options);
     /// Performs shutdown() if it has not run.
     ~VulkanRenderer();
@@ -968,6 +1034,36 @@ class VulkanRenderer {
     /// otherwise falls back to SceneColorFormat::rgba16f. Without asset support the view renders into the swapchain
     /// images, with no scene color target, and this reports SceneColorFormat::rgba16f.
     [[nodiscard]] SceneColorFormat scene_color_format() const noexcept;
+    /// Sets the bloom (Bloom) from the next draw(); it starts as RendererOptions::bloom.
+    ///
+    /// While Bloom::enabled is true, each draw() that prepares a frame creates the bloom chain, unless one of the scene
+    /// targets' size exists, and records its passes after the world pass, in the batch that draws the scene: the bright
+    /// pass into the chain's first level, a downsample into each further level that the radius sums, and an upsample
+    /// into each of those levels but the coarsest, from the coarsest up (FrameProfile::gpu_bloom_ms). The chain is one
+    /// image, with a mip level for each halving of the scene targets from half their size down to 1 pixel, so the
+    /// radius chooses among levels that exist and changing it allocates nothing (ResourceStats::bloom_bytes). Its
+    /// format is `VK_FORMAT_B10G11R11_UFLOAT_PACK32` where the device's optimal tiling can render, blend and linearly
+    /// filter it, whatever scene_color_format() reports, and otherwise `VK_FORMAT_R16G16B16A16_SFLOAT`. The packed
+    /// format halves the bytes that the passes move, but rounds the light that each pass stores, as
+    /// SceneColorFormat::b10g11r11 describes, and the upsamples store sums of levels, so a long chain's bloom can fall
+    /// a few percent short of the light that it spreads, blue the most, where the device rounds toward zero. The
+    /// renderer compiles the passes' pipelines at construction, whether bloom is enabled or not.
+    ///
+    /// A draw() whose scene targets have changed size, after a swapchain recreation or a render scale change
+    /// (set_render_scale()), creates a chain of their new size, and a draw() that finds bloom disabled releases the
+    /// chain; neither waits for the device, and a replaced or released chain is destroyed once no frame in flight can
+    /// use it. If creating the chain fails, that draw() throws SceneResourceError, and each later draw() tries again
+    /// until it succeeds or bloom is disabled.
+    ///
+    /// Throws `std::invalid_argument`, keeping the previous bloom, unless Bloom::threshold is finite and at least 0
+    /// ("Bloom threshold must be finite and nonnegative"), Bloom::knee is finite and from 0 to 1 ("Bloom knee must be
+    /// finite and from 0 to 1"), Bloom::intensity is finite and at least 0 ("Bloom intensity must be finite and
+    /// nonnegative") and Bloom::radius is finite, above 0 and at most 1 ("Bloom radius must be finite, above 0 and at
+    /// most 1"), checked in that order; and then, without asset support, `std::logic_error` ("Bloom requires asset
+    /// support").
+    void set_bloom(const Bloom &bloom);
+    /// The bloom that RendererOptions::bloom or the latest accepted set_bloom() set.
+    [[nodiscard]] Bloom bloom() const noexcept;
     /// Replaces the lighting environment from the next draw(); it starts as a default Environment.
     ///
     /// Validates @p environment with validate_environment() and the detail region, enabled or not, with
@@ -1121,7 +1217,8 @@ class VulkanRenderer {
     /// Each call waits for the frame submitted RendererOptions::frames_in_flight submissions before the one that it
     /// submits and, as wait_for_frame() describes, for the present of the frame submitted one submission before that,
     /// waits that return at once when wait_for_frame() has already made them, releases unowned cache entries, creates
-    /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), compiles the view's
+    /// the scene targets after a swapchain creation or a render scale change (set_render_scale()), creates or releases
+    /// the bloom chain (set_bloom()), compiles the view's
     /// pipelines after a shadow filter change (set_shadow_filter()) or an impostor frame count change
     /// (set_impostor_frames()), replaces the material samplers after an anisotropy change, which waits for every
     /// frame in flight (set_max_anisotropy()), culls, uploads meshes that became visible or cast shadows
