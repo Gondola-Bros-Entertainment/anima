@@ -8,14 +8,16 @@
 #ifndef ANIMA_SHADER_INTERFACE_H
 #define ANIMA_SHADER_INTERFACE_H
 
-// Descriptor sets. Set 0 belongs to each pipeline layout: the material's in the world's pipelines, the scene target's
-// in the resolve pass, and the atmosphere's tables in its compute passes. Every layout that reads the environment binds
-// it at set 1, and the resource pipelines bind their poses at set 2.
+// Descriptor sets. Set 0 belongs to each pipeline layout: the material's in the world's pipelines, the image that the
+// resolve pass and each bloom pass read, and the atmosphere's tables in its compute passes. Every layout that reads the
+// environment binds it at set 1, the resource pipelines bind their poses at set 2, and the resolve pass binds the bloom
+// chain's first level at set 2, as a scene input set.
 #define ANIMA_SET_MATERIAL 0
 #define ANIMA_SET_SCENE_INPUT 0
 #define ANIMA_SET_ATMOSPHERE 0
 #define ANIMA_SET_ENVIRONMENT 1
 #define ANIMA_SET_POSES 2
+#define ANIMA_SET_BLOOM 2
 // The sprite pipelines' sets, built-in and sprite shaders' alike: the frame block that custom materials read too, then
 // the sheet's texture.
 #define ANIMA_SET_SPRITE_FRAME 0
@@ -29,7 +31,8 @@
 #define ANIMA_MATERIAL_OCCLUSION 4
 #define ANIMA_MATERIAL_UNIFORM 5
 
-// The scene input set: the scene target that resolve.frag displays.
+// The scene input set: the scene target that resolve.frag displays and the bright pass reads, or the level of the bloom
+// chain that a bloom pass or resolve.frag reads.
 #define ANIMA_SCENE_INPUT_COLOR 0
 
 // The environment set: its uniform block (environment_data.glsl), the depth maps of the shadow cascades and of the
@@ -96,6 +99,8 @@
 #define ANIMA_SPEC_SHADOW_PASS 0
 // resolve.frag's encoding to sRGB.
 #define ANIMA_SPEC_ENCODE_SRGB 0
+// bloom-downsample.frag's bright pass.
+#define ANIMA_SPEC_BLOOM_BRIGHT_PASS 0
 
 // A draw's push constants (resource.vert): the flags in indices.w, set with placements and with a visibility range.
 #define ANIMA_DRAW_PLACED 1u

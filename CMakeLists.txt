@@ -510,7 +510,8 @@ if(ANIMA_BUILD_DESKTOP)
     if(ANIMA_BUILD_ASSETS)
         list(APPEND shader_sources mesh.frag resource.vert sky.vert sky.frag background.frag shadow-resource.vert
             shadow.frag resolve.frag impostor.vert impostor.frag impostor-shadow.frag atmosphere-transmittance.comp
-            atmosphere-scattering.comp atmosphere-sky.comp sprite.vert sprite.frag)
+            atmosphere-scattering.comp atmosphere-sky.comp sprite.vert sprite.frag bloom-downsample.frag
+            bloom-upsample.frag)
     endif()
     if(ANIMA_BUILD_UI)
         list(APPEND shader_sources ui.vert ui.frag)
@@ -761,11 +762,16 @@ if(ANIMA_BUILD_TESTS)
         anima_add_gpu_check(desktop_instances "${desktop}" "${anima_gpu_checks}/desktop_instances")
         foreach(check_mode IN ITEMS allocations culling placements lod impostors cascades foliage fog tone-mapping
             atmosphere environment resources frames-in-flight present-modes render-scale
-            material-sampling pbr surface-maps sidedness draw-order blending custom-materials sprites texture-memory)
+            material-sampling pbr surface-maps sidedness draw-order blending custom-materials sprites texture-memory
+            bloom)
             string(REPLACE "-" "_" check "${check_mode}")
             anima_add_gpu_check(desktop_${check} "${desktop}" --${check_mode} "${anima_gpu_checks}/desktop_${check}")
             list(APPEND desktop_checks ${check})
         endforeach()
+        # Bloom with one frame in flight, where draw() destroys a replaced or released bloom chain at once.
+        anima_add_gpu_check(desktop_bloom_one_frame "${desktop}" --bloom "${anima_gpu_checks}/desktop_bloom_one_frame"
+            --frames-in-flight 1)
+        list(APPEND desktop_checks bloom_one_frame)
         # The same scale changes with one frame in flight, where draw() destroys replaced scene targets at once.
         anima_add_gpu_check(desktop_render_scale_one_frame "${desktop}" --render-scale
             "${anima_gpu_checks}/desktop_render_scale_one_frame" --frames-in-flight 1)

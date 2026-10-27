@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <locale>
 #include <optional>
@@ -109,6 +110,19 @@ void validate_impostor_frames(std::uint32_t frames) {
     if (frames != 1 && frames != 3)
         throw std::invalid_argument("Impostor frames must be 1 or 3");
 }
+// Throws `std::invalid_argument` for a Bloom that VulkanRenderer::set_bloom rejects, checking its fields in order.
+void validate_bloom(const Bloom &bloom) {
+    if (!std::isfinite(bloom.threshold) || bloom.threshold < 0)
+        throw std::invalid_argument("Bloom threshold must be finite and nonnegative");
+    if (!std::isfinite(bloom.knee) || bloom.knee < 0 || bloom.knee > 1)
+        throw std::invalid_argument("Bloom knee must be finite and from 0 to 1");
+    if (!std::isfinite(bloom.intensity) || bloom.intensity < 0)
+        throw std::invalid_argument("Bloom intensity must be finite and nonnegative");
+    if (!std::isfinite(bloom.radius) || bloom.radius <= 0 || bloom.radius > 1)
+        throw std::invalid_argument("Bloom radius must be finite, above 0 and at most 1");
+}
+// What construction and VulkanRenderer::set_bloom() report for bloom without asset support, which has no scene target.
+[[maybe_unused]] constexpr auto bloom_without_assets = "Bloom requires asset support";
 // Throws `std::invalid_argument` for a value that is not a SceneColorFormat enumerator.
 void validate_scene_color_format(SceneColorFormat format) {
     switch (format) {
@@ -230,6 +244,12 @@ constexpr std::uint32_t sprite_vertex_code[] =
 constexpr std::uint32_t sprite_fragment_code[] =
 #include "sprite.frag.inc"
     ;
+constexpr std::uint32_t bloom_downsample_code[] =
+#include "bloom-downsample.frag.inc"
+    ;
+constexpr std::uint32_t bloom_upsample_code[] =
+#include "bloom-upsample.frag.inc"
+    ;
 #endif
 struct VulkanFailure : std::runtime_error {
     VkResult result;
@@ -334,11 +354,20 @@ struct VulkanRenderer::Impl {
     // Timestamps of a profiled frame, in the order draw() writes them; FrameProfile's GPU fields are the
     // intervals between them.
     struct TimingQuery {
-        enum : std::uint32_t { start, after_atmosphere, after_shadows, after_scene, after_resolve, end, count };
+        enum : std::uint32_t {
+            start,
+            after_atmosphere,
+            after_shadows,
+            after_scene,
+            after_bloom,
+            after_resolve,
+            end,
+            count
+        };
     };
 #ifdef ANIMA_HAS_ASSETS
-    // Batches in each frame's submission: the scene's (the atmosphere, the shadow passes, the world pass and any
-    // opaque copies), which never touches the swapchain image, then display conversion, UI and capture, the only
+    // Batches in each frame's submission: the scene's (the atmosphere, the shadow passes, the world pass, any opaque
+    // copies and the bloom), which never touches the swapchain image, then display conversion, UI and capture, the only
     // commands that do and so the only ones that wait for it.
     static constexpr std::uint32_t frame_batches = 2;
 #else
@@ -579,6 +608,7 @@ struct VulkanRenderer::Impl {
     };
 #ifdef ANIMA_HAS_ASSETS
 #include "atmosphere_renderer.inc"
+#include "bloom_renderer.inc"
 #include "environment_renderer.inc"
 #include "resource_renderer.inc"
 #include "shadow_renderer.inc"
@@ -729,6 +759,11 @@ struct VulkanRenderer::Impl {
         validate_shadow_filter(options.shadow_filter);
         validate_impostor_frames(options.impostor_frames);
         validate_scene_color_format(options.scene_color_format);
+        validate_bloom(options.bloom);
+#ifndef ANIMA_HAS_ASSETS
+        if (options.bloom.enabled)
+            throw std::invalid_argument(bloom_without_assets);
+#endif
         validate_application_name(options.application_name);
         validate_application_version(options.application_version);
         if (!window)
@@ -1094,6 +1129,7 @@ struct VulkanRenderer::Impl {
         make_fragment(resolve_fragment_code, resolve_fragment_shader);
         make_fragment(background_fragment_code, background_fragment_shader);
         create_world_layout();
+        create_bloom(bloom_downsample_code, bloom_upsample_code);
         // write_material_textures() binds each texture at its index in material_texture_count order.
         static_assert(ANIMA_MATERIAL_BASE_COLOR == 0 && ANIMA_MATERIAL_NORMAL == 1 &&
                           ANIMA_MATERIAL_METALLIC_ROUGHNESS == 2 && ANIMA_MATERIAL_EMISSIVE == 3 &&
@@ -2501,6 +2537,7 @@ struct VulkanRenderer::Impl {
         scene_resource_step([&] {
             // Before the custom materials' frame block, which holds the scene targets' size.
             ensure_scene_targets();
+            ensure_bloom();
             ensure_view_pipelines();
             ensure_anisotropy();
             ensure_shadow_targets();
@@ -2536,7 +2573,8 @@ struct VulkanRenderer::Impl {
                 profile.gpu_atmosphere_ms = between(TimingQuery::start, TimingQuery::after_atmosphere);
                 profile.gpu_shadow_ms = between(TimingQuery::after_atmosphere, TimingQuery::after_shadows);
                 profile.gpu_scene_ms = between(TimingQuery::after_shadows, TimingQuery::after_scene);
-                profile.gpu_resolve_ms = between(TimingQuery::after_scene, TimingQuery::after_resolve);
+                profile.gpu_bloom_ms = between(TimingQuery::after_scene, TimingQuery::after_bloom);
+                profile.gpu_resolve_ms = between(TimingQuery::after_bloom, TimingQuery::after_resolve);
                 profile.gpu_transfer_ms = between(TimingQuery::after_resolve, TimingQuery::end);
                 profile.gpu_available = true;
                 // The timed frame's first timestamp happens-after the earlier frame's last, with one frame in flight
@@ -2718,6 +2756,10 @@ struct VulkanRenderer::Impl {
 #endif
         vkCmdEndRenderPass(command);
         timestamp(command, TimingQuery::after_scene);
+#ifdef ANIMA_HAS_ASSETS
+        record_bloom(command);
+#endif
+        timestamp(command, TimingQuery::after_bloom);
 #ifdef ANIMA_HAS_ASSETS
         check(vkEndCommandBuffer(command), "End command buffer");
         // The rest of the frame draws to the swapchain image, in the batch that waits for it. A new command buffer
@@ -2967,6 +3009,7 @@ struct VulkanRenderer::Impl {
             if (shadow_fragment_shader)
                 vkDestroyShaderModule(device, shadow_fragment_shader, nullptr);
             destroy_atmosphere();
+            destroy_bloom();
             if (post_pipeline_layout)
                 vkDestroyPipelineLayout(device, post_pipeline_layout, nullptr);
             if (scene_input_layout)
@@ -3180,6 +3223,17 @@ SceneColorFormat VulkanRenderer::scene_color_format() const noexcept {
 #endif
     return SceneColorFormat::rgba16f;
 }
+void VulkanRenderer::set_bloom(const Bloom &bloom) {
+    impl_->running();
+    validate_bloom(bloom);
+#ifdef ANIMA_HAS_ASSETS
+    // The next draw() that prepares a frame creates or releases the chain, once it has waited for its frame.
+    impl_->options.bloom = bloom;
+#else
+    throw std::logic_error(bloom_without_assets);
+#endif
+}
+Bloom VulkanRenderer::bloom() const noexcept { return impl_->options.bloom; }
 void VulkanRenderer::set_sprites(std::vector<SpriteBatch> batches) {
     impl_->running();
 #ifdef ANIMA_HAS_ASSETS
@@ -3227,6 +3281,8 @@ ResourceStats VulkanRenderer::resource_stats() const noexcept {
         stats.world_target_bytes =
             impl_->world_target->color.allocation_bytes + (depth.lazily_allocated ? 0 : depth.allocation_bytes);
     }
+    if (impl_->bloom_chain)
+        stats.bloom_bytes = impl_->bloom_chain->allocation_bytes;
     return stats;
 #else
     return {};

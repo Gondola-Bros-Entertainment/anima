@@ -43,6 +43,7 @@
 #include "allocations.hpp"
 #include "atmosphere.hpp"
 #include "blending.hpp"
+#include "bloom.hpp"
 #include "cascades.hpp"
 #include "compressed_textures.hpp"
 #include "culling.hpp"
@@ -373,6 +374,7 @@ int main(int argc, char **argv) {
         cascades_test::reject_unknown_shadow_filter();
         impostor_test::reject_invalid_impostor_frames();
         fog_test::reject_unknown_scene_color_format();
+        bloom_test::reject_invalid_bloom();
         tone_mapping_test::check_reference();
         if (argc > 1 && std::string_view(argv[1]) == "--environment")
             return environment_test::run(argc, argv);
@@ -418,6 +420,8 @@ int main(int argc, char **argv) {
             return material_test::run_sidedness(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--draw-order")
             return draw_order_test::run(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--bloom")
+            return bloom_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--blending")
             return blending_test::run(argc, argv);
         if (argc > 1 && std::string_view(argv[1]) == "--custom-materials")
