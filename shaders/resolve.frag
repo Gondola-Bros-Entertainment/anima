@@ -15,6 +15,9 @@ layout(push_constant) uniform Display {
     // The factor of bloomColor added to the exposed scene: Bloom::intensity over the total weight of the levels that
     // the chain sums, and 0 without bloom.
     float bloom;
+    // One step of the swapchain's 8-bit channels in sRGB-encoded values, 1 / 255, while the frame dithers
+    // (Bloom::dither), and 0 otherwise.
+    float dither;
 }
 display;
 #include "environment.glsl"
@@ -108,6 +111,30 @@ vec3 supersampled(vec3 glow) {
     }
     return sum / total;
 }
+// Linear display @p color encoded to sRGB, and @p encoded decoded back, as the sRGB standard defines both.
+vec3 srgbEncoded(vec3 color) {
+    return mix(1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, 12.92 * color, lessThanEqual(color, vec3(0.0031308)));
+}
+vec3 srgbDecoded(vec3 encoded) {
+    return mix(pow((encoded + 0.055) / 1.055, vec3(2.4)), encoded / 12.92, lessThanEqual(encoded, vec3(0.04045)));
+}
+// Jimenez's interleaved gradient noise (Next Generation Post Processing in Call of Duty: Advanced Warfare): a value
+// from 0 to 1 for the window pixel at @p pixel that spreads every small block of pixels across the range, from the
+// pixel's position alone, so it stays put while the view holds still.
+float interleavedGradientNoise(vec2 pixel) {
+    const vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    return fract(magic.z * fract(dot(pixel, magic.xy)));
+}
+// @p encoded, sRGB-encoded display color, plus noise of a triangular distribution from -1 to 1 display steps, which
+// makes the mean of the quantized levels equal the value before quantization and their noise the same at every value,
+// so smooth gradients show no bands. Within a step of black or white the noise narrows, so black and white stay exact.
+vec3 dithered(vec3 encoded) {
+    float uniformNoise = interleavedGradientNoise(gl_FragCoord.xy) * 2.0 - 1.0;
+    // Remaps the uniform noise to a triangular distribution.
+    float noise = sign(uniformNoise) * (1.0 - sqrt(1.0 - abs(uniformNoise)));
+    vec3 room = clamp(min(encoded, 1.0 - encoded) / display.dither, 0.0, 1.0);
+    return clamp(encoded + noise * display.dither * room, 0.0, 1.0);
+}
 void main() {
     vec2 coordinates = screen * 0.5 + 0.5;
     // The bloom light varies slowly, so each window pixel reads it once, interpolated bilinearly at its center, and
@@ -117,7 +144,12 @@ void main() {
     // filters its own area.
     vec3 color = any(greaterThan(display.footprint, vec2(1))) ? supersampled(glow)
                                                               : exposed(texture(sceneColor, coordinates).rgb, glow);
-    if (encodeSrgb)
-        color = mix(1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, 12.92 * color, lessThanEqual(color, vec3(0.0031308)));
+    // Dithering adds its noise to the encoded values that the swapchain quantizes, after tone mapping. An sRGB
+    // swapchain encodes what the shader writes, so the shader writes the dithered value decoded.
+    if (display.dither > 0.0) {
+        vec3 shown = dithered(srgbEncoded(color));
+        color = encodeSrgb ? shown : srgbDecoded(shown);
+    } else if (encodeSrgb)
+        color = srgbEncoded(color);
     outColor = vec4(color, 1);
 }

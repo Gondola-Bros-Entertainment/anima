@@ -67,13 +67,22 @@ VkPipeline resolve_pipeline{};
 VkFormat display_format{};
 // The largest scene targets that the device can create and attach: its 2D image and framebuffer limits.
 VkExtent2D max_scene_extent{};
-// The push constants of resolve.frag: scene target pixels per window pixel along each axis, and the factor of the bloom
-// chain's first level that it adds to the exposed scene (bloom_factor()).
+// The push constants of resolve.frag: scene target pixels per window pixel along each axis, the factor of the bloom
+// chain's first level that it adds to the exposed scene (bloom_factor()), and the display step that it dithers by, or 0
+// (dither_step()).
 struct DisplayPush {
     std::array<float, 2> footprint;
-    float bloom;
+    float bloom, dither;
 };
-static_assert(sizeof(DisplayPush) == 3 * sizeof(float), "resolve.frag's Display holds a vec2 and a float");
+static_assert(sizeof(DisplayPush) == 4 * sizeof(float), "resolve.frag's Display holds a vec2 and two floats");
+// One step of an 8-bit channel in encoded values, the depth of every swapchain format that the renderer knows
+// (preferred_surface_formats).
+static constexpr float display_step = 1.0F / 255;
+// The step that display conversion dithers by: display_step while bloom has a chain and Bloom::dither asks for it and
+// the swapchain has a known 8-bit format, and otherwise 0, which leaves the frame undithered.
+[[nodiscard]] float dither_step() const {
+    return bloom_chain && options.bloom.dither && surface_format_info(format) ? display_step : 0;
+}
 
 void create_world_layout() {
     const VkDescriptorSetLayoutBinding binding{ANIMA_SCENE_INPUT_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
@@ -287,7 +296,8 @@ void record_display(VkCommandBuffer command, VkFramebuffer framebuffer) {
     vkCmdSetScissor(command, 0, 1, &scissor);
     const DisplayPush push{{static_cast<float>(double(scene_extent.width) / extent.width),
                             static_cast<float>(double(scene_extent.height) / extent.height)},
-                           bloom_factor()};
+                           bloom_factor(),
+                           dither_step()};
     std::array<VkDescriptorSet, ANIMA_SET_BLOOM + 1> sets{};
     sets[ANIMA_SET_SCENE_INPUT] = world_target->descriptor;
     sets[ANIMA_SET_ENVIRONMENT] = frame().environment_set;

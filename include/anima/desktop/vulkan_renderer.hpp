@@ -110,9 +110,10 @@ enum class SceneColorFormat {
 /// `s = min(max(b - t + w, 0), 2 * w)^2 / (4 * w)`, or 0 when `w` is 0: `s` is 0 up to `t - w` and rises along a
 /// parabola that meets `b - t` at `t + w`, above which `b - t` alone counts, so the share that blooms rises smoothly
 /// from 0 at `t - w`. A sample no brighter than `t - w` keeps no light at all, so a scene whose light stays below it
-/// shows exactly as without bloom. Since samples are block means, a bright pixel smaller than a block blooms only as
-/// far as the block's mean passes the threshold, and a bright pixel on a dark background adds the same light wherever
-/// it lies on the pixel grid, since every pixel's share of the bright pass's samples is the same.
+/// shows exactly as without bloom, but for dithering (#dither). Since samples are block means, a bright pixel smaller
+/// than a block blooms only as far as the block's mean passes the threshold, and a bright pixel on a dark background
+/// adds the same light wherever it lies on the pixel grid, since every pixel's share of the bright pass's samples is
+/// the same.
 struct Bloom {
     /// Whether frames bloom. While false, the renderer records no bloom passes, holds no bloom images once a draw() has
     /// released them, and shows each frame exactly as it would without bloom.
@@ -134,6 +135,16 @@ struct Bloom {
     /// less 1, from 0 to 1, so that the bloom widens continuously as the radius or the scene targets' height grows,
     /// rather than in steps of a level.
     float radius = .1F;
+    /// Whether display conversion dithers the scene that it shows, under any UI, while bloom is #enabled, so that the
+    /// bloom's gradients, and every other smooth gradient of the scene, show no bands of the swapchain's 8-bit levels.
+    /// After tone mapping, each window pixel's sRGB-encoded color gains noise from -1 to 1 levels in a triangular
+    /// distribution, the same in every channel, from Jimenez's interleaved gradient noise of the pixel's position: the
+    /// mean of a region's quantized levels then follows the color before quantization, but for the device's own error
+    /// in encoding sRGB, and each pixel keeps its noise from frame to frame, so a still view does not shimmer. The
+    /// noise narrows within a level of black or white, which stay exact. Swapchain formats other than the 8-bit BGRA
+    /// and RGBA ones that the renderer prefers are not dithered, and neither is a frame without bloom, so disabling
+    /// bloom restores frames exactly.
+    bool dither = true;
 };
 
 /// Severity of a message that VulkanRenderer passes to RendererOptions::log.
@@ -784,14 +795,15 @@ struct ResourceStats {
 /// chain, without that wait. Where the device supports `VK_KHR_present_id` and `VK_KHR_present_wait`
 /// (waits_for_presents()), presents in the FIFO modes carry ids, which wait_for_frame() and draw() wait for. Display
 /// output is sRGB-encoded once: by an sRGB swapchain format when the surface offers one, otherwise in the display
-/// shader for 8-bit UNORM formats. With asset support each frame is one submission of two batches, and only the second,
-/// display conversion, UI and capture, waits for the acquired image, so the GPU can draw and bloom the scene while the
-/// presentation engine still holds that image; without it, the frame draws into the image and waits for it from its
-/// first color write. Presentation semaphores belong to swapchain images. Where the instance and device support
-/// `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain resources are destroyed; otherwise,
-/// or with RendererOptions::disable_present_fences, a device wait-idle is used, which unextended Vulkan does not
-/// guarantee to cover presentation. Portability enumeration and `VK_KHR_portability_subset` are enabled when
-/// advertised, as on MoltenVK. Diagnostics go to RendererOptions::log.
+/// shader for 8-bit UNORM formats, and while bloom dithers (Bloom::dither) the display shader adds its noise to the
+/// encoded values before the swapchain quantizes them. With asset support each frame is one submission of two batches,
+/// and only the second, display conversion, UI and capture, waits for the acquired image, so the GPU can draw and
+/// bloom the scene while the presentation engine still holds that image; without it, the frame draws into the image
+/// and waits for it from its first color write. Presentation semaphores belong to swapchain images. Where the instance
+/// and device support `VK_EXT_swapchain_maintenance1`, presentation fences are waited before swapchain resources are
+/// destroyed; otherwise, or with RendererOptions::disable_present_fences, a device wait-idle is used, which unextended
+/// Vulkan does not guarantee to cover presentation. Portability enumeration and `VK_KHR_portability_subset` are enabled
+/// when advertised, as on MoltenVK. Diagnostics go to RendererOptions::log.
 ///
 /// After shutdown(), every public non-const member except request_resize(), take_capture() and shutdown() throws
 /// `std::logic_error` ("Renderer is shut down"); after a RendererFatalError they throw RendererFatalError. Without
