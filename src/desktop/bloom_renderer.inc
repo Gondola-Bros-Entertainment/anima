@@ -340,8 +340,8 @@ void record_bloom(VkCommandBuffer command) {
     push.threshold = options.bloom.threshold;
     push.knee = options.bloom.threshold * options.bloom.knee;
     // Draws @p level from @p source, an image of @p source_size.
-    const auto draw_level = [&](VkRenderPass pass, VkPipeline pipeline, std::uint32_t level, VkDescriptorSet source,
-                                VkExtent2D source_size, float weight) {
+    const auto draw_level = [&](VkRenderPass pass, VkPipeline level_pipeline, std::uint32_t level,
+                                VkDescriptorSet source, VkExtent2D source_size, float weight) {
         const auto size = chain.extents[level];
         VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         begin.renderPass = pass;
@@ -352,7 +352,7 @@ void record_bloom(VkCommandBuffer command) {
         const VkRect2D scissor{{0, 0}, size};
         vkCmdSetViewport(command, 0, 1, &viewport);
         vkCmdSetScissor(command, 0, 1, &scissor);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, level_pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_pipeline_layout, ANIMA_SET_SCENE_INPUT,
                                 1, &source, 0, nullptr);
         push.texel = {1.0F / static_cast<float>(source_size.width), 1.0F / static_cast<float>(source_size.height)};
